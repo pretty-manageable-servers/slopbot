@@ -15,12 +15,15 @@ function probability(value: unknown): number {
 }
 
 export class DecisionClassifier implements Classifier {
+  private unsupported = false;
   constructor(
     private readonly options: { baseUrl: string; apiKey: string; model: string },
     private readonly store: Store, private readonly fetcher: typeof fetch = fetch,
+    private readonly fallback?: Classifier,
   ) {}
 
   async classify(message: Message, context: readonly Message[]): Promise<ParticipationDecision> {
+    if (this.unsupported && this.fallback) return this.fallback.classify(message, context);
     const state = JSON.stringify({ preceding: context, CURRENT: message });
     const prompt: Prompt = {
       prefixVersion: "decisions-v1", prefix: [{ role: "system", content: JSON.stringify(questions) }],
@@ -46,6 +49,11 @@ export class DecisionClassifier implements Classifier {
       return decision;
     } catch (error) {
       await this.store.fail(runId, "DecisionError");
+      if (error instanceof ProviderError && error.status === 404 && this.fallback) {
+        this.unsupported = true;
+        console.warn("Decision endpoint unavailable; using the chat participation classifier.");
+        return this.fallback.classify(message, context);
+      }
       throw error;
     }
   }

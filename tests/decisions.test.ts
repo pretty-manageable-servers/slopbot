@@ -34,3 +34,14 @@ test("decision provider errors retain HTTP status without printing response bodi
   const classifier = new DecisionClassifier(config, store, async () => new Response("private body", { status: 401 }));
   await assert.rejects(classifier.classify(message, []), error => error instanceof ProviderError && error.status === 401);
 });
+
+test("unsupported decisions endpoint falls back and is not retried each message", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  let requests = 0, fallbackCalls = 0;
+  const classifier = new DecisionClassifier(config, store, async () => {
+    requests++; return new Response(null, { status: 404 });
+  }, { async classify() { fallbackCalls++; return { addressed: true, respond: true, reason: "fallback" }; } });
+  assert.equal((await classifier.classify(message, [])).reason, "fallback");
+  assert.equal((await classifier.classify(message, [])).respond, true);
+  assert.equal(requests, 1); assert.equal(fallbackCalls, 2);
+});

@@ -15,7 +15,7 @@ import type { Config } from "../config.js";
 import type { Message } from "../domain.js";
 import type { LLM } from "../ports.js";
 import type { RuntimeStore } from "../runtime-store.js";
-import { ParticipationGate } from "../participation.js";
+import { LLMClassifier, ParticipationGate } from "../participation.js";
 import { HistoryImporter } from "../history.js";
 import { DecisionClassifier } from "./decisions.js";
 import { TaskWorker } from "../queue.js";
@@ -54,7 +54,7 @@ export class DiscordAdapter implements ChatGateway {
       return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= max ? value : fallback;
     };
     const savedMonitoring = store.setting(config.guildId, "monitoring");
-    const participation = new ParticipationGate(new DecisionClassifier({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.jevModel }, store), {
+    const participation = new ParticipationGate(new DecisionClassifier({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.jevModel }, store, undefined, new LLMClassifier(llm, store)), {
       enabled: (typeof savedMonitoring === "boolean" ? savedMonitoring : config.jevEnabled) && !config.mock,
       contextMessages: savedLimit("classifier_context", config.jevContextMessages, 100),
       cooldownMs: savedLimit("cooldown_seconds", config.jevCooldownSeconds, 3600) * 1000,
