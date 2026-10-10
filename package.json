@@ -1,0 +1,38 @@
+{
+  "name": "slopbot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && cp src/adapters/postgres-schema.sql dist/src/adapters/postgres-schema.sql",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "start": "npm run build && node --env-file-if-exists=.env dist/src/discord-main.js",
+    "demo": "npm run build && node dist/src/main.js",
+    "models": "npm run build && node --env-file-if-exists=.env dist/src/list-models.js",
+    "search:start": "node scripts/search-start.mjs",
+    "search:stop": "docker compose -f compose.search.yaml down"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.23.1",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "exceljs": "^4.4.0",
+    "fflate": "^0.8.3",
+    "mammoth": "^1.13.0",
+    "pdf-parse": "^2.4.5",
+    "pg": "^8.23.1",
+    "sharp": "^0.35.5"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+.git
+.env
+.env.*
+node_modules
+dist
+data
+.tools
+*.sqlite3*
+.DS_Store
+
+.deployment-build/*
+!.deployment-build/seed.enc

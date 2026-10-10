@@ -1,0 +1,31 @@
+services:
+  bot:
+    build: .
+    image: slopbot:local
+    init: true
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://slopbot:${POSTGRES_PASSWORD:-local-development-only}@postgres:5432/slopbot
+      SEARXNG_URL: http://127.0.0.1:8080
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-local-development-only}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 150s
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: slopbot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
+      POSTGRES_DB: slopbot
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U slopbot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+volumes:
+  postgres_data:
