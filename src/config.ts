@@ -8,6 +8,7 @@ export interface Config {
   model: string;
   databasePath: string;
   databaseUrl?: string;
+  databaseSchema?: string;
   searxngUrl?: string;
   jevEnabled: boolean;
   jevModel: string;
@@ -63,6 +64,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     apiKey: mock ? "" : required("LLM_API_KEY"),
     model: env.LLM_MODEL?.trim() || "qwen3.8-flash-next",
     ...(env.DATABASE_URL ? { databaseUrl: env.DATABASE_URL } : {}),
+    ...(env.DATABASE_SCHEMA ? { databaseSchema: env.DATABASE_SCHEMA } : {}),
     databasePath: env.DATABASE_PATH ?? "./data/slopbot.sqlite3",
     jevEnabled: enabled("JEV_ENABLED", true), jevModel: env.JEV_MODEL ?? "typesafe/kev-4b",
     jevContextMessages: integer("JEV_CONTEXT_MESSAGES", 8, 100),

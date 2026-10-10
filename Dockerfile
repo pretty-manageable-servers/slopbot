@@ -8,10 +8,13 @@ COPY tests ./tests
 RUN npm test
 RUN npm prune --omit=dev
 
+FROM tailscale/tailscale:stable AS tailscale
 FROM docker.io/searxng/searxng:latest AS runtime
 USER root
 RUN mkdir -p /app /data && chown -R 1000:1000 /app /data /etc/searxng /var/cache/searxng
 COPY --from=build /usr/local/bin/node /usr/local/bin/node
+COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscale
+COPY --from=tailscale /usr/local/bin/tailscaled /usr/local/bin/tailscaled
 RUN node --version
 WORKDIR /app
 ENV NODE_ENV=production DATABASE_PATH=/data/slopbot.sqlite3 SEARXNG_URL=http://127.0.0.1:8080

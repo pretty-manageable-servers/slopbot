@@ -12,3 +12,5 @@ data/
 .tools/
 
 .deployment-build/
+
+.env.development

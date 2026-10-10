@@ -35,3 +35,20 @@ test("Postgres preserves identity, context, journals, queue ordering, vectors an
     await store.setSetting(m.server,`history:${m.channel}`,{days:150});await store.purgeUnconfigured(m.server,[]);assert.equal(store.setting(m.server,`history:${m.channel}`),undefined);
   } finally { await store.finishIndexing();await store.close(); }
 });
+
+test("development schemas isolate settings and messages on the same database", {skip: !process.env.TEST_DATABASE_URL}, async () => {
+  const url=process.env.TEST_DATABASE_URL!;
+  const a=await PostgresStore.connect(url,undefined,"slopbot_test_a");
+  const b=await PostgresStore.connect(url,undefined,"slopbot_test_b");
+  try {
+    await a.setSetting("schema-test","isolated",42);
+    assert.equal(b.setting("schema-test","isolated"),undefined);
+    const message:Message={server:"schema-test",channel:"test",id:"one",author:"test",text:"isolated",timestamp:1,addressed:false};
+    await a.ingest(message);
+    assert.equal((await b.indexStats("schema-test","test")).messages,0);
+  } finally {
+    await a.close();await b.close();
+    const cleanup=new Client({connectionString:url});await cleanup.connect();
+    await cleanup.query('DROP SCHEMA slopbot_test_a CASCADE; DROP SCHEMA slopbot_test_b CASCADE');await cleanup.end();
+  }
+});

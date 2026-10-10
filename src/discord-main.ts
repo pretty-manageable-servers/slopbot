@@ -14,7 +14,7 @@ async function main(): Promise<void> {
   mkdirSync(dirname(config.databasePath), { recursive: true });
   const embeddings = config.embeddingsEnabled && !config.mock
     ? new ProviderEmbeddings(config.baseUrl, config.apiKey, config.embeddingModel) : undefined;
-  const store = config.databaseUrl ? await PostgresStore.connect(config.databaseUrl, embeddings) : new SQLiteStore(config.databasePath, embeddings);
+  const store = config.databaseUrl ? await PostgresStore.connect(config.databaseUrl, embeddings, config.databaseSchema) : new SQLiteStore(config.databasePath, embeddings);
   const llm = config.mock ? new FakeLLM() : new ChatCompletionsLLM({
     baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.model,
   });

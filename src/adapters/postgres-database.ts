@@ -7,10 +7,17 @@ types.setTypeParser(20, value => { const number = Number(value); if (!Number.isS
 export type Row = Record<string, any>;
 export class PostgresDatabase {
   private constructor(private readonly client: Client) {}
-  static async connect(url: string): Promise<PostgresDatabase> {
+  static async connect(url: string, schema?: string): Promise<PostgresDatabase> {
+    if (schema && !/^[a-z][a-z0-9_]*$/.test(schema)) throw new Error("Invalid database schema");
     const client = new Client({ connectionString: url, connectionTimeoutMillis: 15000 });
     await client.connect();
-    try { await client.query(readFileSync(new URL("./postgres-schema.sql", import.meta.url), "utf8")); }
+    try {
+      if (schema) {
+        await client.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
+        await client.query(`SET search_path TO "${schema}", public`);
+      }
+      await client.query(readFileSync(new URL("./postgres-schema.sql", import.meta.url), "utf8"));
+    }
     catch(error) { await client.end(); throw error; }
     return new PostgresDatabase(client);
   }

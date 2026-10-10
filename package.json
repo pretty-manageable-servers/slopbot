@@ -14,7 +14,8 @@
     "demo": "npm run build && node dist/src/main.js",
     "models": "npm run build && node --env-file-if-exists=.env dist/src/list-models.js",
     "search:start": "node scripts/search-start.mjs",
-    "search:stop": "docker compose -f compose.search.yaml down"
+    "search:stop": "docker compose -f compose.search.yaml down",
+    "dev": "node scripts/development/start.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

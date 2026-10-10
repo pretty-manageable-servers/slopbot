@@ -17,8 +17,8 @@ export class PostgresStore {
     private readonly threadsCache: { server: string; thread: string; parent: string }[] = [];
     private indexTail: Promise<void> = Promise.resolve();
     private constructor(private readonly db: PostgresDatabase, private readonly embeddings?: Embeddings) { }
-    static async connect(url: string, embeddings?: Embeddings): Promise<PostgresStore> {
-        const db = await PostgresDatabase.connect(url);
+    static async connect(url: string, embeddings?: Embeddings, schema?: string): Promise<PostgresStore> {
+        const db = await PostgresDatabase.connect(url, schema);
         const store = new PostgresStore(db, embeddings);
         for (const row of await db.prepare("SELECT * FROM settings").all()) store.settingsCache.set(JSON.stringify([row.server,row.key]), JSON.parse(String(row.value)));
         for (const row of await db.prepare("SELECT server,thread,parent FROM task_threads").all()) store.threadsCache.push({ server:String(row.server),thread:String(row.thread),parent:String(row.parent) });
