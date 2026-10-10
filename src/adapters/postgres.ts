@@ -390,9 +390,10 @@ export class PostgresStore {
         if (!this.embeddings || !message.text.trim())
             return;
         this.indexTail = this.indexTail.then(() => this.indexMessage(message)).catch((error: unknown) => {
-            const failure = error as { name?: string; code?: string; status?: number };
+            const failure = error as { name?: string; code?: string; status?: number; cause?: { code?: string }; stack?: string };
             console.error("Embedding indexing failed; keyword retrieval remains available.", {
                 name: failure?.name, code: failure?.code, status: failure?.status,
+                cause: failure?.cause?.code, frames: failure?.stack?.split("\n").slice(1, 4),
             });
         });
     }
