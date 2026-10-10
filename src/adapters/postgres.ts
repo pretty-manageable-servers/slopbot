@@ -389,7 +389,12 @@ export class PostgresStore {
     private queueIndex(message: Message): void {
         if (!this.embeddings || !message.text.trim())
             return;
-        this.indexTail = this.indexTail.then(() => this.indexMessage(message)).catch(() => console.error("Embedding indexing failed; keyword retrieval remains available."));
+        this.indexTail = this.indexTail.then(() => this.indexMessage(message)).catch((error: unknown) => {
+            const failure = error as { name?: string; code?: string; status?: number };
+            console.error("Embedding indexing failed; keyword retrieval remains available.", {
+                name: failure?.name, code: failure?.code, status: failure?.status,
+            });
+        });
     }
     private async indexMessage(message: Message): Promise<void> {
             const existing = (await this.db.prepare("SELECT 1 FROM embeddings WHERE server=? AND message_id=? AND model=?").get(message.server, message.id, this.embeddings!.model));
