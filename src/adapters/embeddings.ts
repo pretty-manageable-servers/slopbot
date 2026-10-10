@@ -2,6 +2,7 @@ import type { Embeddings } from "../memory.js";
 import { ProviderError } from "./chat-completions.js";
 
 export class ProviderEmbeddings implements Embeddings {
+  private nextRequestAt = 0;
   constructor(
     private readonly baseUrl: string, private readonly key: string,
     readonly model = "llama.cpp/embeddinggemma-2", private readonly fetcher: typeof fetch = fetch,
@@ -12,11 +13,26 @@ export class ProviderEmbeddings implements Embeddings {
   }
 
   async embedWithUsage(text: string): Promise<{ vector: readonly number[]; tokens: number | null }> {
-    const response = await this.fetcher(`${this.baseUrl.replace(/\/$/, "")}/embeddings`, {
+    // PMServers uses a different alias for the same Gemma model. Keep the index
+    // identity stable so switching gateways does not re-embed channel history.
+    const model = new URL(this.baseUrl).hostname === "api.pmservers.org" && this.model === "llama.cpp/embeddinggemma-2"
+      ? "embeddinggemma2" : this.model;
+    let response!: Response;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const wait = Math.max(0, this.nextRequestAt - Date.now());
+      this.nextRequestAt = Date.now() + wait + 1500;
+      if (wait) await new Promise(resolve => setTimeout(resolve, wait));
+      response = await this.fetcher(`${this.baseUrl.replace(/\/$/, "")}/embeddings`, {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.key}` },
-      body: JSON.stringify({ model: this.model, input: text.slice(0, 8000) }),
+      body: JSON.stringify({ model, input: text.slice(0, 8000) }),
       signal: AbortSignal.timeout(15000),
     });
+      if (response.status !== 429 || attempt === 2) break;
+      const retry = response.headers.get("retry-after");
+      const delay = retry && Number.isFinite(Number(retry)) ? Number(retry) * 1000 : 60000;
+      await response.body?.cancel();
+      this.nextRequestAt = Math.max(this.nextRequestAt, Date.now() + Math.min(120000, Math.max(1500, delay)));
+    }
     if (!response.ok) { await response.body?.cancel(); throw new ProviderError(response.status); }
     const body = await response.json() as { data?: { embedding?: unknown }[]; usage?: { prompt_tokens?: unknown; total_tokens?: unknown } };
     const vector = body.data?.[0]?.embedding;

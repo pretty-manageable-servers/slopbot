@@ -11,3 +11,14 @@ test("embedding adapter preserves reported usage without inventing missing token
   assert.deepEqual(await provider.embedWithUsage("hello"), { vector: [1, 0], tokens: 7 });
   assert.deepEqual(await provider.embedWithUsage("hello"), { vector: [1, 0], tokens: null });
 });
+
+test("PMServers alias preserves the existing Gemma vector index identity", async () => {
+  let sentModel: unknown;
+  const provider = new ProviderEmbeddings("https://api.pmservers.org/ai/v1", "test", "llama.cpp/embeddinggemma-2", async (_url, init) => {
+    sentModel = JSON.parse(String(init?.body)).model;
+    return Response.json({ data: [{ embedding: [1, 0] }] });
+  });
+  await provider.embed("hello");
+  assert.equal(sentModel, "embeddinggemma2");
+  assert.equal(provider.model, "llama.cpp/embeddinggemma-2");
+});
