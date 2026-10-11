@@ -1,0 +1,3 @@
+bucket     = "<existing R2 state bucket>"
+key        = "slopbot/console/terraform.tfstate"
+endpoints  = { s3 = "https://<account id>.r2.cloudflarestorage.com" }
