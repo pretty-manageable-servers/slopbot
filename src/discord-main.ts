@@ -21,7 +21,7 @@ async function main(): Promise<void> {
     baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.model,
   });
   const discord = new DiscordAdapter(config, store, llm);
-  const web = webOptions ? createConsole(webOptions, { snapshot: user => discord.consoleSnapshot(user), invoke: (user, channel, name, args) => discord.consoleInvoke(user, channel, name, args) }) : undefined;
+  const web = webOptions ? createConsole(webOptions, { snapshot: user => discord.consoleSnapshot(user), invoke: (user, channel, name, args) => discord.consoleInvoke(user, channel, name, args), mcp: (user, input) => discord.consoleMcp(user, input) }) : undefined;
   const shutdown = async () => { if (web?.listening) await new Promise<void>((resolve, reject) => web.close(error => error ? reject(error) : resolve())); if (store instanceof PostgresStore) store.stopIndexing(); await discord.stop(); await store.finishIndexing(); await store.close(); process.exit(0); };
   process.once("SIGINT", () => { void shutdown(); });
   process.once("SIGTERM", () => { void shutdown(); });

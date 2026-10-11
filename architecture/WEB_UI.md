@@ -36,6 +36,7 @@ Production uses an HTTPS origin and matching callback. The Slopbot console is se
 | Server | Participation monitoring, classifier/reply context, automatic reply limits, timing footers | Manage Server, checked on every invocation |
 | Channel | Monitor/unmonitor, history window, older imports, pause/resume/status | Manage Server plus channel visibility/history for user and bot |
 | User in server | Personal profile fields, permission for others to edit | Current Discord member; target forced to the signed-in user |
+| MCP connections | Add, refresh, disable, remove, credentials, and explicit tool grants | Manage Server, rechecked on every configuration request |
 | Operator | Models, providers, tokens, credentials, database | Environment only; secrets never returned |
 
 Reply limits are server policy with independent counters in each channel. There is no invented channel/user override hierarchy. History windows are channel-specific. Profiles are public within the server. Each bot installation currently serves one configured guild; multi-server hosting needs a separate lifecycle design.
@@ -43,6 +44,8 @@ Reply limits are server policy with independent counters in each channel. There 
 Removing a monitored channel uses the existing purge behavior and asks for confirmation in the UI. Context saves are two existing tool calls; if the second fails, the UI reports which part was saved. Operations have server-generated IDs and existing audit records. The browser never supplies its identity or an admin flag.
 
 OAuth uses browser-bound, expiring, single-use state. Session cookies are HttpOnly, SameSite=Lax and Secure with HTTPS. Writes require the configured Origin and a per-session CSRF token. Every snapshot checks membership; every invocation re-fetches Discord permissions. API errors avoid provider credentials. The API exposes only the configuration tool allowlist; static file serving uses an allowlist too.pi
+
+MCP configuration uses a separate authenticated `POST /api/mcp` endpoint, not a model-callable management tool. Configuration is guild-scoped and does not require selecting a chat channel. Only admin snapshots include connection metadata and discovered schemas. Saved bearer tokens are never returned. See [runtime MCP connections](TOOLS.md#runtime-mcp-connections) for supported transports, encrypted credential setup, and execution policy.
 
 ## Verification
 

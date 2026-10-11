@@ -73,6 +73,8 @@ Tools share one registry with slash commands. Admin permissions apply equally to
 
 Try: “Slopbot, set cooldown to 120 seconds and 5 replies per hour.” An admin request should create a thread, perform the action and report its result. Then try “Slopbot, index the last 150 days in #chat.” Add connectors through the [tool extension guide](architecture/TOOLS.md); they automatically appear in the model catalog and command interface.
 
+Admins can add remote MCP servers in the web console's **MCP connections** tab while Slopbot is running. Discover tools, select which to enable, and assign access and read/write policies without redeploying. Connections persist across restarts. For bearer-authenticated servers, configure `MCP_SECRET_KEY` once to encrypt saved tokens. See [runtime MCP setup and limits](architecture/TOOLS.md#runtime-mcp-connections).
+
 GIF fixes and cross-channel/project memory remain to implement. Storage supports SQLite locally and PostgreSQL/pgvector in deployment. Run one bot process per database; this is not a distributed worker deployment. Only configured channels and registered task threads are read. No DMs.
 
 Configure unsolicited replies with `/slopbot cooldown seconds:120 per_hour:5` using Manage Server permission. Changes apply immediately and persist across restarts. Each channel has separate counters. Mentions, replies and recognized name requests bypass these limits. `seconds:0` removes the interval; `per_hour:0` disables unsolicited replies. Counters reset on restart.

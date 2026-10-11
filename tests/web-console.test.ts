@@ -15,6 +15,7 @@ test('Discord login binds state to browser, protects writes, and destroys logout
   const server = createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'}, {
     async snapshot(id) { if (deny) throw new ToolError('Membership revoked'); return {user:id}; },
     async invoke(id, _channel, tool) { if (deny) throw new ToolError('Permission revoked'); user=id;name=tool;return {text:'Saved'}; },
+    async mcp(id, input) { if (deny) throw new ToolError('Manage Server permission is required.'); user=id;name='mcp';return {text:'Connected',input}; },
   });
   server.listen(0,'127.0.0.1'); await once(server,'listening');
   t.after(() => new Promise<void>(resolve => server.close(()=>resolve())));
@@ -47,9 +48,14 @@ test('Discord login binds state to browser, protects writes, and destroys logout
   assert.equal((await call('/api/settings',{method:'POST',headers:{...headers,Origin:'https://evil.example'},body})).status,403);
   assert.equal((await call('/api/settings',{method:'POST',headers,body})).status,200);
   assert.equal(user,'123456789012345678');assert.equal(name,'monitoring');
+  const mcpBody=JSON.stringify({action:'save',id:'github',url:'https://example.com/mcp',tools:[]});
+  assert.equal((await call('/api/mcp',{method:'POST',headers:{Cookie:cookie,'Content-Type':'application/json'},body:mcpBody})).status,403);
+  assert.equal((await call('/api/mcp',{method:'POST',headers,body:mcpBody})).status,200);
+  assert.equal(name,'mcp');assert.equal(user,'123456789012345678');
   assert.equal((await call('/api/settings',{method:'POST',headers,body:JSON.stringify({channel:'x',name:'task_start',args:{}})})).status,400);
   assert.equal((await call('/api/settings',{method:'POST',headers,body:'null'})).status,400);
   deny=true;
+  assert.equal((await call('/api/mcp',{method:'POST',headers,body:mcpBody})).status,403);
   assert.equal((await call('/api/settings',{headers:{Cookie:cookie}})).status,403);
   assert.equal((await call('/api/settings',{method:'POST',headers,body})).status,403);
   assert.equal((await call('/api/logout',{method:'POST',headers,body:'{}'})).status,200);

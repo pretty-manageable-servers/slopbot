@@ -7,6 +7,7 @@ import { ToolError, type ToolArgs } from './tools.js';
 export interface ConsoleBackend {
   snapshot(user: string): Promise<unknown>;
   invoke(user: string, channel: string, name: string, args: ToolArgs): Promise<unknown>;
+  mcp?(user: string, input: unknown): Promise<unknown>;
 }
 export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string }
 export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOptions | undefined {
@@ -68,11 +69,15 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         if (req.method === 'GET' && routePath === '/api/settings') return send(res, 200, { data: await backend.snapshot(session.user), csrf: session.csrf });
         if (req.method !== 'POST' || req.headers.origin !== new URL(options.origin).origin || req.headers['x-csrf-token'] !== session.csrf) return send(res, 403, { error: 'Invalid request.' });
         if (routePath === '/api/logout') { sessions.delete(id); res.setHeader('Set-Cookie', cookie('slopbot_session', '', 0)); return send(res, 200, { ok: true }); }
-        if (routePath !== '/api/settings') return send(res, 404, { error: 'Not found.' });
+        if (!['/api/settings', '/api/mcp'].includes(routePath)) return send(res, 404, { error: 'Not found.' });
         if (!req.headers['content-type']?.startsWith('application/json')) return send(res, 415, { error: 'Send JSON.' });
-        let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 16384) return send(res, 413, { error: 'Request too large.' }); }
+        let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > (routePath === '/api/mcp' ? 65536 : 16384)) return send(res, 413, { error: 'Request too large.' }); }
         let input: { channel?: string; name?: string; args?: ToolArgs };
         try { input = JSON.parse(body); } catch { return send(res, 400, { error: 'Invalid JSON.' }); }
+        if (routePath === '/api/mcp') {
+          if (!backend.mcp) return send(res, 404, { error: 'MCP configuration is unavailable.' });
+          return send(res, 200, await backend.mcp(session.user, input));
+        }
         if (!input || typeof input.channel !== 'string' || typeof input.name !== 'string' || !allowed.has(input.name)) return send(res, 400, { error: 'Unsupported setting.' });
         if (input.name === 'profile' && !['set', 'remove', 'lock'].includes(String(input.args?.action))) return send(res, 400, { error: 'Unsupported profile action.' });
         return send(res, 200, await backend.invoke(session.user, input.channel, input.name, input.args || {}));

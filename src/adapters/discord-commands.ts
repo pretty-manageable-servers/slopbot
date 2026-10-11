@@ -4,7 +4,7 @@ import type { ToolRegistry } from "../tools.js";
 export function buildToolCommands(registry: ToolRegistry): SlashCommandBuilder {
   const command = new SlashCommandBuilder().setName("slopbot").setDescription("Slopbot tools, settings and diagnostics");
   // Discord limits subcommands. The generic runner reaches every registered connector.
-  for (const tool of registry.definitions().slice(0, 24)) command.addSubcommand(subcommand => {
+  for (const tool of registry.definitions().filter(tool => !tool.provider?.startsWith('mcp:')).slice(0, 24)) command.addSubcommand(subcommand => {
     subcommand.setName(tool.name).setDescription(tool.description.slice(0, 100));
     const fields = Object.entries(tool.fields).sort((a, b) => Number(Boolean(b[1].required)) - Number(Boolean(a[1].required)));
     for (const [name, field] of fields) {

@@ -13,11 +13,12 @@ interface ContextOptions {
 export class ContextBuilder {
   constructor(private readonly options: ContextOptions) {}
   async build(message: Message, taskKey: string | undefined, recentMessages: number,
-    boundedHistory: (message: Message, taskKey: string, limit: number) => Promise<readonly PromptItem[]>) {
+    boundedHistory: (message: Message, taskKey: string, limit: number) => Promise<readonly PromptItem[]>,
+    prefix = this.options.prefix, tools = this.options.tools) {
     const sourceVersion = await this.options.store.contextVersion(message.server, message.channel);
     let request: PromptItem = { role: "user", content: message.text, author: message.author, sourceIds: [message.id] };
     const metadata: PromptItem[] = this.options.tools ? [{ role: "user", contextOnly: true, content: JSON.stringify({ request_context: { server_id: message.server, channel_id: message.channel, requester_id: message.author, task_id: message.taskId ?? null, is_task: Boolean(message.taskId) } }) }] : [];
-    let budget = this.options.inputLimit - this.options.counter.count([...this.options.prefix, ...metadata, request]);
+    let budget = this.options.inputLimit - this.options.counter.count([...prefix, ...metadata, request]);
     if (budget < 0) throw new Error("Request exceeds context budget");
     const referencedContext = message.replyTo ? await this.options.store.context(message, recentMessages) : undefined;
     const target = referencedContext?.find(item => item.id === message.replyTo);
@@ -74,7 +75,7 @@ export class ContextBuilder {
       }
     }
     inputs.push(...metadata, request);
-    const suggested = suggestRequestTool(this.options.tools, message, target);
+    const suggested = suggestRequestTool(tools, message, target);
     return { sourceVersion, history, inputs, sources, quoteAnswer, clarificationAnswer, suggested, metadata, quotes };
   }
 }

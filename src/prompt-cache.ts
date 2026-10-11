@@ -75,6 +75,8 @@ export function appendToolEvidence(
       tool: name,
       result: {
         ...output,
+        ...(output.data !== undefined && JSON.stringify(output.data).length > 2000 ? { data: undefined, data_omitted: 'Full structured data is retained in the action log.' } : {}),
+        ...(output.content !== undefined && JSON.stringify(output.content).length > 2000 ? { content: undefined, content_omitted: 'Full native content is retained in the action log.' } : {}),
         ...(output.ui ? { ui: { type: output.ui.type, prepared: true } } : {}),
         text:
           output.text.slice(0, length) +

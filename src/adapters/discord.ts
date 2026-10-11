@@ -1,4 +1,6 @@
 import { sandboxTool } from "../sandbox.js";
+import { McpManager, McpSecrets } from '../mcp.js';
+import { remoteMcpConnector } from './mcp-client.js';
 import { E2BSandboxProvider } from "./e2b-sandbox.js";
 import { requestTimings, savedTimingFooter } from "../request-timing.js";
 import { registerTimingTools, saveRequestTiming } from "../timing-tools.js";
@@ -50,6 +52,7 @@ export class DiscordAdapter implements ChatGateway {
   private readonly uiRuntime: UiRuntime;
   private readonly toolProgress = new DiscordToolProgress();
   private readonly tools: ToolRegistry;
+  private readonly mcp: McpManager;
   private readonly worker: TaskWorker;
   private readonly history: HistoryImporter;
   private channels: string[];
@@ -95,6 +98,7 @@ export class DiscordAdapter implements ChatGateway {
         if (message.taskId && (await store.hasPendingOther(message.server, message.channel, message.id))) throw new ToolError("New contributions are queued; review them before further actions");
       }
     });
+    this.mcp = new McpManager(config.guildId, store, this.tools, remoteMcpConnector({ allowPrivate: process.env.MCP_ALLOW_PRIVATE === 'true' }), new McpSecrets(process.env.MCP_SECRET_KEY), message => this.validateChannel(message, message.channel));
     registerServerTools(this.tools, {
       config, store, participation, history: this.history,
       channels: () => this.channels,
@@ -170,7 +174,17 @@ export class DiscordAdapter implements ChatGateway {
         if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Status channel unavailable");
         return channel.send({content,reply:{messageReference:message.id,failIfNotExists:false},allowedMentions:{parse:[],repliedUser:false}});
       });
-    }, presentation: discordPresentation, profiles: store, harness: store, tools: { catalog: () => this.tools.catalog(), suggest: message => this.tools.suggest(message), execute: (message, call, id, version) => this.bot.executeTool(message, call, id, version) } });
+    }, presentation: discordPresentation, profiles: store, harness: store, tools: {
+      catalog: () => this.tools.catalog(), suggest: message => this.tools.suggest(message),
+      execute: (message, call, id, version) => this.bot.executeTool(message, call, id, version),
+      snapshot: () => {
+        const selected = this.tools.capture();
+        return { catalog: selected.catalog, suggest: selected.suggest, execute: (message, call, id, version) => {
+          selected.assertCurrent(call.name);
+          return this.bot.executeTool(message, call, id, version);
+        } };
+      },
+    } });
     this.worker = new TaskWorker(config.guildId, store, async message => {
       const source = (await store.canonicalMessage(message.server, message.id));
       if (!source || source.text !== message.text || source.author !== message.author) throw new Error("Source changed while queued; submit a new request");
@@ -448,6 +462,7 @@ export class DiscordAdapter implements ChatGateway {
     }
     return { server: { id: guild.id, name: guild.name }, user, admin, channels,
       profile: await this.store.profile(guild.id, user),
+      mcp: admin ? this.mcp.snapshot() : null,
       settings: admin ? {
         monitoring: this.store.setting(guild.id, 'monitoring') ?? this.config.jevEnabled,
         classifier_context: this.store.setting(guild.id, 'classifier_context') ?? this.config.jevContextMessages,
@@ -464,10 +479,17 @@ export class DiscordAdapter implements ChatGateway {
     if (name === 'profile') args = { ...args, user };
     return this.tools.invokeResult(message, name, args, message.id, 'command');
   }
-  async start(): Promise<void> { await this.client.login(this.config.discordToken); }
+  async consoleMcp(user: string, input: unknown): Promise<unknown> {
+    const guild = await this.client.guilds.fetch(this.config.guildId);
+    const member = await guild.members.fetch({ user, force: true });
+    if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) throw new ToolError('Manage Server permission is required.');
+    await this.mcp.configure(user, input);
+    return { text: 'MCP configuration applied. Available tools update without a restart.', mcp: this.mcp.snapshot() };
+  }
+  async start(): Promise<void> { await this.mcp.restore(); await this.client.login(this.config.discordToken); }
   async stop(): Promise<void> {
     if (this.historyTimer) clearInterval(this.historyTimer);
     await this.reminders.stop();
-    await this.history.stop(); await this.worker.stop(); await this.client.destroy();
+    await this.history.stop(); await this.worker.stop(); await this.mcp.close(); await this.client.destroy();
   }
 }
