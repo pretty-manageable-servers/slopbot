@@ -52,3 +52,26 @@ also grant project management access; never expose them to generated code.
 
 See `TOOLS.md` for sandbox lifecycle and constraints. Sandbox writes use the
 existing app-record schema, so no database migration is required.
+
+## Separate search service
+
+`services/search/Dockerfile` bundles the reviewed JSON-enabled SearXNG settings.
+The search workflow publishes its own image and updates `slopbot-search` only
+when search configuration changes, so ordinary bot deployments do not redeploy
+search. Its declared private port 8080 is reachable by same-project containers
+at `http://slopbot-search:8080`. The production supervisor supports
+`SEARXNG_MODE=external` and does not launch embedded search in that mode.
+
+Protected external access requires a remotely managed Cloudflare Tunnel, a
+hostname and an Access service-token policy. Local development supplies the
+Access headers through the search adapter. Until that endpoint has been verified,
+the existing Tailscale search bridge remains as a transitional fallback. It can
+forward to the separate search container. Remove `TAILSCALE_AUTH_KEY` and
+`DEV_DATABASE_HOST` from the bot only after development search has moved off it.
+The local database tunnel is independent of the bot container throughout.
+
+During the PMServers model-name transition, Nimbus/Stratus/Vane fall back to
+the known legacy IDs only when the gateway rejects that model name with
+model_not_allowed or model_not_found. Successful aliases are remembered per
+client. Other authentication failures and generation errors are not retried.
+The Gemma embedding index identity remains unchanged.

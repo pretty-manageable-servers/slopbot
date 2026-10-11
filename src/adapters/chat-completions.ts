@@ -1,3 +1,4 @@
+import { ModelAliases } from "./model-aliases.js";
 import { requestTimings } from "../request-timing.js";
 import {PromptCacheDiagnostics} from '../prompt-cache.js';
 import { promptItems, type Json, type ModelEvent, type Prompt } from "../domain.js";
@@ -69,19 +70,20 @@ export async function* sseData(body: ReadableStream<Uint8Array>, waitLabel = "mo
 }
 
 export class ChatCompletionsLLM implements LLM {
+  private readonly aliases: ModelAliases;
   private readonly cacheDiagnostics = new PromptCacheDiagnostics();
-  constructor(private readonly options: ProviderOptions, private readonly fetcher: typeof fetch = fetch) {}
+  constructor(private readonly options: ProviderOptions, private readonly fetcher: typeof fetch = fetch) { this.aliases = new ModelAliases(options.baseUrl); }
 
   async *stream(prompt: Prompt, signal?: AbortSignal): AsyncIterable<ModelEvent> {
     const phase = prompt.prefixVersion.startsWith("participation") ? "decision model" : prompt.purpose === "checkpoint" ? "checkpoint model" : prompt.purpose === "inspection" ? "inspection model" : "reply model";
     const messages = wireMessages(prompt);
     yield { kind: "opaque", payload: this.cacheDiagnostics.compare(prompt, messages) };
-    const response = await requestTimings.wait(`${phase} response headers`, () => this.fetcher(`${this.options.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+    const response = await this.aliases.request(this.options.model, model => requestTimings.wait(`${phase} response headers`, () => this.fetcher(`${this.options.baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.options.apiKey}` },
-      body: JSON.stringify({ model: this.options.model, messages, stream: true, stream_options: { include_usage: true }, ...(prompt.maxOutputTokens ? { max_tokens: prompt.maxOutputTokens } : {}) }),
+      body: JSON.stringify({ model, messages, stream: true, stream_options: { include_usage: true }, ...(prompt.maxOutputTokens ? { max_tokens: prompt.maxOutputTokens } : {}) }),
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(this.options.timeoutMs ?? 120_000)]) : AbortSignal.timeout(this.options.timeoutMs ?? 120_000),
-    }));
+    })));
     if (!response.ok) { await response.body?.cancel(); throw new ProviderError(response.status); }
     if (!response.body) throw new Error("Provider returned an empty stream");
     let completed = false;
