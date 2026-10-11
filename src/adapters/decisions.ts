@@ -1,3 +1,4 @@
+import { ModelAliases } from "./model-aliases.js";
 import { randomUUID } from "node:crypto";
 import { requestTimings } from "../request-timing.js";
 import type { Json, Message, Prompt } from "../domain.js";
@@ -13,12 +14,13 @@ function probability(value: unknown): number {
 }
 
 export class DecisionClassifier implements Classifier {
+  private readonly aliases: ModelAliases;
   private unsupported = false;
   constructor(
     private readonly options: { baseUrl: string; apiKey: string; model: string },
     private readonly store: Store, private readonly fetcher: typeof fetch = fetch,
     private readonly fallback?: Classifier,
-  ) {}
+  ) { this.aliases = new ModelAliases(options.baseUrl); }
 
   async classify(message: Message, context: readonly Message[]): Promise<ParticipationDecision> {
     if (this.unsupported && this.fallback) return this.fallback.classify(message, context);
@@ -31,10 +33,10 @@ export class DecisionClassifier implements Classifier {
     await this.store.startRun(runId, message, prompt);
     await this.store.recordSources(runId, message.server, [message.id, ...context.map(item => item.id)]);
     try {
-      const response = await requestTimings.wait("decision endpoint headers", () => this.fetcher(`${this.options.baseUrl.replace(/\/$/, "")}/decisions`, {
+      const response = await this.aliases.request(this.options.model, model => requestTimings.wait("decision endpoint headers", () => this.fetcher(`${this.options.baseUrl.replace(/\/$/, "")}/decisions`, {
         method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.options.apiKey}` },
-        body: JSON.stringify({ model: this.options.model, state, questions }), signal: AbortSignal.timeout(15000),
-      }));
+        body: JSON.stringify({ model, state, questions }), signal: AbortSignal.timeout(15000),
+      })));
       if (!response.ok) { await response.body?.cancel(); throw new ProviderError(response.status); }
       const raw = await requestTimings.wait("decision response body", () => response.json()) as { answers?: { addressed?: { value?: unknown }; respond?: { value?: unknown }; funny?: { value?: unknown } } };
       await this.store.appendEvent(runId, 0, { kind: "opaque", payload: raw as Json });

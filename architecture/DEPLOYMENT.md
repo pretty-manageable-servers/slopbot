@@ -8,7 +8,7 @@ PMServers account `teddio496`, project `slop` (`prj_sksyapv5awdj`, Toronto).
 | Database | `slopbot`, `db_arm41bbcteab`, managed Postgres with pgvector |
 | Search | SearXNG in the bot container, localhost port 8080 |
 | Image | Private `ghcr.io/teddio496/slopbot:20261010-live-r3`, amd64 and arm64 |
-| Reply model | `qwen3.8-flash-next` |
+| Reply model | `nimbus` |
 
 PMServers workers are outbound-only and have no service routing. Search runs as a supervised process alongside Node; either process exiting stops the other so the container can restart. Secrets for Discord, the LLM and Postgres are excluded from the search process. The managed database is durable across container replacements.
 
@@ -38,7 +38,7 @@ Verification: the unit suite, a real Postgres adapter test, complete migration c
 
 Required GitHub Actions secrets: `PMS_SESSION` holds a dedicated PMServers CLI session JSON; `DEPLOY_GITHUB_TOKEN` downloads the private CLI release and updates the session secret after refresh-token rotation. Deployments run sequentially. The deployment token needs repository access to this repository and read access to the CLI repository. Never use an access JWT alone, since it expires.
 
-AI requests use `https://api.pmservers.org/ai/v1` with the dedicated `slopbot` key and a $1,000 spending limit. Qwen handles chat. The adapter maps the existing Gemma index identity to gateway model `embeddinggemma2`, preserving old vectors. Embeddings are paced and retry HTTP 429. If `/decisions` is unavailable, participation uses the existing chat classifier. The previous direct LLM host was unreachable from the deployed worker.
+AI requests use `https://api.pmservers.org/ai/v1` with the dedicated `slopbot` key and a $1,000 spending limit. Nimbus handles chat. The adapter maps the existing Gemma index identity to gateway model `stratus`, preserving old vectors. Embeddings are paced and retry HTTP 429. If `/decisions` is unavailable, participation uses the existing chat classifier. The previous direct LLM host was unreachable from the deployed worker.
 
 ## Sandbox and CLI credentials
 
@@ -69,3 +69,9 @@ the existing Tailscale search bridge remains as a transitional fallback. It can
 forward to the separate search container. Remove `TAILSCALE_AUTH_KEY` and
 `DEV_DATABASE_HOST` from the bot only after development search has moved off it.
 The local database tunnel is independent of the bot container throughout.
+
+During the PMServers model-name transition, Nimbus/Stratus/Vane fall back to
+the known legacy IDs only when the gateway rejects that model name with
+model_not_allowed or model_not_found. Successful aliases are remembered per
+client. Other authentication failures and generation errors are not retried.
+The Gemma embedding index identity remains unchanged.
