@@ -52,3 +52,47 @@ test("development schemas isolate settings and messages on the same database", {
     await cleanup.query('DROP SCHEMA slopbot_test_a CASCADE; DROP SCHEMA slopbot_test_b CASCADE');await cleanup.end();
   }
 });
+
+test("stopping background indexing retains messages for a later restart", {skip: !process.env.TEST_DATABASE_URL}, async () => {
+  const url=process.env.TEST_DATABASE_URL!;
+  const embeddings={model:"test-stop",async embed(){return [1,0,0];}};
+  const message:Message={server:"stop-test",channel:"test",id:"one",author:"test",text:"Keep this message",timestamp:1,addressed:false};
+  let store=await PostgresStore.connect(url,embeddings,"slopbot_test_stop");
+  try {
+    store.stopIndexing();await store.ingest(message);await store.finishIndexing();
+    assert.equal((await store.indexStats(message.server,message.channel)).messages,1);
+    assert.equal((await store.indexStats(message.server,message.channel)).vectors,0);
+    await store.close();store=await PostgresStore.connect(url,embeddings,"slopbot_test_stop");
+    assert.equal(await store.reindex(message.server,[message.channel]),1);
+    await store.finishIndexing();assert.equal((await store.indexStats(message.server,message.channel)).vectors,1);
+  } finally {
+    await store.close();const cleanup=new Client({connectionString:url});await cleanup.connect();
+    await cleanup.query('DROP SCHEMA slopbot_test_stop CASCADE');await cleanup.end();
+  }
+});
+
+test('new search and feature records use an isolated Postgres schema', {skip: !process.env.TEST_DATABASE_URL}, async () => {
+  const url=process.env.TEST_DATABASE_URL!;
+  const schema='slopbot_test_features_'+Date.now().toString(36);
+  const embeddings={model:'test-features',async embed(text:string){return text.includes('cat')?[0,1,0]:[1,0,0];}};
+  const store=await PostgresStore.connect(url,embeddings,schema);
+  try {
+    const base={server:'feature-test',channel:'test',author:'person'};
+    await store.ingest({...base,id:'3',text:'deploy is done',timestamp:300});
+    await store.ingest({...base,id:'1',text:'deploy starts',timestamp:100});
+    await store.ingest({...base,id:'2',text:'deploy running',timestamp:200});
+    await store.ingest({...base,id:'4',text:'cat',timestamp:400});
+    await store.finishIndexing();
+    assert.deepEqual((await store.readHistory(base.server,base.channel,'2',1)).map(message=>message.id),['1','2','3']);
+    const search=await store.searchHistory({server:base.server,channel:base.channel,query:'deploy',mode:'hybrid',limit:10});
+    assert.equal(search.degraded,false);assert.ok(search.messages.some(message=>message.id==='3'));
+    assert.equal((await store.searchHistory({server:base.server,channel:base.channel,query:'deploy starts',mode:'exact',limit:10})).messages.length,1);
+    assert.equal(await store.putRecord(base.server,'ui','one',{text:'hello'},0),true);
+    const claims=await Promise.all([store.putRecord(base.server,'ui','one',{text:'a'},1),store.putRecord(base.server,'ui','one',{text:'b'},1)]);
+    assert.equal(claims.filter(Boolean).length,1);assert.equal((await store.record(base.server,'ui','one'))?.revision,2);
+  } finally {
+    await store.finishIndexing();await store.close();
+    const cleanup=new Client({connectionString:url});await cleanup.connect();
+    await cleanup.query(`DROP SCHEMA "${schema}" CASCADE`);await cleanup.end();
+  }
+});

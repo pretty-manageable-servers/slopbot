@@ -1,3 +1,4 @@
+import {PromptCacheDiagnostics} from '../prompt-cache.js';
 import { promptItems, type Json, type ModelEvent, type Prompt } from "../domain.js";
 import type { LLM } from "../ports.js";
 
@@ -67,13 +68,16 @@ export async function* sseData(body: ReadableStream<Uint8Array>): AsyncIterable<
 }
 
 export class ChatCompletionsLLM implements LLM {
+  private readonly cacheDiagnostics = new PromptCacheDiagnostics();
   constructor(private readonly options: ProviderOptions, private readonly fetcher: typeof fetch = fetch) {}
 
   async *stream(prompt: Prompt, signal?: AbortSignal): AsyncIterable<ModelEvent> {
+    const messages = wireMessages(prompt);
+    yield { kind: "opaque", payload: this.cacheDiagnostics.compare(prompt, messages) };
     const response = await this.fetcher(`${this.options.baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.options.apiKey}` },
-      body: JSON.stringify({ model: this.options.model, messages: wireMessages(prompt), stream: true, stream_options: { include_usage: true }, ...(prompt.maxOutputTokens ? { max_tokens: prompt.maxOutputTokens } : {}) }),
+      body: JSON.stringify({ model: this.options.model, messages, stream: true, stream_options: { include_usage: true }, ...(prompt.maxOutputTokens ? { max_tokens: prompt.maxOutputTokens } : {}) }),
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(this.options.timeoutMs ?? 120_000)]) : AbortSignal.timeout(this.options.timeoutMs ?? 120_000),
     });
     if (!response.ok) { await response.body?.cancel(); throw new ProviderError(response.status); }

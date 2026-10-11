@@ -10,7 +10,7 @@
     "build": "tsc -p tsconfig.json && cp src/adapters/postgres-schema.sql dist/src/adapters/postgres-schema.sql",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test dist/tests/*.test.js",
-    "start": "npm run build && node --env-file-if-exists=.env dist/src/discord-main.js",
+    "start": "npm run dev",
     "demo": "npm run build && node dist/src/main.js",
     "models": "npm run build && node --env-file-if-exists=.env dist/src/list-models.js",
     "search:start": "node scripts/search-start.mjs",

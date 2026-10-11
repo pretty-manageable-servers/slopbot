@@ -1,3 +1,15 @@
+import {handleDiscordUi} from './discord-ui-interactions.js';
+import {registerTaskTools} from '../productivity/tasks.js';
+import {registerReminderTools,ReminderWorker} from '../productivity/reminders.js';
+import {registerReportTools} from '../search/reports.js';
+import {UiRuntime,registerUiTool,registerPollTool} from '../ui/runtime.js';
+import type {UiDocument} from '../ui/schema.js';
+import {discordUi} from './discord-ui.js';
+import { DiscordToolProgress } from './discord-tool-progress.js';
+import { toolFooter } from '../presentation/tool-activity.js';
+import type { ToolActivity } from '../tool-activity.js';
+import { discordPresentation, suppressLinkPreviews } from '../presentation/discord.js';
+import { registerHistoryTools } from '../search/history-search.js';
 import { registerWebSearch, UnconfiguredSearch } from "../web-search.js";
 import { SearxNGSearch } from "./searxng.js";
 import { ReplyRenderer } from "../reply-renderer.js";
@@ -20,7 +32,7 @@ import { HistoryImporter } from "../history.js";
 import { DecisionClassifier } from "./decisions.js";
 import { TaskWorker } from "../queue.js";
 import { configuredChannels, registerServerTools } from "../server-tools.js";
-import { ToolError, ToolRegistry, UncertainActionError, stableOperationId } from "../tools.js";
+import { displayToolResult, ToolError, ToolRegistry, UncertainActionError, stableOperationId } from "../tools.js";
 
 export class DiscordAdapter implements ChatGateway {
   private readonly client = new Client({
@@ -30,6 +42,9 @@ export class DiscordAdapter implements ChatGateway {
   private readonly bot: Bot;
   private readonly app: Application;
   private readonly renderer: ReplyRenderer;
+  private readonly reminders: ReminderWorker;
+  private readonly uiRuntime: UiRuntime;
+  private readonly toolProgress = new DiscordToolProgress();
   private readonly tools: ToolRegistry;
   private readonly worker: TaskWorker;
   private readonly history: HistoryImporter;
@@ -37,7 +52,7 @@ export class DiscordAdapter implements ChatGateway {
   private historyTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM) {
-    this.renderer = new ReplyRenderer(store);
+    this.renderer = new ReplyRenderer(store, discordPresentation);
     this.channels = configuredChannels(config, store);
     this.history = new HistoryImporter(config.guildId, store, {
       fetch: async (channel, before, limit) => {
@@ -110,6 +125,18 @@ export class DiscordAdapter implements ChatGateway {
       },
       wakeWorker: () => this.worker.wake(),
     });
+    const authorizeFeature = async(message:Message,channel:string) => {
+      if(!this.bot.accepts(message.server,channel))throw new ToolError('Channel is disabled.');
+      await this.validateChannel(message,channel);
+    };
+    this.uiRuntime = new UiRuntime(store,this.tools,authorizeFeature);
+    registerHistoryTools(this.tools,{store,authorize:authorizeFeature});
+    registerReportTools(this.tools,{store,llm,authorize:authorizeFeature});
+    registerPollTool(this.tools);
+    registerTaskTools(this.tools,{store,authorize:authorizeFeature});
+    registerReminderTools(this.tools,{store,authorize:authorizeFeature});
+    this.reminders=new ReminderWorker(config.guildId,store,async(message,text,id)=>{await this.reply(message,text,id);},authorizeFeature);
+    registerUiTool(this.tools);
     registerProfileTools(this.tools, store);
     registerWebSearch(this.tools, config.searxngUrl ? new SearxNGSearch(config.searxngUrl) : new UnconfiguredSearch());
     registerFileTool(this.tools, { store, llm, resolve: async (request, requestedId) => {
@@ -129,7 +156,14 @@ export class DiscordAdapter implements ChatGateway {
       recentMessages: savedLimit("reply_context", config.replyContextMessages, 100),
       maxContextTokens: config.contextTokens, maxInputChars: config.contextTokens,
       maxOutputTokens: config.outputTokens, checkpointTokens: config.checkpointTokens,
-    }, store, { profiles: store, harness: store, tools: { catalog: () => this.tools.catalog(), suggest: message => this.tools.suggest(message), execute: (message, call, id, version) => this.bot.executeTool(message, call, id, version) } });
+    }, store, { onToolActivity: async (message, activity) => {
+      if (!this.bot.accepts(message.server, message.channel)) return;
+      await this.toolProgress.update(JSON.stringify([message.server,message.channel,message.id]), activity, async content => {
+        const channel = await this.client.channels.fetch(message.channel);
+        if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Status channel unavailable");
+        return channel.send({content,reply:{messageReference:message.id,failIfNotExists:false},allowedMentions:{parse:[],repliedUser:false}});
+      });
+    }, presentation: discordPresentation, profiles: store, harness: store, tools: { catalog: () => this.tools.catalog(), suggest: message => this.tools.suggest(message), execute: (message, call, id, version) => this.bot.executeTool(message, call, id, version) } });
     this.worker = new TaskWorker(config.guildId, store, async message => {
       const source = (await store.canonicalMessage(message.server, message.id));
       if (!source || source.text !== message.text || source.author !== message.author) throw new Error("Source changed while queued; submit a new request");
@@ -150,14 +184,19 @@ export class DiscordAdapter implements ChatGateway {
     this.bot = new Bot(this.app, store, store, this, config.guildId, this.channels, { profiles: store, knowledge: store, participation, worker: this.worker, tools: this.tools, queueStore: store });
     this.client.once(Events.ClientReady, client => {
       console.log(`Slopbot connected as ${client.user.tag}. LLM mode: ${config.mock ? "mock" : "provider"}`);
+      if (!this.channels.length) console.warn("No channels configured. Use /slopbot channels action:add channel:<test channel> to enable replies.");
       void this.purgeAndIndex().catch(() => console.error("Database startup indexing failed"));
       void this.hydrateAuthors().catch(() => console.error("Author-name refresh unavailable; names will fill from new messages."));
       try { this.worker.start(); } catch (error) { console.error(error instanceof Error ? error.message : "Worker unavailable"); void this.client.destroy(); return; }
       const sync = () => { for (const channel of this.channels) void this.history.start(channel).catch(() => console.error("History import startup failed")); };
+      this.reminders.start();
       sync(); this.historyTimer = setInterval(sync, 60000);
       void this.registerCommands().catch(() => console.error("Could not register /slopbot commands. Check application command permissions."));
     });
     this.client.on(Events.InteractionCreate, interaction => {
+      if ((interaction.isButton() || interaction.isStringSelectMenu()) && interaction.customId.startsWith('slopui:')) {
+        void handleDiscordUi(interaction,this.uiRuntime).catch(()=>console.error('UI interaction display failed.'));
+      }
       if (interaction.isChatInputCommand() && interaction.commandName === "slopbot") void this.command(interaction).catch(() => console.error("Command failed."));
     });
     this.client.on(Events.Error, () => console.error("Discord client error. Check connection and bot configuration."));
@@ -236,10 +275,13 @@ export class DiscordAdapter implements ChatGateway {
       const message: Message = { authorName: displayName, authorAliases: [interaction.user.username, ...(interaction.user.globalName ? [interaction.user.globalName] : [])], authorIdentity: { discord_handle: interaction.user.username, discord_name: interaction.user.globalName ?? interaction.user.username, server_nickname: displayName, server_name: interaction.guild?.name ?? "" }, id: `command:${interaction.id}`, server: interaction.guildId, channel: interaction.channelId, author: interaction.user.id, text: `/slopbot ${name} ${JSON.stringify(args)}`, addressed: false, timestamp: Date.now() };
       if (definition.access === "member" && !this.bot.accepts(message.server, message.channel)) throw new ToolError("Use this tool in a configured channel or task thread.");
       if (this.bot.accepts(message.server, message.channel)) await this.store.ingest(message);
-      const result = await this.tools.invoke(message, name, args, `command:${interaction.id}`, "command");
+      const output = await this.tools.invokeResult(message, name, args, `command:${interaction.id}`, "command");
+      const result = displayToolResult(output);
       const parts = splitReply(result);
-      await interaction.editReply({ content: parts[0] ?? "Done.", allowedMentions: { parse: [] } });
-      for (const content of parts.slice(1)) await interaction.followUp({ content, ...(ephemeral ? { flags: MessageFlags.Ephemeral } : {}), allowedMentions: { parse: [] } });
+      const previewFlags = suppressLinkPreviews(result) ? MessageFlags.SuppressEmbeds : 0;
+      await interaction.editReply({ content: parts[0] ?? "Done.", ...(previewFlags ? { flags: MessageFlags.SuppressEmbeds } : {}), allowedMentions: { parse: [] } });
+      for (const content of parts.slice(1)) await interaction.followUp({ content, flags: previewFlags | (ephemeral ? MessageFlags.Ephemeral : 0), allowedMentions: { parse: [] } });
+      if(output.ui){const state=await this.uiRuntime.prepare(message,output.ui,interaction.id);const payload=discordUi(output.ui,state.id,state.revision);await interaction.followUp({...payload,flags:[...('flags' in payload?payload.flags:[]),...(ephemeral?['Ephemeral' as const]:[])],allowedMentions:{parse:[]}});}
     } catch (error) {
       await interaction.editReply(error instanceof ToolError || error instanceof UncertainActionError ? error.message : "Tool failed. Its recorded result will be reconciled before retrying.");
     }
@@ -292,13 +334,18 @@ export class DiscordAdapter implements ChatGateway {
     const incoming: Incoming = { ...this.normalize(message), botAuthor: false, mentionsBot: this.client.user ? message.mentions.users.has(this.client.user.id) : false, repliesToBot };
     await this.bot.receive(incoming);
   }
-  async reply(message: Message, text: string, deliveryId?: string): Promise<readonly Message[]> {
+  async reply(message: Message, text: string, deliveryId?: string, activity: readonly ToolActivity[] = [], ui?: UiDocument): Promise<readonly Message[]> {
     if (!this.bot.accepts(message.server, message.channel)) throw new ToolError("Channel was disabled before sending");
     const channel = await this.client.channels.fetch(message.channel);
     if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Channel cannot receive replies");
     const outputs: Message[] = [];
     let part = 0;
-    for (const content of splitReply(await this.renderer.render(message.server, text))) {
+    const rendered = await this.renderer.render(message.server, text + toolFooter(activity));
+    const flags = suppressLinkPreviews(rendered) ? MessageFlags.SuppressEmbeds : undefined;
+    const payloads: import('discord.js').MessageCreateOptions[] = splitReply(rendered).map(content=>({content,flags}));
+    if(ui){const state=await this.uiRuntime.prepare(message,ui,deliveryId??message.id);payloads.push(discordUi(ui,state.id,state.revision));}
+    for (const payload of payloads) {
+      const content = payload.content ?? JSON.stringify(payload);
       const id = deliveryId ? stableOperationId(deliveryId, String(part++)) : undefined;
       const previous = id ? (await this.store.delivery(id)) : undefined;
       if (previous) {
@@ -316,13 +363,14 @@ export class DiscordAdapter implements ChatGateway {
         (await this.store.finishDelivery(id!, result)); outputs.push(result); continue;
       }
       if (id) (await this.store.prepareDelivery(id, message, content));
-      const sent = await channel.send({ content, allowedMentions: { parse: [], repliedUser: false },
+      const sent = await channel.send({ ...payload, allowedMentions: { parse: [], repliedUser: false, ...(message.id.startsWith('command:reminder:') ? {users:[message.author]} : {}) },
         ...(id ? { nonce: id, enforceNonce: true } : {}),
         ...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? { reply: { messageReference: message.id, failIfNotExists: false } } : {}) });
       const result = { ...this.normalize(sent), addressed: false };
       if (id) (await this.store.finishDelivery(id, result));
       outputs.push(result);
     }
+    if (activity.length) await this.toolProgress.finish(JSON.stringify([message.server,message.channel,message.id]));
     return outputs;
   }
   async createTaskThread(message: Message, name: string): Promise<string> {
@@ -348,6 +396,7 @@ export class DiscordAdapter implements ChatGateway {
   async start(): Promise<void> { await this.client.login(this.config.discordToken); }
   async stop(): Promise<void> {
     if (this.historyTimer) clearInterval(this.historyTimer);
+    await this.reminders.stop();
     await this.history.stop(); await this.worker.stop(); await this.client.destroy();
   }
 }

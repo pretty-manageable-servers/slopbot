@@ -115,3 +115,14 @@ test("task handoff carries the referenced profile rather than unrelated channel 
   assert.ok(!seed.text.includes("irrelevant weather"));
   assert.ok(f.llm.prompts[0]?.inputs.some(item=>item.content.includes("Rice Farmer")));
 });
+
+test('quick inline writes stay in the channel while sustained writes use a task thread',async t=>{
+ const {ToolRegistry}=await import('../src/tools.js');const f=setup();t.after(()=>f.store.close());
+ const tools=new ToolRegistry(f.store,async()=>false);let executed=0;
+ tools.register({name:'quick_write',description:'Quick action',fields:{},access:'member',effect:'write',retrySafe:true,execution:'inline',execute:async()=>{executed++;return 'Done';}});
+ tools.register({name:'long_write',description:'Long action',fields:{},access:'member',effect:'write',retrySafe:true,execute:async()=>{throw Error('must move');}});
+ const bot=new Bot(f.app,f.store,f.store,f.gateway,'s',['c'],{tools});
+ const request=incoming('inline','do it');await f.store.ingest(request);
+ const result=await bot.executeTool(request,{name:'quick_write',arguments:{}},'quick');assert.equal(result.text,'Done');assert.equal(executed,1);assert.equal(f.created(),0);
+ const handoff=await bot.executeTool(request,{name:'long_write',arguments:{}},'long');assert.equal(handoff.handoff?.threadId,'thread');assert.equal(f.created(),1);
+});

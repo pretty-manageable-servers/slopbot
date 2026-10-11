@@ -1,3 +1,5 @@
+import type { ToolActivityObserver } from './tool-activity.js';
+import type { PresentationPolicy } from './presentation/policy.js';
 import type { HarnessJournal } from "./harness-state.js";
 import { parseMessage, type Reply } from "./domain.js";
 import type { LLM, Store } from "./ports.js";
@@ -13,7 +15,7 @@ export class Application {
   private readonly taskTails = new Map<string, Promise<void>>();
   private readonly runner: AgentRunner;
   constructor(private readonly store: Store, llm: LLM, policy: Policy, recall?: Recall,
-    services: { profiles?: ProfileStore; tools?: ToolExecutor; counter?: TokenCounter; harness?: HarnessJournal } = {}) {
+    services: { profiles?: ProfileStore; tools?: ToolExecutor; counter?: TokenCounter; harness?: HarnessJournal; presentation?: PresentationPolicy; onToolActivity?: ToolActivityObserver } = {}) {
     this.runner = new AgentRunner(store, llm, policy, recall, services);
   }
   interrupt(server: string, messageId: string): Promise<boolean> { return this.runner.interrupt(server, messageId); }

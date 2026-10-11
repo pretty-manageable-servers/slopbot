@@ -12,7 +12,225 @@ import type { TaskContext } from "../context.js";
 import type { Job, QueueStore } from "../queue.js";
 import type { ToolArgs, ToolCall, ToolContext, ToolJournal, ToolOperation } from "../tools.js";
 
+import type { HistoryQuery, HistoryPage } from '../search/history-search.js';
+import type { AppRecord } from '../records.js';
 export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore {
+  async record(
+    server: string,
+    kind: string,
+    id: string,
+  ): Promise<AppRecord | undefined> {
+    const row = this.db
+      .prepare("SELECT * FROM app_records WHERE server=? AND kind=? AND id=?")
+      .get(server, kind, id);
+    return row
+      ? {
+          id: String(row.id),
+          revision: Number(row.revision),
+          value: JSON.parse(String(row.value)) as Json,
+        }
+      : undefined;
+  }
+  async records(server: string, kind: string): Promise<AppRecord[]> {
+    return this.db
+      .prepare(
+        "SELECT * FROM app_records WHERE server=? AND kind=? ORDER BY id",
+      )
+      .all(server, kind)
+      .map((row) => ({
+        id: String(row.id),
+        revision: Number(row.revision),
+        value: JSON.parse(String(row.value)) as Json,
+      }));
+  }
+  async putRecord(
+    server: string,
+    kind: string,
+    id: string,
+    value: Json,
+    expectedRevision: number,
+  ): Promise<boolean> {
+    if (expectedRevision === 0)
+      return (
+        this.db
+          .prepare(
+            "INSERT OR IGNORE INTO app_records(server,kind,id,revision,value) VALUES(?,?,?,1,?)",
+          )
+          .run(server, kind, id, JSON.stringify(value)).changes === 1
+      );
+    return (
+      this.db
+        .prepare(
+          "UPDATE app_records SET value=?,revision=revision+1 WHERE server=? AND kind=? AND id=? AND revision=?",
+        )
+        .run(JSON.stringify(value), server, kind, id, expectedRevision)
+        .changes === 1
+    );
+  }
+  async searchHistory(request: HistoryQuery): Promise<HistoryPage> {
+    const filters = ["m.server=?", "m.channel=?"];
+    const values: (string | number)[] = [request.server, request.channel];
+    if (request.author) {
+      filters.push("json_extract(m.body,'$.author')=?");
+      values.push(request.author);
+    }
+    if (request.after !== undefined) {
+      filters.push("json_extract(m.body,'$.timestamp')>=?");
+      values.push(request.after);
+    }
+    if (request.before !== undefined) {
+      filters.push("json_extract(m.body,'$.timestamp')<=?");
+      values.push(request.before);
+    }
+    if (request.excludeId) {
+      filters.push("m.id<>?");
+      values.push(request.excludeId);
+    }
+    const where = filters.join(" AND ");
+    const terms = searchTerms(request.query);
+    const pattern = request.mode === "exact" ? [request.query] : terms;
+    const matches = pattern.length
+      ? " AND (" +
+        pattern
+          .map(() => "lower(json_extract(m.body,'$.text')) LIKE ? ESCAPE '\\'")
+          .join(" OR ") +
+        ")"
+      : "";
+    let keywords = this.db
+      .prepare(
+        `SELECT m.body FROM messages m WHERE ${where}${matches} ORDER BY json_extract(m.body,'$.timestamp') DESC,m.id DESC LIMIT 200`,
+      )
+      .all(
+        ...values,
+        ...pattern.map(
+          (term) => "%" + term.toLowerCase().replace(/[\\%_]/g, "\\$&") + "%",
+        ),
+      )
+      .map((row) => parseMessage(JSON.parse(String(row.body))));
+    if (this.fts && request.mode !== "exact" && terms.length) {
+      const query = terms.map((term) => `"${term}"`).join(" OR ");
+      keywords = this.db
+        .prepare(
+          `SELECT m.body FROM message_search JOIN messages m ON m.sequence=message_search.rowid WHERE message_search MATCH ? AND ${where} ORDER BY bm25(message_search),json_extract(m.body,'$.timestamp') DESC,m.id DESC LIMIT 200`,
+        )
+        .all(query, ...values)
+        .map((row) => parseMessage(JSON.parse(String(row.body))));
+    }
+    let semantic: Message[] = [];
+    let degraded = false;
+    if (request.mode === "semantic" || request.mode === "hybrid") {
+      if (this.embeddings && request.query.trim()) {
+        try {
+          const query = await this.embed(
+            {
+              server: request.server,
+              channel: request.channel,
+              author: "search",
+              id: "search",
+              text: request.query,
+            },
+            "query",
+          );
+          const ranked = this.db
+            .prepare(
+              `SELECT m.body,e.vector FROM messages m JOIN embeddings e ON e.server=m.server AND e.message_id=m.id WHERE ${where} AND e.model=?`,
+            )
+            .all(...values, this.embeddings.model);
+          semantic = ranked
+            .map((row) => ({
+              message: parseMessage(JSON.parse(String(row.body))),
+              score: cosine(query, JSON.parse(String(row.vector))),
+            }))
+            .filter((item) => item.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 200)
+            .map((item) => item.message);
+        } catch {
+          degraded = true;
+        }
+      } else degraded = true;
+    }
+    const lists =
+      request.mode === "semantic" && !degraded
+        ? [semantic]
+        : request.mode === "hybrid"
+          ? [keywords, semantic]
+          : [keywords];
+    const scores = new Map<string, { message: Message; score: number }>();
+    for (const list of lists)
+      list.forEach((message, index) => {
+        const entry = scores.get(message.id) ?? { message, score: 0 };
+        entry.score += 1 / (60 + index + 1);
+        scores.set(message.id, entry);
+      });
+    const ranked = [...scores.values()].sort(
+      (a, b) => b.score - a.score || a.message.id.localeCompare(b.message.id),
+    );
+    const offset = request.offset ?? 0;
+    const selected = ranked.slice(offset, offset + request.limit);
+    const messages: Message[] = [];
+    for (const item of selected)
+      messages.push(await this.namedMessage(item.message));
+    const stats = await this.indexStats(request.server, request.channel);
+    return {
+      messages,
+      nextOffset:
+        offset + request.limit < ranked.length
+          ? offset + request.limit
+          : undefined,
+      degraded,
+      coverage: {
+        messages: stats.messages,
+        vectors: stats.vectors,
+        oldest: stats.oldest,
+        newest: stats.newest,
+      },
+      candidateLimit: 200,
+    };
+  }
+
+  async readHistory(
+    server: string,
+    channel: string,
+    id: string,
+    radius: number,
+  ): Promise<Message[]> {
+    const target = this.db
+      .prepare(
+        "SELECT body FROM messages WHERE server=? AND channel=? AND id=?",
+      )
+      .get(server, channel, id);
+    if (!target) return [];
+    const time = parseMessage(JSON.parse(String(target.body))).timestamp ?? 0;
+    const before = this.db
+      .prepare(
+        "SELECT body FROM messages WHERE server=? AND channel=? AND (COALESCE(json_extract(body,'$.timestamp'),0)<? OR (COALESCE(json_extract(body,'$.timestamp'),0)=? AND id<?)) ORDER BY COALESCE(json_extract(body,'$.timestamp'),0) DESC,id DESC LIMIT ?",
+      )
+      .all(server, channel, time, time, id, radius);
+    const after = this.db
+      .prepare(
+        "SELECT body FROM messages WHERE server=? AND channel=? AND (COALESCE(json_extract(body,'$.timestamp'),0)>? OR (COALESCE(json_extract(body,'$.timestamp'),0)=? AND id>=?)) ORDER BY COALESCE(json_extract(body,'$.timestamp'),0),id LIMIT ?",
+      )
+      .all(server, channel, time, time, id, radius + 1);
+    const messages = [...before.reverse(), ...after].map((row) =>
+      parseMessage(JSON.parse(String(row.body))),
+    );
+    const root = messages.find((message) => message.id === id);
+    let reply = root?.replyTo;
+    for (let depth = 0; reply && depth < 4; depth++) {
+      const parent = await this.canonicalMessage(server, reply);
+      if (
+        !parent ||
+        parent.channel !== channel ||
+        messages.some((item) => item.id === parent.id)
+      )
+        break;
+      messages.unshift(parent);
+      reply = parent.replyTo;
+    }
+    return Promise.all(messages.map((message) => this.namedMessage(message)));
+  }
+
   private readonly db: DatabaseSync;
   private readonly fts: boolean;
   private indexTail: Promise<void> = Promise.resolve();
@@ -31,6 +249,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       this.fts = false;
     }
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS app_records (server TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, revision BIGINT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(server,kind,id));
       CREATE TABLE IF NOT EXISTS harness_events (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT, server TEXT NOT NULL, message_id TEXT NOT NULL,
         state TEXT NOT NULL, event TEXT NOT NULL
@@ -591,30 +810,8 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       return score(b) - score(a);
     }).slice(0, Math.min(limit, 4));
     for (const memory of relevant) evidence.push({ kind: "memory", content: memory.content, author: memory.author, sourceIds: memory.sourceIds });
-    const selected = new Map<string, Message>();
-    if (terms.length) {
-      const query = terms.map(term => `"${term}"`).join(" OR ");
-      const rows = this.fts
-        ? this.db.prepare(`SELECT m.body FROM message_search JOIN messages m ON m.sequence=message_search.rowid
-          WHERE message_search MATCH ? AND m.server=? AND m.channel=? AND m.id<>?
-          ORDER BY bm25(message_search) LIMIT ?`).all(query, message.server, message.channel, message.id, limit)
-        : this.db.prepare(`SELECT m.body FROM message_search JOIN messages m ON m.sequence=message_search.rowid
-          WHERE m.server=? AND m.channel=? AND m.id<>? AND (${terms.map(() => "message_search.text LIKE ? ESCAPE '\\'").join(" OR ")})
-          ORDER BY m.sequence DESC LIMIT ?`).all(message.server, message.channel, message.id,
-            ...terms.map(term => `%${term.replace(/[\\%_]/g, "\\$&")}%`), limit);
-      for (const row of rows) { const item = parseMessage(JSON.parse(String(row.body))); selected.set(item.id, item); }
-    }
-    if (this.embeddings && message.text.trim()) {
-      try {
-        const query = await this.embed(message, "query");
-        const candidates = this.db.prepare(`SELECT m.body,e.vector FROM embeddings e JOIN messages m
-          ON m.server=e.server AND m.id=e.message_id WHERE m.server=? AND m.channel=? AND m.id<>? AND e.model=?`)
-          .all(message.server, message.channel, message.id, this.embeddings.model)
-          .map(row => ({ message: parseMessage(JSON.parse(String(row.body))), score: cosine(query, JSON.parse(String(row.vector)) as number[]) }))
-          .filter(item => item.score > 0.55).sort((a, b) => b.score - a.score).slice(0, limit);
-        for (const candidate of candidates) selected.set(candidate.message.id, candidate.message);
-      } catch { console.error("Semantic recall unavailable; using keyword retrieval."); }
-    }
+    const recalled=await this.searchHistory({server:message.server,channel:message.channel,query:message.text,mode:'hybrid',limit,excludeId:message.id});
+    const selected=new Map(recalled.messages.map(item=>[item.id,item]));
     for (const item of selected.values()) {
       if (evidence.length >= limit) break;
       evidence.push({ kind: "message", content: item.text, author: item.author, sourceIds: [item.id] });

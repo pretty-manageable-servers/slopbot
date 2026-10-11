@@ -30,6 +30,7 @@ export interface PromptItem {
 
 export interface Prompt {
   readonly prefixVersion: string;
+  readonly cacheScope?: string;
   readonly prefix: readonly PromptItem[];
   readonly history: readonly PromptItem[];
   readonly inputs: readonly PromptItem[];
@@ -42,6 +43,8 @@ export type ModelEvent =
   | { readonly kind: "reasoning" | "opaque" | "usage" | "tool_call"; readonly payload: Json };
 
 export interface Reply {
+  readonly ui?: import('./ui/schema.js').UiDocument;
+  readonly toolActivity?: readonly import("./tool-activity.js").ToolActivity[];
   readonly runId: string;
   readonly text: string;
   readonly contextVersion?: number;

@@ -1,10 +1,13 @@
+import { formatReply, type PresentationPolicy } from './presentation/policy.js';
 import type { ProfileStore } from './profiles.js';
 
 // Internal IDs remain in prompts and logs. Presentation belongs here, not in storage.
 export class ReplyRenderer {
-  constructor(private readonly profiles?: Pick<ProfileStore, 'findPeople'>) {}
+  constructor(private readonly profiles?: Pick<ProfileStore, 'findPeople'>, private readonly presentation?: PresentationPolicy) {}
   async render(server: string, text: string, verbatim = false): Promise<string> {
-    if (verbatim || !this.profiles) return text;
+    if (verbatim) return text;
+    text = formatReply(text, this.presentation);
+    if (!this.profiles) return text;
     const tokens = /```[\s\S]*?```|`[^`\n]*`|https?:\/\/[^\s]+|<[@#][^>]*>|"(?:\\.|[^"\\])*"|(?<![\w/@])(\d{17,20})(?!\w)/g;
     const names = new Map<string, string>();
     for (const match of text.matchAll(tokens)) {

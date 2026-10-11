@@ -26,7 +26,7 @@ test("provider requests use configured endpoint/model and preserve prefix", asyn
   for await (const event of new ChatCompletionsLLM(options, fetcher).stream(prompt)) events.push(event);
   assert.equal(body.model, "llama.cpp/gemma-4-e4b-qat");
   assert.deepEqual((body.messages as unknown[])[0], { role: "system", content: "fixed" });
-  assert.equal(events.filter(event => event.kind === "opaque").length, 3);
+  assert.equal(events.filter(event => event.kind === "opaque").length, 4);
   assert.ok(events.some(event => event.kind === "reasoning"));
   assert.ok(events.some(event => event.kind === "usage"));
   assert.deepEqual(events.find(event => event.kind === "text"), { kind: "text", payload: { text: "Hi" } });
@@ -95,4 +95,25 @@ test("malformed Gemma text reaches protocol repair with raw events intact", asyn
   const app=new Application(store,llm,{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:{catalog:()=>'',execute:async()=>{searches++;return {text:'actual results',sources:[{kind:'web',url:'https://example.com/',title:'Result'}]};}}});
   assert.equal((await app.handle({id:'m',server:'s',channel:'c',author:'a',text:'search what is openclaw'}))?.text,'Here is the search result.');
   assert.equal(searches,1);assert.equal(requests,3);
+});
+
+test('tool rounds and subsequent task turns append identical wire prefixes',async t=>{
+ const {Application}=await import('../src/application.js');
+ const {SQLiteStore}=await import('../src/adapters/sqlite.js');
+ const store=new SQLiteStore();t.after(()=>store.close());
+ const requests:any[][]=[];
+ const replies=[JSON.stringify({tool_calls:[{name:'lookup',arguments:{query:'one'}}]}),JSON.stringify({tool_calls:[{name:'lookup',arguments:{query:'two'}}]}),'Done.','Next answer.'];
+ const llm=new ChatCompletionsLLM(options,async(_url,init)=>{
+  requests.push(JSON.parse(String(init?.body)).messages);
+  return new Response(`data: ${JSON.stringify({choices:[{index:0,delta:{content:replies[requests.length-1]},finish_reason:'stop'}]})}\n\ndata: [DONE]\n\n`);
+ });
+ let calls=0;
+ const app=new Application(store,llm,{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:{catalog:()=>'',execute:async()=>({text:`Result ${++calls}: `+'evidence '.repeat(10000)})}});
+ await app.handle({id:'one',server:'s',channel:'c',author:'alice',text:'Investigate',taskId:'task'});
+ await app.handle({id:'two',server:'s',channel:'c',author:'bob',text:'Continue',taskId:'task'});
+ assert.equal(calls,2);assert.equal(requests.length,4);
+ for(let index=1;index<requests.length;index++){
+  assert.deepEqual(requests[index]!.slice(0,requests[index-1]!.length),requests[index-1]);
+ }
+ assert.ok(JSON.stringify(requests[1]).includes('truncated for context'));
 });

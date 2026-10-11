@@ -11,11 +11,234 @@ import type { ProfileField, UserProfile } from "../profiles.js";
 import type { TaskContext } from "../context.js";
 import type { Job } from "../queue.js";
 import type { ToolArgs, ToolCall, ToolContext, ToolOperation } from "../tools.js";
+import type { HistoryQuery, HistoryPage } from '../search/history-search.js';
+import type { AppRecord } from '../records.js';
 export class PostgresStore {
-    private readonly fts = false;
+  async record(
+    server: string,
+    kind: string,
+    id: string,
+  ): Promise<AppRecord | undefined> {
+    const row = await this.db
+      .prepare("SELECT * FROM app_records WHERE server=? AND kind=? AND id=?")
+      .get(server, kind, id);
+    return row
+      ? {
+          id: String(row.id),
+          revision: Number(row.revision),
+          value: JSON.parse(String(row.value)) as Json,
+        }
+      : undefined;
+  }
+  async records(server: string, kind: string): Promise<AppRecord[]> {
+    return (
+      await this.db
+        .prepare(
+          "SELECT * FROM app_records WHERE server=? AND kind=? ORDER BY id",
+        )
+        .all(server, kind)
+    ).map((row) => ({
+      id: String(row.id),
+      revision: Number(row.revision),
+      value: JSON.parse(String(row.value)) as Json,
+    }));
+  }
+  async putRecord(
+    server: string,
+    kind: string,
+    id: string,
+    value: Json,
+    expectedRevision: number,
+  ): Promise<boolean> {
+    if (expectedRevision === 0)
+      return (
+        (
+          await this.db
+            .prepare(
+              "INSERT OR IGNORE INTO app_records(server,kind,id,revision,value) VALUES(?,?,?,1,?)",
+            )
+            .run(server, kind, id, JSON.stringify(value))
+        ).changes === 1
+      );
+    return (
+      (
+        await this.db
+          .prepare(
+            "UPDATE app_records SET value=?,revision=revision+1 WHERE server=? AND kind=? AND id=? AND revision=?",
+          )
+          .run(JSON.stringify(value), server, kind, id, expectedRevision)
+      ).changes === 1
+    );
+  }
+  async searchHistory(request: HistoryQuery): Promise<HistoryPage> {
+    const filters = ["m.server=?", "m.channel=?"];
+    const values: (string | number)[] = [request.server, request.channel];
+    if (request.author) {
+      filters.push("json_extract(m.body,'$.author')=?");
+      values.push(request.author);
+    }
+    if (request.after !== undefined) {
+      filters.push("json_extract(m.body,'$.timestamp')>=?");
+      values.push(request.after);
+    }
+    if (request.before !== undefined) {
+      filters.push("json_extract(m.body,'$.timestamp')<=?");
+      values.push(request.before);
+    }
+    if (request.excludeId) {
+      filters.push("m.id<>?");
+      values.push(request.excludeId);
+    }
+    const where = filters.join(" AND ");
+    const terms = searchTerms(request.query);
+    const pattern = request.mode === "exact" ? [request.query] : terms;
+    const matches = pattern.length
+      ? " AND (" +
+        pattern
+          .map(() => "lower(json_extract(m.body,'$.text')) LIKE ? ESCAPE '\\'")
+          .join(" OR ") +
+        ")"
+      : "";
+    let keywords = (
+      await this.db
+        .prepare(
+          `SELECT m.body FROM messages m WHERE ${where}${matches} ORDER BY json_extract(m.body,'$.timestamp') DESC,m.id DESC LIMIT 200`,
+        )
+        .all(
+          ...values,
+          ...pattern.map(
+            (term) => "%" + term.toLowerCase().replace(/[\\%_]/g, "\\$&") + "%",
+          ),
+        )
+    ).map((row) => parseMessage(JSON.parse(String(row.body))));
+    if (request.mode !== "exact" && terms.length) {
+      const query = terms.join(" | ");
+      keywords = (
+        await this.db
+          .prepare(
+            `SELECT m.body FROM messages m WHERE ${where} AND to_tsvector('simple',json_extract(m.body,'$.text')) @@ to_tsquery('simple',?) ORDER BY ts_rank(to_tsvector('simple',json_extract(m.body,'$.text')),to_tsquery('simple',?)) DESC,json_extract(m.body,'$.timestamp') DESC,m.id DESC LIMIT 200`,
+          )
+          .all(...values, query, query)
+      ).map((row) => parseMessage(JSON.parse(String(row.body))));
+    }
+    let semantic: Message[] = [];
+    let degraded = false;
+    if (request.mode === "semantic" || request.mode === "hybrid") {
+      if (this.embeddings && request.query.trim()) {
+        try {
+          const query = await this.embed(
+            {
+              server: request.server,
+              channel: request.channel,
+              author: "search",
+              id: "search",
+              text: request.query,
+            },
+            "query",
+          );
+          const ranked = await this.db
+            .prepare(
+              `SELECT m.body, e.vector AS vector FROM messages m JOIN embeddings e ON e.server=m.server AND e.message_id=m.id WHERE ${where} AND e.model=? AND vector_dims(e.vector)=? ORDER BY e.vector <=> ?::vector LIMIT 200`,
+            )
+            .all(
+              ...values,
+              this.embeddings.model,
+              query.length,
+              JSON.stringify(query),
+            );
+          semantic = ranked.map((row) =>
+            parseMessage(JSON.parse(String(row.body))),
+          );
+        } catch {
+          degraded = true;
+        }
+      } else degraded = true;
+    }
+    const lists =
+      request.mode === "semantic" && !degraded
+        ? [semantic]
+        : request.mode === "hybrid"
+          ? [keywords, semantic]
+          : [keywords];
+    const scores = new Map<string, { message: Message; score: number }>();
+    for (const list of lists)
+      list.forEach((message, index) => {
+        const entry = scores.get(message.id) ?? { message, score: 0 };
+        entry.score += 1 / (60 + index + 1);
+        scores.set(message.id, entry);
+      });
+    const ranked = [...scores.values()].sort(
+      (a, b) => b.score - a.score || a.message.id.localeCompare(b.message.id),
+    );
+    const offset = request.offset ?? 0;
+    const selected = ranked.slice(offset, offset + request.limit);
+    const messages: Message[] = [];
+    for (const item of selected)
+      messages.push(await this.namedMessage(item.message));
+    const stats = await this.indexStats(request.server, request.channel);
+    return {
+      messages,
+      nextOffset:
+        offset + request.limit < ranked.length
+          ? offset + request.limit
+          : undefined,
+      degraded,
+      coverage: {
+        messages: stats.messages,
+        vectors: stats.vectors,
+        oldest: stats.oldest,
+        newest: stats.newest,
+      },
+      candidateLimit: 200,
+    };
+  }
+
+  async readHistory(
+    server: string,
+    channel: string,
+    id: string,
+    radius: number,
+  ): Promise<Message[]> {
+    const target = await this.db
+      .prepare(
+        "SELECT body FROM messages WHERE server=? AND channel=? AND id=?",
+      )
+      .get(server, channel, id);
+    if (!target) return [];
+    const time = parseMessage(JSON.parse(String(target.body))).timestamp ?? 0;
+    const before = await this.db
+      .prepare(
+        "SELECT body FROM messages WHERE server=? AND channel=? AND (COALESCE(json_extract(body,'$.timestamp'),0)<? OR (COALESCE(json_extract(body,'$.timestamp'),0)=? AND id<?)) ORDER BY COALESCE(json_extract(body,'$.timestamp'),0) DESC,id DESC LIMIT ?",
+      )
+      .all(server, channel, time, time, id, radius);
+    const after = await this.db
+      .prepare(
+        "SELECT body FROM messages WHERE server=? AND channel=? AND (COALESCE(json_extract(body,'$.timestamp'),0)>? OR (COALESCE(json_extract(body,'$.timestamp'),0)=? AND id>=?)) ORDER BY COALESCE(json_extract(body,'$.timestamp'),0),id LIMIT ?",
+      )
+      .all(server, channel, time, time, id, radius + 1);
+    const messages = [...before.reverse(), ...after].map((row) =>
+      parseMessage(JSON.parse(String(row.body))),
+    );
+    const root = messages.find((message) => message.id === id);
+    let reply = root?.replyTo;
+    for (let depth = 0; reply && depth < 4; depth++) {
+      const parent = await this.canonicalMessage(server, reply);
+      if (
+        !parent ||
+        parent.channel !== channel ||
+        messages.some((item) => item.id === parent.id)
+      )
+        break;
+      messages.unshift(parent);
+      reply = parent.replyTo;
+    }
+    return Promise.all(messages.map((message) => this.namedMessage(message)));
+  }
+
     private readonly settingsCache = new Map<string, unknown>();
     private readonly threadsCache: { server: string; thread: string; parent: string }[] = [];
     private indexTail: Promise<void> = Promise.resolve();
+    private indexingStopped = false;
     private constructor(private readonly db: PostgresDatabase, private readonly embeddings?: Embeddings) { }
     static async connect(url: string, embeddings?: Embeddings, schema?: string): Promise<PostgresStore> {
         const db = await PostgresDatabase.connect(url, schema);
@@ -257,6 +480,7 @@ export class PostgresStore {
     }
     async close(): Promise<void> { (await this.db.close()); }
     async finishIndexing(): Promise<void> { await this.indexTail; }
+    stopIndexing(): void { this.indexingStopped = true; }
     private job(row: Record<string, unknown>): Job {
         return { id: String(row.id), message: parseMessage(JSON.parse(String(row.message))), status: row.status as Job["status"], reply: row.reply ? JSON.parse(String(row.reply)) : null, attempts: Number(row.attempts), error: row.error === null ? null : String(row.error) };
     }
@@ -387,9 +611,9 @@ export class PostgresStore {
                 (await this.db.prepare("UPDATE jobs SET status='cancelled',error='Channel disabled' WHERE id=?").run(String(row.id)));
     }
     private queueIndex(message: Message): void {
-        if (!this.embeddings || !message.text.trim())
+        if (this.indexingStopped || !this.embeddings || !message.text.trim())
             return;
-        this.indexTail = this.indexTail.then(() => this.indexMessage(message)).catch((error: unknown) => {
+        this.indexTail = this.indexTail.then(() => this.indexingStopped ? undefined : this.indexMessage(message)).catch((error: unknown) => {
             const failure = error as { name?: string; code?: string; status?: number; cause?: { code?: string }; stack?: string };
             console.error("Embedding indexing failed; keyword retrieval remains available.", {
                 name: failure?.name, code: failure?.code, status: failure?.status,
@@ -529,34 +753,8 @@ export class PostgresStore {
         }).slice(0, Math.min(limit, 4));
         for (const memory of relevant)
             evidence.push({ kind: "memory", content: memory.content, author: memory.author, sourceIds: memory.sourceIds });
-        const selected = new Map<string, Message>();
-        if (terms.length) {
-            const query = terms.map(term => `"${term}"`).join(" OR ");
-            const rows = this.fts
-                ? (await this.db.prepare(`SELECT m.body FROM message_search JOIN messages m ON m.sequence=message_search.rowid
-          WHERE message_search MATCH ? AND m.server=? AND m.channel=? AND m.id<>?
-          ORDER BY bm25(message_search) LIMIT ?`).all(query, message.server, message.channel, message.id, limit)) : (await this.db.prepare(`SELECT m.body FROM message_search JOIN messages m ON m.sequence=message_search.rowid
-          WHERE m.server=? AND m.channel=? AND m.id<>? AND (${terms.map(() => "message_search.text LIKE ? ESCAPE '\\'").join(" OR ")})
-          ORDER BY m.sequence DESC LIMIT ?`).all(message.server, message.channel, message.id, ...terms.map(term => `%${term.replace(/[\\%_]/g, "\\$&")}%`), limit));
-            for (const row of rows) {
-                const item = parseMessage(JSON.parse(String(row.body)));
-                selected.set(item.id, item);
-            }
-        }
-        if (this.embeddings && message.text.trim()) {
-            try {
-                const query = await this.embed(message, "query");
-                const candidates = (await this.db.prepare(`SELECT m.body,1-(e.vector <=> ?::vector) AS score FROM embeddings e JOIN messages m
-                  ON m.server=e.server AND m.id=e.message_id WHERE m.server=? AND m.channel=? AND m.id<>? AND e.model=? AND vector_dims(e.vector)=?
-                  ORDER BY e.vector <=> ?::vector LIMIT ?`).all(JSON.stringify(query),message.server,message.channel,message.id,this.embeddings.model,query.length,JSON.stringify(query),limit))
-                  .filter(row=>Number(row.score)>0.55).map(row=>({message:parseMessage(JSON.parse(String(row.body))),score:Number(row.score)}));
-                for (const candidate of candidates)
-                    selected.set(candidate.message.id, candidate.message);
-            }
-            catch {
-                console.error("Semantic recall unavailable; using keyword retrieval.");
-            }
-        }
+    const recalled=await this.searchHistory({server:message.server,channel:message.channel,query:message.text,mode:'hybrid',limit,excludeId:message.id});
+    const selected=new Map(recalled.messages.map(item=>[item.id,item]));
         for (const item of selected.values()) {
             if (evidence.length >= limit)
                 break;

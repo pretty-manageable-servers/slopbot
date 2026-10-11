@@ -5,7 +5,7 @@ import type { Message } from "./domain.js";
 import type { Store } from "./ports.js";
 import type { Knowledge } from "./memory.js";
 import type { TaskWorker, QueueStore } from "./queue.js";
-import { displayToolResult, ToolError, type ToolCall, type ToolRegistry, type ToolResult } from "./tools.js";
+import { ToolError, type ToolCall, type ToolRegistry, type ToolResult } from "./tools.js";
 import type { ParticipationGate } from "./participation.js";
 
 export interface Incoming extends Message {
@@ -15,7 +15,7 @@ export interface Incoming extends Message {
 }
 
 export interface ChatGateway {
-  reply(message: Message, text: string, deliveryId?: string): Promise<readonly Message[]>;
+  reply(message: Message, text: string, deliveryId?: string, activity?: readonly import("./tool-activity.js").ToolActivity[], ui?: import("./ui/schema.js").UiDocument): Promise<readonly Message[]>;
   createTaskThread(message: Message, name: string): Promise<string>;
   typing(channel: string): () => void;
 }
@@ -151,26 +151,18 @@ export class Bot {
     if (!registry || !this.accepts(message.server, message.channel)) throw new ToolError("Tools are unavailable in this channel");
     registry.validate(call.name, call.arguments);
     await registry.checkAccess(message, call.name);
-    if (registry.effect(call.name, call.arguments) === "write" && !this.tasks.has(message.channel) && call.name !== "task_start") {
+    if (registry.requiresThread(call.name, call.arguments) && !this.tasks.has(message.channel) && call.name !== "task_start") {
       const thread = await this.startTask(message, message.text);
       return { text: `Task started in <#${thread}>. Updates will appear there.`, handoff: { threadId: thread } };
     }
     if (registry.effect(call.name, call.arguments) === "write" && call.name !== "task_retry" && (await this.options.queueStore?.hasBlocked(message.server, message.channel))) throw new ToolError("This task has an uncertain action. Reconcile that job before new writes.");
     if (registry.effect(call.name, call.arguments) === "write" && call.name !== "task_retry" && (await this.options.queueStore?.hasPendingOther(message.server, message.channel, message.id))) throw new ToolError("New contributions are queued. Pause actions so the next contribution can be reviewed before proceeding.");
-    const transparent = this.tasks.has(message.channel);
-    if (transparent) await this.send(message, `Tool ${call.name}: ${JSON.stringify(call.arguments)}`, undefined, `${operationId}:start`);
-    let result: ToolResult;
-    try { result = await registry.invokeResult(message, call.name, call.arguments, operationId, "agent", expectedVersion); }
-    catch (error) {
-      if (transparent && this.accepts(message.server, message.channel)) await this.send(message, `Tool ${call.name}: ${error instanceof ToolError ? error.message : "result unavailable; action log retained for reconciliation"}`, undefined, `${operationId}:error`);
-      throw error;
-    }
-    if (transparent && this.accepts(message.server, message.channel)) await this.send(message, `Tool ${call.name} result: ${displayToolResult(result)}`, undefined, `${operationId}:result`);
+    const result = await registry.invokeResult(message, call.name, call.arguments, operationId, "agent", expectedVersion);
     return result;
   }
   async deliver(message: Message, reply: import("./domain.js").Reply, deliveryId: string): Promise<void> {
     if (!this.accepts(message.server, message.channel) || reply.contextVersion !== await this.store.contextVersion(message.server, message.channel)) throw new Error("Context changed before publication");
-    await this.send(message, reply.text || "The AI returned no answer.", reply.runId, deliveryId);
+    await this.send(message, reply.text || "The AI returned no answer.", reply.runId, deliveryId, reply.toolActivity, reply.ui);
   }
 
   private async enqueue(message: Message): Promise<void> {
@@ -190,7 +182,7 @@ export class Bot {
       if (reply && reply.contextVersion !== await this.store.contextVersion(message.server, message.channel)) {
         throw new Error("Context changed before publication");
       }
-      if (reply) await this.send(message, reply.text || "The AI returned no answer. Please try again.", reply.runId);
+      if (reply) await this.send(message, reply.text || "The AI returned no answer. Please try again.", reply.runId, undefined, reply.toolActivity, reply.ui);
     } catch (error) {
       console.error("Request failed:", error instanceof ProviderError ? `provider HTTP ${error.status}` : error instanceof Error ? error.name : "UnknownError");
       const explanation = error instanceof ProviderError
@@ -204,8 +196,8 @@ export class Bot {
     } finally { stopTyping(); }
   }
 
-  private async send(message: Message, text: string, runId?: string, deliveryId?: string): Promise<void> {
-    for (const sent of await this.gateway.reply(message, text, deliveryId)) {
+  private async send(message: Message, text: string, runId?: string, deliveryId?: string, activity?: readonly import("./tool-activity.js").ToolActivity[], ui?: import("./ui/schema.js").UiDocument): Promise<void> {
+    for (const sent of await this.gateway.reply(message, text, deliveryId, activity, ui)) {
       await this.store.ingest({ ...sent, addressed: false });
       await this.store.linkOutput(sent, runId, message.id);
     }

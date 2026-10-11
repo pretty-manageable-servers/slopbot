@@ -89,3 +89,7 @@ CREATE TABLE IF NOT EXISTS worker_leases (server TEXT PRIMARY KEY, owner TEXT NO
 CREATE OR REPLACE VIEW message_search AS SELECT sequence AS rowid,body::jsonb->>'text' AS text FROM messages;
 CREATE INDEX IF NOT EXISTS jobs_ready ON jobs(server,status,sequence);
 CREATE INDEX IF NOT EXISTS messages_channel ON messages(server,channel,sequence);
+
+CREATE TABLE IF NOT EXISTS app_records (server TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, revision BIGINT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(server,kind,id));
+
+CREATE INDEX IF NOT EXISTS messages_fulltext ON messages USING gin(to_tsvector('simple',body::jsonb->>'text'));

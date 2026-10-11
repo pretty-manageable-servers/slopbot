@@ -1,3 +1,4 @@
+import {stableJson} from './prompt-cache.js';
 import { createHash } from "node:crypto";
 import type { Json, Message } from "./domain.js";
 
@@ -7,6 +8,7 @@ export interface ToolResult {
   sources?: readonly ({ kind: "message"; server: string; channel: string; id: string } | { kind: "web"; url: string; title: string })[];
   artifacts?: readonly { url: string; label: string }[];
   handoff?: { threadId: string };
+  ui?: import('./ui/schema.js').UiDocument;
 }
 export type ToolOutput = string | ToolResult;
 export function toolResult(output: ToolOutput): ToolResult { return typeof output === "string" ? { text: output } : output; }
@@ -49,11 +51,13 @@ export interface ToolDefinition {
   access: "member" | "admin";
   effect: "read" | "write";
   retrySafe: boolean;
+  execution?: "inline" | "thread";
   publicResult?(args: ToolArgs): boolean;
   matchRead?(message: Message): ToolArgs | undefined;
   resource?(message: Message, args: ToolArgs): string;
   writes?(args: ToolArgs): boolean;
   validate?(args: ToolArgs): ToolArgs;
+  authorize?(context: ToolContext, args: ToolArgs): Promise<void>;
   execute(context: ToolContext, args: ToolArgs): Promise<ToolOutput>;
   reconcile?(context: ToolContext, args: ToolArgs): Promise<ToolOutput | undefined>;
 }
@@ -85,6 +89,10 @@ export class ToolRegistry {
     this.tools.set(tool.name, tool);
   }
   definitions(): readonly ToolDefinition[] { return [...this.tools.values()].sort((a, b) => a.name.localeCompare(b.name)); }
+  async recordedResult(operationId: string): Promise<ToolResult | undefined> {
+    const operation = await this.journal.operation(operationId);
+    return operation?.status === "done" && operation.result ? decodeToolResult(operation.result) : undefined;
+  }
   suggest(message: Message): ToolCall | undefined {
     const matches = this.definitions().flatMap(tool => {
       const args = tool.matchRead?.(message);
@@ -93,9 +101,12 @@ export class ToolRegistry {
     return matches.length === 1 ? matches[0] : undefined;
   }
   catalog(): string {
-    return JSON.stringify(this.definitions().map(({ name, description, fields, access, effect, writes }) => ({ name, description, fields, access, effect, read_actions: writes ? fields.action?.choices?.filter(action => !writes({ action })) ?? [] : [] })));
+    return stableJson(this.definitions().map(({ name, description, fields, access, effect, execution, writes }) => ({ name, description, fields, access, effect, execution, read_actions: writes ? fields.action?.choices?.filter(action => !writes({ action })) ?? [] : [] })));
   }
   effect(name: string, args: ToolArgs): "read" | "write" { const tool = this.tools.get(name); return tool?.writes ? tool.writes(args) ? "write" : "read" : tool?.effect ?? "read"; }
+  requiresThread(name: string, args: ToolArgs): boolean {
+    return this.effect(name,args) === "write" && this.tools.get(name)?.execution !== "inline";
+  }
   validate(name: string, input: unknown): ToolArgs {
     const tool = this.tools.get(name);
     if (!tool) throw new ToolError(`Unknown tool: ${name}`);
@@ -148,6 +159,7 @@ export class ToolRegistry {
     const args = this.validate(name, input);
     const context: ToolContext = { message, operationId, isAdmin: await this.checkAccess(message, name), source, toolName: name, arguments: args, resource: this.effect(name, args) === "write" ? tool!.resource?.(message, args) ?? `server:${message.server}:tool:${name}` : null, assertActive: () => this.guard(context, expectedVersion) };
     await context.assertActive();
+    await tool!.authorize?.(context,args);
     if (tool!.access === "admin" && !context.isAdmin) throw new ToolError("Manage Server permission is required.");
     const previous = await this.journal.operation(operationId);
     if (context.resource) {

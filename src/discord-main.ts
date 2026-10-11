@@ -19,7 +19,7 @@ async function main(): Promise<void> {
     baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.model,
   });
   const discord = new DiscordAdapter(config, store, llm);
-  const shutdown = async () => { await discord.stop(); await store.finishIndexing(); await store.close(); process.exit(0); };
+  const shutdown = async () => { if (store instanceof PostgresStore) store.stopIndexing(); await discord.stop(); await store.finishIndexing(); await store.close(); process.exit(0); };
   process.once("SIGINT", () => { void shutdown(); });
   process.once("SIGTERM", () => { void shutdown(); });
   try { await discord.start(); }

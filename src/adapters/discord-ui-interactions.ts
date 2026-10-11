@@ -1,0 +1,75 @@
+import {
+  MessageFlags,
+  type ButtonInteraction,
+  type StringSelectMenuInteraction,
+} from "discord.js";
+import type { Message } from "../domain.js";
+import { ToolError } from "../tools.js";
+import type { UiRuntime } from "../ui/runtime.js";
+import { discordUi } from "./discord-ui.js";
+export async function handleDiscordUi(
+  interaction: ButtonInteraction | StringSelectMenuInteraction,
+  runtime: UiRuntime,
+): Promise<void> {
+  if (!interaction.guildId || !interaction.channelId) return;
+  const message: Message = {
+    server: interaction.guildId,
+    channel: interaction.channelId,
+    author: interaction.user.id,
+    id: `interaction:${interaction.id}`,
+    text: "UI action",
+    timestamp: Date.now(),
+  };
+  const [, id, revision, rawIndex] = interaction.customId.split(":");
+  try {
+    await interaction.deferUpdate();
+    const index = interaction.isStringSelectMenu()
+      ? Number(interaction.values[0])
+      : Number(rawIndex);
+    if (
+      !id ||
+      !Number.isSafeInteger(Number(revision)) ||
+      !Number.isSafeInteger(index)
+    )
+      throw new ToolError("Invalid control.");
+    const result = await runtime.act(
+      message,
+      id,
+      Number(revision),
+      index,
+      interaction.id,
+    );
+    await interaction.editReply({
+      ...discordUi(result.document, id, result.revision),
+      allowedMentions: { parse: [] },
+    });
+  } catch (error) {
+    if (id) {
+      try {
+        const current = await runtime.current(message, id);
+        await interaction.editReply({
+          ...discordUi(current.document, id, current.revision, current.pending),
+          allowedMentions: { parse: [] },
+        });
+      } catch {
+        /* Keep the original error when UI recovery cannot display. */
+      }
+    }
+    const content =
+      error instanceof ToolError
+        ? error.message
+        : "Action could not finish. Its recorded result will be reconciled before retrying.";
+    if (interaction.deferred || interaction.replied)
+      await interaction.followUp({
+        content,
+        flags: MessageFlags.Ephemeral,
+        allowedMentions: { parse: [] },
+      });
+    else
+      await interaction.reply({
+        content,
+        flags: MessageFlags.Ephemeral,
+        allowedMentions: { parse: [] },
+      });
+  }
+}
