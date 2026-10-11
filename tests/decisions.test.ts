@@ -5,7 +5,7 @@ import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { ProviderError } from "../src/adapters/chat-completions.js";
 
 const message = { id: "1", server: "s", channel: "c", author: "alice", text: "Slopbot help" };
-const config = { baseUrl: "https://api.pmservers.org/ai/v1", apiKey: "test-only", model: "typesafe/kev-4b" };
+const config = { baseUrl: "https://api.pmservers.org/ai/v1", apiKey: "test-only", model: "vane" };
 
 test("kev uses Decisions API and validates probability thresholds", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());

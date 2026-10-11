@@ -126,7 +126,7 @@ test("mock config requires Discord details but no AI key", () => {
     DISCORD_BOT_TOKEN: "test-only", DISCORD_GUILD_ID: "123456789012345678",
     DISCORD_CHANNEL_IDS: "223456789012345678", LLM_MODE: "mock",
   });
-  assert.equal(config.model, "qwen3.8-flash-next");
+  assert.equal(config.model, "nimbus");
   assert.equal(config.apiKey, "");
   assert.throws(() => loadConfig({}), /DISCORD_GUILD_ID/);
 });

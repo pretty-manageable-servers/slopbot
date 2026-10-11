@@ -19,6 +19,6 @@ test("PMServers alias preserves the existing Gemma vector index identity", async
     return Response.json({ data: [{ embedding: [1, 0] }] });
   });
   await provider.embed("hello");
-  assert.equal(sentModel, "embeddinggemma2");
+  assert.equal(sentModel, "stratus");
   assert.equal(provider.model, "llama.cpp/embeddinggemma-2");
 });

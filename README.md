@@ -30,10 +30,10 @@ In .env, set:
 LLM_MODE=provider
 LLM_BASE_URL=https://api.pmservers.org/ai/v1
 LLM_API_KEY=your_key_here
-LLM_MODEL=qwen3.8-flash-next
+LLM_MODEL=nimbus
 ```
 
-Restart with `npm start`. The adapter sends streaming requests to `/chat/completions`. The configured model is PMServers’ `qwen3.8-flash-next`. Use the exact model ID accepted by the provider. Run `npm run models` to list available IDs when changing models.
+Restart with `npm start`. The adapter sends streaming requests to `/chat/completions`. The configured model is PMServers’ `nimbus`. Use the exact model ID accepted by the provider. Run `npm run models` to list available IDs when changing models.
 
 Test actual continuity: inside a task thread, say "The budget is $200", then ask "What budget did I give you?" Try the same after a restart. Outside the thread, reply to an older bot answer and ask a follow-up; it should use the reference without continuing that task session.
 
@@ -53,7 +53,7 @@ Set `DATABASE_URL` to use PostgreSQL/pgvector. Without it, local development use
 
 ## Participation
 
-`JEV_ENABLED=true` enables `typesafe/kev-4b` through the provider's native `/decisions` endpoint. This is a decision model, not a text-generating chat model. Native support is documented in the [Bifrost Decisions guide](https://bifrost-1.ghost.io/typesafe-system-one-models-and-new-v1-decisions-endpoint/).
+`JEV_ENABLED=true` enables `vane` through the provider's native `/decisions` endpoint. This is a decision model, not a text-generating chat model. Native support is documented in the [Bifrost Decisions guide](https://bifrost-1.ghost.io/typesafe-system-one-models-and-new-v1-decisions-endpoint/).
 
 Name requests such as "Slopbot, help me with dinner" can trigger a reply without a ping. Ordinary conversation should stay silent. Explicit mentions and bot replies bypass classification. Unsolicited responses require high confidence and are limited to one per minute and three per hour per channel. Classifier failures remain silent. Mock mode disables network classification and embeddings.
 

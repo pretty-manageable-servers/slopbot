@@ -17,7 +17,7 @@ export class ProviderEmbeddings implements Embeddings {
     // PMServers uses a different alias for the same Gemma model. Keep the index
     // identity stable so switching gateways does not re-embed channel history.
     const model = new URL(this.baseUrl).hostname === "api.pmservers.org" && this.model === "llama.cpp/embeddinggemma-2"
-      ? "embeddinggemma2" : this.model;
+      ? "stratus" : this.model;
     let response!: Response;
     for (let attempt = 0; attempt < 3; attempt++) {
       const wait = Math.max(0, this.nextRequestAt - Date.now());
