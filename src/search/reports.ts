@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { EventJournal } from "../event-journal.js";
 import type { Json, Message, Prompt } from "../domain.js";
 import type { Store, LLM } from "../ports.js";
 import type { RecordStore } from "../records.js";
@@ -171,21 +172,24 @@ export function registerReportTools(
           context.message.server,
           page.messages.map((message) => message.id),
         );
-        let text = "",
-          sequence = 0;
+        let text = "";
+        const journal = new EventJournal(services.store, runId, context.message, `tool:${decision ? "decision_lookup" : "conversation_summary"}`);
         try {
           for await (const event of services.llm.stream(prompt)) {
-            await services.store.appendEvent(runId, sequence++, event);
+            await journal.append(event);
             if (event.kind === "text") text += event.payload.text;
           }
+          await journal.close();
           if (!text.trim())
             throw new ToolError("The model returned no report.");
           await services.store.finishToolRun(runId, text);
         } catch (error) {
+          try { await journal.close(); } finally {
           await services.store.fail(
             runId,
             error instanceof Error ? error.name : "ReportError",
           );
+          }
           throw error;
         }
         for (const message of page.messages) {

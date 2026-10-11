@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { EventJournal } from "./event-journal.js";
+import { requestTimings } from "./request-timing.js";
 import type { Message, Prompt } from "./domain.js";
 import type { LLM, Store } from "./ports.js";
 
@@ -25,12 +27,13 @@ export class LLMClassifier implements Classifier {
     await this.store.startRun(runId, message, prompt);
     await this.store.recordSources(runId, message.server, [message.id, ...context.map(item => item.id)]);
     const text: string[] = [];
+    const journal = new EventJournal(this.store, runId, message, "participation");
     try {
-      let sequence = 0;
       for await (const event of this.llm.stream(prompt)) {
-        await this.store.appendEvent(runId, sequence++, event);
+        await journal.append(event);
         if (event.kind === "text") text.push(event.payload.text);
       }
+      await journal.close();
       const output = text.join("").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
       const value = JSON.parse(output) as Record<string, unknown>;
       if (typeof value.respond !== "boolean" || typeof value.addressed !== "boolean" || typeof value.reason !== "string") {
@@ -39,7 +42,7 @@ export class LLMClassifier implements Classifier {
       await this.store.complete(runId, undefined, [], output);
       return { respond: value.respond, addressed: value.addressed, reason: value.reason.slice(0, 200) };
     } catch (error) {
-      await this.store.fail(runId, "ClassifierError");
+      try { await journal.close(); } finally { await this.store.fail(runId, "ClassifierError"); }
       throw error;
     }
   }
@@ -65,11 +68,13 @@ export class ParticipationGate {
     let release!: () => void;
     const tail = new Promise<void>(resolve => { release = resolve; });
     this.channelTails.set(key, tail);
-    await previous;
+    requestTimings.start(message, "participation queue");
+    await requestTimings.wait("participation queue", () => previous);
+    requestTimings.end(message, "participation queue");
     try {
       if (!this.options.enabled) return this.finish(key, { respond: false, addressed: false, reason: "monitoring_disabled" });
       let decision: ParticipationDecision;
-      try { decision = await this.classifier.classify(message, context); }
+      try { decision = await requestTimings.measure(message, "decision classifier", () => this.classifier.classify(message, context)); }
       catch { return this.finish(key, { respond: false, addressed: false, reason: "classifier_failed" }); }
       if (!decision.respond) return this.finish(key, { ...decision, reason: "classifier_silent" });
       if (!decision.addressed) {

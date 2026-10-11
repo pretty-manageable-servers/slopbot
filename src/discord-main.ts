@@ -8,9 +8,11 @@ import { FakeLLM } from "./adapters/fake-llm.js";
 import { ChatCompletionsLLM } from "./adapters/chat-completions.js";
 import { discordStartupError } from "./startup-error.js";
 import { ProviderEmbeddings } from "./adapters/embeddings.js";
+import { consoleOptions, createConsole } from './web-console.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  const webOptions = consoleOptions();
   mkdirSync(dirname(config.databasePath), { recursive: true });
   const embeddings = config.embeddingsEnabled && !config.mock
     ? new ProviderEmbeddings(config.baseUrl, config.apiKey, config.embeddingModel) : undefined;
@@ -19,10 +21,11 @@ async function main(): Promise<void> {
     baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.model,
   });
   const discord = new DiscordAdapter(config, store, llm);
-  const shutdown = async () => { if (store instanceof PostgresStore) store.stopIndexing(); await discord.stop(); await store.finishIndexing(); await store.close(); process.exit(0); };
+  const web = webOptions ? createConsole(webOptions, { snapshot: user => discord.consoleSnapshot(user), invoke: (user, channel, name, args) => discord.consoleInvoke(user, channel, name, args) }) : undefined;
+  const shutdown = async () => { if (web?.listening) await new Promise<void>((resolve, reject) => web.close(error => error ? reject(error) : resolve())); if (store instanceof PostgresStore) store.stopIndexing(); await discord.stop(); await store.finishIndexing(); await store.close(); process.exit(0); };
   process.once("SIGINT", () => { void shutdown(); });
   process.once("SIGTERM", () => { void shutdown(); });
-  try { await discord.start(); }
+  try { await discord.start(); if (web && webOptions) { await new Promise<void>((resolve, reject) => { web.once('error', reject); web.listen(webOptions.port, webOptions.host, resolve); }); console.log(`Slopbot settings: ${webOptions.origin}`); } }
   catch (error) { await store.close(); await discord.stop(); throw new Error(discordStartupError(error)); }
 }
 

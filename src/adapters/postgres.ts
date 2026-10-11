@@ -432,6 +432,11 @@ export class PostgresStore {
         (await this.db.prepare("INSERT INTO events VALUES(?,?,?,?)")
             .run(runId, sequence, event.kind, JSON.stringify(event.payload)));
     }
+    async appendEvents(runId: string, startSequence: number, events: readonly ModelEvent[]): Promise<void> {
+        if (!events.length) return;
+        const rows = events.map(() => "(?,?,?,?)").join(",");
+        await this.db.prepare(`INSERT INTO events VALUES ${rows}`).run(...events.flatMap((event, index) => [runId, startSequence + index, event.kind, JSON.stringify(event.payload)]));
+    }
     async complete(runId: string, taskKey: string | undefined, inputs: readonly PromptItem[], text: string): Promise<void> {
         (await this.db.exec("BEGIN IMMEDIATE"));
         try {

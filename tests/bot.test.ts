@@ -62,11 +62,39 @@ test("task mapping survives reconstructing the bot", async t => {
   assert.equal(f.llm.prompts[1]?.history.length, 2);
 });
 
-test("bot messages and unconfigured channels cannot trigger the model", async t => {
+test("other bots can mention and reply to Slopbot; unconfigured channels remain ignored", async t => {
   const f = setup(); t.after(() => f.store.close());
   await f.bot.receive(incoming("1", "hello", { botAuthor: true, mentionsBot: true }));
   await f.bot.receive(incoming("2", "hello", { channel: "private", mentionsBot: true }));
-  assert.equal(f.llm.prompts.length, 0);
+  await f.bot.receive(incoming("3", "continue", { author: "other-bot", botAuthor: true, repliesToBot: true }));
+  assert.equal(f.llm.prompts.length, 2);
+});
+
+test("unaddressed bots are stored once as context", async t => {
+  const f = setup(); t.after(() => f.store.close());
+  const automated = incoming("external", "app deployment succeeded", { author: "other-bot", botAuthor: true });
+  await f.bot.receive(automated);
+  await f.bot.receive(automated);
+  assert.equal(f.created(), 0);
+  assert.equal(f.outputs.length, 0);
+  const observer = incoming("observer", "ordinary chat");
+  await f.bot.receive(observer);
+  const context = await f.store.context(observer, 10);
+  assert.equal(context.filter(message => message.id === "external").length, 1);
+  assert.equal(context.find(message => message.id === "external")?.isBot, true);
+  await f.bot.receive(incoming("human", "what happened?", { mentionsBot: true, replyTo: "external" }));
+  assert.ok(JSON.stringify(f.llm.prompts[0]).includes("app deployment succeeded"));
+});
+
+test("other bots in task threads continue the task", async t => {
+  const f = setup(); t.after(() => f.store.close());
+  await f.bot.receive(incoming("start", "!task plan", { mentionsBot: true }));
+  const count = f.llm.prompts.length;
+  await f.bot.receive(incoming("external", "continue", { channel: "thread", botAuthor: true, repliesToBot: true }));
+  assert.equal(f.llm.prompts.length, count + 1);
+  const observer = incoming("observer", "status", { channel: "thread", botAuthor: true });
+  await f.bot.receive(observer);
+  assert.ok((await f.store.context(observer, 10)).some(message => message.id === "external"));
 });
 
 test("source edits invalidate copied task context but preserve reasoning events", async t => {

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { requestTimings } from "../request-timing.js";
 import { Client, types } from "pg";
 import { readFileSync } from "node:fs";
 
@@ -24,7 +25,9 @@ export class PostgresDatabase {
   prepare(sql: string) {
     const query = async (values: unknown[]) => {
       const translated = postgresSql(sql, values);
-      return this.client.query(translated.sql, translated.values);
+      const operation = sql.trim().split(/\s+/)[0]!.toLowerCase();
+      const table = sql.match(/\b(?:FROM|INTO|UPDATE)\s+([a-z_]+)/i)?.[1] ?? "statement";
+      return requestTimings.wait(`database ${operation} ${table}`, () => this.client.query(translated.sql, translated.values));
     };
     return {
       get: async (...values: unknown[]): Promise<Row | undefined> => (await query(values)).rows[0],
@@ -32,7 +35,7 @@ export class PostgresDatabase {
       run: async (...values: unknown[]): Promise<{ changes: number }> => ({ changes: (await query(values)).rowCount ?? 0 }),
     };
   }
-  async exec(sql: string): Promise<void> { await this.client.query(sql === "BEGIN IMMEDIATE" ? "BEGIN" : sql); }
+  async exec(sql: string): Promise<void> { await requestTimings.wait("database transaction", () => this.client.query(sql === "BEGIN IMMEDIATE" ? "BEGIN" : sql)); }
   async close(): Promise<void> { await this.client.end(); }
 }
 export function postgresSql(input: string, values: unknown[]): { sql: string; values: unknown[] } {
@@ -74,7 +77,7 @@ export function serializeStore<T extends object>(store: T): T {
     return async (...args: unknown[]) => {
       if(property !== "indexMessage" && scope.getStore()?.active) return value.apply(receiver,args);
       const previous=tail; let release!: () => void;
-      tail=new Promise<void>(resolve=>{release=resolve;}); await previous;
+      tail=new Promise<void>(resolve=>{release=resolve;}); await requestTimings.wait("database connection queue", () => previous);
       const current={active:true};
       try { return await scope.run(current,()=>value.apply(receiver,args)); }
       finally { current.active=false;release(); }

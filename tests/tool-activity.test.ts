@@ -7,6 +7,17 @@ import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { ToolError } from '../src/tools.js';
 import type { ToolActivity } from '../src/tool-activity.js';
 
+test('each timed call is displayed separately, with no invented duration for saved results', () => {
+  const calls: ToolActivity[] = [
+    {id:'1',name:'web_search',status:'completed',durationMs:1200},
+    {id:'2',name:'web_search',status:'completed',durationMs:2700},
+    {id:'3',name:'web_search',status:'completed',reused:true},
+  ];
+  assert.match(toolFooter(calls), /`web_search`: completed \| 1.2s\n- `web_search`: completed \| 2.7s/);
+  assert.match(toolProgress(calls), /2\. `web_search`: completed \| 2.7s/);
+  assert.ok(toolFooter(calls).endsWith('`web_search`: completed, saved result'));
+});
+
 test('tool footer groups repeated calls and distinguishes rejected and saved results', () => {
   assert.equal(toolFooter([]), '');
   const calls: ToolActivity[] = [
@@ -15,8 +26,8 @@ test('tool footer groups repeated calls and distinguishes rejected and saved res
     {id:'3',name:'index',status:'rejected'},
     {id:'4',name:'index',status:'completed',reused:true},
   ];
-  assert.equal(toolFooter(calls), '\n\n**Tool activity**\n- web search ×2: completed\n- index: rejected\n- index: completed, saved result');
-  assert.match(toolProgress(calls), /1\. web search: completed/);
+  assert.equal(toolFooter(calls), '\n\n**Tool activity**\n- `web_search` ×2: completed\n- `index`: rejected\n- `index`: completed, saved result');
+  assert.match(toolProgress(calls), /1\. `web_search`: completed/);
 });
 
 test('progress edits one message per request and removes it after delivery', async () => {
@@ -28,7 +39,7 @@ test('progress edits one message per request and removes it after delivery', asy
   await progress.update('request', {id:'1',name:'web_search',status:'completed'},send);
   await progress.update('other', {id:'2',name:'index',status:'running'},send);
   assert.equal(sent.length,2);
-  assert.deepEqual(edited,['**Working**\n1. web search: completed']);
+  assert.deepEqual(edited,['**Working**\n1. `web_search`: completed']);
   await progress.finish('request');
   assert.equal(deleted,1);
   await progress.update('other', {id:'2',name:'index',status:'completed'},send);
@@ -48,6 +59,7 @@ for (const rejected of [false,true]) test(`execution reports ${rejected ? 'rejec
     assert.equal(reply?.toolActivity?.length,1);
     assert.equal(reply?.toolActivity?.[0]?.status,rejected ? 'rejected' : 'completed');
     assert.equal(reply?.toolActivity?.[0]?.reused,false);
+    assert.ok(Number.isFinite(reply?.toolActivity?.[0]?.durationMs));
     assert.ok(!reply?.text.includes('Tool activity'));
   } finally {store.close();}
 });

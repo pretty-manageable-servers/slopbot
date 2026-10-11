@@ -23,6 +23,7 @@ export interface Store {
   agentResult(turnId: string, index: number, result: ToolOutput): void | Promise<void>;
   startRun(runId: string, message: Message, prompt: Prompt): Promise<void>;
   appendEvent(runId: string, sequence: number, event: ModelEvent): Promise<void>;
+  appendEvents?(runId: string, startSequence: number, events: readonly ModelEvent[]): Promise<void>;
   complete(runId: string, taskKey: string | undefined, inputs: readonly PromptItem[], text: string): Promise<void>;
   fail(runId: string, error: string): Promise<void>;
 }

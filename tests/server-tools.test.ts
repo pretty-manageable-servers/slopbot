@@ -12,6 +12,15 @@ const server = "12345678901234567", channel = "12345678901234568", other = "1234
 const config = loadConfig({ DISCORD_BOT_TOKEN: "test", DISCORD_GUILD_ID: server, DISCORD_CHANNEL_IDS: channel, LLM_MODE: "mock" });
 const message: Message = { id: "1", server, channel, author: "alice", text: "request", timestamp: Date.now() };
 
+test("timing footer setting persists and requires server management permission", async t => {
+  const f = setup(); t.after(() => f.store.close());
+  await f.registry.invoke(message, "timing", { enabled: true }, "timing-on", "command");
+  assert.equal(f.store.setting(server, "timing_footer"), true);
+  f.setAdmin(false);
+  await assert.rejects(f.registry.invoke(message, "timing", { enabled: false }, "timing-off", "agent"), /Manage Server/);
+  assert.equal(f.store.setting(server, "timing_footer"), true);
+});
+
 function setup() {
   const store = new SQLiteStore();
   let channels = configuredChannels(config, store), admin = true;

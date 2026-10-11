@@ -1,4 +1,5 @@
 import {stableJson} from './prompt-cache.js';
+import { requestTimings } from "./request-timing.js";
 import { createHash } from "node:crypto";
 import type { Json, Message } from "./domain.js";
 
@@ -150,7 +151,7 @@ export class ToolRegistry {
     let release!: () => void;
     const tail = new Promise<void>(resolve => { release = resolve; });
     this.writers.set(key, tail);
-    await previous;
+    await requestTimings.wait("tool resource lock", () => previous);
     try { return await this.perform(message, name, args, operationId, source, expectedVersion); }
     finally { release(); if (this.writers.get(key) === tail) this.writers.delete(key); }
   }

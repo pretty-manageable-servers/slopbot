@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { EventJournal } from "../src/event-journal.js";
+import { requestTimings } from "../src/request-timing.js";
 import { PostgresStore } from "../src/adapters/postgres.js";
 import type { Message } from "../src/domain.js";
 import { Client } from "pg";
@@ -93,6 +95,34 @@ test('new search and feature records use an isolated Postgres schema', {skip: !p
   } finally {
     await store.finishIndexing();await store.close();
     const cleanup=new Client({connectionString:url});await cleanup.connect();
+    await cleanup.query(`DROP SCHEMA "${schema}" CASCADE`);await cleanup.end();
+  }
+});
+
+test('stream event batches preserve all deltas in an isolated Postgres schema', {skip: !process.env.TEST_DATABASE_URL}, async t => {
+  const url=process.env.TEST_DATABASE_URL!,schema='slopbot_test_event_batches_'+Date.now().toString(36);
+  const store=await PostgresStore.connect(url,undefined,schema);
+  try {
+    const message={server:'event-test',channel:'test',author:'a',id:'m',text:'test'};
+    await store.startRun('run',message,{prefixVersion:'v1',prefix:[],history:[],inputs:[]});
+    const journal=new EventJournal(store,'run',message,'model');
+    const batchStart=performance.now();
+    for(let index=0;index<65;index++)await journal.append({kind:'reasoning',payload:{index,text:'raw delta'}});
+    await journal.close();
+    const batchMs=performance.now()-batchStart;
+    const events=await store.events('run');assert.equal(events.length,65);
+    assert.deepEqual(events.map(event=>(event.payload as any).index),Array.from({length:65},(_,index)=>index));
+    await store.startRun('sequential',message,{prefixVersion:'v1',prefix:[],history:[],inputs:[]});
+    const sequentialStart=performance.now();
+    for(let index=0;index<65;index++)await store.appendEvent('sequential',index,{kind:'reasoning',payload:{index,text:'raw delta'}});
+    t.diagnostic(`65 events: batched ${Math.round(batchMs)}ms; sequential ${Math.round(performance.now()-sequentialStart)}ms`);
+    requestTimings.begin(message);
+    await requestTimings.withScope(message,()=>store.appendEvents('measured',0,[{kind:'reasoning',payload:{text:'measured'}}]));
+    const trace=requestTimings.finish(message)!;
+    assert.ok('database connection queue' in trace.blockedMs!);
+    assert.ok('database insert events' in trace.blockedMs!);
+  } finally {
+    await store.close();const cleanup=new Client({connectionString:url});await cleanup.connect();
     await cleanup.query(`DROP SCHEMA "${schema}" CASCADE`);await cleanup.end();
   }
 });

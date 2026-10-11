@@ -1,4 +1,5 @@
 import type { ToolActivityObserver } from './tool-activity.js';
+import { requestTimings } from "./request-timing.js";
 import type { PresentationPolicy } from './presentation/policy.js';
 import type { HarnessJournal } from "./harness-state.js";
 import { parseMessage, type Reply } from "./domain.js";
@@ -24,6 +25,9 @@ export class Application {
   disallowChannel(server: string, channel: string): void { this.runner.disallowChannel(server, channel); }
   async handle(input: unknown, alreadyIngested = false): Promise<Reply | undefined> {
     const message = parseMessage(input);
+    return requestTimings.withScope(message, () => this.handleScoped(message, alreadyIngested));
+  }
+  private async handleScoped(message: import('./domain.js').Message, alreadyIngested: boolean): Promise<Reply | undefined> {
     if (!this.runner.accepts(message)) return undefined;
     if (message.taskId && message.addressed !== false) {
       const key = JSON.stringify([message.server, message.channel, message.taskId]);
@@ -32,7 +36,7 @@ export class Application {
       const tail = new Promise<void>(resolve => { release = resolve; });
       this.taskTails.set(key, tail);
       const accepted = (alreadyIngested ? Promise.resolve(true) : this.store.ingest(message)).then(value => ({ value }), error => ({ error }));
-      await previous;
+      await requestTimings.wait("task input queue", () => previous);
       try {
         const result = await accepted;
         if ("error" in result) throw result.error;

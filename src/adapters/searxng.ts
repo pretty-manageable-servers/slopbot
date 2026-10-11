@@ -1,4 +1,5 @@
 import { ToolError } from '../tools.js';
+import { requestTimings } from "../request-timing.js";
 import type { SearchHit, WebSearch } from '../web-search.js';
 export class SearxNGSearch implements WebSearch {
   private readonly endpoint: URL;
@@ -15,12 +16,12 @@ export class SearxNGSearch implements WebSearch {
     this.requests.push(now);
     const url = new URL(this.endpoint); url.searchParams.set('q', query); url.searchParams.set('format', 'json'); url.searchParams.set('safesearch', '1');
     let response: Response;
-    try { response = await this.request(url, { signal: AbortSignal.timeout(15000), redirect: 'error', headers: { Accept: 'application/json' } }); }
+    try { response = await requestTimings.wait("web search headers", () => this.request(url, { signal: AbortSignal.timeout(15000), redirect: 'error', headers: { Accept: 'application/json' } })); }
     catch { throw new ToolError('Web search service is unavailable or timed out.'); }
     if (!response.ok) { await response.body?.cancel(); throw new ToolError(response.status === 403 ? 'Search returned HTTP 403. Enable JSON format in SearXNG settings.' : `Search returned HTTP ${response.status}`); }
     if (!response.body) throw new ToolError('Empty search response');
     const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0;
-    try { while (true) { const item = await reader.read(); if (item.done) break; size += item.value.length; if (size > 1024 * 1024) throw new ToolError('Search response exceeds 1 MiB'); chunks.push(item.value); } } finally { await reader.cancel(); }
+    try { while (true) { const item = await requestTimings.wait("web search body", () => reader.read()); if (item.done) break; size += item.value.length; if (size > 1024 * 1024) throw new ToolError('Search response exceeds 1 MiB'); chunks.push(item.value); } } finally { await reader.cancel(); }
     let payload: unknown;
     try { payload = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new ToolError('Search did not return JSON. Check SearXNG settings.'); }
     if (!payload || typeof payload !== 'object' || !('results' in payload) || !Array.isArray(payload.results)) throw new ToolError('Invalid search response');

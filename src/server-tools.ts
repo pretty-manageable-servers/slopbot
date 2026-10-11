@@ -1,4 +1,5 @@
 import type { Config } from "./config.js";
+import { selfKnowledgeTool } from "./self-knowledge.js";
 import type { Json, Message } from "./domain.js";
 import type { Knowledge } from "./memory.js";
 import type { ParticipationOptions } from "./participation.js";
@@ -44,6 +45,10 @@ export function configuredChannels(config: Config, store: Pick<ServerToolStore, 
 export function registerServerTools(registry: ToolRegistry, services: ServerToolServices): void {
   const { config, store, participation, history } = services;
   const add = (tool: ToolDefinition) => registry.register(tool);
+  add({ name: "timing", description: "Toggle request timing footers for this server; full delivery timings remain in logs", fields: { enabled: { type: "boolean", description: "Show timing at the end of replies", required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
+    async execute(_context, args) { await store.setSetting(config.guildId, "timing_footer", args.enabled!); return `Timing footers ${args.enabled ? "enabled" : "disabled"}. Footer totals end before Discord delivery; logs include delivery.`; }
+  });
+  add(selfKnowledgeTool(registry, () => `Reply model: ${config.model}\nParticipation model: ${config.jevModel}\nMock mode: ${config.mock}\nDatabase adapter: ${config.databaseUrl ? "PostgreSQL/pgvector" : "SQLite"}\nMonitoring enabled: ${participation.options.enabled}\nEmbeddings enabled: ${config.embeddingsEnabled && !config.mock}; model: ${config.embeddingModel}\nContext budget: ${config.contextTokens}; output reserve: ${config.outputTokens}\nReply context messages: ${store.setting(config.guildId, "reply_context") ?? config.replyContextMessages}`));
   const scoped = async (message: Message, target: Json | undefined): Promise<string> => {
     const id = target === undefined ? (await services.originMessage(message)).channel : String(target);
     if (!services.accepts(id)) throw new ToolError("That channel is not configured for Slopbot.");

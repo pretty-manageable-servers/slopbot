@@ -42,3 +42,12 @@ Tool implementations can return `{ text, status?, sources?, artifacts?, handoff?
 Use `invokeResult()` when metadata is needed. `invoke()` formats text and artifact links for existing command handlers. The action journal stores the complete result with a version marker; older plain-text operation records and agent turns remain readable. Agent turns persist structured results as JSON. The runner adds canonical message sources to its manifest, preserves web citations and artifacts in the model trace, and follows explicit handoffs without parsing display text.
 
 `web_search` uses the WebSearch interface. The SearXNG adapter has a 15-second timeout, a 1 MiB response limit, up to 10 results and 30 requests per minute. It does not fetch result pages. Model output must treat snippets as evidence and cite their URLs.
+# Bot self-knowledge
+
+`bot_info` is a member-readable tool available to both slash commands and the LLM.
+Its focused topics come from `BOT_GUIDE.md`, bundled with the build and container.
+Update that guide with behavior changes; it describes implemented features and
+known limits rather than exposing historical proposals as current behavior.
+`capabilities` lists the live registry; `runtime` uses an explicit allowlist of
+safe configuration fields. Neither can read arbitrary files, credentials or logs.
+Documentation is versioned with the running build, not proof of live service health.

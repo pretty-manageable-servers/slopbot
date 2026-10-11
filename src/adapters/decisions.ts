@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { requestTimings } from "../request-timing.js";
 import type { Json, Message, Prompt } from "../domain.js";
 import type { Classifier, ParticipationDecision } from "../participation.js";
 import type { Store } from "../ports.js";
@@ -33,12 +34,12 @@ export class DecisionClassifier implements Classifier {
     await this.store.startRun(runId, message, prompt);
     await this.store.recordSources(runId, message.server, [message.id, ...context.map(item => item.id)]);
     try {
-      const response = await this.fetcher(`${this.options.baseUrl.replace(/\/$/, "")}/decisions`, {
+      const response = await requestTimings.wait("decision endpoint headers", () => this.fetcher(`${this.options.baseUrl.replace(/\/$/, "")}/decisions`, {
         method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.options.apiKey}` },
         body: JSON.stringify({ model: this.options.model, state, questions }), signal: AbortSignal.timeout(15000),
-      });
+      }));
       if (!response.ok) { await response.body?.cancel(); throw new ProviderError(response.status); }
-      const raw = await response.json() as { answers?: { addressed?: { value?: unknown }; respond?: { value?: unknown } } };
+      const raw = await requestTimings.wait("decision response body", () => response.json()) as { answers?: { addressed?: { value?: unknown }; respond?: { value?: unknown } } };
       await this.store.appendEvent(runId, 0, { kind: "opaque", payload: raw as Json });
       const direct = probability(raw.answers?.addressed?.value);
       const useful = probability(raw.answers?.respond?.value);

@@ -1,3 +1,4 @@
+import { requestTimings } from "../request-timing.js";
 import {PromptCacheDiagnostics} from '../prompt-cache.js';
 import { promptItems, type Json, type ModelEvent, type Prompt } from "../domain.js";
 import type { LLM } from "../ports.js";
@@ -28,7 +29,7 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-export async function* sseData(body: ReadableStream<Uint8Array>): AsyncIterable<string> {
+export async function* sseData(body: ReadableStream<Uint8Array>, waitLabel = "model stream read"): AsyncIterable<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let pending = "";
@@ -44,7 +45,7 @@ export async function* sseData(body: ReadableStream<Uint8Array>): AsyncIterable<
   }
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await requestTimings.wait(waitLabel, () => reader.read());
       pending += done ? decoder.decode() : decoder.decode(value, { stream: true });
       if (pending.length > 2_000_000) throw new Error("Provider event exceeds stream limit");
       let newline: number;
@@ -72,20 +73,21 @@ export class ChatCompletionsLLM implements LLM {
   constructor(private readonly options: ProviderOptions, private readonly fetcher: typeof fetch = fetch) {}
 
   async *stream(prompt: Prompt, signal?: AbortSignal): AsyncIterable<ModelEvent> {
+    const phase = prompt.prefixVersion.startsWith("participation") ? "decision model" : prompt.purpose === "checkpoint" ? "checkpoint model" : prompt.purpose === "inspection" ? "inspection model" : "reply model";
     const messages = wireMessages(prompt);
     yield { kind: "opaque", payload: this.cacheDiagnostics.compare(prompt, messages) };
-    const response = await this.fetcher(`${this.options.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+    const response = await requestTimings.wait(`${phase} response headers`, () => this.fetcher(`${this.options.baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.options.apiKey}` },
       body: JSON.stringify({ model: this.options.model, messages, stream: true, stream_options: { include_usage: true }, ...(prompt.maxOutputTokens ? { max_tokens: prompt.maxOutputTokens } : {}) }),
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(this.options.timeoutMs ?? 120_000)]) : AbortSignal.timeout(this.options.timeoutMs ?? 120_000),
-    });
+    }));
     if (!response.ok) { await response.body?.cancel(); throw new ProviderError(response.status); }
     if (!response.body) throw new Error("Provider returned an empty stream");
     let completed = false;
     let fullText = "";
     const nativeCalls = new Map<number, { name: string; arguments: string }>();
-    for await (const data of sseData(response.body)) {
+    for await (const data of sseData(response.body, `${phase} stream read`)) {
       if (data === "[DONE]") { completed = true; break; }
       const chunk = record(JSON.parse(data));
       // Preserve the complete original provider chunk, including unknown reasoning formats.

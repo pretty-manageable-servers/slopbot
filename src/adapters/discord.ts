@@ -1,3 +1,5 @@
+import { requestTimings, savedTimingFooter } from "../request-timing.js";
+import { registerTimingTools, saveRequestTiming } from "../timing-tools.js";
 import {handleDiscordUi} from './discord-ui-interactions.js';
 import {registerTaskTools} from '../productivity/tasks.js';
 import {registerReminderTools,ReminderWorker} from '../productivity/reminders.js';
@@ -130,6 +132,7 @@ export class DiscordAdapter implements ChatGateway {
       await this.validateChannel(message,channel);
     };
     this.uiRuntime = new UiRuntime(store,this.tools,authorizeFeature);
+    registerTimingTools(this.tools, { store, authorize: authorizeFeature });
     registerHistoryTools(this.tools,{store,authorize:authorizeFeature});
     registerReportTools(this.tools,{store,llm,authorize:authorizeFeature});
     registerPollTool(this.tools);
@@ -309,12 +312,20 @@ export class DiscordAdapter implements ChatGateway {
       const url = media?.url ?? media?.proxyURL;
       if (url && /\.(gif|png|jpe?g|webp)(?:\?|$)/i.test(url) && !attachments.some(item => item.url === url)) attachments.push({ name: new URL(url).pathname.split('/').pop() ?? 'image.gif', url, size: 0 });
     }
+    const embedText = message.author.bot || message.webhookId
+      ? message.embeds.map(embed => [embed.title, embed.description, ...embed.fields.map(field => `${field.name}: ${field.value}`)].filter(Boolean).join("\n")).filter(Boolean).join("\n").slice(0, 12000)
+      : "";
     const media = attachments.map(item => `[Attachment ${item.name}, type ${'contentType' in item ? item.contentType : 'unknown'}: ${item.url}; content not inspected]`).join("\n");
-    return { attachments, id: message.id, server: message.guildId!, channel: message.channelId, author: message.author.id, authorName: message.member?.displayName ?? message.author.globalName ?? message.author.username, authorAliases: [message.author.username, ...(message.author.globalName ? [message.author.globalName] : [])], isBot: message.author.bot, authorIdentity: { discord_handle: message.author.username, discord_name: message.author.globalName ?? message.author.username, server_nickname: message.member?.displayName ?? message.author.username, server_name: message.guild?.name ?? "" }, text: [text, media].filter(Boolean).join("\n"), timestamp: message.createdTimestamp,
+    return { attachments, id: message.id, server: message.guildId!, channel: message.channelId, author: message.author.id, authorName: message.member?.displayName ?? message.author.globalName ?? message.author.username, authorAliases: [message.author.username, ...(message.author.globalName ? [message.author.globalName] : [])], isBot: message.author.bot || Boolean(message.webhookId), authorIdentity: { discord_handle: message.author.username, discord_name: message.author.globalName ?? message.author.username, server_nickname: message.member?.displayName ?? message.author.username, server_name: message.guild?.name ?? "" }, text: [text, embedText, media].filter(Boolean).join("\n"), timestamp: message.createdTimestamp,
       ...(message.reference?.messageId ? { replyTo: message.reference.messageId } : {}) };
   }
   private async receive(message: DiscordMessage): Promise<void> {
-    if (!message.guildId || message.author.bot || !this.bot.accepts(message.guildId, message.channelId)) return;
+    if (!message.guildId || message.author.id === this.client.user?.id || !this.bot.accepts(message.guildId, message.channelId)) return;
+    const timingScope = { server: message.guildId, channel: message.channelId, id: message.id };
+    requestTimings.begin(timingScope); requestTimings.start(timingScope, "references");
+    await requestTimings.withScope(timingScope, () => this.receiveScoped(message, timingScope));
+  }
+  private async receiveScoped(message: DiscordMessage, timingScope: { server: string; channel: string; id: string }): Promise<void> {
     let repliesToBot = false;
     let referenced = message;
     const visited = new Set<string>();
@@ -322,7 +333,7 @@ export class DiscordAdapter implements ChatGateway {
       if ((referenced.reference.channelId ?? message.channelId) !== message.channelId || visited.has(referenced.reference.messageId)) break;
       visited.add(referenced.reference.messageId);
       try {
-        const reference = await referenced.fetchReference();
+        const reference = await requestTimings.wait("Discord reference fetch", () => referenced.fetchReference());
         if (reference.guildId !== message.guildId || reference.channelId !== message.channelId) break;
         if (depth === 0) repliesToBot = reference.author.id === this.client.user?.id;
         const source = { ...this.normalize(reference), addressed: false };
@@ -331,16 +342,24 @@ export class DiscordAdapter implements ChatGateway {
         referenced = reference;
       } catch { break; } // Missing references grant no access.
     }
-    const incoming: Incoming = { ...this.normalize(message), botAuthor: false, mentionsBot: this.client.user ? message.mentions.users.has(this.client.user.id) : false, repliesToBot };
+    const incoming: Incoming = { ...this.normalize(message), botAuthor: message.author.bot || Boolean(message.webhookId), mentionsBot: this.client.user ? message.mentions.users.has(this.client.user.id) : false, repliesToBot };
+    requestTimings.end(timingScope, "references");
     await this.bot.receive(incoming);
   }
   async reply(message: Message, text: string, deliveryId?: string, activity: readonly ToolActivity[] = [], ui?: UiDocument): Promise<readonly Message[]> {
-    if (!this.bot.accepts(message.server, message.channel)) throw new ToolError("Channel was disabled before sending");
-    const channel = await this.client.channels.fetch(message.channel);
-    if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Channel cannot receive replies");
+    requestTimings.begin(message, true);
+    requestTimings.start(message, "delivery");
+    let delivered = false;
     const outputs: Message[] = [];
+    try {
+    if (!this.bot.accepts(message.server, message.channel)) throw new ToolError("Channel was disabled before sending");
+    const channel = await requestTimings.wait("Discord channel fetch", () => this.client.channels.fetch(message.channel));
+    if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Channel cannot receive replies");
     let part = 0;
-    const rendered = await this.renderer.render(message.server, text + toolFooter(activity));
+    // Freeze the footer in the existing delivery journal so retries keep identical content.
+    const timingRecordId = deliveryId ?? `reply:${message.channel}:${message.id}`;
+    const footer = await savedTimingFooter(this.store, message, timingRecordId);
+    const rendered = await this.renderer.render(message.server, text + toolFooter(activity) + footer);
     const flags = suppressLinkPreviews(rendered) ? MessageFlags.SuppressEmbeds : undefined;
     const payloads: import('discord.js').MessageCreateOptions[] = splitReply(rendered).map(content=>({content,flags}));
     if(ui){const state=await this.uiRuntime.prepare(message,ui,deliveryId??message.id);payloads.push(discordUi(ui,state.id,state.revision));}
@@ -353,7 +372,7 @@ export class DiscordAdapter implements ChatGateway {
         if (previous.result) { outputs.push(previous.result); continue; }
         let before: string | undefined, found: DiscordMessage | undefined;
         for (let page = 0; page < 20; page++) {
-          const batch = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+          const batch = await requestTimings.wait("Discord delivery reconciliation", () => channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) }));
           found = batch.find(sent => sent.author.id === this.client.user?.id && String(sent.nonce) === id);
           if (found || !batch.size || batch.last()!.createdTimestamp < previous.createdAt - 5000) break;
           before = batch.last()!.id;
@@ -363,15 +382,25 @@ export class DiscordAdapter implements ChatGateway {
         (await this.store.finishDelivery(id!, result)); outputs.push(result); continue;
       }
       if (id) (await this.store.prepareDelivery(id, message, content));
-      const sent = await channel.send({ ...payload, allowedMentions: { parse: [], repliedUser: false, ...(message.id.startsWith('command:reminder:') ? {users:[message.author]} : {}) },
+      const sent = await requestTimings.wait<DiscordMessage>("Discord reply send", async () => channel.send({ ...payload, allowedMentions: { parse: [], repliedUser: false, ...(message.id.startsWith('command:reminder:') ? {users:[message.author]} : {}) },
         ...(id ? { nonce: id, enforceNonce: true } : {}),
-        ...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? { reply: { messageReference: message.id, failIfNotExists: false } } : {}) });
+        ...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? { reply: { messageReference: message.id, failIfNotExists: false } } : {}) }));
       const result = { ...this.normalize(sent), addressed: false };
       if (id) (await this.store.finishDelivery(id, result));
       outputs.push(result);
     }
-    if (activity.length) await this.toolProgress.finish(JSON.stringify([message.server,message.channel,message.id]));
+    if (activity.length) await requestTimings.wait("Discord status cleanup", () => this.toolProgress.finish(JSON.stringify([message.server,message.channel,message.id])));
+    delivered = true;
     return outputs;
+    } finally {
+    requestTimings.end(message, "delivery");
+    const timing = requestTimings.finish(message);
+    if (timing) console.log(JSON.stringify({ type: "request_timing", server: message.server, channel: message.channel, messageId: message.id, delivery: delivered ? "sent" : "failed", ...timing }));
+    if (timing) {
+      try { await saveRequestTiming(this.store, message, timing, delivered ? "sent" : "failed", outputs, activity); }
+      catch { console.warn("Request timing storage unavailable; delivery outcome unchanged."); }
+    }
+    }
   }
   async createTaskThread(message: Message, name: string): Promise<string> {
     const channel = await this.client.channels.fetch(message.channel);
@@ -392,6 +421,36 @@ export class DiscordAdapter implements ChatGateway {
     const pulse = async () => { const channel = await this.client.channels.fetch(channelId); if (channel?.isTextBased() && "sendTyping" in channel) await channel.sendTyping(); };
     const send = () => { void pulse().catch(() => undefined); }; send();
     const timer = setInterval(send, 8000); timer.unref(); return () => clearInterval(timer);
+  }
+  async consoleSnapshot(user: string): Promise<unknown> {
+    const guild = await this.client.guilds.fetch(this.config.guildId);
+    const member = await guild.members.fetch({ user, force: true });
+    const admin = member.permissions.has(PermissionFlagsBits.ManageGuild);
+    const channels = [];
+    for (const channel of (await guild.channels.fetch()).values()) {
+      if (channel?.type !== ChannelType.GuildText) continue;
+      try {
+        await this.validateChannel({ server: guild.id, channel: channel.id, author: user, id: 'command:web', text: '' }, channel.id, true);
+        channels.push({ id: channel.id, name: channel.name, monitored: this.channels.includes(channel.id), ...(admin ? { history: this.history.state(channel.id) } : {}) });
+      } catch (error) { if (!(error instanceof ToolError)) throw error; }
+    }
+    return { server: { id: guild.id, name: guild.name }, user, admin, channels,
+      profile: await this.store.profile(guild.id, user),
+      settings: admin ? {
+        monitoring: this.store.setting(guild.id, 'monitoring') ?? this.config.jevEnabled,
+        classifier_context: this.store.setting(guild.id, 'classifier_context') ?? this.config.jevContextMessages,
+        reply_context: this.store.setting(guild.id, 'reply_context') ?? this.config.replyContextMessages,
+        cooldown_seconds: this.store.setting(guild.id, 'cooldown_seconds') ?? this.config.jevCooldownSeconds,
+        max_unsolicited_per_hour: this.store.setting(guild.id, 'max_unsolicited_per_hour') ?? this.config.jevMaxRepliesPerHour,
+        timing_footer: this.store.setting(guild.id, 'timing_footer') ?? false,
+        model: this.config.model, mock: this.config.mock,
+      } : null };
+  }
+  async consoleInvoke(user: string, channel: string, name: string, args: import('../tools.js').ToolArgs): Promise<unknown> {
+    const message: Message = { id: `command:web:${crypto.randomUUID()}`, server: this.config.guildId, channel, author: user, text: '' };
+    await this.validateChannel(message, channel, true);
+    if (name === 'profile') args = { ...args, user };
+    return this.tools.invokeResult(message, name, args, message.id, 'command');
   }
   async start(): Promise<void> { await this.client.login(this.config.discordToken); }
   async stop(): Promise<void> {

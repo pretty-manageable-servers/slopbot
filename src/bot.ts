@@ -1,4 +1,5 @@
 import { replySubject, type ProfileStore } from "./profiles.js";
+import { requestTimings } from "./request-timing.js";
 import { Application } from "./application.js";
 import { ProviderError } from "./adapters/chat-completions.js";
 import type { Message } from "./domain.js";
@@ -52,7 +53,12 @@ export class Bot {
   }
 
   async receive(message: Incoming): Promise<void> {
-    if (message.botAuthor || !this.accepts(message.server, message.channel)) return;
+    if (!this.accepts(message.server, message.channel)) return;
+    if (message.botAuthor) message = { ...message, isBot: true };
+    requestTimings.begin(message);
+    await requestTimings.withScope(message, () => this.receiveScoped(message));
+  }
+  private async receiveScoped(message: Incoming): Promise<void> {
     const task = this.tasks.has(message.channel);
     let addressed = task || message.mentionsBot || message.repliesToBot;
     let ingested = false;
@@ -61,9 +67,9 @@ export class Bot {
       ingested = true;
       const gate = this.options.participation;
       if (!gate) return;
-      const context = await this.store.context(message, gate.options.contextMessages);
-      const decision = await gate.decide(message, context);
-      if (!decision.respond) return;
+      const context = await requestTimings.measure(message, "participation context", () => this.store.context(message, gate.options.contextMessages));
+      const decision = await requestTimings.measure(message, "participation", () => gate.decide(message, context));
+      if (!decision.respond) { requestTimings.finish(message); return; }
       addressed = decision.addressed;
     }
     const text = message.text.trim();
@@ -166,6 +172,7 @@ export class Bot {
   }
 
   private async enqueue(message: Message): Promise<void> {
+    requestTimings.start(message, "queue");
     // Includes sending, so slow Discord writes cannot reorder task answers.
     const previous = this.replies.get(message.channel) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(() => this.process(message));
@@ -176,6 +183,7 @@ export class Bot {
   }
 
   private async process(message: Message, ingested = false): Promise<void> {
+    requestTimings.end(message, "queue");
     const stopTyping = this.gateway.typing(message.channel);
     try {
       const reply = await this.app.handle(message, ingested);

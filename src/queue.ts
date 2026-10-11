@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { requestTimings } from "./request-timing.js";
 import type { Message, Reply } from "./domain.js";
 import { ProviderError } from "./adapters/chat-completions.js";
 import { UncertainActionError } from "./tools.js";
@@ -48,9 +49,12 @@ export class TaskWorker {
     };
     void tick();this.timer=setInterval(()=>{void tick();},1000);this.timer.unref();
   }
-  async enqueue(message: Message): Promise<Job> { const job=await this.store.enqueueJob(message);await this.pump();return job; }
+  async enqueue(message: Message): Promise<Job> { requestTimings.start(message, "queue"); const job=await this.store.enqueueJob(message);await this.pump();return job; }
   wake(): void { void this.pump(); }
   private async pump(): Promise<void> {
+    return requestTimings.withoutScope(() => this.pumpUnscoped());
+  }
+  private async pumpUnscoped(): Promise<void> {
     if(!this.started || this.stopping || this.pumping)return;
     this.pumping=true;
     try {
@@ -61,6 +65,11 @@ export class TaskWorker {
     } finally {this.pumping=false;}
   }
   private async process(job: Job): Promise<void> {
+    return requestTimings.withScope(job.message, () => this.processScoped(job));
+  }
+  private async processScoped(job: Job): Promise<void> {
+    requestTimings.end(job.message, "retry backoff");
+    requestTimings.end(job.message, "queue");
     try {
       if (!this.accepts(job.message)) throw new Error("Channel is no longer enabled");
       const reply = job.reply ?? await this.run(job.message);
@@ -69,7 +78,7 @@ export class TaskWorker {
       await this.store.finishJob(job.id);
     } catch (error) {
       const transient = error instanceof ProviderError && (error.status === 429 || error.status >= 500) || error instanceof TypeError;
-      if (transient && job.attempts < 2) { await this.store.retryLater(job.id, Date.now() + 5000 * (job.attempts + 1)); return; }
+      if (transient && job.attempts < 2) { await this.store.retryLater(job.id, Date.now() + 5000 * (job.attempts + 1)); requestTimings.start(job.message, "retry backoff"); return; }
       await this.store.failJob(job.id, error instanceof Error ? error.message : "Unknown failure", error instanceof UncertainActionError);
       try { await this.onFailure(job, error); } catch { console.error("Could not publish task failure notice"); }
       console.error(`Task job ${job.id} ${error instanceof UncertainActionError ? "needs reconciliation" : "failed"}: ${error instanceof Error ? error.name : "UnknownError"}`);

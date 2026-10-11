@@ -2,12 +2,27 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ChatCompletionsLLM, ProviderError, sseData, wireMessages } from "../src/adapters/chat-completions.js";
 import type { ModelEvent, Prompt } from "../src/domain.js";
+import { requestTimings } from "../src/request-timing.js";
 
 const prompt: Prompt = {
   prefixVersion: "v1", prefix: [{ role: "system", content: "fixed" }], history: [],
   inputs: [{ role: "user", content: "hello", author: "alice" }],
 };
 const options = { baseUrl: "https://api.pmservers.org/ai/v1", apiKey: "test-only", model: "llama.cpp/gemma-4-e4b-qat" };
+
+test('provider boundaries record headers and stream reads separately without changing prompts',async()=>{
+ const message={server:'s',channel:'c',id:'provider-boundaries'};
+ const llm=new ChatCompletionsLLM(options,async()=>{
+   await new Promise(resolve=>setTimeout(resolve,10));
+   return new Response('data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+ });
+ requestTimings.begin(message);
+ await requestTimings.withScope(message,async()=>{for await(const event of llm.stream(prompt))void event;});
+ const timing=requestTimings.finish(message)!;
+ assert.ok((timing.blockedMs!['reply model response headers']??0)>=1);
+ assert.ok('reply model stream read' in timing.blockedMs!);
+ assert.equal(Object.values(timing.blockedMs!).reduce((sum,ms)=>sum+ms,0),timing.totalMs);
+});
 
 test("provider requests use configured endpoint/model and preserve prefix", async () => {
   let body: Record<string, unknown> = {};
@@ -116,4 +131,11 @@ test('tool rounds and subsequent task turns append identical wire prefixes',asyn
   assert.deepEqual(requests[index]!.slice(0,requests[index-1]!.length),requests[index-1]);
  }
  assert.ok(JSON.stringify(requests[1]).includes('truncated for context'));
+ const {requestTimings}=await import('../src/request-timing.js');
+ const timing=requestTimings.finish({server:'s',channel:'c',id:'one'})!;
+ assert.ok(timing.steps.context!==undefined);
+ assert.ok(timing.steps.model!==undefined);
+ assert.ok(timing.steps['tool:lookup']!==undefined);
+ assert.equal(timing.firstOutputMs.length,3);
+ requestTimings.finish({server:'s',channel:'c',id:'two'});
 });

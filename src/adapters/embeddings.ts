@@ -1,4 +1,5 @@
 import type { Embeddings } from "../memory.js";
+import { requestTimings } from "../request-timing.js";
 import { ProviderError } from "./chat-completions.js";
 
 export class ProviderEmbeddings implements Embeddings {
@@ -21,12 +22,12 @@ export class ProviderEmbeddings implements Embeddings {
     for (let attempt = 0; attempt < 3; attempt++) {
       const wait = Math.max(0, this.nextRequestAt - Date.now());
       this.nextRequestAt = Date.now() + wait + 1500;
-      if (wait) await new Promise(resolve => setTimeout(resolve, wait));
-      response = await this.fetcher(`${this.baseUrl.replace(/\/$/, "")}/embeddings`, {
+      if (wait) await requestTimings.wait("embedding throttle/backoff", () => new Promise(resolve => setTimeout(resolve, wait)));
+      response = await requestTimings.wait("embedding headers", () => this.fetcher(`${this.baseUrl.replace(/\/$/, "")}/embeddings`, {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.key}` },
       body: JSON.stringify({ model, input: text.slice(0, 8000) }),
       signal: AbortSignal.timeout(15000),
-    });
+    }));
       if (response.status !== 429 || attempt === 2) break;
       const retry = response.headers.get("retry-after");
       const delay = retry && Number.isFinite(Number(retry)) ? Number(retry) * 1000 : 60000;
@@ -34,7 +35,7 @@ export class ProviderEmbeddings implements Embeddings {
       this.nextRequestAt = Math.max(this.nextRequestAt, Date.now() + Math.min(120000, Math.max(1500, delay)));
     }
     if (!response.ok) { await response.body?.cancel(); throw new ProviderError(response.status); }
-    const body = await response.json() as { data?: { embedding?: unknown }[]; usage?: { prompt_tokens?: unknown; total_tokens?: unknown } };
+    const body = await requestTimings.wait("embedding body", () => response.json()) as { data?: { embedding?: unknown }[]; usage?: { prompt_tokens?: unknown; total_tokens?: unknown } };
     const vector = body.data?.[0]?.embedding;
     if (!Array.isArray(vector) || !vector.length || !vector.every(value => typeof value === "number" && Number.isFinite(value))) {
       throw new Error("Invalid embedding response");

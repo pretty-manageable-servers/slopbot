@@ -3,5 +3,6 @@ export interface ToolActivity {
   readonly name: string;
   readonly status: 'running' | 'completed' | 'rejected' | 'failed' | 'delegated';
   readonly reused?: boolean;
+  readonly durationMs?: number;
 }
 export type ToolActivityObserver = (message: import('./domain.js').Message, activity: ToolActivity) => Promise<void>;

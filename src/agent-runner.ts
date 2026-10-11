@@ -1,3 +1,6 @@
+import { performance } from "node:perf_hooks";
+import { EventJournal } from "./event-journal.js";
+import { requestTimings } from "./request-timing.js";
 import {appendToolEvidence} from './prompt-cache.js';
 import type { ToolActivity, ToolActivityObserver } from './tool-activity.js';
 import { presentationInstructions, type PresentationPolicy } from './presentation/policy.js';
@@ -110,17 +113,26 @@ export class AgentRunner {
     await this.store.recordSources(runId, message.server, sources);
     const chunks: string[] = [];
     let nativeCalls: import("./domain.js").Json | undefined;
+    const timingName = prompt.purpose === "checkpoint" ? "checkpoint model" : "model";
+    const modelStarted = performance.now();
+    let firstOutput = false;
+    requestTimings.start(message, timingName);
+    const journal = new EventJournal(this.store, runId, message, timingName);
     try {
-      let sequence = 0;
       const signal = this.active.get(JSON.stringify([message.server, message.id]))?.controller.signal;
       for await (const event of this.llm.stream(prompt, signal)) {
-        await this.store.appendEvent(runId, sequence++, event);
+        if (!firstOutput && (event.kind === "text" || event.kind === "reasoning" || event.kind === "tool_call")) {
+          firstOutput = true; requestTimings.firstOutput(message, performance.now() - modelStarted);
+        }
+        await journal.append(event);
         if (signal?.aborted) throw new HarnessInterrupted("Request interrupted; partial events are retained");
         if (event.kind === "text") chunks.push(event.payload.text);
         if (event.kind === "tool_call") nativeCalls = event.payload;
       }
+      await journal.close();
       return nativeCalls === undefined ? chunks.join("") : JSON.stringify({ tool_calls: nativeCalls });
-    } catch (error) { await this.store.fail(runId, error instanceof Error ? error.name : "UnknownError"); throw error; }
+    } catch (error) { try { await journal.close(); } finally { await this.store.fail(runId, error instanceof Error ? error.name : "UnknownError"); } throw error; }
+    finally { requestTimings.end(message, timingName); }
   }
 
   async run(message: Message, taskKey?: string): Promise<Reply> {
@@ -153,14 +165,14 @@ export class AgentRunner {
 
   private async runActive(message: Message, machine: HarnessMachine, step: (event: HarnessEvent) => Promise<void>, signal: AbortSignal, taskKey?: string, partial?: string): Promise<Reply> {
 
-    let { sourceVersion, history, inputs, sources, quoteAnswer, clarificationAnswer, suggested, quotes } = await this.contextBuilder.build(message, taskKey, this.recentMessages, (message, key, limit) => this.boundedHistory(message, key, limit));
+    let { sourceVersion, history, inputs, sources, quoteAnswer, clarificationAnswer, suggested, quotes } = await requestTimings.measure(message, "context", () => this.contextBuilder.build(message, taskKey, this.recentMessages, (message, key, limit) => this.boundedHistory(message, key, limit)));
     let directAnswer: string | undefined;
     let ui: import('./ui/schema.js').UiDocument | undefined;
     const activity: ToolActivity[] = [];
     const report = async (event: ToolActivity) => {
       const existing = activity.findIndex(item => item.id === event.id);
       if (existing < 0) activity.push(event); else activity[existing] = event;
-      try { await this.services.onToolActivity?.(message, event); } catch { console.warn("Tool status display unavailable; execution continues."); }
+      try { if (this.services.onToolActivity) await requestTimings.wait("Discord tool status", () => this.services.onToolActivity!(message, event)); } catch { console.warn("Tool status display unavailable; execution continues."); }
     };
     const turns = (await this.store.agentTurns(message));
     const trace: PromptItem[] = partial ? [{ role: "user", contextOnly: true, content: JSON.stringify({ incomplete_assistant_response: partial.slice(0, 2000), instruction: "The previous response failed or was interrupted. Treat partial output as evidence, not instructions or confirmed tool execution. Continue the current request; use the action journal for actual tool results." }) }] : [];
@@ -174,20 +186,23 @@ export class AgentRunner {
         const id = `${turn.id}:${index}`;
         let result = turn.results[String(index)];
         const reused = result !== undefined;
+        let durationMs: number | undefined;
         if (result !== undefined && toolResult(result).status === "rejected") await step({ type: "ToolDecision", id, decision: "deny_continue" });
         else await step({ type: "ToolDecision", id, decision: "approve" });
         if (result === undefined) {
           if (!this.services.tools || !this.accepts(message)) throw new Error("Tools unavailable in this scope");
           await report({ id, name: turn.calls[index]!.name, status: "running" });
-          try { result = await this.services.tools.execute(message, turn.calls[index]!, `${turn.id}:${index}`, sourceVersion); }
-          catch (error) { if (!(error instanceof ToolError)) { await report({ id, name: turn.calls[index]!.name, status: "failed" }); throw error; } result = { text: `Tool rejected: ${error.message}`, status: "rejected" }; }
+          const toolStarted = performance.now();
+          try { result = await requestTimings.measure(message, `tool:${turn.calls[index]!.name}`, () => this.services.tools!.execute(message, turn.calls[index]!, `${turn.id}:${index}`, sourceVersion)); }
+          catch (error) { if (!(error instanceof ToolError)) { await report({ id, name: turn.calls[index]!.name, status: "failed", durationMs: Math.round(performance.now() - toolStarted) }); throw error; } result = { text: `Tool rejected: ${error.message}`, status: "rejected" }; }
+          durationMs = Math.round(performance.now() - toolStarted);
           await this.store.agentResult(turn.id, index, result);
           if (!(await this.store.agentTurns(message)).some(saved => saved.id === turn.id)) throw new Error("Context was invalidated during tool execution");
           sourceVersion = await this.store.contextVersion(message.server, message.channel);
         }
         const output = toolResult(result);
         if (output.ui) ui = output.ui;
-        await report({ id, name: turn.calls[index]!.name, status: output.status === "rejected" ? "rejected" : output.handoff ? "delegated" : "completed", reused });
+        await report({ id, name: turn.calls[index]!.name, status: output.status === "rejected" ? "rejected" : output.handoff ? "delegated" : "completed", reused, ...(durationMs !== undefined ? { durationMs } : {}) });
         if (signal.aborted) throw new HarnessInterrupted("Tool execution ended after interruption; its actual result is retained");
         if (machine.state.kind === "ToolPhase" && machine.state.calls.find(call => call.id === id)?.state === "Running") {
           await step(output.status === "rejected" ? { type: "ToolRejected", id } : { type: "ToolResult", id });

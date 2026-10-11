@@ -5,6 +5,8 @@ RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
 COPY tests ./tests
+COPY web ./web
+COPY architecture/BOT_GUIDE.md ./architecture/BOT_GUIDE.md
 RUN npm test
 RUN npm prune --omit=dev
 
@@ -21,6 +23,8 @@ ENV NODE_ENV=production DATABASE_PATH=/data/slopbot.sqlite3 SEARXNG_URL=http://1
 COPY --from=build --chown=1000:1000 /app/package.json ./
 COPY --from=build --chown=1000:1000 /app/node_modules ./node_modules
 COPY --from=build --chown=1000:1000 /app/dist/src ./dist/src
+COPY --from=build --chown=1000:1000 /app/dist/architecture ./dist/architecture
+COPY --from=build --chown=1000:1000 /app/web ./web
 COPY --chown=1000:1000 scripts/deployment ./scripts/deployment
 COPY --chown=1000:1000 scripts/container-health.mjs ./scripts/container-health.mjs
 COPY --chown=1000:1000 services/search/settings.yml /etc/searxng/settings.yml
