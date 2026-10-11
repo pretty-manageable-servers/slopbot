@@ -1,3 +1,5 @@
+import { sandboxTool } from "../sandbox.js";
+import { E2BSandboxProvider } from "./e2b-sandbox.js";
 import { requestTimings, savedTimingFooter } from "../request-timing.js";
 import { registerTimingTools, saveRequestTiming } from "../timing-tools.js";
 import {handleDiscordUi} from './discord-ui-interactions.js';
@@ -73,6 +75,7 @@ export class DiscordAdapter implements ChatGateway {
     const savedMonitoring = store.setting(config.guildId, "monitoring");
     const participation = new ParticipationGate(new DecisionClassifier({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.jevModel }, store, undefined, new LLMClassifier(llm, store)), {
       enabled: (typeof savedMonitoring === "boolean" ? savedMonitoring : config.jevEnabled) && !config.mock,
+      reactionFrequency: savedLimit("reaction_frequency", store.setting(config.guildId, "reactions_enabled") === false ? 0 : 60, 100),
       contextMessages: savedLimit("classifier_context", config.jevContextMessages, 100),
       cooldownMs: savedLimit("cooldown_seconds", config.jevCooldownSeconds, 3600) * 1000,
       maxUnsolicitedPerHour: savedLimit("max_unsolicited_per_hour", config.jevMaxRepliesPerHour, 1000),
@@ -127,6 +130,7 @@ export class DiscordAdapter implements ChatGateway {
       },
       wakeWorker: () => this.worker.wake(),
     });
+    this.tools.register(sandboxTool(store, config.sandboxApiKey ? new E2BSandboxProvider({ apiKey: config.sandboxApiKey, apiUrl: config.sandboxApiUrl!, sandboxUrl: config.sandboxUrl!, ...(config.sandboxTemplate ? { template: config.sandboxTemplate } : {}) }) : undefined));
     const authorizeFeature = async(message:Message,channel:string) => {
       if(!this.bot.accepts(message.server,channel))throw new ToolError('Channel is disabled.');
       await this.validateChannel(message,channel);
@@ -141,7 +145,7 @@ export class DiscordAdapter implements ChatGateway {
     this.reminders=new ReminderWorker(config.guildId,store,async(message,text,id)=>{await this.reply(message,text,id);},authorizeFeature);
     registerUiTool(this.tools);
     registerProfileTools(this.tools, store);
-    registerWebSearch(this.tools, config.searxngUrl ? new SearxNGSearch(config.searxngUrl) : new UnconfiguredSearch());
+    registerWebSearch(this.tools, config.searxngUrl ? new SearxNGSearch(config.searxngUrl, fetch, Date.now, config.searxngAccess) : new UnconfiguredSearch());
     registerFileTool(this.tools, { store, llm, resolve: async (request, requestedId) => {
       const id = requestedId ?? (request.attachments?.length ? request.id : request.replyTo);
       if (!id) throw new ToolError("Reply to a message with a file attached.");
@@ -345,6 +349,14 @@ export class DiscordAdapter implements ChatGateway {
     const incoming: Incoming = { ...this.normalize(message), botAuthor: message.author.bot || Boolean(message.webhookId), mentionsBot: this.client.user ? message.mentions.users.has(this.client.user.id) : false, repliesToBot };
     requestTimings.end(timingScope, "references");
     await this.bot.receive(incoming);
+  }
+  async react(message: Message, emoji: string): Promise<void> {
+    if (!this.bot.accepts(message.server, message.channel)) return;
+    const channel = await requestTimings.wait("reaction channel fetch", () => this.client.channels.fetch(message.channel));
+    if (!channel || !channel.isTextBased() || !("messages" in channel)) return;
+    const target = await requestTimings.wait("reaction message fetch", () => channel.messages.fetch(message.id));
+    if (target.guildId !== message.server || target.author.id === this.client.user?.id) return;
+    await requestTimings.wait("Discord reaction", () => target.react(emoji));
   }
   async reply(message: Message, text: string, deliveryId?: string, activity: readonly ToolActivity[] = [], ui?: UiDocument): Promise<readonly Message[]> {
     requestTimings.begin(message, true);

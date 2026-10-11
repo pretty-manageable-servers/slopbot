@@ -1,4 +1,8 @@
 export interface Config {
+  sandboxApiKey?: string;
+  sandboxApiUrl?: string;
+  sandboxUrl?: string;
+  sandboxTemplate?: string;
   discordToken: string;
   guildId: string;
   channelIds: string[];
@@ -10,6 +14,7 @@ export interface Config {
   databaseUrl?: string;
   databaseSchema?: string;
   searxngUrl?: string;
+  searxngAccess?: { clientId: string; clientSecret: string };
   jevEnabled: boolean;
   jevModel: string;
   jevContextMessages: number;
@@ -58,7 +63,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const searchUrl = new URL(env.SEARXNG_URL);
     if (!["https:", "http:"].includes(searchUrl.protocol) || searchUrl.username || searchUrl.password || searchUrl.search || searchUrl.hash) throw new Error("SEARXNG_URL must be an HTTP(S) base URL without credentials, query or fragment");
   }
+  for (const key of ["E2B_API_URL", "E2B_SANDBOX_URL"]) if (env[key]) {
+    const value = new URL(env[key]!);
+    if (value.protocol !== "https:" || value.username || value.password || value.search || value.hash) throw new Error(`${key} must be an HTTPS URL without credentials, query or fragment`);
+  }
+  const accessId = env.SEARXNG_ACCESS_CLIENT_ID, accessSecret = env.SEARXNG_ACCESS_CLIENT_SECRET;
+  if (accessId || accessSecret) {
+    if (!accessId || !accessSecret || !env.SEARXNG_URL || new URL(env.SEARXNG_URL).protocol !== "https:") throw new Error("Protected search requires HTTPS SEARXNG_URL and both SEARXNG_ACCESS_CLIENT_ID and SEARXNG_ACCESS_CLIENT_SECRET");
+  }
   return {
+    ...(accessId && accessSecret ? { searxngAccess: { clientId: accessId, clientSecret: accessSecret } } : {}),
+    ...(env.E2B_API_KEY ? { sandboxApiKey: env.E2B_API_KEY, sandboxApiUrl: env.E2B_API_URL ?? "https://api.pmservers.org/sandboxes", sandboxUrl: env.E2B_SANDBOX_URL ?? "https://sandbox.pmservers.org" } : {}),
+    ...(env.E2B_TEMPLATE ? { sandboxTemplate: env.E2B_TEMPLATE } : {}),
     ...(env.SEARXNG_URL ? { searxngUrl: env.SEARXNG_URL } : {}),
     discordToken: required("DISCORD_BOT_TOKEN"), guildId, channelIds, mock, baseUrl,
     apiKey: mock ? "" : required("LLM_API_KEY"),

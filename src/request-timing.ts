@@ -209,8 +209,9 @@ export class RequestTimings {
     const trace = this.traces.get(this.key(message));
     if (!trace) return undefined;
     this.account(trace);
+    // account captured the snapshot boundary; reuse it for every elapsed value.
     return {
-      totalMs: Math.round(this.now() - trace.start),
+      totalMs: Math.round(trace.last - trace.start),
       steps: Object.fromEntries(
         Object.entries(trace.steps).map(([name, ms]) => [name, Math.round(ms)]),
       ),
@@ -219,7 +220,7 @@ export class RequestTimings {
       blockedMs: { ...trace.blocked },
       activeWaits: [...trace.waits.values()].map((wait) => ({
         name: wait.name,
-        elapsedMs: Math.round(this.now() - wait.start),
+        elapsedMs: Math.round(trace.last - wait.start),
       })),
       timeline: trace.timeline.map((interval) => ({
         ...interval,

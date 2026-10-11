@@ -1,3 +1,4 @@
+import { decisionQuestions, participationPrompt } from "./participation-prompts.js";
 import { readFileSync } from "node:fs";
 import { ToolError, type ToolDefinition, type ToolRegistry } from "./tools.js";
 
@@ -8,6 +9,8 @@ export function selfKnowledgeTool(registry: ToolRegistry, runtime: () => string)
     const end = section.indexOf("\n");
     return [section.slice(0, end).trim(), section.slice(end + 1).trim()];
   }));
+  sections.set("decision_prompt", JSON.stringify(decisionQuestions, null, 2));
+  sections.set("participation_prompt", participationPrompt);
   const topics = [...sections.keys(), "capabilities", "runtime"];
   return {
     name: "bot_info",

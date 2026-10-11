@@ -16,6 +16,7 @@ export interface Incoming extends Message {
 }
 
 export interface ChatGateway {
+  react?(message: Message, emoji: string): Promise<void>;
   reply(message: Message, text: string, deliveryId?: string, activity?: readonly import("./tool-activity.js").ToolActivity[], ui?: import("./ui/schema.js").UiDocument): Promise<readonly Message[]>;
   createTaskThread(message: Message, name: string): Promise<string>;
   typing(channel: string): () => void;
@@ -69,6 +70,10 @@ export class Bot {
       if (!gate) return;
       const context = await requestTimings.measure(message, "participation context", () => this.store.context(message, gate.options.contextMessages));
       const decision = await requestTimings.measure(message, "participation", () => gate.decide(message, context));
+      if (decision.emoji && this.gateway.react) {
+        try { await requestTimings.measure(message, "reaction", () => this.gateway.react!(message, decision.emoji!)); }
+        catch { console.warn("Discord reaction could not be delivered."); }
+      }
       if (!decision.respond) { requestTimings.finish(message); return; }
       addressed = decision.addressed;
     }

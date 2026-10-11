@@ -69,3 +69,38 @@ test("changing cooldown preserves the hourly cap and channel isolation", async (
   assert.equal((await gate.decide(message, [])).respond, true);
   assert.equal((await gate.decide(message, [])).reason, "hourly_limit");
 });
+
+test("reaction frequency samples suitable opportunities and handles 0 and 100 exactly", async () => {
+  const classifier = { async classify() { return { respond: false, addressed: false, reason: "funny", emoji: "😂" }; } };
+  const gate = new ParticipationGate(classifier, { ...options, reactionFrequency: 60 }, () => 0.59);
+  assert.equal((await gate.decide(message, [])).emoji, "😂");
+  gate.options.reactionFrequency = 0;
+  assert.equal((await gate.decide(message, [])).emoji, undefined);
+  const sampledOut = new ParticipationGate(classifier, { ...options, reactionFrequency: 60 }, () => 0.6);
+  assert.equal((await sampledOut.decide(message, [])).emoji, undefined);
+  sampledOut.options.reactionFrequency = 100;
+  for (let i = 0; i < 10; i++) assert.equal((await sampledOut.decide(message, [])).emoji, "😂");
+  sampledOut.options.enabled = false;
+  assert.equal((await sampledOut.decide(message, [])).emoji, undefined);
+});
+
+test("unsupported emoji is rejected even at maximum frequency", async () => {
+  const gate = new ParticipationGate({ async classify() { return { ...decision, respond: false, emoji: "not-an-emoji" }; } }, { ...options, reactionFrequency: 100 });
+  assert.equal((await gate.decide(message, [])).emoji, undefined);
+});
+
+test("a funny unaddressed message receives a reaction without a text reply; duplicates do not react twice", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const llm = new FakeLLM(); const reactions: string[] = [];
+  const app = new Application(store, llm, { allowedChannels: [{ server: "s", channel: "c" }] });
+  const gate = new ParticipationGate({ async classify() { return { respond: false, addressed: false, reason: "funny", emoji: "🤭" }; } }, { ...options, reactionFrequency: 100 });
+  const bot = new Bot(app, store, store, {
+    async react(target, emoji) { reactions.push(`${target.id}:${emoji}`); },
+    async reply() { assert.fail("Should not reply"); },
+    async createTaskThread() { return "thread"; }, typing() { return () => undefined; },
+  }, "s", ["c"], { participation: gate });
+  const incoming = { ...message, botAuthor: false, mentionsBot: false, repliesToBot: false };
+  await bot.receive(incoming); await bot.receive(incoming);
+  assert.deepEqual(reactions, ["1:🤭"]);
+  assert.equal(llm.prompts.length, 0);
+});

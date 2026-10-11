@@ -45,3 +45,17 @@ test("unsupported decisions endpoint falls back and is not retried each message"
   assert.equal((await classifier.classify(message, [])).respond, true);
   assert.equal(requests, 1); assert.equal(fallbackCalls, 2);
 });
+
+test("Kev receives alias instructions and independently selects funny reactions", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const classifier = new DecisionClassifier(config, store, async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    for (const alias of ["slop", "bot", "sb", "ai", "machine"]) assert.ok(body.questions.addressed.instructions.includes(alias));
+    assert.ok(body.questions.funny.instructions.includes("No addressing is required"));
+    assert.equal(JSON.parse(body.state).CURRENT.id, message.id);
+    return Response.json({ answers: { addressed: { value: 0.1 }, respond: { value: 0.1 }, funny: { value: 0.95 } } });
+  });
+  const result = await classifier.classify(message, []);
+  assert.equal(result.respond, false);
+  assert.equal(result.emoji, "😂");
+});

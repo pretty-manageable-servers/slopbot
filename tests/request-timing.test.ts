@@ -188,3 +188,17 @@ test("recovered traces are partial and timing footers stay identical across deli
   requestTimings.finish(message);
   assert.equal(await savedTimingFooter(store, message, "new-delivery"), first);
 });
+
+
+test("snapshot uses one clock boundary so wait buckets always reconcile", () => {
+  let tick = 0;
+  const timing = new RequestTimings(() => tick++);
+  timing.begin(message);
+  for (let i = 0; i < 5; i++) {
+    const snapshot = timing.snapshot(message)!;
+    assert.equal(Object.values(snapshot.blockedMs!).reduce((sum, value) => sum + value, 0), snapshot.totalMs);
+    assert.equal(snapshot.timeline!.at(-1)!.endMs, snapshot.totalMs);
+  }
+  const snapshot = timing.finish(message)!;
+  assert.equal(Object.values(snapshot.blockedMs!).reduce((sum, value) => sum + value, 0), snapshot.totalMs);
+});
