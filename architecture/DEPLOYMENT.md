@@ -39,3 +39,16 @@ Verification: the unit suite, a real Postgres adapter test, complete migration c
 Required GitHub Actions secrets: `PMS_SESSION` holds a dedicated PMServers CLI session JSON; `DEPLOY_GITHUB_TOKEN` downloads the private CLI release and updates the session secret after refresh-token rotation. Deployments run sequentially. The deployment token needs repository access to this repository and read access to the CLI repository. Never use an access JWT alone, since it expires.
 
 AI requests use `https://api.pmservers.org/ai/v1` with the dedicated `slopbot` key and a $1,000 spending limit. Qwen handles chat. The adapter maps the existing Gemma index identity to gateway model `embeddinggemma2`, preserving old vectors. Embeddings are paced and retry HTTP 429. If `/decisions` is unavailable, participation uses the existing chat classifier. The previous direct LLM host was unreachable from the deployed worker.
+
+## Sandbox and CLI credentials
+
+PMServers CLI is pinned to v0.7.0 and downloaded with its SHA256 manifest.
+Deployments use a project-scoped `PMS_TOKEN` Actions secret instead of rotating
+user sessions. The sandbox has a separate project token in `E2B_API_KEY`; it
+uses the PMServers E2B-compatible API and sandbox data-plane URLs. Local secret
+files and production environment values are not tracked in Git. Tokens expire
+90 days after creation and require replacement before expiry. Sandbox tokens
+also grant project management access; never expose them to generated code.
+
+See `TOOLS.md` for sandbox lifecycle and constraints. Sandbox writes use the
+existing app-record schema, so no database migration is required.

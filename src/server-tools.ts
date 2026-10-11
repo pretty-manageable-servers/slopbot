@@ -66,6 +66,15 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
       participation.options.enabled = Boolean(args.enabled) && !config.mock;
       return `Monitoring ${participation.options.enabled ? "enabled" : "disabled"}. Mentions and replies still work.`;
     } });
+  add({ name: "reactions", description: "Set emoji reaction frequency from 0 (off) to 100 (every suitable opportunity); requires monitoring", fields: {
+    frequency: integer("0 to 100. Default 60. Percentage of classifier-selected funny messages to react to", 100),
+  }, access: "admin", effect: "write", retrySafe: true,
+    async execute(_context, args) {
+      const frequency = Number(args.frequency);
+      await store.setSetting(config.guildId, "reaction_frequency", frequency);
+      participation.options.reactionFrequency = frequency;
+      return `Reaction frequency: ${frequency}/100. ${frequency === 0 ? "Reactions disabled." : `${frequency}% of suitable funny messages; no separate cooldown or hourly cap. Monitoring must be enabled.`}`;
+    } });
   add({ name: "context", description: "Configure preceding messages for JEV or replies", fields: { messages: integer("0 to 100 preceding messages", 100), target: choice("Default: jev", ["jev", "reply"]) }, access: "admin", effect: "write", retrySafe: true,
     async execute(_context, args) {
       const count = Number(args.messages), target = args.target ?? "jev";

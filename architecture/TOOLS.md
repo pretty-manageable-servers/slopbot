@@ -51,3 +51,26 @@ known limits rather than exposing historical proposals as current behavior.
 `capabilities` lists the live registry; `runtime` uses an explicit allowlist of
 safe configuration fields. Neither can read arbitrary files, credentials or logs.
 Documentation is versioned with the running build, not proof of live service health.
+
+## Remote sandbox
+
+`sandbox` uses the `SandboxProvider` interface, implemented by the E2B SDK adapter.
+It supports `run`, `read`, `write`, `status`, and `close`. Commands and writes
+belong in a task thread, and each thread owns one recorded workspace. There are
+no model-supplied provider URLs, credentials, or sandbox IDs. Reads/status are
+read operations; mutations share a resource lock and are not automatically
+retried after uncertain network results. TTL bounds orphan lifetimes. Workspace
+IDs and leases live in the existing RecordStore; no database migration is needed.
+
+Set `E2B_API_KEY` to a PMServers project token, `E2B_API_URL` to
+`https://api.pmservers.org/sandboxes`, and `E2B_SANDBOX_URL` to
+`https://sandbox.pmservers.org`. A sandbox never receives these control-plane
+credentials or the bot's environment. An optional `E2B_TEMPLATE` chooses the
+provider template. TTL is ten minutes, command timeout at most sixty seconds.
+The SDK's external declarations require `skipLibCheck` with our exact optional
+property checks; application code retains strict type checking.
+
+Live smoke test: `npm run sandbox:smoke` uses `.env.development`, creates a
+temporary sandbox, verifies remote shell/file operations and reconnect, then
+destroys it. In Discord, ask Slopbot to run a calculation in a sandbox; it
+moves the work into a task thread and selects the shared sandbox tool.
