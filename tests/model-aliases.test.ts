@@ -17,6 +17,7 @@ test('other providers, unknown models, auth failures and generation failures nev
   for (const [base, model, status, code] of [
     ['https://other.example', 'nimbus', 403, 'model_not_allowed'],
     ['https://api.pmservers.org/ai/v1', 'unknown', 403, 'model_not_allowed'],
+    ['https://api.pmservers.org/ai/v1', 'constructor', 403, 'model_not_allowed'],
     ['https://api.pmservers.org/ai/v1', 'nimbus', 401, 'model_not_allowed'],
     ['https://api.pmservers.org/ai/v1', 'nimbus', 403, 'access_denied'],
     ['https://api.pmservers.org/ai/v1', 'nimbus', 500, 'model_not_found'],
