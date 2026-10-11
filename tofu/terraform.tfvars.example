@@ -1,0 +1,2 @@
+account_id     = "<Cloudflare account ID>"
+zone_id        = "<pmservers.org zone ID>"

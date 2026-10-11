@@ -7,6 +7,7 @@ import { ToolError } from '../src/tools.js';
 test('web console is opt-in and rejects insecure public origins', () => {
   assert.equal(consoleOptions({}), undefined);
   assert.throws(() => consoleOptions({WEB_ENABLED:'true',WEB_ORIGIN:'http://example.com'}), /HTTPS/);
+  assert.throws(() => consoleOptions({WEB_ENABLED:'true',WEB_ORIGIN:'https://slopbot.pmservers.org/console',DISCORD_CLIENT_ID:'id',DISCORD_CLIENT_SECRET:'secret'}), /without a path/);
   assert.throws(() => consoleOptions({WEB_ENABLED:'true'}), /CLIENT_ID/);
 });
 test('Discord login binds state to browser, protects writes, and destroys logout sessions', async t => {
@@ -27,6 +28,9 @@ test('Discord login binds state to browser, protects writes, and destroys logout
   });
   assert.equal((await call('/api/settings')).status,401);
   const login = await call('/auth/login',{redirect:'manual'});
+  assert.match(login.headers.get('set-cookie')!,/Path=\//);
+  const auth = new URL(login.headers.get('location')!);
+  assert.equal(auth.searchParams.get('redirect_uri'),'http://localhost:3000/auth/callback');
   const state = new URL(login.headers.get('location')!).searchParams.get('state')!;
   assert.equal((await call(`/auth/callback?state=${state}&code=x`,{redirect:'manual'})).status,400);
   const callback = await call(`/auth/callback?state=${state}&code=x`,{redirect:'manual',headers:{Cookie:`slopbot_state=${state}`}});
