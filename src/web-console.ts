@@ -12,7 +12,7 @@ export interface ConsoleOptions { origin: string; clientId: string; clientSecret
 export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOptions | undefined {
   if (env.WEB_ENABLED !== 'true') return undefined;
   const origin = new URL(env.WEB_ORIGIN || 'http://localhost:3000');
-  if (origin.pathname !== '/' || origin.search || origin.hash || origin.username || origin.password || !['http:', 'https:'].includes(origin.protocol)) throw new Error('WEB_ORIGIN must be an HTTP(S) origin');
+  if (origin.pathname !== '/' || origin.search || origin.hash || origin.username || origin.password || !['http:', 'https:'].includes(origin.protocol)) throw new Error('WEB_ORIGIN must be an HTTP(S) origin without a path, query, or fragment');
   if (origin.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(origin.hostname)) throw new Error('Public WEB_ORIGIN must use HTTPS');
   const port = Number(env.WEB_PORT || 3000);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid WEB_PORT');
@@ -33,17 +33,18 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
     res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
     try {
       const url = new URL(req.url || '/', options.origin);
+      const routePath = url.pathname;
       const now = Date.now();
       for (const [key, value] of states) if (value < now) states.delete(key);
       for (const [key, value] of sessions) if (value.expires < now) sessions.delete(key);
-      if (req.method === 'GET' && url.pathname === '/auth/login') {
+      if (req.method === 'GET' && routePath === '/auth/login') {
         if (states.size >= 1000) return send(res, 429, { error: 'Try again later.' });
         const state = token(); states.set(state, now + 600_000);
         const auth = new URL('https://discord.com/oauth2/authorize');
         auth.search = new URLSearchParams({ client_id: options.clientId, redirect_uri: `${options.origin}/auth/callback`, response_type: 'code', scope: 'identify', state }).toString();
         res.writeHead(302, { Location: auth.href, 'Set-Cookie': cookie('slopbot_state', state, 600) }); res.end(); return;
       }
-      if (req.method === 'GET' && url.pathname === '/auth/callback') {
+      if (req.method === 'GET' && routePath === '/auth/callback') {
         const state = url.searchParams.get('state');
         if (!state || cookies(req).slopbot_state !== state || !states.has(state)) return send(res, 400, { error: 'Login expired. Sign in again.' });
         states.delete(state);
@@ -61,13 +62,13 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         const id = token(); sessions.set(id, { user: user.id, csrf: token(), expires: now + 3_600_000 });
         res.writeHead(302, { Location: '/', 'Set-Cookie': [cookie('slopbot_session', id, 3600), cookie('slopbot_state', '', 0)] }); res.end(); return;
       }
-      if (url.pathname.startsWith('/api/')) {
+      if (routePath.startsWith('/api/')) {
         const id = cookies(req).slopbot_session || '', session = sessions.get(id);
         if (!session) return send(res, 401, { error: 'Sign in with Discord to continue.' });
-        if (req.method === 'GET' && url.pathname === '/api/settings') return send(res, 200, { data: await backend.snapshot(session.user), csrf: session.csrf });
-        if (req.method !== 'POST' || req.headers.origin !== options.origin || req.headers['x-csrf-token'] !== session.csrf) return send(res, 403, { error: 'Invalid request.' });
-        if (url.pathname === '/api/logout') { sessions.delete(id); res.setHeader('Set-Cookie', cookie('slopbot_session', '', 0)); return send(res, 200, { ok: true }); }
-        if (url.pathname !== '/api/settings') return send(res, 404, { error: 'Not found.' });
+        if (req.method === 'GET' && routePath === '/api/settings') return send(res, 200, { data: await backend.snapshot(session.user), csrf: session.csrf });
+        if (req.method !== 'POST' || req.headers.origin !== new URL(options.origin).origin || req.headers['x-csrf-token'] !== session.csrf) return send(res, 403, { error: 'Invalid request.' });
+        if (routePath === '/api/logout') { sessions.delete(id); res.setHeader('Set-Cookie', cookie('slopbot_session', '', 0)); return send(res, 200, { ok: true }); }
+        if (routePath !== '/api/settings') return send(res, 404, { error: 'Not found.' });
         if (!req.headers['content-type']?.startsWith('application/json')) return send(res, 415, { error: 'Send JSON.' });
         let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 16384) return send(res, 413, { error: 'Request too large.' }); }
         let input: { channel?: string; name?: string; args?: ToolArgs };
@@ -78,10 +79,10 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
       }
       if (req.method !== 'GET') return send(res, 405, { error: 'Method not allowed.' });
       const assets: Record<string, string> = { '/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/assets/logo-light.svg': 'assets/logo-light.svg', '/assets/logo-dark.svg': 'assets/logo-dark.svg' };
-      const file = assets[url.pathname];
-      if (!file && !/^\/assets\/[a-z0-9-]+\.woff2$/.test(url.pathname)) return send(res, 404, { error: 'Not found.' });
-      const content = await readFile(resolve('web', file || url.pathname.slice(1)));
-      res.setHeader('Content-Type', url.pathname.endsWith('.js') ? 'text/javascript' : url.pathname.endsWith('.css') ? 'text/css' : url.pathname.endsWith('.svg') ? 'image/svg+xml' : url.pathname.endsWith('.woff2') ? 'font/woff2' : 'text/html');
+      const file = assets[routePath];
+      if (!file && !/^\/assets\/[a-z0-9-]+\.woff2$/.test(routePath)) return send(res, 404, { error: 'Not found.' });
+      let content = await readFile(resolve('web', file || routePath.slice(1)));
+      res.setHeader('Content-Type', routePath.endsWith('.js') ? 'text/javascript' : routePath.endsWith('.css') ? 'text/css' : routePath.endsWith('.svg') ? 'image/svg+xml' : routePath.endsWith('.woff2') ? 'font/woff2' : 'text/html');
       res.end(content);
     } catch (error) { send(res, error instanceof ToolError ? 403 : 502, { error: error instanceof ToolError ? error.message : 'The request could not be completed. Try again.' }); }
   });

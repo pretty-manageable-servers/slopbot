@@ -1,0 +1,6 @@
+.terraform/
+*.tfstate*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+backend.hcl
