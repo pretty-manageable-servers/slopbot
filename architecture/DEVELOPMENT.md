@@ -1,13 +1,29 @@
 # Local development
 
-Production runs on PMServers. Development runs locally with its own Discord application, AI key and `slopbot_dev` Postgres schema. Both use the managed Postgres service and the production SearXNG service over Tailscale.
+Development has its own Discord application, AI key and `slopbot_dev` Postgres
+schema. It shares the managed PostgreSQL database through a private PMServers
+SSH tunnel, rather than forwarding the database through the production bot.
 
-1. Put the development Discord token in `.env.development`, along with the test server ID and optional allowed channel IDs.
-2. Connect Tailscale.
-3. Run `npm run dev`. TypeScript recompiles and Node restarts when code changes.
+1. Configure `.env.development` with the development token and schema.
+2. Register a dedicated SSH public key with `pms ssh-key add`.
+3. Set `PMS_DB_TUNNEL=true`, `PMS_CLI_PATH`, `PMS_SSH_KEY`, and `PMS_DB_PORT=15432`.
+   Set `DATABASE_URL` to the same database credentials at `127.0.0.1:15432`.
+4. Run `npm run dev`. It starts the database tunnel before the bot, recompiles
+   TypeScript, and restarts Node when code changes. It closes its own tunnel on
+   shutdown and stops the bot if that tunnel exits unexpectedly. An existing
+   listener is reused without taking ownership; the database still authenticates
+   the connection. Stop other tunnel processes before relying on managed cleanup.
 
-The launcher rejects the production token and requires the development schema. Database isolation separates history, settings, jobs, memory and worker leases. It is schema isolation, not a database permission boundary; the shared database credential can access production. Never copy a production configuration into development.
+The CLI uses a project token when available, otherwise its PMServers login.
+It uses cloudflared and a registered SSH key to reach the jump host. PostgreSQL
+is not publicly exposed. A dedicated development schema separates history,
+settings, jobs and memory, but is not a database permission boundary.
 
-The production container exposes search on private Tailscale port 8080 and Postgres on private port 5432. It uses userspace networking and a reusable auth key. No public listener is opened. Production can run if the private connection fails; development cannot reach its services until that connection is restored. Auth-key expiration requires replacement.
+Search can use a protected HTTPS endpoint with `SEARXNG_ACCESS_CLIENT_ID` and
+`SEARXNG_ACCESS_CLIENT_SECRET`. Credentials are sent only over HTTPS and redirects
+are refused. During the search-access migration, development still uses the
+existing private Tailscale search endpoint; the database no longer depends on it.
+Do not remove that bridge until protected search is configured and verified.
 
-Secrets stay in `.env.development` and `data/deployment/`, both ignored by Git. Pushes to main still deploy production. A development token is never added to PMServers or GitHub Actions.
+Secrets stay in `.env.development` and `data/deployment/`, both ignored by Git.
+The launcher rejects the production Discord token. Pushes to main deploy production.

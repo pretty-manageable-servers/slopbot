@@ -29,3 +29,18 @@ test('web search is shared, returns structured sources and replays without anoth
  assert.deepEqual(await registry.invokeResult(message,'web_search',{query:'query'},'one','agent'),first);
  assert.equal(calls,1);assert.match(await registry.invoke(message,'web_search',{query:'query'},'one','command'),/result/);
 });
+
+test('protected search sends Access credentials only over HTTPS and refuses redirects',async()=>{
+ const access={clientId:'test-id',clientSecret:'test-secret'};
+ assert.throws(()=>new SearxNGSearch('http://search.example',fetch,Date.now,access),/HTTPS/);
+ let calls=0;
+ const search=new SearxNGSearch('https://search.example',async(_input,init)=>{
+   calls++;
+   const headers=new Headers(init?.headers);
+   assert.equal(headers.get('CF-Access-Client-Id'),access.clientId);
+   assert.equal(headers.get('CF-Access-Client-Secret'),access.clientSecret);
+   assert.equal(init?.redirect,'error');
+   return Response.json({results:[]});
+ },Date.now,access);
+ await search.search('hello',1);assert.equal(calls,1);
+});

@@ -145,7 +145,7 @@ export class DiscordAdapter implements ChatGateway {
     this.reminders=new ReminderWorker(config.guildId,store,async(message,text,id)=>{await this.reply(message,text,id);},authorizeFeature);
     registerUiTool(this.tools);
     registerProfileTools(this.tools, store);
-    registerWebSearch(this.tools, config.searxngUrl ? new SearxNGSearch(config.searxngUrl) : new UnconfiguredSearch());
+    registerWebSearch(this.tools, config.searxngUrl ? new SearxNGSearch(config.searxngUrl, fetch, Date.now, config.searxngAccess) : new UnconfiguredSearch());
     registerFileTool(this.tools, { store, llm, resolve: async (request, requestedId) => {
       const id = requestedId ?? (request.attachments?.length ? request.id : request.replyTo);
       if (!id) throw new ToolError("Reply to a message with a file attached.");

@@ -9,5 +9,5 @@ cd "$RUNNER_TEMP/pms-bin"
 gh release download v0.7.0 --repo pretty-manageable-servers/pmservers-cli --pattern 'pms-v0.7.0-x86_64-unknown-linux-gnu.tar.gz' --pattern SHA256SUMS
 grep 'pms-v0.7.0-x86_64-unknown-linux-gnu.tar.gz$' SHA256SUMS | sha256sum --check -
 tar -xzf pms-v0.7.0-x86_64-unknown-linux-gnu.tar.gz --strip-components=1
-./pms --project slop container edit slopbot --image "$IMAGE" --wait --timeout 600
-./pms --project slop container show slopbot
+./pms --project slop container edit "${CONTAINER:-slopbot}" --image "$IMAGE" --wait --timeout 600
+./pms --project slop container show "${CONTAINER:-slopbot}"

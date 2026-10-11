@@ -40,8 +40,10 @@ export async function startPrivateNetwork(){
       try{await run('/usr/local/bin/tailscale',[...args,'status','--json']);break;}catch{await new Promise(resolve=>setTimeout(resolve,500));}
     }
     await run('/usr/local/bin/tailscale',[...args,'up',`--auth-key=file:${keyFile}`,'--hostname=slopbot-services','--accept-dns=false'],{timeout:60000});
-    await run('/usr/local/bin/tailscale',[...args,'serve','--bg','--tcp=8080','tcp://127.0.0.1:8080']);
+    const searchOrigin=new URL(process.env.SEARXNG_URL??'http://127.0.0.1:8080');
+    if(searchOrigin.protocol==='http:') await run('/usr/local/bin/tailscale',[...args,'serve','--bg','--tcp=8080',`tcp://${searchOrigin.hostname}:${searchOrigin.port||80}`]);
     if(process.env.DEV_DATABASE_HOST) await run('/usr/local/bin/tailscale',[...args,'serve','--bg','--tcp=5432',`tcp://${process.env.DEV_DATABASE_HOST}:5432`]);
+    else await run('/usr/local/bin/tailscale',[...args,'serve','--tcp=5432','off']).catch(()=>console.error('Legacy private database forwarding could not be cleared.'));
     await save();
     const timer=setInterval(()=>void save(),30000);timer.unref();
     const {stdout}=await run('/usr/local/bin/tailscale',[...args,'ip','-4']);

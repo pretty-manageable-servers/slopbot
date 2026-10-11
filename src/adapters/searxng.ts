@@ -4,9 +4,10 @@ import type { SearchHit, WebSearch } from '../web-search.js';
 export class SearxNGSearch implements WebSearch {
   private readonly endpoint: URL;
   private requests: number[] = [];
-  constructor(baseUrl: string, private readonly request: typeof fetch = fetch, private readonly now: () => number = Date.now) {
+  constructor(baseUrl: string, private readonly request: typeof fetch = fetch, private readonly now: () => number = Date.now, private readonly access?: { clientId: string; clientSecret: string }) {
     const base = new URL(baseUrl.endsWith('/') ? baseUrl : baseUrl + '/');
     if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) throw new Error('SEARXNG_URL must be an HTTP(S) base URL without credentials, query or fragment');
+    if (access && (base.protocol !== 'https:' || !access.clientId || !access.clientSecret)) throw new Error('Protected search requires HTTPS and both Cloudflare Access credentials');
     this.endpoint = new URL('search', base);
   }
   async search(query: string, limit: number): Promise<readonly SearchHit[]> {
@@ -16,9 +17,9 @@ export class SearxNGSearch implements WebSearch {
     this.requests.push(now);
     const url = new URL(this.endpoint); url.searchParams.set('q', query); url.searchParams.set('format', 'json'); url.searchParams.set('safesearch', '1');
     let response: Response;
-    try { response = await requestTimings.wait("web search headers", () => this.request(url, { signal: AbortSignal.timeout(15000), redirect: 'error', headers: { Accept: 'application/json' } })); }
+    try { response = await requestTimings.wait("web search headers", () => this.request(url, { signal: AbortSignal.timeout(15000), redirect: 'error', headers: { Accept: 'application/json', ...(this.access ? { 'CF-Access-Client-Id': this.access.clientId, 'CF-Access-Client-Secret': this.access.clientSecret } : {}) } })); }
     catch { throw new ToolError('Web search service is unavailable or timed out.'); }
-    if (!response.ok) { await response.body?.cancel(); throw new ToolError(response.status === 403 ? 'Search returned HTTP 403. Enable JSON format in SearXNG settings.' : `Search returned HTTP ${response.status}`); }
+    if (!response.ok) { await response.body?.cancel(); throw new ToolError(response.status === 403 ? (this.access ? 'Search access denied. Check the Cloudflare Access service-token policy and credentials.' : 'Search returned HTTP 403. Enable JSON format in SearXNG settings.') : `Search returned HTTP ${response.status}`); }
     if (!response.body) throw new ToolError('Empty search response');
     const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0;
     try { while (true) { const item = await requestTimings.wait("web search body", () => reader.read()); if (item.done) break; size += item.value.length; if (size > 1024 * 1024) throw new ToolError('Search response exceeds 1 MiB'); chunks.push(item.value); } } finally { await reader.cancel(); }
