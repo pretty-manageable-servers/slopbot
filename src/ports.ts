@@ -3,6 +3,8 @@ import type { ToolCall, ToolOutput } from "./tools.js";
 import type { Message, ModelEvent, Prompt, PromptItem, Reply } from "./domain.js";
 
 export interface LLM {
+  readonly outputTokenLimit?: number;
+  readonly contextTokenLimit?: number;
   stream(prompt: Prompt, signal?: AbortSignal): AsyncIterable<ModelEvent>;
 }
 

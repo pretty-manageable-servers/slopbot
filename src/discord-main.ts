@@ -20,6 +20,7 @@ async function main(): Promise<void> {
   const store = config.databaseUrl ? await PostgresStore.connect(config.databaseUrl, embeddings, config.databaseSchema) : new SQLiteStore(config.databasePath, embeddings);
   const llm = config.mock ? new FakeLLM() : new ChatCompletionsLLM({
     baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.model,
+    outputTokens: config.outputTokens, contextTokens: config.contextTokens,
   });
   const discord = new DiscordAdapter(config, store, llm);
   const web = webOptions ? createConsole(webOptions, { snapshot: user => discord.consoleSnapshot(user), invoke: (user, channel, name, args) => discord.consoleInvoke(user, channel, name, args), mcp: (user, input) => discord.consoleMcp(user, input) }) : undefined;

@@ -151,7 +151,7 @@ test("provider output exhaustion reports the budget and checkpoint stage", async
   }, (error: unknown) => {
     assert.ok(error instanceof Error && "code" in error && "details" in error);
     assert.equal(error.code, "MODEL_OUTPUT_LIMIT");
-    assert.deepEqual(error.details, { maxOutputTokens: 2048, purpose: "checkpoint" });
+    assert.deepEqual(error.details, { maxOutputTokens: 2048, purpose: "checkpoint", configuredOutputTokens: 50000, contextTokens: 200000 });
     return true;
   });
   assert.deepEqual(partial, ["partial"]);

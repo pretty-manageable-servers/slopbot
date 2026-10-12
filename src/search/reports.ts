@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { withInspectionBudget } from "../context.js";
+import { errorSummary } from "../errors.js";
 import { EventJournal } from "../event-journal.js";
 import type { Json, Message, Prompt } from "../domain.js";
 import type { Store, LLM } from "../ports.js";
@@ -140,7 +142,7 @@ export function registerReportTools(
           text: message.text.slice(0, 1000),
         }));
         const sourceText = historyResult(evidence).text.slice(0, 45000);
-        const prompt: Prompt = {
+        const prompt: Prompt = withInspectionBudget(services.llm, {
           prefixVersion: "source-report-v1",
           prefix: [
             {
@@ -153,18 +155,11 @@ export function registerReportTools(
           inputs: [
             {
               role: "user",
-              content: JSON.stringify({
-                request: decision
-                  ? "Identify confirmed decisions, their rationale, any later changes, and unresolved proposals."
-                  : "Summarize the conversation and outstanding questions.",
-                topic: String(args.query ?? ""),
-                evidence: sourceText,
-              }),
+              content: `${decision ? "Identify confirmed decisions, their rationale, any later changes, and unresolved proposals." : "Summarize the conversation and outstanding questions."}\nTopic: ${String(args.query ?? "")}\n\nIndexed evidence:\n${sourceText}`,
             },
           ],
-          maxOutputTokens: 1200,
           purpose: "inspection",
-        };
+        });
         const runId = `report:${context.operationId}:${randomUUID()}`;
         await services.store.startRun(runId, context.message, prompt);
         await services.store.recordSources(
@@ -187,7 +182,7 @@ export function registerReportTools(
           try { await journal.close(); } finally {
           await services.store.fail(
             runId,
-            error instanceof Error ? error.name : "ReportError",
+            errorSummary(error),
           );
           }
           throw error;

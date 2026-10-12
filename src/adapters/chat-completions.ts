@@ -1,3 +1,4 @@
+import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, modelTokenLimits } from "../context.js";
 import { providerError, RequestError } from "../errors.js";
 import { ModelAliases } from "./model-aliases.js";
 import { requestTimings } from "../request-timing.js";
@@ -10,6 +11,8 @@ export interface ProviderOptions {
   apiKey: string;
   model: string;
   timeoutMs?: number;
+  outputTokens?: number;
+  contextTokens?: number;
 }
 
 export { ProviderError } from "../errors.js";
@@ -92,9 +95,16 @@ export async function* sseData(body: ReadableStream<Uint8Array>, waitLabel = "mo
 }
 
 export class ChatCompletionsLLM implements LLM {
+  readonly outputTokenLimit: number;
+  readonly contextTokenLimit: number;
   private readonly aliases: ModelAliases;
   private readonly cacheDiagnostics = new PromptCacheDiagnostics();
-  constructor(private readonly options: ProviderOptions, private readonly fetcher: typeof fetch = fetch) { this.aliases = new ModelAliases(options.baseUrl); }
+  constructor(private readonly options: ProviderOptions, private readonly fetcher: typeof fetch = fetch) {
+    this.aliases = new ModelAliases(options.baseUrl);
+    const limits = modelTokenLimits(options.model, options.baseUrl);
+    this.outputTokenLimit = options.outputTokens ?? limits?.output ?? DEFAULT_OUTPUT_TOKENS;
+    this.contextTokenLimit = options.contextTokens ?? limits?.context ?? DEFAULT_CONTEXT_TOKENS;
+  }
 
   async *stream(prompt: Prompt, signal?: AbortSignal): AsyncIterable<ModelEvent> {
     const phase = prompt.prefixVersion.startsWith("participation") ? "decision model" : prompt.purpose === "checkpoint" ? "checkpoint model" : prompt.purpose === "inspection" ? "inspection model" : "reply model";
@@ -151,7 +161,7 @@ export class ChatCompletionsLLM implements LLM {
           fullText += delta.content;
           yield { kind: "text", payload: { text: delta.content } };
         }
-        if (choice.finish_reason === "length") throw new RequestError("MODEL_OUTPUT_LIMIT", `Provider reached its output limit of ${prompt.maxOutputTokens ?? "the provider default"} tokens; response is incomplete.`, "Increase OUTPUT_TOKENS or request a shorter response. Partial output and completed tools are retained.", { maxOutputTokens: prompt.maxOutputTokens ?? "provider default", purpose: prompt.purpose ?? "reply" });
+        if (choice.finish_reason === "length") throw new RequestError("MODEL_OUTPUT_LIMIT", `Provider reached its output limit of ${prompt.maxOutputTokens ?? "the provider default"} tokens; response is incomplete.`, "Inspect the request purpose and output allowance in the logs. Use the model's supported output allowance or narrow the request. Partial output and completed tools are retained.", { maxOutputTokens: prompt.maxOutputTokens ?? "provider default", purpose: prompt.purpose ?? "reply", configuredOutputTokens: this.outputTokenLimit, contextTokens: this.contextTokenLimit });
       }
     }
     if (!completed) throw new Error("Provider stream ended before completion");

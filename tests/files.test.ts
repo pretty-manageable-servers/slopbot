@@ -35,7 +35,7 @@ test('file tool retains reasoning, sends vision parts, and links source', async 
   const request = {id:'request',server:'s',channel:'c',author:'a',text:'what is this',replyTo:'file'};
   await store.ingest(source); await store.ingest(request);
   let inspected = false;
-  const llm: LLM = { async *stream(prompt) { inspected = true; assert.equal(prompt.purpose,'inspection'); assert.ok(Array.isArray(wireMessages(prompt)[1]!.content)); yield {kind:'reasoning',payload:{text:'retained'}}; yield {kind:'text',payload:{text:'Red image'}}; } };
+  const llm: LLM = { outputTokenLimit: 32000, contextTokenLimit: 64000, async *stream(prompt) { inspected = true; assert.equal(prompt.maxOutputTokens,32000); assert.equal(prompt.purpose,'inspection'); assert.ok(Array.isArray(wireMessages(prompt)[1]!.content)); yield {kind:'reasoning',payload:{text:'retained'}}; yield {kind:'text',payload:{text:'Red image'}}; } };
   const registry = new ToolRegistry(store,async()=>false);
   registerFileTool(registry,{store,llm,resolve:async()=>source,fetcher:{fetch:async()=>new Uint8Array()},decoder:{read:async()=>({text:'still',images:[{url:'data:image/png;base64,AA==',label:'frame'}]})}});
   const result=await registry.invokeResult(request,'file_read',{},'inspection','agent');
