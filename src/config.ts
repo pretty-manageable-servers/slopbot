@@ -1,5 +1,5 @@
 import { DEFAULT_MAX_TOOL_ROUNDS } from "./errors.js";
-import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS } from "./context.js";
+import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, modelTokenLimits } from "./context.js";
 
 export interface Config {
   sandboxApiKey?: string;
@@ -57,8 +57,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (!["true", "false"].includes(env[key]!)) throw new Error(`${key} must be true or false`);
     return env[key] === "true";
   };
-  const contextTokens = integer("CONTEXT_TOKENS", DEFAULT_CONTEXT_TOKENS, 1000000, 2048);
-  const outputTokens = integer("OUTPUT_TOKENS", DEFAULT_OUTPUT_TOKENS, 100000, 128);
+  const model = env.LLM_MODEL?.trim() || "nimbus";
+  const limits = modelTokenLimits(model, baseUrl);
+  const contextTokens = integer("CONTEXT_TOKENS", limits?.context ?? DEFAULT_CONTEXT_TOKENS, 1000000, 2048);
+  const outputTokens = integer("OUTPUT_TOKENS", limits?.output ?? DEFAULT_OUTPUT_TOKENS, 100000, 128);
+  if (limits && contextTokens > limits.context) throw new Error(`CONTEXT_TOKENS exceeds ${model} context window of ${limits.context}`);
+  if (limits && outputTokens > limits.output) throw new Error(`OUTPUT_TOKENS exceeds ${model} maximum output of ${limits.output}`);
   const checkpointTokens = integer("CHECKPOINT_TOKENS", 2048, 100000, 128);
   if (outputTokens >= contextTokens) throw new Error("OUTPUT_TOKENS must leave room within CONTEXT_TOKENS for input");
   const url = new URL(baseUrl);
@@ -82,7 +86,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.SEARXNG_URL ? { searxngUrl: env.SEARXNG_URL } : {}),
     discordToken: required("DISCORD_BOT_TOKEN"), guildId, channelIds, mock, baseUrl,
     apiKey: mock ? "" : required("LLM_API_KEY"),
-    model: env.LLM_MODEL?.trim() || "nimbus",
+    model,
     ...(env.DATABASE_URL ? { databaseUrl: env.DATABASE_URL } : {}),
     ...(env.DATABASE_SCHEMA ? { databaseSchema: env.DATABASE_SCHEMA } : {}),
     databasePath: env.DATABASE_PATH ?? "./data/slopbot.sqlite3",

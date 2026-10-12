@@ -160,11 +160,11 @@ test("provider output exhaustion reports the budget and checkpoint stage", async
 test("provider receives the full reply budget without a Discord size cap", async () => {
   const text = "Long response 🙂\n".repeat(5000);
   const llm = new ChatCompletionsLLM(options, async (_url, init) => {
-    assert.equal(JSON.parse(String(init?.body)).max_tokens, 65536);
+    assert.equal(JSON.parse(String(init?.body)).max_tokens, 50000);
     return new Response(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: text }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
   });
   let result = "";
-  for await (const event of llm.stream({ ...prompt, maxOutputTokens: 65536 })) {
+  for await (const event of llm.stream({ ...prompt, maxOutputTokens: 50000 })) {
     if (event.kind === "text") result += event.payload.text;
   }
   const { splitReply } = await import("../src/bot.js");
