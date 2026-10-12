@@ -1,4 +1,6 @@
 import { DEFAULT_MAX_TOOL_ROUNDS } from "./errors.js";
+import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS } from "./context.js";
+
 export interface Config {
   sandboxApiKey?: string;
   sandboxApiUrl?: string;
@@ -55,8 +57,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (!["true", "false"].includes(env[key]!)) throw new Error(`${key} must be true or false`);
     return env[key] === "true";
   };
-  const contextTokens = integer("CONTEXT_TOKENS", 32768, 1000000, 2048);
-  const outputTokens = integer("OUTPUT_TOKENS", 2048, 100000, 128);
+  const contextTokens = integer("CONTEXT_TOKENS", DEFAULT_CONTEXT_TOKENS, 1000000, 2048);
+  const outputTokens = integer("OUTPUT_TOKENS", DEFAULT_OUTPUT_TOKENS, 100000, 128);
   const checkpointTokens = integer("CHECKPOINT_TOKENS", 2048, 100000, 128);
   if (outputTokens >= contextTokens) throw new Error("OUTPUT_TOKENS must leave room within CONTEXT_TOKENS for input");
   const url = new URL(baseUrl);

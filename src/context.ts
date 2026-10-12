@@ -1,5 +1,8 @@
 import type { PromptItem } from "./domain.js";
 
+export const DEFAULT_CONTEXT_TOKENS = 131072;
+export const DEFAULT_OUTPUT_TOKENS = 65536;
+
 export interface TokenCounter {
   readonly name: string;
   count(items: readonly PromptItem[]): number;

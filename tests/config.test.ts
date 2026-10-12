@@ -4,6 +4,15 @@ import { loadConfig } from "../src/config.js";
 
 const env = { DISCORD_BOT_TOKEN: "test", DISCORD_GUILD_ID: "12345678901234567", DISCORD_CHANNEL_IDS: "12345678901234568", LLM_MODE: "mock" };
 
+test("reply generation reserves 64K output tokens with room for input", () => {
+  const config = loadConfig(env);
+  assert.equal(config.outputTokens, 65536);
+  assert.equal(config.contextTokens - config.outputTokens, 65536);
+  assert.equal(config.checkpointTokens, 2048);
+  assert.throws(() => loadConfig({ ...env, CONTEXT_TOKENS: "65536" }), /OUTPUT_TOKENS must leave room/);
+  assert.equal(loadConfig({ ...env, CONTEXT_TOKENS: "32768", OUTPUT_TOKENS: "2048" }).outputTokens, 2048);
+});
+
 test("cooldown defaults and environment settings", () => {
   assert.equal(loadConfig(env).jevCooldownSeconds, 60);
   assert.equal(loadConfig(env).jevMaxRepliesPerHour, 3);
