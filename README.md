@@ -141,3 +141,11 @@ Tool definitions are sent as native chat function schemas. Results use matching 
 Errors in replies, jobs, failed runs, web responses and background logs use shared diagnostics with the actual reason, code, failing stage and available request IDs. Credentials are redacted. `bot_info topic:errors` explains recovery. `bot_info topic:pmservers` and `topic:pmservers_changelog` summarize the PMServers docs reviewed on October 12, 2026; runtime and capabilities report the bot's current safe configuration and tools. Vane classification uses the documented System One endpoint.
 
 Task history reserves space for tool calls/results before packing. Active loops checkpoint older completed work before the input budget fills, preserving the current request, latest complete native tool batch and all original journal records. Recovery rebuilds checkpoints and reuses saved tool results. A genuinely oversized call reports CONTEXT_BUDGET with estimated input-unit figures instead of UNEXPECTED_ERROR.
+
+### Deployment changelogs
+
+After the PMServers deployment succeeds, GitHub Actions posts through the `SLOPBOT_CHANGELOG_WEBHOOK_URL` repository secret. The destination is fixed to `#slopbot-changelog` in server `1528063444874432734`, channel `1559233255763353600`, independently of the servers where Slopbot operates. The webhook is never stored in source code or supplied to the model.
+
+Add a short Markdown file under `changelog/` with each user-visible change. Announcements collect added or updated notes since the last confirmed announcement, or use commit titles if no notes exist. They link to the deployed version, comparison and workflow, and disable mentions. The first announcement starts after commit `3ac2ea9`.
+
+GitHub deployment records in the `slopbot-changelog` environment track delivery. Confirmed versions are not posted again. A definite Discord rejection is marked failed and can retry; a timeout, server error or lost confirmation leaves a reservation to avoid duplicate messages. For `CHANGELOG_DELIVERY_UNCERTAIN`, inspect the channel and the referenced GitHub deployment. Mark its status `success` if the message exists, or `failure` only after confirming it was not delivered, then retry the workflow. Notification failures appear in the separate announcement job; the successful application deployment remains visible.

@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && cp src/adapters/postgres-schema.sql dist/src/adapters/postgres-schema.sql && mkdir -p dist/architecture && cp architecture/BOT_GUIDE.md dist/architecture/BOT_GUIDE.md",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/tests/*.test.js",
+    "test": "npm run build && node --test dist/tests/*.test.js && node --test scripts/deployment/*.test.mjs",
     "start": "npm run dev",
     "demo": "npm run build && node dist/src/main.js",
     "models": "npm run build && node --env-file-if-exists=.env dist/src/list-models.js",

@@ -62,3 +62,24 @@ jobs:
           PMS_TOKEN: ${{ secrets.PMS_TOKEN }}
           IMAGE: ghcr.io/pretty-manageable-servers/slopbot:${{ github.sha }}
         run: bash scripts/deployment/ci-deploy.sh
+
+  announce:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Post Slopbot deployment changelog
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SLOPBOT_CHANGELOG_WEBHOOK_URL: ${{ secrets.SLOPBOT_CHANGELOG_WEBHOOK_URL }}
+          CHANGELOG_INITIAL_BASE: 3ac2ea9514ef82a57bd887995fab340befea8825
+        run: node scripts/deployment/changelog.mjs
