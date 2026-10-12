@@ -139,3 +139,20 @@ test('tool rounds and subsequent task turns append identical wire prefixes',asyn
  assert.equal(timing.firstOutputMs.length,3);
  requestTimings.finish({server:'s',channel:'c',id:'two'});
 });
+
+
+test("provider output exhaustion reports the budget and checkpoint stage", async () => {
+  const llm = new ChatCompletionsLLM(options, async () => new Response('data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":"length"}]}\n\ndata: [DONE]\n\n'));
+  const partial: string[] = [];
+  await assert.rejects(async () => {
+    for await (const event of llm.stream({ ...prompt, purpose: "checkpoint", maxOutputTokens: 2048 })) {
+      if (event.kind === "text") partial.push(event.payload.text);
+    }
+  }, (error: unknown) => {
+    assert.ok(error instanceof Error && "code" in error && "details" in error);
+    assert.equal(error.code, "MODEL_OUTPUT_LIMIT");
+    assert.deepEqual(error.details, { maxOutputTokens: 2048, purpose: "checkpoint" });
+    return true;
+  });
+  assert.deepEqual(partial, ["partial"]);
+});

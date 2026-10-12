@@ -50,3 +50,8 @@ test('structured provider errors retain the code and sanitized cause but ignore 
   const plain = await providerError(new Response('private upstream body',{status:502}));
   assert.ok(!errorReply(plain).includes('private upstream body'));
 });
+
+
+test('DOM timeout errors use a meaningful code rather than a numeric DOM code', () => {
+  assert.equal(describeError(new DOMException('Timed out', 'TimeoutError')).code, 'REQUEST_TIMEOUT');
+});

@@ -46,7 +46,7 @@ export function describeError(error: unknown) {
     : value instanceof ToolError ? value.status === 'failed' ? 'TOOL_FAILED' : 'TOOL_BLOCKED'
     : value instanceof ProviderError ? value.providerCode ? `PROVIDER_${value.providerCode.toUpperCase()}` : `PROVIDER_HTTP_${value.status}`
     : value.name === 'HarnessInterrupted' ? 'REQUEST_INTERRUPTED'
-    : nativeCode !== undefined ? String(nativeCode) : value.name === 'TimeoutError' ? 'REQUEST_TIMEOUT' : 'UNEXPECTED_ERROR';
+    : value.name === 'TimeoutError' ? 'REQUEST_TIMEOUT' : value.name === 'AbortError' ? 'REQUEST_ABORTED' : nativeCode !== undefined ? String(nativeCode) : 'UNEXPECTED_ERROR';
   const recovery = value instanceof RequestError ? value.recovery : value instanceof UncertainActionError ? 'Inspect the recorded action before retrying; it may already have happened.'
     : value instanceof ProviderError ? value.status === 402 ? 'The key or account budget is spent. Check the budget; retrying without a budget change will not help.' : value.status === 413 ? 'Reduce the request size before retrying.' : value.status === 401 || value.status === 403 ? 'Check the AI key and model access.' : value.status === 400 || value.status === 404 ? 'Check the provider endpoint and model configuration.' : value.status === 429 ? 'Wait for the provider rate limit to reset, then retry.' : 'Check provider availability, then retry.'
     : value instanceof ToolError ? value.status === 'rejected' ? 'Correct the arguments, permissions, or configuration described above.' : 'Check the tool or service, then retry.'

@@ -1,3 +1,4 @@
+import { RequestError } from "./errors.js";
 import { createHash } from "node:crypto";
 import type { Json, Prompt, PromptItem } from "./domain.js";
 import type { TokenCounter } from "./context.js";
@@ -92,10 +93,9 @@ export function appendToolEvidence(
       },
     }),
   });
-  if (counter.count([...base, build(0)]) > limit)
-    throw new Error(
-      "Context budget boundary reached; original prompts and tool results are retained. Start a fresh request to continue.",
-    );
+  const minimum = counter.count([...base, build(0)]);
+  if (minimum > limit)
+    throw new RequestError("CONTEXT_BUDGET", `Context budget boundary reached while adding ${name}: minimum ${minimum} estimated input units exceeds budget ${limit}. Full results are retained.`, "Retry to rebuild the working context. Completed tools are reused. If one call is too large, reduce its size or increase CONTEXT_TOKENS.", { tool: name, required: minimum, inputLimit: limit, remaining: limit - counter.count(base) });
   let left = 0,
     right = max;
   while (left < right) {

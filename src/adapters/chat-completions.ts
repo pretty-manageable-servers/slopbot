@@ -151,7 +151,7 @@ export class ChatCompletionsLLM implements LLM {
           fullText += delta.content;
           yield { kind: "text", payload: { text: delta.content } };
         }
-        if (choice.finish_reason === "length") throw new Error("Provider reached its output limit; response is incomplete");
+        if (choice.finish_reason === "length") throw new RequestError("MODEL_OUTPUT_LIMIT", `Provider reached its output limit of ${prompt.maxOutputTokens ?? "the provider default"} tokens; response is incomplete.`, "Increase OUTPUT_TOKENS or request a shorter response. Partial output and completed tools are retained.", { maxOutputTokens: prompt.maxOutputTokens ?? "provider default", purpose: prompt.purpose ?? "reply" });
       }
     }
     if (!completed) throw new Error("Provider stream ended before completion");

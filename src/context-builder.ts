@@ -1,3 +1,4 @@
+import { RequestError } from "./errors.js";
 import type { Message, PromptItem } from "./domain.js";
 import type { Store } from "./ports.js";
 import type { Recall } from "./memory.js";
@@ -19,17 +20,19 @@ export class ContextBuilder {
     let request: PromptItem = { role: "user", content: message.text, author: message.author, sourceIds: [message.id] };
     const metadata: PromptItem[] = this.options.tools ? [{ role: "user", contextOnly: true, content: JSON.stringify({ request_context: { server_id: message.server, channel_id: message.channel, requester_id: message.author, task_id: message.taskId ?? null, is_task: Boolean(message.taskId) } }) }] : [];
     let budget = this.options.inputLimit - schemaBudget - this.options.counter.count([...prefix, ...metadata, request]);
-    if (budget < 0) throw new Error("Request exceeds context budget");
+    if (budget < 0) throw new RequestError("CONTEXT_BUDGET", `Request exceeds context budget: request and schemas are ${-budget} estimated input units over the limit.`, "Reduce the request or increase CONTEXT_TOKENS while leaving room for OUTPUT_TOKENS.", { inputLimit: this.options.inputLimit, schemaBudget });
     const referencedContext = message.replyTo ? await this.options.store.context(message, recentMessages) : undefined;
     const target = referencedContext?.find(item => item.id === message.replyTo);
     const expanded = await expandReplySubject(this.options.profiles, message, target, request);
     budget -= this.options.counter.count([expanded]) - this.options.counter.count([request]);
-    if (budget < 0) throw new Error("Request and reply subject exceed context budget");
+    if (budget < 0) throw new RequestError("CONTEXT_BUDGET", "Request and reply subject exceed the context budget.", "Reduce the request or increase CONTEXT_TOKENS.", { inputLimit: this.options.inputLimit, schemaBudget });
     request = expanded;
     const targetReserve = target ? this.options.counter.count([{ role: "user", content: JSON.stringify({ ...target, context_role: "reply_target" }), contextOnly: true }]) : 0;
-    let history = taskKey ? await boundedHistory(message, taskKey, budget - targetReserve * (this.options.tools ? 2 : 1)) : [];
+    // Reserve working space before history selection, not after it has filled the budget.
+    const toolReserve = tools ? Math.floor(Math.max(0, budget - targetReserve) / 2) : 0;
+    budget -= toolReserve;
+    let history = taskKey ? await boundedHistory(message, taskKey, budget - targetReserve) : [];
     budget -= this.options.counter.count(history);
-    if (this.options.tools) budget = Math.floor(budget / 2);
     const inputs: PromptItem[] = [];
     const sources = new Set([message.id]);
     if (!taskKey || message.replyTo) {
