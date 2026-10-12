@@ -1,3 +1,4 @@
+import { logError } from "./errors.js";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { loadConfig } from "./config.js";
@@ -23,13 +24,13 @@ async function main(): Promise<void> {
   const discord = new DiscordAdapter(config, store, llm);
   const web = webOptions ? createConsole(webOptions, { snapshot: user => discord.consoleSnapshot(user), invoke: (user, channel, name, args) => discord.consoleInvoke(user, channel, name, args), mcp: (user, input) => discord.consoleMcp(user, input) }) : undefined;
   const shutdown = async () => { if (web?.listening) await new Promise<void>((resolve, reject) => web.close(error => error ? reject(error) : resolve())); if (store instanceof PostgresStore) store.stopIndexing(); await discord.stop(); await store.finishIndexing(); await store.close(); process.exit(0); };
-  process.once("SIGINT", () => { void shutdown(); });
-  process.once("SIGTERM", () => { void shutdown(); });
+  process.once("SIGINT", () => { void shutdown().catch(error => { logError("shutdown_failed", error, { stage: "shutdown" }); process.exitCode = 1; }); });
+  process.once("SIGTERM", () => { void shutdown().catch(error => { logError("shutdown_failed", error, { stage: "shutdown" }); process.exitCode = 1; }); });
   try { await discord.start(); if (web && webOptions) { await new Promise<void>((resolve, reject) => { web.once('error', reject); web.listen(webOptions.port, webOptions.host, resolve); }); console.log(`Slopbot settings: ${webOptions.origin}`); } }
-  catch (error) { await store.close(); await discord.stop(); throw new Error(discordStartupError(error)); }
+  catch (error) { await store.close(); await discord.stop(); throw new Error(discordStartupError(error), { cause: error }); }
 }
 
 void main().catch(error => {
-  console.error(error instanceof Error ? error.message : "Startup failed");
+  logError("startup_failed", error, { stage: "startup" });
   process.exitCode = 1;
 });

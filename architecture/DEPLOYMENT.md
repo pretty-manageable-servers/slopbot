@@ -10,7 +10,7 @@ PMServers account `teddio496`, project `slop` (`prj_sksyapv5awdj`, Toronto).
 | Image | Private `ghcr.io/teddio496/slopbot:20261010-live-r3`, amd64 and arm64 |
 | Reply model | `nimbus` |
 
-PMServers workers are outbound-only and have no service routing. Search runs as a supervised process alongside Node; either process exiting stops the other so the container can restart. Secrets for Discord, the LLM and Postgres are excluded from the search process. The managed database is durable across container replacements.
+PMServers worker containers support same-project private ports and optional managed Cloudflare Tunnel access. Search runs as a supervised process alongside Node; either process exiting stops the other so the container can restart. Secrets for Discord, the LLM and Postgres are excluded from the search process. The managed database is durable across container replacements.
 
 `DATABASE_URL` selects Postgres. Without it, `npm start` uses the existing local SQLite database. Do not run local and remote bots together with the same Discord token.
 
@@ -28,7 +28,7 @@ Useful commands from this workspace:
 
 Test in Discord: mention Slopbot, ask it to search, inspect `/slopbot index` status, then ask about previously indexed messages. Task-thread continuity should survive a container restart. No test messages are sent automatically during deployment.
 
-For updates: build and push a new private GHCR tag, then use `container edit --image <new-tag>`. Changing environment variables replaces the complete environment; pass the full protected env file. Do not run the migration again with a different snapshot against the live database.
+For updates: build and push a new private GHCR tag, then use `container edit --image <new-tag>`. For individual environment changes use `--set-env`/`--unset-env`, which preserve other variables. `--env` still replaces the full environment; use a complete protected env file only for full replacement. Do not run the migration again with a different snapshot against the live database.
 
 Verification: the unit suite, a real Postgres adapter test, complete migration count checks and replay checks passed. The remote container completed migration, returned JSON search results and connected to Discord. GIF issues deferred by the user remain separate from deployment.
 
@@ -36,7 +36,7 @@ Verification: the unit suite, a real Postgres adapter test, complete migration c
 
 `.github/workflows/deploy.yml` tests pull requests. Pushes to `main` also publish an amd64/arm64 image to `ghcr.io/pretty-manageable-servers/slopbot:<commit>` and replace the existing PMServers container. Production images contain no migration snapshot. Existing remote environment variables and the managed database stay in place.
 
-Required GitHub Actions secrets: `PMS_SESSION` holds a dedicated PMServers CLI session JSON; `DEPLOY_GITHUB_TOKEN` downloads the private CLI release and updates the session secret after refresh-token rotation. Deployments run sequentially. The deployment token needs repository access to this repository and read access to the CLI repository. Never use an access JWT alone, since it expires.
+Required GitHub Actions secrets: `PMS_TOKEN` holds a project-scoped deployment token. The workflow GitHub token downloads the pinned CLI release. Deployments run sequentially. The PMServers token authorizes the project deployment; the GitHub token authorizes the CLI download. Do not substitute an expiring access JWT for a deployment token.
 
 AI requests use `https://api.pmservers.org/ai/v1` with the dedicated `slopbot` key and a $1,000 spending limit. Nimbus handles chat. The adapter maps the existing Gemma index identity to gateway model `stratus`, preserving old vectors. Embeddings are paced and retry HTTP 429. If `/decisions` is unavailable, participation uses the existing chat classifier. The previous direct LLM host was unreachable from the deployed worker.
 
@@ -46,8 +46,7 @@ PMServers CLI is pinned to v0.7.0 and downloaded with its SHA256 manifest.
 Deployments use a project-scoped `PMS_TOKEN` Actions secret instead of rotating
 user sessions. The sandbox has a separate project token in `E2B_API_KEY`; it
 uses the PMServers E2B-compatible API and sandbox data-plane URLs. Local secret
-files and production environment values are not tracked in Git. Tokens expire
-90 days after creation and require replacement before expiry. Sandbox tokens
+files and production environment values are not tracked in Git. Project tokens can expire after 1-365 days or have no expiry; rotate the configured tokens before their chosen expiry. Sandbox tokens
 also grant project management access; never expose them to generated code.
 
 See `TOOLS.md` for sandbox lifecycle and constraints. Sandbox writes use the

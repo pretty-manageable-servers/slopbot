@@ -1,3 +1,4 @@
+import { logError } from "./errors.js";
 import type { RecordStore } from './records.js';
 import { ToolError, type ToolDefinition } from './tools.js';
 import { requestTimings } from './request-timing.js';
@@ -51,7 +52,7 @@ export function sandboxTool(store: RecordStore, provider?: SandboxProvider): Too
         session = await requestTimings.wait('sandbox create', () => provider.create({ server: message.server, channel: message.channel, operation: context.operationId }, lifetimeMs));
         try {
           if (!await store.putRecord(message.server, 'sandbox', message.channel, { id: session.id, expiresAt: Date.now() + lifetimeMs }, record?.revision ?? 0)) throw new ToolError('Sandbox workspace changed concurrently.');
-        } catch (error) { await session.close().catch(() => undefined); throw error; }
+        } catch (error) { await session.close().catch(secondary => logError("sandbox_create_cleanup_failed", secondary, { stage: "sandbox cleanup", operationId: context.operationId }, true)); throw error; }
       }
       if (args.action === 'status') return `Sandbox ${session.id} is connected. Recorded lease expires at ${new Date(value!.expiresAt!).toISOString()}.`;
       if (args.action === 'read') return { text: limit(await requestTimings.wait('sandbox read', () => session.read(String(args.path)))) };

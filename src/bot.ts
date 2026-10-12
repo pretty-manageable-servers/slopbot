@@ -1,7 +1,7 @@
+import { errorReply, logError } from "./errors.js";
 import { replySubject, type ProfileStore } from "./profiles.js";
 import { requestTimings } from "./request-timing.js";
 import { Application } from "./application.js";
-import { ProviderError } from "./adapters/chat-completions.js";
 import type { Message } from "./domain.js";
 import type { Store } from "./ports.js";
 import type { Knowledge } from "./memory.js";
@@ -72,7 +72,7 @@ export class Bot {
       const decision = await requestTimings.measure(message, "participation", () => gate.decide(message, context));
       if (decision.emoji && this.gateway.react) {
         try { await requestTimings.measure(message, "reaction", () => this.gateway.react!(message, decision.emoji!)); }
-        catch { console.warn("Discord reaction could not be delivered."); }
+        catch (error) { logError("discord_reaction_failed", error, { stage: "Discord reaction", server: message.server, channel: message.channel, messageId: message.id }, true); }
       }
       if (!decision.respond) { requestTimings.finish(message); return; }
       addressed = decision.addressed;
@@ -197,14 +197,8 @@ export class Bot {
       }
       if (reply) await this.send(message, reply.text || "The AI returned no answer. Please try again.", reply.runId, undefined, reply.toolActivity, reply.ui);
     } catch (error) {
-      console.error("Request failed:", error instanceof ProviderError ? `provider HTTP ${error.status}` : error instanceof Error ? error.name : "UnknownError");
-      const explanation = error instanceof ProviderError
-        ? error.status === 401 ? "The AI key was rejected. Check LLM_API_KEY in .env."
-          : error.status === 400 ? "The AI provider rejected the request (HTTP 400). Check the exact provider-qualified LLM_MODEL ID; run npm run models to list it."
-          : error.status === 404 ? "The AI endpoint or model was not found. Check LLM_MODEL in .env."
-          : error.status === 429 ? "The AI provider is rate limited. Try again later."
-          : `The AI provider could not complete this request (HTTP ${error.status}).`
-        : "This request could not finish. Check the bot terminal and try a new message.";
+      logError("request_failed", error, { server: message.server, channel: message.channel, messageId: message.id });
+      const explanation = errorReply(error);
       await this.send(message, explanation);
     } finally { stopTyping(); }
   }

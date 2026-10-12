@@ -1,7 +1,7 @@
 import { ModelAliases } from "./model-aliases.js";
 import type { Embeddings } from "../memory.js";
 import { requestTimings } from "../request-timing.js";
-import { ProviderError } from "./chat-completions.js";
+import { providerError } from "../errors.js";
 
 export class ProviderEmbeddings implements Embeddings {
   private readonly aliases: ModelAliases;
@@ -36,7 +36,7 @@ export class ProviderEmbeddings implements Embeddings {
       await response.body?.cancel();
       this.nextRequestAt = Math.max(this.nextRequestAt, Date.now() + Math.min(120000, Math.max(1500, delay)));
     }
-    if (!response.ok) { await response.body?.cancel(); throw new ProviderError(response.status); }
+    if (!response.ok) { throw await providerError(response); }
     const body = await requestTimings.wait("embedding body", () => response.json()) as { data?: { embedding?: unknown }[]; usage?: { prompt_tokens?: unknown; total_tokens?: unknown } };
     const vector = body.data?.[0]?.embedding;
     if (!Array.isArray(vector) || !vector.length || !vector.every(value => typeof value === "number" && Number.isFinite(value))) {

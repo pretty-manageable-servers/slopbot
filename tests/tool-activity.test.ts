@@ -59,9 +59,9 @@ for (const returned of [false, true]) test(`runner explains execution failures f
     }}});
   const reply = await app.handle({server:'s',channel:'c',author:'person',id:'request',text:'Read it',addressed:true});
   assert.equal(rounds, 1);
-  assert.match(reply!.text, /remote_read.*failed: Remote service unavailable/);
+  assert.match(reply!.text, /remote_read.*failed:.*Remote service unavailable/);
   assert.equal(reply!.toolActivity![0]!.status, 'failed');
-  assert.equal(reply!.toolActivity![0]!.reason, 'Remote service unavailable');
+  assert.match(reply!.toolActivity![0]!.reason ?? '', /Remote service unavailable/);
   assert.equal((await store.harnessState('s', 'request'))?.kind, 'ToolResultsHeld');
 });
 
@@ -94,7 +94,7 @@ for (const rejected of [false,true]) test(`execution reports ${rejected ? 'rejec
     assert.equal(reply?.toolActivity?.length,1);
     assert.equal(reply?.toolActivity?.[0]?.status,rejected ? 'rejected' : 'completed');
     assert.equal(reply?.toolActivity?.[0]?.reused,false);
-    if (rejected) { assert.equal(reply?.toolActivity?.[0]?.reason, 'Unavailable'); assert.match(reply!.text, /web_search.*blocked: Unavailable/); }
+    if (rejected) { assert.match(reply?.toolActivity?.[0]?.reason ?? '', /Unavailable/); assert.match(reply!.text, /web_search.*blocked:.*Unavailable/); }
     assert.ok(Number.isFinite(reply?.toolActivity?.[0]?.durationMs));
     assert.ok(!reply?.text.includes('Tool activity'));
   } finally {store.close();}

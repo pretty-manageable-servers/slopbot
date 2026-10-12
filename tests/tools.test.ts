@@ -1,3 +1,4 @@
+import { errorSummary } from "../src/errors.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
@@ -13,10 +14,10 @@ test("saved tool errors retain their failure status and reason without executing
   let executions = 0;
   const registry = new ToolRegistry(store, async () => true);
   registry.register({ name: "read", description: "read", fields: {}, access: "member", effect: "read", retrySafe: true,
-    async execute() { executions++; throw new ToolError("Remote service unavailable", "failed"); } });
+    async execute() { executions++; throw new ToolError("Remote service unavailable", "failed", { cause: Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" }) }); } });
   for (let attempt = 0; attempt < 2; attempt++) {
     await assert.rejects(registry.invokeResult(message, "read", {}, "error", "agent"), error =>
-      error instanceof ToolError && error.status === "failed" && error.message === "Remote service unavailable");
+      error instanceof ToolError && error.status === "failed" && error.message === "Remote service unavailable" && errorSummary(error).includes("ECONNREFUSED"));
   }
   assert.equal(executions, 1);
 });

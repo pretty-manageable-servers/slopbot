@@ -9,7 +9,7 @@ export class ModelAliases {
     const response = await send(wire);
     if (new URL(this.baseUrl).hostname !== 'api.pmservers.org' || !Object.hasOwn(legacy, model) || ![403, 404].includes(response.status)) return response;
     let code: unknown;
-    try { code = (await requestTimings.wait('model alias response body', () => response.json()) as { error?: { code?: unknown } }).error?.code; } catch { return response; }
+    try { code = (await requestTimings.wait('model alias response body', () => response.clone().json()) as { error?: { code?: unknown } }).error?.code; } catch { return response; }
     if (code !== 'model_not_allowed' && code !== 'model_not_found') return response;
     const alternate = wire === model ? legacy[model]! : model;
     const retry = await send(alternate);

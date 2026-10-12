@@ -1,3 +1,4 @@
+import { providerError, RequestError } from "../errors.js";
 import { ModelAliases } from "./model-aliases.js";
 import { requestTimings } from "../request-timing.js";
 import {PromptCacheDiagnostics} from '../prompt-cache.js';
@@ -11,18 +12,39 @@ export interface ProviderOptions {
   timeoutMs?: number;
 }
 
-export class ProviderError extends Error {
-  constructor(readonly status: number) {
-    super(`AI provider returned HTTP ${status}`);
-    this.name = "ProviderError";
-  }
-}
+export { ProviderError } from "../errors.js";
 
-export function wireMessages(prompt: Prompt): { role: string; content: string | ({ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } })[] }[] {
-  return promptItems(prompt).map(item => {
+export interface WireMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null | ({ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } })[];
+  tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[];
+  tool_call_id?: string;
+}
+export function wireMessages(prompt: Prompt): WireMessage[] {
+  const items = promptItems(prompt), messages: WireMessage[] = [];
+  const ordinary = (item: typeof items[number]): WireMessage => {
     const text = item.author || item.sourceIds ? JSON.stringify({ ...(item.author ? { author_id: item.author } : {}), ...(item.sourceIds ? { source_ids: item.sourceIds } : {}), text: item.content }) : item.content;
-    return { role: item.role, content: item.images?.length ? [{ type: "text" as const, text }, ...item.images.map(image => ({ type: "image_url" as const, image_url: { url: image.url } }))] : text };
-  });
+    return { role: item.role, content: item.images?.length ? [{ type: 'text', text }, ...item.images.map(image => ({ type: 'image_url' as const, image_url: { url: image.url } }))] : text };
+  };
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index]!;
+    if (item.role === 'assistant' && item.toolCalls?.length) {
+      const results = items.slice(index + 1, index + 1 + item.toolCalls.length);
+      const expected = new Set(item.toolCalls.map(call => call.id));
+      const actual = new Set(results.map(result => result.toolCallId));
+      if (results.length === expected.size && actual.size === expected.size && results.every(result => result.role === 'tool' && result.toolCallId && expected.has(result.toolCallId))) {
+        messages.push({ role: 'assistant', content: item.content || null, tool_calls: item.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } })) });
+        for (const result of results) messages.push({ role: 'tool', tool_call_id: result.toolCallId!, content: result.content });
+        index += results.length;
+      } else {
+        // Checkpoint/source invalidation may split an old pair. Keep the surviving
+        // evidence without emitting an invalid assistant/tool protocol sequence.
+        messages.push({ role: 'user', content: JSON.stringify({ recorded_tool_activity: item }) });
+      }
+    } else if (item.role === 'tool') messages.push({ role: 'user', content: JSON.stringify({ recorded_tool_result: item }) });
+    else messages.push(ordinary(item));
+  }
+  return messages;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -81,20 +103,23 @@ export class ChatCompletionsLLM implements LLM {
     const response = await this.aliases.request(this.options.model, model => requestTimings.wait(`${phase} response headers`, () => this.fetcher(`${this.options.baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.options.apiKey}` },
-      body: JSON.stringify({ model, messages, stream: true, stream_options: { include_usage: true }, ...(prompt.maxOutputTokens ? { max_tokens: prompt.maxOutputTokens } : {}) }),
+      body: JSON.stringify({ model, messages, ...(prompt.tools?.length ? { tools: prompt.tools, tool_choice: "auto" } : {}), stream: true, stream_options: { include_usage: true }, ...(prompt.maxOutputTokens ? { max_tokens: prompt.maxOutputTokens } : {}) }),
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(this.options.timeoutMs ?? 120_000)]) : AbortSignal.timeout(this.options.timeoutMs ?? 120_000),
     })));
-    if (!response.ok) { await response.body?.cancel(); throw new ProviderError(response.status); }
+    if (!response.ok) { throw await providerError(response); }
     if (!response.body) throw new Error("Provider returned an empty stream");
     let completed = false;
     let fullText = "";
-    const nativeCalls = new Map<number, { name: string; arguments: string }>();
+    const nativeCalls = new Map<number, { id?: string; name: string; arguments: string }>();
     for await (const data of sseData(response.body, `${phase} stream read`)) {
       if (data === "[DONE]") { completed = true; break; }
       const chunk = record(JSON.parse(data));
       // Preserve the complete original provider chunk, including unknown reasoning formats.
       yield { kind: "opaque", payload: chunk as Json };
-      if (chunk.error) throw new Error("Provider reported a stream error");
+      if (chunk.error) {
+        const detail = typeof chunk.error === "object" ? chunk.error as { code?: unknown; message?: unknown } : {};
+        throw new RequestError("PROVIDER_STREAM_ERROR", `Provider reported a stream error${typeof detail.code === "string" ? ` (${detail.code})` : ""}.`, "Inspect provider availability and the recorded stream before retrying.", {}, typeof detail.message === "string" ? { cause: new Error(detail.message) } : undefined);
+      }
       if (chunk.usage) yield { kind: "usage", payload: chunk.usage as Json };
       if (!Array.isArray(chunk.choices)) throw new Error("Provider response is missing choices");
       for (const choiceValue of chunk.choices) {
@@ -106,7 +131,11 @@ export class ChatCompletionsLLM implements LLM {
           for (const value of delta.tool_calls) {
             const call = record(value), index = call.index;
             if (typeof index !== "number" || !Number.isSafeInteger(index) || index < 0 || index >= 8) throw new Error("Invalid tool call index");
-            const parts = nativeCalls.get(index) ?? { name: "", arguments: "" };
+            const parts: { id?: string; name: string; arguments: string } = nativeCalls.get(index) ?? { name: "", arguments: "" };
+            if (call.id !== undefined) {
+              if (typeof call.id !== "string" || !call.id || call.id.length > 256 || parts.id && parts.id !== call.id) throw new RequestError("PROVIDER_TOOL_PROTOCOL", "Provider returned an invalid or changing tool call ID.", "Inspect the provider stream before retrying.");
+              parts.id = call.id;
+            }
             const fn = record(call.function ?? {});
             if (fn.name !== undefined) { if (typeof fn.name !== "string") throw new Error("Invalid tool name"); parts.name += fn.name; }
             if (fn.arguments !== undefined) { if (typeof fn.arguments !== "string") throw new Error("Invalid tool arguments"); parts.arguments += fn.arguments; }
@@ -130,8 +159,11 @@ export class ChatCompletionsLLM implements LLM {
       const calls = [...nativeCalls.entries()].sort((a, b) => a[0] - b[0]).map(([, call]) => {
         const args = record(JSON.parse(call.arguments));
         if (!/^[a-z][a-z0-9_]{0,31}$/.test(call.name)) throw new Error("Invalid tool name");
-        return { name: call.name, arguments: args as Json };
+        if (prompt.tools?.length && !call.id) throw new RequestError("PROVIDER_TOOL_PROTOCOL", "Provider returned a tool call without its ID.", "Inspect the provider stream before retrying.");
+        return { name: call.name, arguments: args as Json, ...(call.id ? { id: call.id } : {}) };
       });
+      const ids = calls.flatMap(call => call.id ? [call.id] : []);
+      if (new Set(ids).size !== ids.length) throw new RequestError("PROVIDER_TOOL_PROTOCOL", "Provider returned duplicate tool call IDs.", "Inspect the provider stream before retrying.");
       yield { kind: "tool_call", payload: calls };
     } else {
       // Raw text has already been journaled. Malformed template calls must reach

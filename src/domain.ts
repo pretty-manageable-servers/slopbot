@@ -20,13 +20,18 @@ export interface Message {
 }
 
 export interface PromptItem {
-  readonly role: "system" | "user" | "assistant";
+  readonly role: "system" | "user" | "assistant" | "tool";
+  readonly toolCalls?: readonly ModelToolCall[];
+  readonly toolCallId?: string;
   readonly content: string;
   readonly author?: string;
   readonly contextOnly?: boolean;
   readonly images?: readonly { url: string; label: string }[];
   readonly sourceIds?: readonly string[];
 }
+
+export interface ModelToolCall { readonly id: string; readonly name: string; readonly arguments: Record<string, Json> }
+export interface ModelTool { readonly type: "function"; readonly function: { readonly name: string; readonly description: string; readonly parameters: Json } }
 
 export interface Prompt {
   readonly prefixVersion: string;
@@ -36,6 +41,7 @@ export interface Prompt {
   readonly inputs: readonly PromptItem[];
   readonly maxOutputTokens?: number;
   readonly purpose?: "reply" | "checkpoint" | "inspection";
+  readonly tools?: readonly ModelTool[];
 }
 
 export type ModelEvent =

@@ -1,3 +1,4 @@
+import { logError } from "../errors.js";
 // PostgreSQL implementation of the existing persistence contract.
 import type { HarnessState, HarnessEvent } from "../harness-state.js";
 import type { ToolOutput } from "../tools.js";
@@ -619,11 +620,7 @@ export class PostgresStore {
         if (this.indexingStopped || !this.embeddings || !message.text.trim())
             return;
         this.indexTail = this.indexTail.then(() => this.indexingStopped ? undefined : this.indexMessage(message)).catch((error: unknown) => {
-            const failure = error as { name?: string; code?: string; status?: number; cause?: { code?: string }; stack?: string };
-            console.error("Embedding indexing failed; keyword retrieval remains available.", {
-                name: failure?.name, code: failure?.code, status: failure?.status,
-                cause: failure?.cause?.code, frames: failure?.stack?.split("\n").slice(1, 4),
-            });
+            logError("embedding_index_failed_keyword_search_available", error, { stage: "embedding indexing", server: message.server, channel: message.channel, messageId: message.id });
         });
     }
     private async indexMessage(message: Message): Promise<void> {

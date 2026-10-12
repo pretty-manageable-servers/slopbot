@@ -7,15 +7,15 @@ import { ProviderError } from "../src/adapters/chat-completions.js";
 const message = { id: "1", server: "s", channel: "c", author: "alice", text: "Slopbot help" };
 const config = { baseUrl: "https://api.pmservers.org/ai/v1", apiKey: "test-only", model: "vane" };
 
-test("kev uses Decisions API and validates probability thresholds", async t => {
+test("Vane uses System One API and validates probability thresholds", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const fetcher: typeof fetch = async (url, init) => {
-    assert.equal(url, `${config.baseUrl}/decisions`);
+    assert.equal(url, `${config.baseUrl}/systemone`);
     const body = JSON.parse(String(init?.body));
     assert.equal(body.model, config.model);
-    assert.equal(body.questions.addressed.kind, "noul");
+    assert.equal(body.questions.addressed.type, "choice");
     assert.equal(body.stream, undefined);
-    return Response.json({ answers: { addressed: { value: 0.8 }, respond: { value: 0.7 } } });
+    return Response.json({ answers: { addressed: { probabilities: { yes: 0.8 } }, respond: { probabilities: { yes: 0.7 } } } });
   };
   const decision = await new DecisionClassifier(config, store, fetcher).classify(message, []);
   assert.equal(decision.respond, true); assert.equal(decision.addressed, true);
@@ -23,9 +23,9 @@ test("kev uses Decisions API and validates probability thresholds", async t => {
 
 test("unsolicited responses require high confidence and malformed results fail", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
-  const classifier = new DecisionClassifier(config, store, async () => Response.json({ answers: { addressed: { value: 0.1 }, respond: { value: 0.7 } } }));
+  const classifier = new DecisionClassifier(config, store, async () => Response.json({ answers: { addressed: { probabilities: { yes: 0.1 } }, respond: { probabilities: { yes: 0.7 } } } }));
   assert.equal((await classifier.classify(message, [])).respond, false);
-  const malformed = new DecisionClassifier(config, store, async () => Response.json({ answers: { addressed: { value: "true" }, respond: { value: 1 } } }));
+  const malformed = new DecisionClassifier(config, store, async () => Response.json({ answers: { addressed: { probabilities: { yes: "true" } }, respond: { probabilities: { yes: 1 } } } }));
   await assert.rejects(malformed.classify(message, []), /probability/);
 });
 
@@ -46,14 +46,14 @@ test("unsupported decisions endpoint falls back and is not retried each message"
   assert.equal(requests, 1); assert.equal(fallbackCalls, 2);
 });
 
-test("Kev receives alias instructions and independently selects funny reactions", async t => {
+test("Vane receives alias instructions and independently selects funny reactions", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const classifier = new DecisionClassifier(config, store, async (_url, init) => {
     const body = JSON.parse(String(init?.body));
     for (const alias of ["slop", "bot", "sb", "ai", "machine"]) assert.ok(body.questions.addressed.instructions.includes(alias));
     assert.ok(body.questions.funny.instructions.includes("No addressing is required"));
     assert.equal(JSON.parse(body.state).CURRENT.id, message.id);
-    return Response.json({ answers: { addressed: { value: 0.1 }, respond: { value: 0.1 }, funny: { value: 0.95 } } });
+    return Response.json({ answers: { addressed: { probabilities: { yes: 0.1 } }, respond: { probabilities: { yes: 0.1 } }, funny: { probabilities: { yes: 0.95 } } } });
   });
   const result = await classifier.classify(message, []);
   assert.equal(result.respond, false);

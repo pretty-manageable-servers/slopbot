@@ -1,3 +1,4 @@
+import { logError } from "./errors.js";
 // Loads only provider configuration; a Discord token is not needed.
 const baseUrl = process.env.LLM_BASE_URL ?? "https://api.pmservers.org/ai/v1";
 const key = process.env.LLM_API_KEY;
@@ -12,6 +13,6 @@ else {
     if (!Array.isArray(body.data)) throw new Error("Provider did not return a model list");
     for (const model of body.data) if (typeof model.id === "string") console.log(model.id);
   } catch (error) {
-    console.error(error instanceof Error ? error.message : "Model lookup failed"); process.exitCode = 1;
+    logError("model_lookup_failed", error, { stage: "model discovery" }); process.exitCode = 1;
   }
 }

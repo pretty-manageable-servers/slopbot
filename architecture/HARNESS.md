@@ -18,3 +18,11 @@ Slopbot adaptations:
 The upstream Rust state enum uses additional implementation phases around tool consent and execution; this port follows the published session diagram's lifecycle, rather than copying Auger's provider/server/runtime.
 
 The adapted module and copied diagram are attributed in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md). The upstream AGPL license is retained under `licenses/`.
+
+## Error diagnostics and round budgets
+
+`src/errors.ts` provides bounded, redacted error codes, messages, recovery suggestions, cause chains and structured logs. Replies, jobs and failed runs retain the actual reason. Known tool failures and blocked calls remain distinct from uncertain effects. Background fallbacks log their original exceptions. Errors are correlated with available job/run/message/tool/operation IDs.
+
+`MAX_TOOL_ROUNDS` defaults to 64 and accepts 1-1000. It limits new model/tool rounds in one attempt, not the number of individual calls or all historical progress. A retry reconstructs saved calls/results and gets a fresh allowance. Reaching the limit raises `TOOL_ROUND_LIMIT` with the limit, completed round count and requested next tool names. Context budgets and per-tool limits still apply.
+
+Native calls retain provider IDs in the existing durable JSON call records; results reconstruct `role:tool` messages with matching `tool_call_id`. Stable operation IDs remain separate and prevent duplicate execution on recovery. Legacy saved calls receive deterministic conversation IDs during native replay. No database schema migration is required.

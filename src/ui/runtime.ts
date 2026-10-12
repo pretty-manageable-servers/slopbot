@@ -1,3 +1,4 @@
+import { errorSummary } from "../errors.js";
 import { uiActions } from "./actions.js";
 import { createHash } from "node:crypto";
 import type { Json, Message } from "../domain.js";
@@ -155,7 +156,7 @@ export class UiRuntime {
     } catch (error) {
       // A known validation rejection did not execute an action. Unknown outcomes remain blocked.
       if (error instanceof ToolError)
-        result = { text: error.message, status: "rejected" };
+        result = { text: errorSummary(error), status: error.status, reason: errorSummary(error) };
       else throw error;
     }
     const document = result.ui ?? {

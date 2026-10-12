@@ -1,3 +1,4 @@
+import { describeError, errorSummary, logError } from "./errors.js";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -89,6 +90,10 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
       let content = await readFile(resolve('web', file || routePath.slice(1)));
       res.setHeader('Content-Type', routePath.endsWith('.js') ? 'text/javascript' : routePath.endsWith('.css') ? 'text/css' : routePath.endsWith('.svg') ? 'image/svg+xml' : routePath.endsWith('.woff2') ? 'font/woff2' : 'text/html');
       res.end(content);
-    } catch (error) { send(res, error instanceof ToolError ? 403 : 502, { error: error instanceof ToolError ? error.message : 'The request could not be completed. Try again.' }); }
+    } catch (error) {
+      logError('web_console_failed', error, { stage: 'web console' });
+      const info = describeError(error);
+      send(res, error instanceof ToolError && error.status === 'rejected' ? 403 : 502, { error: errorSummary(error), code: info.code, recovery: info.recovery });
+    }
   });
 }

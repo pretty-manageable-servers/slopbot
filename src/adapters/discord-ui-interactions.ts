@@ -1,3 +1,4 @@
+import { errorReply, logError } from "../errors.js";
 import {
   MessageFlags,
   type ButtonInteraction,
@@ -44,6 +45,7 @@ export async function handleDiscordUi(
       allowedMentions: { parse: [] },
     });
   } catch (error) {
+    logError("ui_action_failed", error, { stage: "UI action", server: message.server, channel: message.channel, messageId: message.id });
     if (id) {
       try {
         const current = await runtime.current(message, id);
@@ -51,14 +53,11 @@ export async function handleDiscordUi(
           ...discordUi(current.document, id, current.revision, current.pending),
           allowedMentions: { parse: [] },
         });
-      } catch {
-        /* Keep the original error when UI recovery cannot display. */
+      } catch (recoveryError) {
+        logError("ui_recovery_display_failed", recoveryError, { stage: "UI recovery", messageId: message.id }, true);
       }
     }
-    const content =
-      error instanceof ToolError
-        ? error.message
-        : "Action could not finish. Its recorded result will be reconciled before retrying.";
+    const content = errorReply(error);
     if (interaction.deferred || interaction.replied)
       await interaction.followUp({
         content,

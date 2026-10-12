@@ -1,3 +1,4 @@
+import { logError } from "../errors.js";
 import type { HarnessJournal, HarnessState, HarnessEvent } from "../harness-state.js";
 import type { ToolOutput } from "../tools.js";
 import { DatabaseSync } from "node:sqlite";
@@ -709,7 +710,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       if (!current || parseMessage(JSON.parse(String(current.body))).text !== message.text) return;
       this.db.prepare("INSERT OR REPLACE INTO embeddings VALUES(?,?,?,?)")
         .run(message.server, message.id, this.embeddings!.model, JSON.stringify(vector));
-    }).catch(() => console.error("Embedding indexing failed; keyword retrieval remains available."));
+    }).catch(error => logError("embedding_index_failed_keyword_search_available", error, { stage: "embedding indexing", server: message.server, channel: message.channel, messageId: message.id }));
   }
 
   indexStats(server: string, channel: string): { messages: number; vectors: number; oldest: number | null; newest: number | null; usage: { model: string; purpose: string; requests: number; tokens: number; unknown: number }[] } {

@@ -1,6 +1,7 @@
 # Prompt caching
 
-The system instructions and sorted tool catalog form a stable prefix. Dynamic
+The system instructions and sorted native function schemas form a stable prefix.
+Schemas travel in the API tools field rather than the system message. Dynamic
 profiles, retrieved messages and current requests follow that prefix.
 
 Task conversations replay saved prompt snapshots and append new turns. Tool
@@ -21,3 +22,5 @@ Client `client_prompt_cache` events record hashed prefix stability and whether a
 request is an append, repeat or branch. Provider usage reports actual cache hits;
 these are separate measurements. Client scope identifiers are not sent as
 provider-specific cache controls.
+
+Native assistant/tool message pairs retain their call IDs across retries. Schema bytes are included in input budgeting. Cache diagnostics report tool count and schema fingerprint; a schema change is a new branch even if message text is unchanged.

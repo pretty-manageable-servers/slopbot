@@ -1,3 +1,4 @@
+import { errorSummary, logError } from "./errors.js";
 import type { Json, Message } from "./domain.js";
 
 export interface HistoryState {
@@ -8,6 +9,7 @@ export interface HistoryState {
   oldest: { id: string; timestamp: number } | null;
   job: null | { kind: "window" | "more"; before: string | null; cutoff: number; started: number; remaining: number | null; scanned: number; added: number };
   error: boolean;
+  errorReason?: string;
 }
 
 export interface HistoryStore {
@@ -58,9 +60,11 @@ export class HistoryImporter {
       };
     }
     state.error = false;
+    delete state.errorReason;
     const saved = this.save(channel, state);
-    const worker = saved.then(() => this.run(channel)).catch(async () => {
-      const current = this.state(channel); current.error = true; await this.save(channel, current);
+    const worker = saved.then(() => this.run(channel)).catch(async error => {
+      logError("history_import_failed", error, { stage: "history import", server: this.server, channel });
+      const current = this.state(channel); current.error = true; current.errorReason = errorSummary(error); await this.save(channel, current);
     }).finally(() => this.workers.delete(channel));
     this.workers.set(channel, worker);
     await saved;

@@ -1,3 +1,4 @@
+import { logError } from "../errors.js";
 import type { ToolActivity } from '../tool-activity.js';
 import { toolProgress } from '../presentation/tool-activity.js';
 interface StatusMessage { edit(content: string): Promise<unknown>; delete(): Promise<unknown>; }
@@ -13,6 +14,6 @@ export class DiscordToolProgress {
   }
   async finish(key: string): Promise<void> {
     const request=this.requests.get(key);this.requests.delete(key);
-    await request?.message?.delete().catch(()=>undefined);
+    await request?.message?.delete().catch(error => logError("tool_progress_cleanup_failed", error, { stage: "Discord status cleanup" }, true));
   }
 }

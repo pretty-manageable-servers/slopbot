@@ -11,20 +11,20 @@ export class E2BSandboxProvider implements SandboxProvider {
     try {
       return this.wrap(await Sandbox.create({ ...this.connection(), template: this.options.template ?? 'base', metadata, timeoutMs: lifetimeMs }));
     } catch (error) {
-      if (error instanceof ServiceBusyError) throw new ToolError('PMServers sandbox capacity is being prepared or is busy. Try again in a few minutes.');
-      if (error instanceof AuthenticationError) throw new ToolError('Sandbox authentication failed. Check the configured project token.');
-      throw new UncertainActionError('Sandbox creation could not be confirmed. Any orphan expires automatically; do not blindly retry.'); }
+      if (error instanceof ServiceBusyError) throw new ToolError('PMServers sandbox capacity is being prepared or is busy. Try again in a few minutes.', 'failed', { cause: error });
+      if (error instanceof AuthenticationError) throw new ToolError('Sandbox authentication failed. Check the configured project token.', 'failed', { cause: error });
+      throw new UncertainActionError('Sandbox creation could not be confirmed. Any orphan expires automatically; do not blindly retry.', { cause: error }); }
   }
   async connect(id: string): Promise<SandboxSession> {
     try { return this.wrap(await Sandbox.connect(id, this.connection())); }
-    catch { throw new ToolError('Sandbox could not be connected. It may have expired or the provider may be unavailable.'); }
+    catch (error) { throw new ToolError('Sandbox could not be connected. It may have expired or the provider may be unavailable.', 'failed', { cause: error }); }
   }
   private wrap(sandbox: Sandbox): SandboxSession {
     const read = async <T>(work: () => Promise<T>) => {
-      try { return await work(); } catch { throw new ToolError('Sandbox read or lease request failed. Check workspace status.'); }
+      try { return await work(); } catch (error) { throw new ToolError('Sandbox read or lease request failed. Check workspace status.', 'failed', { cause: error }); }
     };
     const write = async <T>(work: () => Promise<T>) => {
-      try { return await work(); } catch { throw new UncertainActionError('Sandbox action could not be confirmed. Inspect workspace state before retrying.'); }
+      try { return await work(); } catch (error) { throw new UncertainActionError('Sandbox action could not be confirmed. Inspect workspace state before retrying.', { cause: error }); }
     };
     return {
       id: sandbox.sandboxId,
@@ -32,7 +32,7 @@ export class E2BSandboxProvider implements SandboxProvider {
         try { const result = await sandbox.commands.run(command, { timeoutMs, requestTimeoutMs: timeoutMs + 5000 }); return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode }; }
         catch (error) {
           if (error instanceof CommandExitError) return { stdout: error.stdout, stderr: error.stderr, exitCode: error.exitCode };
-          throw new UncertainActionError('Sandbox command timed out or its result was lost. It may have run; inspect state before retrying.');
+          throw new UncertainActionError('Sandbox command timed out or its result was lost. It may have run; inspect state before retrying.', { cause: error });
         }
       },
       read: path => read(() => sandbox.files.read(path)),

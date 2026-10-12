@@ -59,6 +59,7 @@ test("failed imports retain a cursor, pause blocks work, and a new worker resume
   await importer.start("c"); await importer.idle();
   assert.equal(store.indexStats("s", "c").messages, 100);
   assert.equal(importer.state("c").error, true);
+  assert.match(importer.state("c").errorReason ?? "", /UNEXPECTED_ERROR/);
   assert.equal(importer.state("c").job?.before, "151");
   await importer.pause("c");
   const resumed = new HistoryImporter("s", store, healthy, 7, () => now);

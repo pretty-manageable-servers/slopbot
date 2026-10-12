@@ -1,3 +1,4 @@
+import { errorContext, errorSummary, logError } from "./errors.js";
 import { randomUUID } from "node:crypto";
 import { requestTimings } from "./request-timing.js";
 import type { Message, Reply } from "./domain.js";
@@ -44,13 +45,13 @@ export class TaskWorker {
         if(!await this.store.acquireWorker(this.server,this.owner,Date.now()+60000)) { if(this.started)this.stopping=true; return; }
         if(!this.started) { await this.store.recoverJobs(this.server);this.started=true; }
         await this.pump();
-      } catch(error) { console.error("Task worker database operation failed",error instanceof Error?error.name:"UnknownError"); }
+      } catch(error) { logError("worker_database_failed", error, { stage: "worker lease or queue", server: this.server }); }
       finally {this.ticking=false;}
     };
     void tick();this.timer=setInterval(()=>{void tick();},1000);this.timer.unref();
   }
   async enqueue(message: Message): Promise<Job> { requestTimings.start(message, "queue"); const job=await this.store.enqueueJob(message);await this.pump();return job; }
-  wake(): void { void this.pump(); }
+  wake(): void { void this.pump().catch(error => logError("worker_pump_failed", error, { server: this.server })); }
   private async pump(): Promise<void> {
     return requestTimings.withoutScope(() => this.pumpUnscoped());
   }
@@ -60,7 +61,7 @@ export class TaskWorker {
     try {
       while(this.active.size<this.concurrency && !this.stopping) {
         const job=await this.store.claimJob(this.server);if(!job)return;
-        const promise=this.process(job).finally(()=>{this.active.delete(promise);void this.pump();});this.active.add(promise);
+        const promise=this.process(job).catch(error => logError("worker_job_record_failed", error, { stage: "job persistence", server: this.server, jobId: job.id })).finally(()=>{this.active.delete(promise);this.wake();});this.active.add(promise);
       }
     } finally {this.pumping=false;}
   }
@@ -70,18 +71,24 @@ export class TaskWorker {
   private async processScoped(job: Job): Promise<void> {
     requestTimings.end(job.message, "retry backoff");
     requestTimings.end(job.message, "queue");
+    let stage = "request execution";
     try {
       if (!this.accepts(job.message)) throw new Error("Channel is no longer enabled");
       const reply = job.reply ?? await this.run(job.message);
+      stage = "save reply";
       if (reply) await this.store.readyJob(job.id, reply);
+      stage = "Discord delivery";
       if (reply) await this.deliver(job.message, reply, job.id);
+      stage = "finish job";
       await this.store.finishJob(job.id);
     } catch (error) {
+      error = errorContext(error, { stage, jobId: job.id, server: job.message.server, channel: job.message.channel, messageId: job.message.id });
+      logError("task_job_failed", error);
       const transient = error instanceof ProviderError && (error.status === 429 || error.status >= 500) || error instanceof TypeError;
       if (transient && job.attempts < 2) { await this.store.retryLater(job.id, Date.now() + 5000 * (job.attempts + 1)); requestTimings.start(job.message, "retry backoff"); return; }
-      await this.store.failJob(job.id, error instanceof Error ? error.message : "Unknown failure", error instanceof UncertainActionError);
-      try { await this.onFailure(job, error); } catch { console.error("Could not publish task failure notice"); }
-      console.error(`Task job ${job.id} ${error instanceof UncertainActionError ? "needs reconciliation" : "failed"}: ${error instanceof Error ? error.name : "UnknownError"}`);
+      await this.store.failJob(job.id, errorSummary(error), error instanceof UncertainActionError);
+      try { await this.onFailure(job, error); } catch (noticeError) { logError("task_failure_notice_failed", noticeError, { stage: "failure notice delivery", jobId: job.id }); }
+
     }
   }
   async idle(): Promise<void> {

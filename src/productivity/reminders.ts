@@ -1,3 +1,4 @@
+import { errorSummary, logError } from "../errors.js";
 import type { Json, Message } from "../domain.js";
 import type { RecordStore } from "../records.js";
 import { ToolError, type ToolRegistry } from "../tools.js";
@@ -61,7 +62,7 @@ export function registerReminderTools(
           records
             .map((record) => {
               const reminder = record.value as unknown as Reminder;
-              return `${reminder.text} — ${new Date(reminder.at).toISOString()} (${reminder.status}${reminder.error ? "; delivery waiting for access or retry" : ""})\nReference: ${record.id}`;
+              return `${reminder.text} — ${new Date(reminder.at).toISOString()} (${reminder.status}${reminder.error ? `; ${reminder.error}` : ""})\nReference: ${record.id}`;
             })
             .join("\n\n") || "No reminders in this channel."
         );
@@ -157,7 +158,7 @@ export class ReminderWorker {
     const tick = () => {
       if (!this.active)
         this.active = this.tick()
-          .catch(() => console.error("Reminder scan unavailable."))
+          .catch(error => logError("reminder_scan_failed", error, { stage: "reminder scan", server: this.server }))
           .finally(() => {
             this.active = undefined;
           });
@@ -190,7 +191,8 @@ export class ReminderWorker {
       };
       try {
         await this.authorize(message, reminder.channel);
-      } catch {
+      } catch (error) {
+        logError("reminder_failed", error, { stage: "reminder", server: this.server, channel: reminder.channel, operationId: record.id });
         await this.store.putRecord(
           this.server,
           "reminder",
@@ -198,7 +200,7 @@ export class ReminderWorker {
           {
             ...reminder,
             retryAt: this.now() + 60000,
-            error: "access",
+            error: errorSummary(error),
           } as unknown as Json,
           record.revision,
         );
@@ -232,7 +234,8 @@ export class ReminderWorker {
           { ...reminder, status: "sent", retryAt: 0 } as unknown as Json,
           record.revision + 1,
         );
-      } catch {
+      } catch (error) {
+        logError("reminder_failed", error, { stage: "reminder", server: this.server, channel: reminder.channel, operationId: record.id });
         await this.store.putRecord(
           this.server,
           "reminder",
@@ -241,7 +244,7 @@ export class ReminderWorker {
             ...reminder,
             status: "sending",
             retryAt: this.now() + 60000,
-            error: "delivery",
+            error: errorSummary(error),
           } as unknown as Json,
           record.revision + 1,
         );

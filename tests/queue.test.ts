@@ -87,3 +87,19 @@ test("leases reject a second worker owner until expiration; interrupted jobs rec
   store.recoverJobs("s");
   assert.equal(store.jobs("s", "t")[0]?.status, "pending");
 });
+
+
+test("job errors and logs include the real cause, stage and job ID even if notice delivery fails", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const logs: string[] = []; t.mock.method(console, 'error', (line: string) => logs.push(line));
+  let notice: unknown;
+  const worker = new TaskWorker('s', store, async () => { throw new Error('Tool round limit reached; progress retained'); }, async () => {}, () => true, 3,
+    async (_job, error) => { notice = error; throw new Error('Discord notice denied'); });
+  worker.start(); const job = await worker.enqueue(message('failure')); await worker.idle(); await worker.stop();
+  assert.ok(notice instanceof Error);
+  assert.match(store.jobs('s', 't')[0]!.error!, /request execution: Tool round limit reached/);
+  const events = logs.map(line => JSON.parse(line));
+  assert.equal(events[0].context.jobId, job.id);
+  assert.equal(events[0].message, 'Tool round limit reached; progress retained');
+  assert.equal(events[1].event, 'task_failure_notice_failed');
+});

@@ -1,3 +1,4 @@
+import { DEFAULT_MAX_TOOL_ROUNDS } from "./errors.js";
 export interface Config {
   sandboxApiKey?: string;
   sandboxApiUrl?: string;
@@ -27,6 +28,7 @@ export interface Config {
   contextTokens: number;
   outputTokens: number;
   checkpointTokens: number;
+  maxToolRounds: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -92,6 +94,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     contextTokens,
     outputTokens,
     checkpointTokens,
+    maxToolRounds: integer("MAX_TOOL_ROUNDS", DEFAULT_MAX_TOOL_ROUNDS, 1000, 1),
     historyWindowDays: integer("HISTORY_WINDOW_DAYS", 7, 3650, 1),
   };
 }

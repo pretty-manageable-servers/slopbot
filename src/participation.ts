@@ -1,3 +1,4 @@
+import { errorSummary, logError } from "./errors.js";
 import { participationPrompt, reactionEmoji } from "./participation-prompts.js";
 import { randomUUID } from "node:crypto";
 import { EventJournal } from "./event-journal.js";
@@ -44,7 +45,7 @@ export class LLMClassifier implements Classifier {
       await this.store.complete(runId, undefined, [], output);
       return { ...(reactionEmoji(value.emoji) ? { emoji: reactionEmoji(value.emoji) } : {}), respond: value.respond, addressed: value.addressed, reason: value.reason.slice(0, 200) };
     } catch (error) {
-      try { await journal.close(); } finally { await this.store.fail(runId, "ClassifierError"); }
+      try { await journal.close(); } finally { await this.store.fail(runId, errorSummary(error)); }
       throw error;
     }
   }
@@ -78,7 +79,7 @@ export class ParticipationGate {
       if (!this.options.enabled) return this.finish(key, { respond: false, addressed: false, reason: "monitoring_disabled" });
       let decision: ParticipationDecision;
       try { decision = await requestTimings.measure(message, "decision classifier", () => this.classifier.classify(message, context)); }
-      catch { return this.finish(key, { respond: false, addressed: false, reason: "classifier_failed" }); }
+      catch (error) { logError("participation_classifier_failed_staying_silent", error, { stage: "participation classification", server: message.server, channel: message.channel, messageId: message.id }, true); return this.finish(key, { respond: false, addressed: false, reason: "classifier_failed" }); }
       const emoji = reactionEmoji(decision.emoji);
       const frequency = Math.max(0, Math.min(100, this.options.reactionFrequency ?? 60));
       const allowReaction = emoji && frequency > 0 && (frequency === 100 || this.random() < frequency / 100);

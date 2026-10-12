@@ -1,3 +1,4 @@
+import { logError } from "../errors.js";
 import { lookup } from 'node:dns/promises';
 import { BlockList, isIP } from 'node:net';
 import { Agent, buildConnector, fetch as httpFetch } from 'undici';
@@ -32,7 +33,7 @@ export function remoteMcpConnector(options: { allowPrivate?: boolean } = {}): Mc
         const addresses = isIP(hostname) ? [{ address: hostname, family: isIP(hostname) }] : await lookup(hostname, { all: true });
         if (!addresses.length || !options.allowPrivate && addresses.some(item => !publicMcpAddress(item.address))) throw new Error('Private MCP destinations are blocked');
         connector({ ...socketOptions, hostname: addresses[0]!.address, servername: hostname }, callback);
-      })().catch(() => callback(new Error('MCP endpoint could not be reached safely'), null));
+      })().catch(error => callback(new Error('MCP endpoint could not be reached safely', { cause: error }), null));
     } });
     const guardedFetch: typeof fetch = async (input, init) => {
       const request = new Request(input, init), url = new URL(request.url);
@@ -62,7 +63,7 @@ export function remoteMcpConnector(options: { allowPrivate?: boolean } = {}): Mc
       : new StreamableHTTPClientTransport(endpoint, { ...transportOptions, reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 1000, initialReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
     // The SDK's optional sessionId declaration predates exactOptionalPropertyTypes.
     try { await client.connect(transport as Transport, { timeout: config.timeoutMs }); }
-    catch { await client.close().catch(() => {}); await dispatcher.destroy(); throw new Error('MCP initialization failed'); }
+    catch (error) { await client.close().catch(error => logError("mcp_client_cleanup_failed", error, { stage: "MCP cleanup" }, true)); await dispatcher.destroy(); throw new Error('MCP initialization failed', { cause: error }); }
     let closed = false;
     return {
       async listTools() {
@@ -86,7 +87,7 @@ export function remoteMcpConnector(options: { allowPrivate?: boolean } = {}): Mc
         if (!Array.isArray(result.content)) throw new Error('Invalid MCP content');
         return { content: result.content as Json[], ...(result.structuredContent ? { structuredContent: result.structuredContent as Json } : {}), ...(typeof result.isError === 'boolean' ? { isError: result.isError } : {}) };
       },
-      async close() { if (closed) return; closed = true; await client.close().catch(() => {}); await dispatcher.destroy(); },
+      async close() { if (closed) return; closed = true; await client.close().catch(error => logError("mcp_client_cleanup_failed", error, { stage: "MCP cleanup" }, true)); await dispatcher.destroy(); },
     };
   };
 }

@@ -1,3 +1,4 @@
+import { errorReply, logError } from "../errors.js";
 import { sandboxTool } from "../sandbox.js";
 import { McpManager, McpSecrets } from '../mcp.js';
 import { remoteMcpConnector } from './mcp-client.js';
@@ -166,7 +167,7 @@ export class DiscordAdapter implements ChatGateway {
       allowedChannels: this.channels.map(channel => ({ server: config.guildId, channel })),
       recentMessages: savedLimit("reply_context", config.replyContextMessages, 100),
       maxContextTokens: config.contextTokens, maxInputChars: config.contextTokens,
-      maxOutputTokens: config.outputTokens, checkpointTokens: config.checkpointTokens,
+      maxOutputTokens: config.outputTokens, checkpointTokens: config.checkpointTokens, maxToolRounds: config.maxToolRounds,
     }, store, { onToolActivity: async (message, activity) => {
       if (!this.bot.accepts(message.server, message.channel)) return;
       await this.toolProgress.update(JSON.stringify([message.server,message.channel,message.id]), activity, async content => {
@@ -175,11 +176,11 @@ export class DiscordAdapter implements ChatGateway {
         return channel.send({content,reply:{messageReference:message.id,failIfNotExists:false},allowedMentions:{parse:[],repliedUser:false}});
       });
     }, presentation: discordPresentation, profiles: store, harness: store, tools: {
-      catalog: () => this.tools.catalog(), suggest: message => this.tools.suggest(message),
+      catalog: () => this.tools.catalog(), schemas: () => this.tools.schemas(), suggest: message => this.tools.suggest(message),
       execute: (message, call, id, version) => this.bot.executeTool(message, call, id, version),
       snapshot: () => {
         const selected = this.tools.capture();
-        return { catalog: selected.catalog, suggest: selected.suggest, execute: (message, call, id, version) => {
+        return { catalog: selected.catalog, schemas: selected.schemas, suggest: selected.suggest, execute: (message, call, id, version) => {
           selected.assertCurrent(call.name);
           return this.bot.executeTool(message, call, id, version);
         } };
@@ -199,41 +200,40 @@ export class DiscordAdapter implements ChatGateway {
       try { return await this.app.handle(message, true); } finally { stop(); }
     }, (message, reply, id) => this.bot.deliver(message, reply, id), message => this.bot.accepts(message.server, message.channel), 3, async (job, error) => {
       if (!this.bot.accepts(job.message.server, job.message.channel)) return;
-      const reason = error instanceof UncertainActionError ? "An action or reply has an uncertain result. It will be reconciled before retrying." : "This request could not finish. You can ask me to retry it.";
-      await this.reply(job.message, `${reason}\nJob ID: ${job.id}`, `job-error:${job.id}`);
+      await this.reply(job.message, errorReply(error, job.id), `job-error:${job.id}`);
     });
     this.bot = new Bot(this.app, store, store, this, config.guildId, this.channels, { profiles: store, knowledge: store, participation, worker: this.worker, tools: this.tools, queueStore: store });
     this.client.once(Events.ClientReady, client => {
       console.log(`Slopbot connected as ${client.user.tag}. LLM mode: ${config.mock ? "mock" : "provider"}`);
       if (!this.channels.length) console.warn("No channels configured. Use /slopbot channels action:add channel:<test channel> to enable replies.");
-      void this.purgeAndIndex().catch(() => console.error("Database startup indexing failed"));
-      void this.hydrateAuthors().catch(() => console.error("Author-name refresh unavailable; names will fill from new messages."));
+      void this.purgeAndIndex().catch(error => logError("Database startup indexing failed", error));
+      void this.hydrateAuthors().catch(error => logError("Author-name refresh unavailable; names will fill from new messages.", error));
       try { this.worker.start(); } catch (error) { console.error(error instanceof Error ? error.message : "Worker unavailable"); void this.client.destroy(); return; }
-      const sync = () => { for (const channel of this.channels) void this.history.start(channel).catch(() => console.error("History import startup failed")); };
+      const sync = () => { for (const channel of this.channels) void this.history.start(channel).catch(error => logError("History import startup failed", error)); };
       this.reminders.start();
       sync(); this.historyTimer = setInterval(sync, 60000);
-      void this.registerCommands().catch(() => console.error("Could not register /slopbot commands. Check application command permissions."));
+      void this.registerCommands().catch(error => logError("Could not register /slopbot commands. Check application command permissions.", error));
     });
     this.client.on(Events.InteractionCreate, interaction => {
       if ((interaction.isButton() || interaction.isStringSelectMenu()) && interaction.customId.startsWith('slopui:')) {
-        void handleDiscordUi(interaction,this.uiRuntime).catch(()=>console.error('UI interaction display failed.'));
+        void handleDiscordUi(interaction,this.uiRuntime).catch(error => logError('UI interaction display failed.', error));
       }
-      if (interaction.isChatInputCommand() && interaction.commandName === "slopbot") void this.command(interaction).catch(() => console.error("Command failed."));
+      if (interaction.isChatInputCommand() && interaction.commandName === "slopbot") void this.command(interaction).catch(error => logError("Command failed.", error));
     });
-    this.client.on(Events.Error, () => console.error("Discord client error. Check connection and bot configuration."));
-    this.client.on(Events.MessageCreate, message => { void this.receive(message).catch(() => console.error("Discord event failed. Check channel permissions.")); });
+    this.client.on(Events.Error, error => logError("discord_client_failed", error));
+    this.client.on(Events.MessageCreate, message => { void this.receive(message).catch(error => logError("Discord event failed. Check channel permissions.", error)); });
     this.client.on(Events.MessageUpdate, (_old, updated) => {
       void (async () => {
         if (!updated.guildId || !this.bot.accepts(updated.guildId, updated.channelId)) return;
         const message = updated.partial ? await updated.fetch() : updated;
         await store.revise(this.normalize(message));
-      })().catch(() => console.error("Could not update edited message context."));
+      })().catch(error => logError("Could not update edited message context.", error));
     });
     this.client.on(Events.MessageDelete, message => {
-      if (message.guildId && this.bot.accepts(message.guildId, message.channelId)) void store.remove(message.guildId, message.channelId, message.id);
+      if (message.guildId && this.bot.accepts(message.guildId, message.channelId)) void store.remove(message.guildId, message.channelId, message.id).catch(error => logError("discord_message_delete_failed", error, { messageId: message.id }));
     });
     this.client.on(Events.MessageBulkDelete, messages => {
-      for (const message of messages.values()) if (message.guildId && this.bot.accepts(message.guildId, message.channelId)) void store.remove(message.guildId, message.channelId, message.id);
+      for (const message of messages.values()) if (message.guildId && this.bot.accepts(message.guildId, message.channelId)) void store.remove(message.guildId, message.channelId, message.id).catch(error => logError("discord_message_delete_failed", error, { messageId: message.id }));
     });
   }
   private async purgeAndIndex(): Promise<void> {
@@ -304,7 +304,8 @@ export class DiscordAdapter implements ChatGateway {
       for (const content of parts.slice(1)) await interaction.followUp({ content, flags: previewFlags | (ephemeral ? MessageFlags.Ephemeral : 0), allowedMentions: { parse: [] } });
       if(output.ui){const state=await this.uiRuntime.prepare(message,output.ui,interaction.id);const payload=discordUi(output.ui,state.id,state.revision);await interaction.followUp({...payload,flags:[...('flags' in payload?payload.flags:[]),...(ephemeral?['Ephemeral' as const]:[])],allowedMentions:{parse:[]}});}
     } catch (error) {
-      await interaction.editReply(error instanceof ToolError || error instanceof UncertainActionError ? error.message : "Tool failed. Its recorded result will be reconciled before retrying.");
+      logError("command_failed", error, { stage: "slash command", server: this.config.guildId, messageId: interaction.id });
+      await interaction.editReply({content: errorReply(error), allowedMentions: {parse: []}});
     }
   }
   private async hydrateAuthors(): Promise<void> {
@@ -424,7 +425,7 @@ export class DiscordAdapter implements ChatGateway {
     if (timing) console.log(JSON.stringify({ type: "request_timing", server: message.server, channel: message.channel, messageId: message.id, delivery: delivered ? "sent" : "failed", ...timing }));
     if (timing) {
       try { await saveRequestTiming(this.store, message, timing, delivered ? "sent" : "failed", outputs, activity); }
-      catch { console.warn("Request timing storage unavailable; delivery outcome unchanged."); }
+      catch (error) { logError("request_timing_storage_failed", error, { stage: "timing storage", server: message.server, channel: message.channel, messageId: message.id }, true); }
     }
     }
   }
@@ -445,7 +446,7 @@ export class DiscordAdapter implements ChatGateway {
   }
   typing(channelId: string): () => void {
     const pulse = async () => { const channel = await this.client.channels.fetch(channelId); if (channel?.isTextBased() && "sendTyping" in channel) await channel.sendTyping(); };
-    const send = () => { void pulse().catch(() => undefined); }; send();
+    const send = () => { void pulse().catch(error => logError("discord_typing_failed", error, { channel: channelId }, true)); }; send();
     const timer = setInterval(send, 8000); timer.unref(); return () => clearInterval(timer);
   }
   async consoleSnapshot(user: string): Promise<unknown> {

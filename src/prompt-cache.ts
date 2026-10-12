@@ -19,17 +19,19 @@ export function stableJson(value: unknown): string {
 const hash = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 export class PromptCacheDiagnostics {
-  private readonly lanes = new Map<string, string[]>();
+  private readonly lanes = new Map<string, { fingerprints: string[]; tools: string }>();
   compare(prompt: Prompt, messages: readonly unknown[]): Json {
     const lane = hash(
       prompt.cacheScope ??
         `${prompt.purpose ?? "reply"}:${prompt.prefixVersion}`,
     );
     const fingerprints = messages.map((message) => hash(stableJson(message)));
-    const previous = this.lanes.get(lane);
+    const saved = this.lanes.get(lane);
+    const previous = saved?.fingerprints;
+    const tools = hash(stableJson(prompt.tools ?? []));
     let common = 0;
     while (
-      previous &&
+      previous && saved?.tools === tools &&
       common < Math.min(previous.length, fingerprints.length) &&
       previous[common] === fingerprints[common]
     )
@@ -42,18 +44,20 @@ export class PromptCacheDiagnostics {
           : "append"
         : "branch";
     this.lanes.delete(lane);
-    this.lanes.set(lane, fingerprints);
+    this.lanes.set(lane, { fingerprints, tools });
     if (this.lanes.size > 128)
       this.lanes.delete(this.lanes.keys().next().value!);
     return {
       type: "client_prompt_cache",
       lane,
       prefix_fingerprint: hash(
-        stableJson(messages.slice(0, prompt.prefix.length)),
+        stableJson({ messages: messages.slice(0, prompt.prefix.length), tools: prompt.tools ?? [] }),
       ),
       relation,
       unchanged_messages: common,
       total_messages: fingerprints.length,
+      total_tools: prompt.tools?.length ?? 0,
+      tools_fingerprint: hash(stableJson(prompt.tools ?? [])),
       ...(previous && common < previous.length
         ? { changed_at_message: common }
         : {}),
@@ -66,10 +70,12 @@ export function appendToolEvidence(
   base: readonly PromptItem[],
   counter: TokenCounter,
   limit: number,
+  toolCallId?: string,
 ): PromptItem {
   const max = Math.min(output.text.length, 2000);
   const build = (length: number): PromptItem => ({
-    role: "user",
+    role: toolCallId ? "tool" : "user",
+    ...(toolCallId ? { toolCallId } : {}),
     contextOnly: true,
     content: JSON.stringify({
       tool: name,

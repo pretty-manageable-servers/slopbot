@@ -1,3 +1,4 @@
+import { errorSummary, logError } from "./errors.js";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { Ajv, type ValidateFunction } from 'ajv';
 import { Ajv2019 } from 'ajv/dist/2019.js';
@@ -93,8 +94,9 @@ export class McpManager {
       try {
         const state = await this.prepare(saved);
         this.publish(state);
-      } catch {
-        this.live.set(saved.id, { config: saved, tools: [], error: 'Connection unavailable. Refresh to reconnect.', active: 0, retired: false, waiting: [] });
+      } catch (error) {
+        logError("mcp_restore_failed", error, { stage: "MCP restore", server: this.server, tool: saved.id });
+        this.live.set(saved.id, { config: saved, tools: [], error: errorSummary(error) + " Refresh to reconnect.", active: 0, retired: false, waiting: [] });
       }
     }));
   }
@@ -162,7 +164,7 @@ export class McpManager {
       } catch (error) {
         if (candidate) this.retire(candidate);
         if (error instanceof ToolError) throw error;
-        throw new ToolError('Could not connect or discover valid tools. Check the endpoint and credentials.');
+        throw new ToolError('Could not connect or discover valid tools. Check the endpoint and credentials.', 'failed', { cause: error });
       }
     } finally { release(); }
   }
@@ -203,7 +205,7 @@ export class McpManager {
       }
       this.registry.validateProvider(`mcp:${config.id}`, this.definitions(state));
       return state;
-    } catch (error) { await client.close().catch(() => {}); throw error; }
+    } catch (error) { await client.close().catch(error => logError("mcp_client_cleanup_failed", error, { stage: "MCP cleanup", server: this.server }, true)); throw error; }
   }
   private validator(schema: Json): ValidateFunction {
     const dialect = schema && typeof schema === 'object' && !Array.isArray(schema) ? schema.$schema : undefined;
@@ -247,8 +249,10 @@ export class McpManager {
             const result = await state.client!.callTool(tool.name, args);
             if (JSON.stringify(result).length > 1_000_000) throw new Error('MCP result exceeds limit');
             if (result.isError) {
-              if (policy.effect === 'read') throw new ToolError('The MCP server reported a tool failure. Check the connection and the remote service before retrying.', 'failed');
-              throw new Error('MCP write reported an error; its effects are uncertain');
+              const detail = result.content.flatMap(block => block && typeof block === 'object' && !Array.isArray(block) && block.type === 'text' && typeof block.text === 'string' ? [block.text] : []).join(' ').slice(0, 1000);
+              const cause = new Error(detail || 'The remote tool provided no error detail.');
+              if (policy.effect === 'read') throw new ToolError('The MCP server reported a tool failure. Check the connection and the remote service before retrying.', 'failed', { cause });
+              throw new Error('MCP write reported an error; its effects are uncertain', { cause });
             }
             if (validateOutput && (result.structuredContent === undefined || !validateOutput(result.structuredContent))) throw new Error('MCP returned invalid structured content');
             const text = result.content.flatMap(block => block && typeof block === 'object' && !Array.isArray(block) && block.type === 'text' && typeof block.text === 'string' ? [block.text] : []).join('\n');
@@ -281,7 +285,7 @@ export class McpManager {
     for (const resolve of state.waiting.splice(0)) resolve();
     if (state.active) { this.retired.add(state); return; }
     this.retired.delete(state);
-    if (state.client) void state.client.close().catch(() => {});
+    if (state.client) void state.client.close().catch(error => logError("mcp_client_cleanup_failed", error, { stage: "MCP cleanup", server: this.server }, true));
   }
   async close(): Promise<void> {
     this.closed = true;

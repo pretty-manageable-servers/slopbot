@@ -21,3 +21,20 @@ test("self knowledge works for members, ships focused topics and rejects arbitra
   assert.match(toolResult(await registry.invoke(message, "bot_info", { topic: "runtime" }, "runtime2", "agent")).text, /changed/);
   await assert.rejects(registry.invoke(message, "bot_info", { topic: "../../.env" }, "bad", "agent"));
 });
+
+
+test("bot_info documents native calling, budgets and the current provider changelog with source links", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const registry = new ToolRegistry(store, async () => false);
+  registry.register(selfKnowledgeTool(registry, () => 'Native function calling: enabled'));
+  const message = {id:'m',server:'s',channel:'c',author:'a',text:'Explain the deployment'};
+  const tools = await registry.invokeResult(message,'bot_info',{topic:'tools'},'native','agent');
+  assert.match(tools.text,/native function schemas/); assert.match(tools.text,/64/);
+  const changes = await registry.invokeResult(message,'bot_info',{topic:'pmservers_changelog'},'changes','agent');
+  assert.match(changes.text,/2026-10-11/); assert.match(changes.text,/2026-11-10/);
+  assert.ok(changes.sources?.some(source=>source.kind==='web' && source.url==='https://docs.pmservers.org/changelog/'));
+  const ai = await registry.invokeResult(message,'bot_info',{topic:'pmservers_ai'},'ai','agent');
+  assert.match(ai.text,/systemone/); assert.match(ai.text,/not a Slopbot feature/);
+  const prompt = await registry.invokeResult(message,'bot_info',{topic:'decision_prompt'},'prompt','agent');
+  assert.match(prompt.text, /"type": "choice"/); assert.ok(!prompt.text.includes('noul'));
+});

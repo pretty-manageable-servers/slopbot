@@ -1,6 +1,6 @@
 # Add a tool once
 
-Register a `ToolDefinition` in `ToolRegistry` at startup. Both the LLM catalog and `/slopbot` commands use that definition. The generic `/slopbot run tool:<name> arguments:<JSON>` supports tools beyond Discord's subcommand limit.
+Register a `ToolDefinition` in `ToolRegistry` at startup. Both native API function schemas and `/slopbot` commands use that definition. The generic `/slopbot run tool:<name> arguments:<JSON>` supports tools beyond Discord's subcommand limit.
 
 ```ts
 registry.register({
@@ -31,7 +31,7 @@ registry.register({
 
 Keep service clients outside the core. Native tools register at startup. Runtime providers replace their own definitions atomically through `replaceProvider()`. Each agent request captures a catalog; changing it changes the prefix version for subsequent requests. An active request keeps its captured catalog, and attempts to invoke changed or revoked definitions are rejected. Existing LLM, embeddings, storage and chat transport interfaces remain independent of tool connectors.
 
-Tools may supply `matchRead(message)` for a narrow, unambiguous read intent. The registry validates it and the same permission-checked executor runs it. For example, an indexing-status request selects `index` directly and returns its actual result. Matches never authorize writes. Model tool-protocol failures have at most two repair attempts; each failed run retains its original events.
+Tools may supply `matchRead(message)` for a narrow, unambiguous read intent. The registry validates it and the same permission-checked executor runs it. For example, an indexing-status request selects `index` directly and returns its actual result. Matches never authorize writes. Legacy text-protocol failures have at most two repair attempts; native calls retain provider IDs and validate their arguments before execution. Each failed run retains its original events.
 
 `file_read` is a member read tool shared by model calls and slash commands. Sources resolve through current Discord permissions; downloads accept only approved media hosts. Add decoders through `FileReader` registration, independent of fetching and vision. Every inspection is a separate durable run with a stable prefix and preserved reasoning events. Completed inspection sources are inherited by subsequent reply runs for the same request.
 
@@ -94,3 +94,9 @@ Live smoke test: `npm run sandbox:smoke` uses `.env.development`, creates a
 temporary sandbox, verifies remote shell/file operations and reconnect, then
 destroys it. In Discord, ask Slopbot to run a calculation in a sandbox; it
 moves the work into a task thread and selects the shared sandbox tool.
+
+## Native function calling and errors
+
+The production executor exposes a captured, sorted function-schema array from ToolRegistry. Native fields produce JSON Schema constraints; MCP input schemas are preserved. Chat requests send `tools` and `tool_choice:auto`. The system prompt contains behavioral instructions, not the catalog or a JSON-only calling format. Streamed IDs, names and argument fragments are assembled before execution. Assistant function calls and matching tool-role results are persisted and reconstructed together. Ordinary JSON in a native-mode answer cannot trigger execution. Legacy saved calls keep their stable operation IDs when replayed with deterministic conversation call IDs. Missing historical pairs are transmitted as labeled evidence instead of invalid tool messages.
+
+Schemas count against context budgets and have separate hashed cache diagnostics. Registry permissions and revocation checks still enforce execution. A schema does not grant access. Native protocol failures surface as `PROVIDER_TOOL_PROTOCOL`; tool errors include sanitized original reasons and preserved causes. `ToolError(message, "failed", {cause})` marks a known execution failure. Unknown write results use `UncertainActionError` and retain reconciliation behavior. `MAX_TOOL_ROUNDS` controls per-attempt rounds, default 64, range 1-1000.

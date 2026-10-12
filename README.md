@@ -135,3 +135,7 @@ The agent lifecycle follows [Auger's state machine](architecture/HARNESS.md), ad
 ## Deployment
 
 See [managed deployment](architecture/DEPLOYMENT.md).
+
+Tool definitions are sent as native chat function schemas. Results use matching tool-role messages; provider IDs and completed operations survive recovery. `MAX_TOOL_ROUNDS` defaults to 64 new rounds per attempt and accepts 1-1000. Retrying a job gets a fresh allowance without rerunning completed operations.
+
+Errors in replies, jobs, failed runs, web responses and background logs use shared diagnostics with the actual reason, code, failing stage and available request IDs. Credentials are redacted. `bot_info topic:errors` explains recovery. `bot_info topic:pmservers` and `topic:pmservers_changelog` summarize the PMServers docs reviewed on October 12, 2026; runtime and capabilities report the bot's current safe configuration and tools. Vane classification uses the documented System One endpoint.

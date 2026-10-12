@@ -131,7 +131,7 @@ test("reminder access revocation blocks delivery and cancellation prevents sendi
   await worker.tick();
   assert.equal(sent, 0);
   const record = (await store.record("s", "reminder", "r"))!;
-  assert.equal((record.value as unknown as Reminder).error, "access");
+  assert.match((record.value as unknown as Reminder).error ?? "", /no access/);
   const registry = new ToolRegistry(store, async () => false);
   registerReminderTools(registry, { store, authorize: async () => {} });
   await registry.invokeResult(
