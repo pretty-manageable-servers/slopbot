@@ -1,8 +1,17 @@
 import type { ToolActivity } from "../tool-activity.js";
 const label = (name: string) =>
   "`" + name.replace(/[^a-zA-Z0-9_]/g, "").slice(0, 80) + "`";
-const status = (item: ToolActivity) =>
-  item.reused ? `${item.status}, saved result` : item.status;
+const status = (item: ToolActivity) => {
+  const text = item.status === "rejected" ? "blocked" : item.status;
+  return item.reused ? `${text}, saved result` : text;
+};
+const reason = (item: ToolActivity) => item.reason
+  ? `: ${item.reason.replace(/\s+/g, " ").replace(/[\\`*_~<>|\[\]]/g, "\\$&").slice(0, 500)}`
+  : "";
+export function toolFailureSummary(activity: readonly ToolActivity[]): string {
+  return activity.filter(item => item.status === "rejected" || item.status === "failed")
+    .map(item => `- ${label(item.name)}: ${status(item)}${reason(item)}`).join("\n");
+}
 const duration = (item: ToolActivity) =>
   item.durationMs === undefined
     ? ""
@@ -11,7 +20,7 @@ export function toolFooter(activity: readonly ToolActivity[]): string {
   const groups = new Map<string, { item: ToolActivity; count: number }>();
   for (const item of activity) {
     const key =
-      item.durationMs === undefined ? `${item.name}:${status(item)}` : item.id;
+      item.durationMs === undefined ? JSON.stringify([item.name, status(item), item.reason]) : item.id;
     const group = groups.get(key);
     if (group) group.count++;
     else groups.set(key, { item, count: 1 });
@@ -21,7 +30,7 @@ export function toolFooter(activity: readonly ToolActivity[]): string {
         [...groups.values()]
           .map(
             ({ item, count }) =>
-              `- ${label(item.name)}${count > 1 ? ` ×${count}` : ""}: ${status(item)}${duration(item)}`,
+              `- ${label(item.name)}${count > 1 ? ` ×${count}` : ""}: ${status(item)}${duration(item)}${reason(item)}`,
           )
           .join("\n")
     : "";
@@ -34,7 +43,7 @@ export function toolProgress(activity: readonly ToolActivity[]): string {
       .slice(-8)
       .map(
         (item, index) =>
-          `${activity.length - Math.min(activity.length, 8) + index + 1}. ${label(item.name)}: ${status(item)}${duration(item)}`,
+          `${activity.length - Math.min(activity.length, 8) + index + 1}. ${label(item.name)}: ${status(item)}${duration(item)}${reason(item)}`,
       )
       .join("\n")
   );

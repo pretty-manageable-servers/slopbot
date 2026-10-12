@@ -26,8 +26,43 @@ test('tool footer groups repeated calls and distinguishes rejected and saved res
     {id:'3',name:'index',status:'rejected'},
     {id:'4',name:'index',status:'completed',reused:true},
   ];
-  assert.equal(toolFooter(calls), '\n\n**Tool activity**\n- `web_search` ×2: completed\n- `index`: rejected\n- `index`: completed, saved result');
+  assert.equal(toolFooter(calls), '\n\n**Tool activity**\n- `web_search` ×2: completed\n- `index`: blocked\n- `index`: completed, saved result');
   assert.match(toolProgress(calls), /1\. `web_search`: completed/);
+});
+
+test('tool errors retain distinct reasons and render them as bounded plain text', () => {
+  const calls: ToolActivity[] = [
+    {id:'1',name:'index',status:'rejected',reason:'Missing argument: channel'},
+    {id:'2',name:'index',status:'rejected',reason:'Manage Server permission is required.'},
+    {id:'3',name:'remote_read',status:'failed',reason:'Service unavailable'},
+    {id:'4',name:'read',status:'rejected',reason:'Bad\n**input** <@123> ' + 'x'.repeat(1000)},
+  ];
+  const footer = toolFooter(calls);
+  assert.match(footer, /index`: blocked: Missing argument: channel/);
+  assert.match(footer, /index`: blocked: Manage Server permission is required/);
+  assert.match(footer, /remote_read`: failed: Service unavailable/);
+  assert.ok(!footer.includes('×2'));
+  assert.ok(!footer.includes('Bad\n'));
+  assert.ok(!footer.includes('<@123>'));
+  assert.ok(footer.length < 900);
+  assert.match(toolProgress(calls), /remote_read`: failed: Service unavailable/);
+});
+
+for (const returned of [false, true]) test(`runner explains execution failures from ${returned ? 'results' : 'exceptions'} and holds continuation`, async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  let rounds = 0;
+  const app = new Application(store, {async *stream(){rounds++;yield {kind:'text',payload:{text:'{"tool_calls":[{"name":"remote_read","arguments":{}}]}'}};}},
+    {allowedChannels:[{server:'s',channel:'c'}]}, undefined,
+    {harness:store,tools:{catalog:()=>'',execute:async()=>{
+      if (returned) return {text:'Remote service unavailable',status:'failed',reason:'Remote service unavailable'};
+      throw new ToolError('Remote service unavailable', 'failed');
+    }}});
+  const reply = await app.handle({server:'s',channel:'c',author:'person',id:'request',text:'Read it',addressed:true});
+  assert.equal(rounds, 1);
+  assert.match(reply!.text, /remote_read.*failed: Remote service unavailable/);
+  assert.equal(reply!.toolActivity![0]!.status, 'failed');
+  assert.equal(reply!.toolActivity![0]!.reason, 'Remote service unavailable');
+  assert.equal((await store.harnessState('s', 'request'))?.kind, 'ToolResultsHeld');
 });
 
 test('progress edits one message per request and removes it after delivery', async () => {
@@ -59,6 +94,7 @@ for (const rejected of [false,true]) test(`execution reports ${rejected ? 'rejec
     assert.equal(reply?.toolActivity?.length,1);
     assert.equal(reply?.toolActivity?.[0]?.status,rejected ? 'rejected' : 'completed');
     assert.equal(reply?.toolActivity?.[0]?.reused,false);
+    if (rejected) { assert.equal(reply?.toolActivity?.[0]?.reason, 'Unavailable'); assert.match(reply!.text, /web_search.*blocked: Unavailable/); }
     assert.ok(Number.isFinite(reply?.toolActivity?.[0]?.durationMs));
     assert.ok(!reply?.text.includes('Tool activity'));
   } finally {store.close();}

@@ -8,7 +8,7 @@ The model lifecycle is explicit: waiting, streaming, interrupting, interrupted, 
 
 Slopbot adaptations:
 
-- Existing permission checks make the execution decisions. There is no new approval prompt. A permission/validation rejection marks the call denied; if every call is rejected, the runner returns a clarification request and leaves results held.
+- Existing permission checks make the execution decisions. There is no new approval prompt or safety classifier. Permission/validation errors display as blocked, while known execution failures display as failed. The actual reason appears in the reply and tool activity. If every call is blocked or failed, the runner leaves results held without making further model or tool calls. Saved error results retain their reasons.
 - Tool execution remains sequential. The existing durable queue preserves contributions from different people; it does not overwrite messages with Auger's single queued-message slot.
 - `Application.interrupt(server, messageId)` cancels the active request's provider stream and prevents subsequent tool calls. Already-started actions settle and keep their actual results in the journal; they are never reported as rolled back. No Discord cancel command is wired yet.
 - Partial text from a failed or interrupted stream can enter retry context as labeled evidence when the source/context version is still current. Original reasoning and opaque events remain untouched; raw reasoning is not replayed as ordinary chat.

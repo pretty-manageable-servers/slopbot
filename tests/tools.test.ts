@@ -8,6 +8,19 @@ import type { LLM } from "../src/ports.js";
 
 const message: Message = { id: "1", server: "s", channel: "t", taskId: "t", author: "alice", text: "set the limit to 5" };
 
+test("saved tool errors retain their failure status and reason without executing again", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  let executions = 0;
+  const registry = new ToolRegistry(store, async () => true);
+  registry.register({ name: "read", description: "read", fields: {}, access: "member", effect: "read", retrySafe: true,
+    async execute() { executions++; throw new ToolError("Remote service unavailable", "failed"); } });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(registry.invokeResult(message, "read", {}, "error", "agent"), error =>
+      error instanceof ToolError && error.status === "failed" && error.message === "Remote service unavailable");
+  }
+  assert.equal(executions, 1);
+});
+
 test("commands and agents share permissions, validation and operation deduplication", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   let admin = false, executions = 0;

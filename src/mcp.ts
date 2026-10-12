@@ -247,7 +247,7 @@ export class McpManager {
             const result = await state.client!.callTool(tool.name, args);
             if (JSON.stringify(result).length > 1_000_000) throw new Error('MCP result exceeds limit');
             if (result.isError) {
-              if (policy.effect === 'read') throw new ToolError('The MCP server reported a tool failure.');
+              if (policy.effect === 'read') throw new ToolError('The MCP server reported a tool failure. Check the connection and the remote service before retrying.', 'failed');
               throw new Error('MCP write reported an error; its effects are uncertain');
             }
             if (validateOutput && (result.structuredContent === undefined || !validateOutput(result.structuredContent))) throw new Error('MCP returned invalid structured content');

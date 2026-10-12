@@ -57,7 +57,7 @@ test('runner journals lifecycle and holds an all-rejected batch without more mod
  const store=new SQLiteStore();t.after(()=>store.close());let streams=0;
  const llm: LLM={async *stream(){streams++;yield {kind:'reasoning',payload:{delta:'retained'}};yield {kind:'text',payload:{text:'{"tool_calls":[{"name":"write","arguments":{}}]}'}};}};
  const app=new Application(store,llm,policy,undefined,{harness:store,tools:{catalog:()=>'',execute:async()=>{throw new ToolError('not allowed');}}});
- assert.match((await app.handle(message))!.text,/tools were rejected/);
+ assert.match((await app.handle(message))!.text,/write.*blocked: not allowed/);
  assert.equal(streams,1);assert.equal((await store.harnessState('s','m'))?.kind,'ToolResultsHeld');
 });
 test('stream interruption preserves partial events and resumes on an explicit retry',async t=>{

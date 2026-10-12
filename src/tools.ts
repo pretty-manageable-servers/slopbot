@@ -7,7 +7,8 @@ export interface ToolResult {
   text: string;
   data?: Json;
   content?: readonly Json[];
-  status?: "ok" | "rejected";
+  status?: "ok" | "rejected" | "failed";
+  reason?: string;
   sources?: readonly ({ kind: "message"; server: string; channel: string; id: string } | { kind: "web"; url: string; title: string })[];
   artifacts?: readonly { url: string; label: string }[];
   handoff?: { threadId: string };
@@ -15,6 +16,7 @@ export interface ToolResult {
 }
 export type ToolOutput = string | ToolResult;
 export function toolResult(output: ToolOutput): ToolResult { return typeof output === "string" ? { text: output } : output; }
+export function toolFailed(output: ToolOutput): boolean { const { status } = toolResult(output); return status === "rejected" || status === "failed"; }
 export function displayToolResult(output: ToolOutput): string {
   const result = toolResult(output);
   const links = (result.artifacts ?? []).filter(artifact => !result.text.includes(artifact.url)).map(artifact => `[${artifact.label}](${artifact.url})`);
@@ -83,7 +85,10 @@ export interface ToolExecutor {
   catalog(): string;
   execute(message: Message, call: ToolCall, operationId: string, expectedVersion?: number): Promise<ToolOutput>;
 }
-export class ToolError extends Error { override name = "ToolError"; }
+export class ToolError extends Error {
+  override name = "ToolError";
+  constructor(message: string, readonly status: "rejected" | "failed" = "rejected") { super(message); }
+}
 export class UncertainActionError extends Error { override name = "UncertainActionError"; }
 
 export class ToolRegistry {
@@ -214,7 +219,10 @@ export class ToolRegistry {
     if (previous) {
       if (previous.name !== name || JSON.stringify(previous.args) !== JSON.stringify(args)) throw new UncertainActionError("Operation ID was reused with different arguments");
       if (previous.status === "done") return decodeToolResult(previous.result!);
-      if (previous.status === "failed") throw new ToolError(previous.result ?? "Tool failed");
+      if (previous.status === "failed") {
+        const failure = decodeToolResult(previous.result ?? "Tool failed");
+        throw new ToolError(failure.reason ?? failure.text, failure.status === "failed" ? "failed" : "rejected");
+      }
       if (!tool!.retrySafe) {
         const result = await tool!.reconcile?.(context, args);
         if (result === undefined) throw new UncertainActionError(`The result of ${name} is uncertain; inspect it before retrying.`);
@@ -228,7 +236,7 @@ export class ToolRegistry {
       return toolResult(result);
     } catch (error) {
       // Only known validation failures are safely final; network outcomes stay uncertain.
-      if (error instanceof ToolError) await this.journal.endOperation(operationId, error.message, true);
+      if (error instanceof ToolError) await this.journal.endOperation(operationId, encodeToolResult({ text: error.message, reason: error.message, status: error.status }), true);
       else if (context.resource && !tool!.retrySafe) throw new UncertainActionError(`The result of ${name} is uncertain and was recorded for reconciliation.`, { cause: error });
       throw error;
     }

@@ -2,6 +2,7 @@ import { performance } from "node:perf_hooks";
 import { EventJournal } from "./event-journal.js";
 import { requestTimings } from "./request-timing.js";
 import {appendToolEvidence} from './prompt-cache.js';
+import { toolFailureSummary } from "./presentation/tool-activity.js";
 import type { ToolActivity, ToolActivityObserver } from './tool-activity.js';
 import { presentationInstructions, type PresentationPolicy } from './presentation/policy.js';
 import { HarnessMachine, HarnessInterrupted, type HarnessJournal, type HarnessEvent } from "./harness-state.js";
@@ -13,7 +14,7 @@ import type { AgentTurn, LLM, Store } from "./ports.js";
 import type { Recall } from "./memory.js";
 import { ByteTokenCounter, type TokenCounter } from "./context.js";
 import { type ProfileStore } from "./profiles.js";
-import { displayToolResult, toolResult, parseToolCalls, toolInstructions, ToolError, stableOperationId, type ToolExecutor } from "./tools.js";
+import { displayToolResult, toolResult, toolFailed, parseToolCalls, toolInstructions, ToolError, stableOperationId, type ToolExecutor } from "./tools.js";
 
 export interface Policy {
   readonly allowedChannels: readonly { server: string; channel: string }[];
@@ -188,14 +189,14 @@ export class AgentRunner {
         let result = turn.results[String(index)];
         const reused = result !== undefined;
         let durationMs: number | undefined;
-        if (result !== undefined && toolResult(result).status === "rejected") await step({ type: "ToolDecision", id, decision: "deny_continue" });
+        if (result !== undefined && toolFailed(result)) await step({ type: "ToolDecision", id, decision: "deny_continue" });
         else await step({ type: "ToolDecision", id, decision: "approve" });
         if (result === undefined) {
           if (!tools || !this.accepts(message)) throw new Error("Tools unavailable in this scope");
           await report({ id, name: turn.calls[index]!.name, status: "running" });
           const toolStarted = performance.now();
           try { result = await requestTimings.measure(message, `tool:${turn.calls[index]!.name}`, () => tools.execute(message, turn.calls[index]!, `${turn.id}:${index}`, sourceVersion)); }
-          catch (error) { if (!(error instanceof ToolError)) { await report({ id, name: turn.calls[index]!.name, status: "failed", durationMs: Math.round(performance.now() - toolStarted) }); throw error; } result = { text: `Tool rejected: ${error.message}`, status: "rejected" }; }
+          catch (error) { if (!(error instanceof ToolError)) { await report({ id, name: turn.calls[index]!.name, status: "failed", reason: "Unexpected tool execution error. Inspect the recorded operation before retrying.", durationMs: Math.round(performance.now() - toolStarted) }); throw error; } result = { text: `Tool ${error.status === "failed" ? "failed" : "blocked"}: ${error.message}`, status: error.status, reason: error.message }; }
           durationMs = Math.round(performance.now() - toolStarted);
           await this.store.agentResult(turn.id, index, result);
           if (!(await this.store.agentTurns(message)).some(saved => saved.id === turn.id)) throw new Error("Context was invalidated during tool execution");
@@ -203,13 +204,13 @@ export class AgentRunner {
         }
         const output = toolResult(result);
         if (output.ui) ui = output.ui;
-        await report({ id, name: turn.calls[index]!.name, status: output.status === "rejected" ? "rejected" : output.handoff ? "delegated" : "completed", reused, ...(durationMs !== undefined ? { durationMs } : {}) });
+        await report({ id, name: turn.calls[index]!.name, status: toolFailed(output) ? output.status as "rejected" | "failed" : output.handoff ? "delegated" : "completed", ...(toolFailed(output) ? { reason: output.reason ?? output.text } : {}), reused, ...(durationMs !== undefined ? { durationMs } : {}) });
         if (signal.aborted) throw new HarnessInterrupted("Tool execution ended after interruption; its actual result is retained");
         if (machine.state.kind === "ToolPhase" && machine.state.calls.find(call => call.id === id)?.state === "Running") {
-          await step(output.status === "rejected" ? { type: "ToolRejected", id } : { type: "ToolResult", id });
+          await step(toolFailed(output) ? { type: "ToolRejected", id } : { type: "ToolResult", id });
         }
         for (const source of output.sources ?? []) if (source.kind === "message" && source.server === message.server) sources.add(source.id);
-        if (suggested && turn.calls[index]!.name === suggested.name && output.status !== "rejected") directAnswer = displayToolResult(output);
+        if (suggested && turn.calls[index]!.name === suggested.name && !toolFailed(output)) directAnswer = displayToolResult(output);
         if (!message.taskId && output.handoff) directAnswer = `Task started in <#${output.handoff.threadId}>. Updates will appear there.`;
         trace.push(appendToolEvidence(turn.calls[index]!.name, output, [...prefix, ...history, ...inputs, ...trace], this.counter, this.inputLimit));
       }
@@ -222,7 +223,7 @@ export class AgentRunner {
     let protocolRepairs = 0;
     for (let round = turns.length; round <= maxRounds; round++) {
       if (signal.aborted) throw new HarnessInterrupted("Request interrupted");
-      if (machine.state.kind === "ToolResultsHeld") directAnswer = "The requested tools were rejected. No further actions were taken. Please clarify or change the request.";
+      if (machine.state.kind === "ToolResultsHeld") directAnswer = "Slopbot could not complete these tool calls:\n" + toolFailureSummary(activity) + "\nNo further tool calls were run.";
       if (this.counter.count([...prefix, ...history, ...inputs, ...trace]) > this.inputLimit) throw new Error("Context budget boundary reached; original prompts and tool results are retained. Start a fresh request to continue.");
       const runId = randomUUID();
       const prompt: Prompt = { cacheScope: taskKey??JSON.stringify([message.server,message.channel,message.id]), prefixVersion: (this.policy.prefixVersion ?? "v3") + ":" + stableOperationId(JSON.stringify(prefix)), prefix, history, inputs: [...inputs, ...trace], maxOutputTokens: this.outputLimit, purpose: "reply" };
