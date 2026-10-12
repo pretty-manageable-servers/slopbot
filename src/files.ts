@@ -1,3 +1,4 @@
+import { contextChangedError, sourceFingerprint } from "./source-context.js";
 import { randomUUID } from 'node:crypto';
 import { withInspectionBudget } from './context.js';
 import { errorSummary } from './errors.js';
@@ -70,7 +71,7 @@ export function registerFileTool(registry: ToolRegistry, options: {
         await journal.close();
         await context.assertActive();
         const refreshed = await options.resolve(context.message, source.id);
-        if (JSON.stringify(refreshed.attachments?.map(({url, ...item}) => item)) !== JSON.stringify(source.attachments?.map(({url, ...item}) => item))) throw new ToolError('File changed during inspection. Please retry.');
+        if (sourceFingerprint(refreshed, true) !== sourceFingerprint(source, true)) throw contextChangedError(context.message, { reason: 'file_source_changed', sourceId: source.id });
         if (!text.trim()) throw new ToolError('Model returned no file description');
         await options.store.complete(runId, undefined, [], text);
         return { text: `${text}\nSource: https://discord.com/channels/${source.server}/${source.channel}/${source.id}`, sources: [{ kind: "message", server: source.server, channel: source.channel, id: source.id }] };

@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
+import { sourceFingerprint } from "../source-context.js";
+import { randomUUID } from "node:crypto";
 import { withInspectionBudget } from "../context.js";
 import { errorSummary } from "../errors.js";
 import { EventJournal } from "../event-journal.js";
@@ -20,10 +21,7 @@ interface Report {
   text: string;
   sources: { id: string; digest: string }[];
 }
-const digest = (message: Message) =>
-  createHash("sha256")
-    .update(JSON.stringify([message.text, message.author, message.timestamp]))
-    .digest("hex");
+const digest = sourceFingerprint;
 export function registerReportTools(
   registry: ToolRegistry,
   services: {

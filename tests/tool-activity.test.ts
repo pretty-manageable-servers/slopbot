@@ -112,3 +112,8 @@ test('a failed status display does not prevent tool execution', async () => {
     assert.equal(reply?.toolActivity?.[0]?.status,'completed');
   } finally {store.close();}
 });
+
+ test('progress stays within Discord limits with eight long failures', () => {
+ const items: ToolActivity[] = Array.from({length:8},(_,i)=>({id:String(i),name:'read_'+i,status:'failed',reason:'x'.repeat(500)}));
+ const text = toolProgress(items); assert.ok(text.length <= 2000); for(const item of items) assert.ok(text.includes(item.name));
+ });

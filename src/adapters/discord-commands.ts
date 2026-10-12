@@ -14,7 +14,8 @@ export function buildToolCommands(registry: ToolRegistry): SlashCommandBuilder {
       else if (field.type === "channel") subcommand.addChannelOption(option => option.setName(name).setDescription(description).setRequired(required).addChannelTypes(ChannelType.GuildText, ChannelType.PublicThread));
       else subcommand.addStringOption(option => {
         option.setName(name).setDescription(description).setRequired(required).setMaxLength(Math.min(field.max ?? 4000, 6000));
-        if (field.choices) option.addChoices(...field.choices.map(value => ({ name: value, value })));
+        // Larger enums accept typed input; ToolRegistry still validates every value.
+        if (field.choices?.length && field.choices.length <= 25) option.addChoices(...field.choices.map(value => ({ name: value, value })));
         return option;
       });
     }

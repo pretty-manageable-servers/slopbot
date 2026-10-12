@@ -40,7 +40,7 @@ test('native schemas, streamed IDs and matching tool results survive a failed st
     return response([{index:0,delta:{content:'It is sunny.'},finish_reason:'stop'}]);
   });
   const policy = {allowedChannels:[{server:'s',channel:'c'}]};
-  await assert.rejects(new Application(store,llm,policy,undefined,{tools:executor,harness:store}).handle(message), /connection lost/);
+  await assert.rejects(new Application(store,llm,policy,undefined,{tools:executor,harness:store}).handle(message), error => error instanceof Error && "code" in error && error.code === "PROVIDER_NETWORK" && error.cause instanceof Error && error.cause.message === "connection lost");
   assert.equal(store.agentTurns(message)[0]!.calls[0]!.id, 'call_saved_123');
   const reply = await new Application(store,llm,policy,undefined,{tools:executor,harness:store}).handle(message,true);
   assert.equal(reply?.text, 'It is sunny.'); assert.equal(reads, 1); assert.equal(requests, 3);

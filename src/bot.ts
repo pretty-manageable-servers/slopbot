@@ -1,3 +1,4 @@
+import { contextChangedError } from "./source-context.js";
 import { errorReply, logError } from "./errors.js";
 import { replySubject, type ProfileStore } from "./profiles.js";
 import { requestTimings } from "./request-timing.js";
@@ -172,7 +173,7 @@ export class Bot {
     return result;
   }
   async deliver(message: Message, reply: import("./domain.js").Reply, deliveryId: string): Promise<void> {
-    if (!this.accepts(message.server, message.channel) || reply.contextVersion !== await this.store.contextVersion(message.server, message.channel)) throw new Error("Context changed before publication");
+    if (!this.accepts(message.server, message.channel) || reply.contextVersion !== await this.store.contextVersion(message.server, message.channel)) throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel), { expectedVersion: reply.contextVersion ?? "unknown", actualVersion: await this.store.contextVersion(message.server, message.channel) });
     await this.send(message, reply.text || "The AI returned no answer.", reply.runId, deliveryId, reply.toolActivity, reply.ui);
   }
 
@@ -193,7 +194,7 @@ export class Bot {
     try {
       const reply = await this.app.handle(message, ingested);
       if (reply && reply.contextVersion !== await this.store.contextVersion(message.server, message.channel)) {
-        throw new Error("Context changed before publication");
+        throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel), { expectedVersion: reply.contextVersion ?? "unknown", actualVersion: await this.store.contextVersion(message.server, message.channel) });
       }
       if (reply) await this.send(message, reply.text || "The AI returned no answer. Please try again.", reply.runId, undefined, reply.toolActivity, reply.ui);
     } catch (error) {

@@ -10,6 +10,7 @@ export interface LLM {
 
 // Async contracts allow remote databases without changing application logic.
 export interface Store {
+  lastContextChange?(server: string, channel: string): unknown | Promise<unknown>;
   partialReply?(message: Message): Promise<string | undefined>;
   recordSources(runId: string, server: string, sourceIds: readonly string[]): Promise<void>;
   linkOutput(message: Message, runId: string | undefined, sourceId: string): Promise<void>;

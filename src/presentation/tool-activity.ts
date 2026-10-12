@@ -5,8 +5,8 @@ const status = (item: ToolActivity) => {
   const text = item.status === "rejected" ? "blocked" : item.status;
   return item.reused ? `${text}, saved result` : text;
 };
-const reason = (item: ToolActivity) => item.reason
-  ? `: ${item.reason.replace(/\s+/g, " ").replace(/[\\`*_~<>|\[\]]/g, "\\$&").slice(0, 500)}`
+const reason = (item: ToolActivity, limit = 500) => item.reason
+  ? `: ${item.reason.replace(/\s+/g, " ").replace(/[\\`*_~<>|\[\]]/g, "\\$&").slice(0, limit).replace(/[\uD800-\uDBFF]$/, "")}`
   : "";
 export function toolFailureSummary(activity: readonly ToolActivity[]): string {
   return activity.filter(item => item.status === "rejected" || item.status === "failed")
@@ -36,15 +36,10 @@ export function toolFooter(activity: readonly ToolActivity[]): string {
     : "";
 }
 export function toolProgress(activity: readonly ToolActivity[]): string {
-  return (
-    "**Working**\n" +
-    (activity.length > 8 ? `Earlier steps: ${activity.length - 8}\n` : "") +
-    activity
-      .slice(-8)
-      .map(
-        (item, index) =>
-          `${activity.length - Math.min(activity.length, 8) + index + 1}. ${label(item.name)}: ${status(item)}${duration(item)}${reason(item)}`,
-      )
-      .join("\n")
-  );
+  const prefix = "**Working**\n" + (activity.length > 8 ? `Earlier steps: ${activity.length - 8}\n` : "");
+  const recent = activity.slice(-8);
+  const rows = recent.map((item, index) => `${activity.length - recent.length + index + 1}. ${label(item.name)}: ${status(item)}${duration(item)}`);
+  const fixed = prefix.length + rows.join('\n').length;
+  const limit = Math.max(0, Math.min(500, Math.floor((2000 - fixed) / Math.max(1, recent.length)) - 2));
+  return prefix + rows.map((row, index) => row + reason(recent[index]!, limit)).join('\n');
 }

@@ -1,5 +1,6 @@
 import { promptItems, type Prompt, type PromptItem } from "./domain.js";
 import { RequestError } from "./errors.js";
+import { IMAGE_INPUT_RESERVE } from "./generation-policy.js";
 
 export const DEFAULT_CONTEXT_TOKENS = 200000;
 export const DEFAULT_OUTPUT_TOKENS = 50000;
@@ -27,12 +28,15 @@ export interface TokenCounter {
   count(items: readonly PromptItem[]): number;
 }
 
-// Conservative UTF-8 byte estimate until a provider tokenizer is configured.
-// Includes JSON author tags and message framing; it is not a billing token count.
+// Text uses a conservative UTF-8 estimate. Bounded file images have a separate
+// allowance, independent of base64/URL transport length. Not a billing count.
 export class ByteTokenCounter implements TokenCounter {
-  readonly name = "utf8-byte-upper-estimate";
+  readonly name = "utf8-text-and-image-reserve";
   count(items: readonly PromptItem[]): number {
-    return items.reduce((sum, item) => sum + Buffer.byteLength(JSON.stringify(item), "utf8") + 32, 0);
+    return items.reduce((sum, item) => {
+      const { images, ...text } = item;
+      return sum + Buffer.byteLength(JSON.stringify(text), "utf8") + 32 + (images?.length ?? 0) * IMAGE_INPUT_RESERVE;
+    }, 0);
   }
 }
 

@@ -1,6 +1,6 @@
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
-export interface Attachment { readonly name: string; readonly url: string; readonly contentType?: string; readonly size?: number }
+export interface Attachment { readonly name: string; readonly url: string; readonly contentType?: string; readonly size?: number; readonly preview?: boolean }
 
 export interface Message {
   readonly attachments?: readonly Attachment[];
@@ -17,6 +17,8 @@ export interface Message {
   readonly authorName?: string;
   readonly authorAliases?: readonly string[];
   readonly isBot?: boolean;
+  readonly transient?: boolean;
+  readonly revisionTimestamp?: number;
 }
 
 export interface PromptItem {
@@ -82,16 +84,20 @@ export function parseMessage(input: unknown): Message {
   if (value.timestamp !== undefined && (typeof value.timestamp !== "number" || !Number.isFinite(value.timestamp))) {
     throw new TypeError("Invalid message field: timestamp");
   }
+  if (value.revisionTimestamp !== undefined && (typeof value.revisionTimestamp !== "number" || !Number.isFinite(value.revisionTimestamp))) throw new TypeError("Invalid revision timestamp");
   if (value.isBot !== undefined && typeof value.isBot !== "boolean") throw new TypeError("Invalid bot flag");
+  if (value.transient !== undefined && typeof value.transient !== "boolean") throw new TypeError("Invalid transient message flag");
   if (value.authorAliases !== undefined && (!Array.isArray(value.authorAliases) || value.authorAliases.some(alias => typeof alias !== "string"))) throw new TypeError("Invalid author aliases");
   if (value.authorIdentity !== undefined && (!value.authorIdentity || typeof value.authorIdentity !== "object" || Array.isArray(value.authorIdentity) || Object.values(value.authorIdentity).some(item => typeof item !== "string"))) throw new TypeError("Invalid Discord identity");
-  if (value.attachments !== undefined && (!Array.isArray(value.attachments) || value.attachments.some(item => !item || typeof item.name !== "string" || typeof item.url !== "string" || (item.contentType !== undefined && typeof item.contentType !== "string") || (item.size !== undefined && (!Number.isSafeInteger(item.size) || item.size < 0))))) throw new TypeError("Invalid attachments");
+  if (value.attachments !== undefined && (!Array.isArray(value.attachments) || value.attachments.some(item => !item || typeof item.name !== "string" || typeof item.url !== "string" || (item.contentType !== undefined && typeof item.contentType !== "string") || (item.preview !== undefined && typeof item.preview !== "boolean") || (item.size !== undefined && (!Number.isSafeInteger(item.size) || item.size < 0))))) throw new TypeError("Invalid attachments");
   return {
     ...(value.attachments ? { attachments: value.attachments as Attachment[] } : {}),
     ...(value.authorIdentity ? { authorIdentity: value.authorIdentity as Record<string,string> } : {}),
     ...(value.authorName ? { authorName: value.authorName as string } : {}),
     ...(value.authorAliases ? { authorAliases: value.authorAliases as string[] } : {}),
     ...(value.isBot !== undefined ? { isBot: value.isBot as boolean } : {}),
+    ...(value.revisionTimestamp !== undefined ? { revisionTimestamp: value.revisionTimestamp as number } : {}),
+    ...(value.transient !== undefined ? { transient: value.transient as boolean } : {}),
     id: value.id as string, server: value.server as string,
     channel: value.channel as string, author: value.author as string, text: value.text as string,
     ...(value.replyTo !== undefined ? { replyTo: value.replyTo as string } : {}),

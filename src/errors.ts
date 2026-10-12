@@ -1,5 +1,5 @@
 // Keep error reporting independent of adapters so every boundary uses the same format.
-export const DEFAULT_MAX_TOOL_ROUNDS = 64;
+export { DEFAULT_MAX_TOOL_ROUNDS } from './generation-policy.js';
 export class RequestError extends Error {
   override name = 'RequestError';
   constructor(readonly code: string, message: string, readonly recovery: string, readonly details: Record<string, string | number> = {}, options?: ErrorOptions) { super(message, options); }

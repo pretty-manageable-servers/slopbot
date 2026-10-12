@@ -90,3 +90,11 @@ test("indexing status requests select the indexing read handler", t => {
   assert.deepEqual(f.registry.suggest({ ...message, text: `indexing progress in <#${other}>` }), { name: "index", arguments: { action: "status", channel: other } });
   assert.equal(f.registry.suggest({ ...message, text: "index the last 150 days" }), undefined);
 });
+
+test('large tool enums still produce valid slash commands without losing validation', t => {
+ const f=setup();t.after(()=>f.store.close());const choices=Array.from({length:26},(_,i)=>'topic_'+i);
+ f.registry.register({name:'large_enum',description:'Large enum',fields:{topic:{type:'string',description:'Topic',choices,required:true}},access:'member',effect:'read',retrySafe:true,async execute(){return 'done';}});
+ assert.doesNotThrow(()=>buildToolCommands(f.registry).toJSON());
+ assert.deepEqual(f.registry.validate('large_enum',{topic:'topic_25'}),{topic:'topic_25'});
+ assert.throws(()=>f.registry.validate('large_enum',{topic:'unknown'}));
+});

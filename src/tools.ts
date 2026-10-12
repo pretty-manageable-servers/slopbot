@@ -1,3 +1,4 @@
+import { MAX_TOOL_CALLS_PER_BATCH } from "./generation-policy.js";
 import { ToolError, UncertainActionError, errorSummary, redactErrorText, describeError } from "./errors.js";
 import {stableJson} from './prompt-cache.js';
 import { requestTimings } from "./request-timing.js";
@@ -290,7 +291,7 @@ export function parseToolCalls(text: string): ToolCall[] | undefined {
   }
   if (!value || typeof value !== "object" || !Object.hasOwn(value, "tool_calls")) return undefined;
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).length !== 1 || !Array.isArray(record.tool_calls) || record.tool_calls.length < 1 || record.tool_calls.length > 8) throw new ToolError("Invalid tool call envelope");
+  if (Object.keys(record).length !== 1 || !Array.isArray(record.tool_calls) || record.tool_calls.length < 1 || record.tool_calls.length > MAX_TOOL_CALLS_PER_BATCH) throw new ToolError("Invalid tool call envelope");
   return record.tool_calls.map(item => {
     if (!item || typeof item !== "object" || typeof item.name !== "string" || !item.arguments || typeof item.arguments !== "object" || Array.isArray(item.arguments) || Object.keys(item).some(key => !["name", "arguments", "id"].includes(key))) throw new ToolError("Invalid tool call");
     if (item.id !== undefined && (typeof item.id !== "string" || !item.id || item.id.length > 256)) throw new ToolError("Invalid tool call ID");

@@ -1,3 +1,4 @@
+import { contextChangedError, legacyToolProgress, sourceFingerprint, stableAttachmentUrl, toolProgressFooter } from "../source-context.js";
 import { errorReply, logError } from "../errors.js";
 import { sandboxTool } from "../sandbox.js";
 import { McpManager, McpSecrets } from '../mcp.js';
@@ -42,10 +43,7 @@ import { configuredChannels, registerServerTools } from "../server-tools.js";
 import { displayToolResult, ToolError, ToolRegistry, UncertainActionError, stableOperationId } from "../tools.js";
 
 export class DiscordAdapter implements ChatGateway {
-  private readonly client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
-    partials: [Partials.Message, Partials.Channel],
-  });
+  private readonly client: Client;
   private readonly bot: Bot;
   private readonly app: Application;
   private readonly renderer: ReplyRenderer;
@@ -59,7 +57,8 @@ export class DiscordAdapter implements ChatGateway {
   private channels: string[];
   private historyTimer: ReturnType<typeof setInterval> | undefined;
 
-  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM) {
+  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client?: Client) {
+    this.client = client ?? new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent], partials: [Partials.Message, Partials.Channel] });
     this.renderer = new ReplyRenderer(store, discordPresentation);
     this.channels = configuredChannels(config, store);
     this.history = new HistoryImporter(config.guildId, store, {
@@ -93,7 +92,7 @@ export class DiscordAdapter implements ChatGateway {
       if (context.source !== "agent") return;
       const message = context.message, source = (await store.canonicalMessage(message.server, message.id));
       if (!source || source.text !== message.text || !this.bot.accepts(message.server, message.channel)) throw new ToolError("Source or channel changed before the action");
-      if (expectedVersion !== undefined && expectedVersion !== await store.contextVersion(message.server, message.channel)) throw new ToolError("Context changed before the action");
+      if (expectedVersion !== undefined && expectedVersion !== await store.contextVersion(message.server, message.channel)) throw contextChangedError(message, await store.lastContextChange?.(message.server, message.channel), { expectedVersion, actualVersion: await store.contextVersion(message.server, message.channel) });
       if (this.tools.effect(context.toolName, context.arguments) === "write" && context.toolName !== "task_retry") {
         if ((await store.hasBlocked(message.server, message.channel))) throw new ToolError("This task has an uncertain action; reconcile it before new writes");
         if (message.taskId && (await store.hasPendingOther(message.server, message.channel, message.id))) throw new ToolError("New contributions are queued; review them before further actions");
@@ -160,7 +159,7 @@ export class DiscordAdapter implements ChatGateway {
       const channel = await this.client.channels.fetch(known.channel);
       if (!channel || !channel.isTextBased() || !("messages" in channel)) throw new ToolError("Source channel unavailable");
       const fresh = this.normalize(await channel.messages.fetch(id));
-      if (fresh.text !== known.text && JSON.stringify(fresh.attachments?.map(({url,...item}) => item)) !== JSON.stringify(known.attachments?.map(({url,...item}) => item))) throw new ToolError("Attachment metadata changed. Submit a new request.");
+      if (sourceFingerprint(fresh) !== sourceFingerprint(known)) { await this.store.revise(fresh); throw contextChangedError(request, { reason: "file_source_changed", sourceId: id }); }
       return fresh;
     } });
     this.app = new Application(store, llm, {
@@ -173,7 +172,7 @@ export class DiscordAdapter implements ChatGateway {
       await this.toolProgress.update(JSON.stringify([message.server,message.channel,message.id]), activity, async content => {
         const channel = await this.client.channels.fetch(message.channel);
         if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Status channel unavailable");
-        return channel.send({content,reply:{messageReference:message.id,failIfNotExists:false},allowedMentions:{parse:[],repliedUser:false}});
+        return channel.send({content,embeds:[{footer:{text:toolProgressFooter}}],reply:{messageReference:message.id,failIfNotExists:false},allowedMentions:{parse:[],repliedUser:false}});
       });
     }, presentation: discordPresentation, profiles: store, harness: store, tools: {
       catalog: () => this.tools.catalog(), schemas: () => this.tools.schemas(), suggest: message => this.tools.suggest(message),
@@ -203,7 +202,9 @@ export class DiscordAdapter implements ChatGateway {
       await this.reply(job.message, errorReply(error, job.id), `job-error:${job.id}`);
     });
     this.bot = new Bot(this.app, store, store, this, config.guildId, this.channels, { profiles: store, knowledge: store, participation, worker: this.worker, tools: this.tools, queueStore: store });
-    this.client.once(Events.ClientReady, client => {
+    this.client.once(Events.ClientReady, async client => {
+      try { await store.setSetting(config.guildId, "context_bot_author", client.user.id); }
+      catch (error) { logError("Context identity initialization failed", error); await this.client.destroy(); return; }
       console.log(`Slopbot connected as ${client.user.tag}. LLM mode: ${config.mock ? "mock" : "provider"}`);
       if (!this.channels.length) console.warn("No channels configured. Use /slopbot channels action:add channel:<test channel> to enable replies.");
       void this.purgeAndIndex().catch(error => logError("Database startup indexing failed", error));
@@ -325,18 +326,20 @@ export class DiscordAdapter implements ChatGateway {
   private normalize(message: DiscordMessage): Message {
     const id = this.client.user?.id;
     const text = id ? message.content.replace(new RegExp(`<@!?${id}>`, "g"), "").trim() : message.content;
-    const attachments = [...message.attachments.values()].map(item => ({ name: item.name ?? "file", url: item.url, size: item.size, ...(item.contentType ? { contentType: item.contentType } : {}) }));
+    const attachments: import("../domain.js").Attachment[] = [...message.attachments.values()].map(item => ({ name: item.name ?? "file", url: item.url, size: item.size, ...(item.contentType ? { contentType: item.contentType } : {}) }));
     for (const embed of message.embeds) {
       const media = embed.image ?? embed.thumbnail;
       const url = media?.url ?? media?.proxyURL;
-      if (url && /\.(gif|png|jpe?g|webp)(?:\?|$)/i.test(url) && !attachments.some(item => item.url === url)) attachments.push({ name: new URL(url).pathname.split('/').pop() ?? 'image.gif', url, size: 0 });
+      if (url && /\.(gif|png|jpe?g|webp)(?:\?|$)/i.test(url) && !attachments.some(item => item.url === url)) attachments.push({ name: new URL(url).pathname.split('/').pop() ?? 'image.gif', url, size: 0, preview: true });
     }
     const embedText = message.author.bot || message.webhookId
-      ? message.embeds.map(embed => [embed.title, embed.description, ...embed.fields.map(field => `${field.name}: ${field.value}`)].filter(Boolean).join("\n")).filter(Boolean).join("\n").slice(0, 12000)
+      ? message.embeds.filter(embed => !embed.data?.type || embed.data.type === "rich").map(embed => [embed.title, embed.description, ...embed.fields.map(field => `${field.name}: ${field.value}`)].filter(Boolean).join("\n")).filter(Boolean).join("\n").slice(0, 12000)
       : "";
-    const media = attachments.map(item => `[Attachment ${item.name}, type ${'contentType' in item ? item.contentType : 'unknown'}: ${item.url}; content not inspected]`).join("\n");
-    return { attachments, id: message.id, server: message.guildId!, channel: message.channelId, author: message.author.id, authorName: message.member?.displayName ?? message.author.globalName ?? message.author.username, authorAliases: [message.author.username, ...(message.author.globalName ? [message.author.globalName] : [])], isBot: message.author.bot || Boolean(message.webhookId), authorIdentity: { discord_handle: message.author.username, discord_name: message.author.globalName ?? message.author.username, server_nickname: message.member?.displayName ?? message.author.username, server_name: message.guild?.name ?? "" }, text: [text, embedText, media].filter(Boolean).join("\n"), timestamp: message.createdTimestamp,
+    const media = attachments.map(item => `[Attachment ${item.name}, type ${'contentType' in item ? item.contentType : 'unknown'}: ${stableAttachmentUrl(item.url)}; content not inspected]`).join("\n");
+    const normalized: Message = { attachments, id: message.id, server: message.guildId!, channel: message.channelId, author: message.author.id, authorName: message.member?.displayName ?? message.author.globalName ?? message.author.username, authorAliases: [message.author.username, ...(message.author.globalName ? [message.author.globalName] : [])], isBot: message.author.bot || Boolean(message.webhookId), authorIdentity: { discord_handle: message.author.username, discord_name: message.author.globalName ?? message.author.username, server_nickname: message.member?.displayName ?? message.author.username, server_name: message.guild?.name ?? "" }, text: [text, embedText, media].filter(Boolean).join("\n"), timestamp: message.createdTimestamp, revisionTimestamp: message.editedTimestamp ?? message.createdTimestamp,
       ...(message.reference?.messageId ? { replyTo: message.reference.messageId } : {}) };
+    const ownProgress = message.author.id === this.client.user?.id && ((text.startsWith("**Working**\n") && message.embeds.some(embed => embed.footer?.text === toolProgressFooter)) || legacyToolProgress(normalized));
+    return ownProgress ? { ...normalized, transient: true } : normalized;
   }
   private async receive(message: DiscordMessage): Promise<void> {
     if (!message.guildId || message.author.id === this.client.user?.id || !this.bot.accepts(message.guildId, message.channelId)) return;
@@ -416,7 +419,7 @@ export class DiscordAdapter implements ChatGateway {
       if (id) (await this.store.finishDelivery(id, result));
       outputs.push(result);
     }
-    if (activity.length) await requestTimings.wait("Discord status cleanup", () => this.toolProgress.finish(JSON.stringify([message.server,message.channel,message.id])));
+    await requestTimings.wait("Discord status cleanup", () => this.toolProgress.finish(JSON.stringify([message.server,message.channel,message.id])));
     delivered = true;
     return outputs;
     } finally {

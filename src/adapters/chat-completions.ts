@@ -1,5 +1,6 @@
-import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, modelTokenLimits } from "../context.js";
+import { MAX_TOOL_ARGUMENT_CHARS, MAX_TOOL_CALLS_PER_BATCH, MAX_PROVIDER_EVENT_CHARS } from "../generation-policy.js";
 import { providerError, RequestError } from "../errors.js";
+import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, modelTokenLimits } from "../context.js";
 import { ModelAliases } from "./model-aliases.js";
 import { requestTimings } from "../request-timing.js";
 import {PromptCacheDiagnostics} from '../prompt-cache.js';
@@ -50,8 +51,12 @@ export function wireMessages(prompt: Prompt): WireMessage[] {
   return messages;
 }
 
+function providerProtocol(message: string, code = "PROVIDER_PROTOCOL"): RequestError {
+  return new RequestError(code, message, "Inspect the recorded provider stream before retrying. No tool call from this incomplete response was executed.");
+}
+
 function record(value: unknown): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Invalid provider response");
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw providerProtocol("Provider response must be an object");
   return value as Record<string, unknown>;
 }
 
@@ -73,7 +78,7 @@ export async function* sseData(body: ReadableStream<Uint8Array>, waitLabel = "mo
     while (true) {
       const { done, value } = await requestTimings.wait(waitLabel, () => reader.read());
       pending += done ? decoder.decode() : decoder.decode(value, { stream: true });
-      if (pending.length > 2_000_000) throw new Error("Provider event exceeds stream limit");
+      if (pending.length > MAX_PROVIDER_EVENT_CHARS) throw providerProtocol(`Provider event exceeds the ${MAX_PROVIDER_EVENT_CHARS}-character stream limit`, "PROVIDER_EVENT_LIMIT");
       let newline: number;
       while ((newline = pending.indexOf("\n")) !== -1) {
         const line = pending.slice(0, newline).replace(/\r$/, "");
@@ -88,6 +93,9 @@ export async function* sseData(body: ReadableStream<Uint8Array>, waitLabel = "mo
         break;
       }
     }
+  } catch (error) {
+    if (error instanceof RequestError || error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name)) throw error;
+    throw new RequestError("PROVIDER_STREAM_INTERRUPTED", "The model response connection failed while reading the stream. Partial output is retained.", "Retry after checking provider availability. No tool call from this incomplete response was executed.", {}, { cause: error });
   } finally {
     await reader.cancel().catch(() => undefined);
     reader.releaseLock();
@@ -107,23 +115,32 @@ export class ChatCompletionsLLM implements LLM {
   }
 
   async *stream(prompt: Prompt, signal?: AbortSignal): AsyncIterable<ModelEvent> {
+    const maxOutputTokens = prompt.maxOutputTokens ?? this.outputTokenLimit;
     const phase = prompt.prefixVersion.startsWith("participation") ? "decision model" : prompt.purpose === "checkpoint" ? "checkpoint model" : prompt.purpose === "inspection" ? "inspection model" : "reply model";
     const messages = wireMessages(prompt);
     yield { kind: "opaque", payload: this.cacheDiagnostics.compare(prompt, messages) };
-    const response = await this.aliases.request(this.options.model, model => requestTimings.wait(`${phase} response headers`, () => this.fetcher(`${this.options.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+    let response: Response;
+    try { response = await this.aliases.request(this.options.model, model => requestTimings.wait(`${phase} response headers`, () => this.fetcher(`${this.options.baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.options.apiKey}` },
-      body: JSON.stringify({ model, messages, ...(prompt.tools?.length ? { tools: prompt.tools, tool_choice: "auto" } : {}), stream: true, stream_options: { include_usage: true }, ...(prompt.maxOutputTokens ? { max_tokens: prompt.maxOutputTokens } : {}) }),
+      body: JSON.stringify({ model, messages, ...(prompt.tools?.length ? { tools: prompt.tools, tool_choice: "auto" } : {}), stream: true, stream_options: { include_usage: true }, max_tokens: maxOutputTokens }),
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(this.options.timeoutMs ?? 120_000)]) : AbortSignal.timeout(this.options.timeoutMs ?? 120_000),
     })));
+    } catch (error) {
+      if (error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name)) throw error;
+      if (error instanceof RequestError) throw error;
+      throw new RequestError("PROVIDER_NETWORK", "The model gateway request failed before response headers arrived.", "Check the configured endpoint and network availability, then retry. Completed tools remain recorded.", {}, { cause: error });
+    }
     if (!response.ok) { throw await providerError(response); }
-    if (!response.body) throw new Error("Provider returned an empty stream");
+    if (!response.body) throw providerProtocol("Provider returned an empty stream", "PROVIDER_STREAM_INCOMPLETE");
     let completed = false;
     let fullText = "";
     const nativeCalls = new Map<number, { id?: string; name: string; arguments: string }>();
     for await (const data of sseData(response.body, `${phase} stream read`)) {
       if (data === "[DONE]") { completed = true; break; }
-      const chunk = record(JSON.parse(data));
+      let chunk: Record<string, unknown>;
+      try { chunk = record(JSON.parse(data)); }
+      catch { yield { kind: "opaque", payload: { invalid_provider_chunk: data } }; throw providerProtocol("Provider stream contained malformed JSON or a non-object response"); }
       // Preserve the complete original provider chunk, including unknown reasoning formats.
       yield { kind: "opaque", payload: chunk as Json };
       if (chunk.error) {
@@ -131,25 +148,28 @@ export class ChatCompletionsLLM implements LLM {
         throw new RequestError("PROVIDER_STREAM_ERROR", `Provider reported a stream error${typeof detail.code === "string" ? ` (${detail.code})` : ""}.`, "Inspect provider availability and the recorded stream before retrying.", {}, typeof detail.message === "string" ? { cause: new Error(detail.message) } : undefined);
       }
       if (chunk.usage) yield { kind: "usage", payload: chunk.usage as Json };
-      if (!Array.isArray(chunk.choices)) throw new Error("Provider response is missing choices");
+      if (!Array.isArray(chunk.choices)) throw providerProtocol("Provider response is missing its choices array");
       for (const choiceValue of chunk.choices) {
         const choice = record(choiceValue);
-        if (choice.index !== 0) continue;
+        const choiceIndex = choice.index ?? (chunk.choices.length === 1 ? 0 : undefined);
+        if (choiceIndex === undefined) throw providerProtocol("Multiple response choices omitted their indexes");
+        if (choiceIndex !== 0) continue;
         const delta = record(choice.delta ?? {});
         if (delta.tool_calls !== undefined) {
-          if (!Array.isArray(delta.tool_calls)) throw new Error("Invalid native tool calls");
+          if (!Array.isArray(delta.tool_calls)) throw providerProtocol("Native tool calls must be an array", "PROVIDER_TOOL_PROTOCOL");
           for (const value of delta.tool_calls) {
             const call = record(value), index = call.index;
-            if (typeof index !== "number" || !Number.isSafeInteger(index) || index < 0 || index >= 8) throw new Error("Invalid tool call index");
+            if (typeof index !== "number" || !Number.isSafeInteger(index) || index < 0) throw providerProtocol("Invalid native tool call index", "PROVIDER_TOOL_PROTOCOL");
+            if (index >= MAX_TOOL_CALLS_PER_BATCH) throw new RequestError("TOOL_BATCH_LIMIT", `Provider exceeded the ${MAX_TOOL_CALLS_PER_BATCH}-call batch limit.`, "Split the request into smaller batches. No call from this response was executed.", { limit: MAX_TOOL_CALLS_PER_BATCH, index });
             const parts: { id?: string; name: string; arguments: string } = nativeCalls.get(index) ?? { name: "", arguments: "" };
             if (call.id !== undefined) {
               if (typeof call.id !== "string" || !call.id || call.id.length > 256 || parts.id && parts.id !== call.id) throw new RequestError("PROVIDER_TOOL_PROTOCOL", "Provider returned an invalid or changing tool call ID.", "Inspect the provider stream before retrying.");
               parts.id = call.id;
             }
             const fn = record(call.function ?? {});
-            if (fn.name !== undefined) { if (typeof fn.name !== "string") throw new Error("Invalid tool name"); parts.name += fn.name; }
-            if (fn.arguments !== undefined) { if (typeof fn.arguments !== "string") throw new Error("Invalid tool arguments"); parts.arguments += fn.arguments; }
-            if (parts.arguments.length > 64000) throw new Error("Tool arguments exceed limit");
+            if (fn.name !== undefined) { if (typeof fn.name !== "string") throw providerProtocol("Invalid native tool name", "PROVIDER_TOOL_PROTOCOL"); parts.name += fn.name; }
+            if (fn.arguments !== undefined) { if (typeof fn.arguments !== "string") throw providerProtocol("Native tool argument fragments must be text", "PROVIDER_TOOL_PROTOCOL"); parts.arguments += fn.arguments; }
+            if (parts.arguments.length > MAX_TOOL_ARGUMENT_CHARS) throw new RequestError("TOOL_ARGUMENT_LIMIT", `Tool arguments exceed the ${MAX_TOOL_ARGUMENT_CHARS}-character limit.`, "Use smaller arguments or reference a saved artifact. No call from this response was executed.", { limit: MAX_TOOL_ARGUMENT_CHARS, required: parts.arguments.length });
             nativeCalls.set(index, parts);
           }
         }
@@ -157,18 +177,22 @@ export class ChatCompletionsLLM implements LLM {
           yield { kind: "reasoning", payload: delta as Json };
         }
         if (delta.content !== undefined && delta.content !== null) {
-          if (typeof delta.content !== "string") throw new Error("Provider content must be text");
+          if (typeof delta.content !== "string") throw providerProtocol("Provider content must be text");
           fullText += delta.content;
           yield { kind: "text", payload: { text: delta.content } };
         }
-        if (choice.finish_reason === "length") throw new RequestError("MODEL_OUTPUT_LIMIT", `Provider reached its output limit of ${prompt.maxOutputTokens ?? "the provider default"} tokens; response is incomplete.`, "Inspect the request purpose and output allowance in the logs. Use the model's supported output allowance or narrow the request. Partial output and completed tools are retained.", { maxOutputTokens: prompt.maxOutputTokens ?? "provider default", purpose: prompt.purpose ?? "reply", configuredOutputTokens: this.outputTokenLimit, contextTokens: this.contextTokenLimit });
+        if (choice.finish_reason === "content_filter") throw new RequestError("PROVIDER_CONTENT_FILTERED", "The model provider stopped this response with content_filter.", "Review the request and provider logs before retrying. No call from this response was executed.");
+        if (choice.finish_reason === "length") throw new RequestError("MODEL_OUTPUT_LIMIT", `Provider reached its output limit of ${maxOutputTokens} tokens; response is incomplete.`, "Inspect the request purpose and output allowance in the logs. Use the model's supported output allowance or narrow the request. Partial output and completed tools are retained.", { maxOutputTokens, purpose: prompt.purpose ?? "reply", configuredOutputTokens: this.outputTokenLimit, contextTokens: this.contextTokenLimit });
       }
     }
-    if (!completed) throw new Error("Provider stream ended before completion");
+    if (!completed) throw providerProtocol("Provider stream ended before completion; partial output is retained", "PROVIDER_STREAM_INCOMPLETE");
+    if (!nativeCalls.size && !fullText.trim()) throw providerProtocol("Provider completed without an answer or a tool call", "MODEL_EMPTY_OUTPUT");
     if (nativeCalls.size) {
       const calls = [...nativeCalls.entries()].sort((a, b) => a[0] - b[0]).map(([, call]) => {
-        const args = record(JSON.parse(call.arguments));
-        if (!/^[a-z][a-z0-9_]{0,31}$/.test(call.name)) throw new Error("Invalid tool name");
+        let args: Record<string, unknown>;
+        try { args = record(JSON.parse(call.arguments)); }
+        catch { throw providerProtocol("Completed native tool arguments were not a valid JSON object", "PROVIDER_TOOL_PROTOCOL"); }
+        if (!/^[a-z][a-z0-9_]{0,31}$/.test(call.name)) throw providerProtocol("Invalid native tool name", "PROVIDER_TOOL_PROTOCOL");
         if (prompt.tools?.length && !call.id) throw new RequestError("PROVIDER_TOOL_PROTOCOL", "Provider returned a tool call without its ID.", "Inspect the provider stream before retrying.");
         return { name: call.name, arguments: args as Json, ...(call.id ? { id: call.id } : {}) };
       });
@@ -193,7 +217,7 @@ export function gemmaToolCalls(text: string): { name: string; arguments: Json }[
   let pending = text.trim();
   while (pending) {
     const match = /^<\|tool_call>call:([a-z][a-z0-9_]{0,31})([\s\S]*?)<tool_call\|>/.exec(pending);
-    if (!match || calls.length >= 8) throw new Error("Malformed Gemma tool call");
+    if (!match || calls.length >= MAX_TOOL_CALLS_PER_BATCH) throw new Error("Malformed Gemma tool call");
     calls.push({ name: match[1]!, arguments: record(JSON.parse(match[2]!)) as Json });
     pending = pending.slice(match[0].length).trim();
   }

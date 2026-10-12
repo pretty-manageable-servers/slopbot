@@ -1,3 +1,4 @@
+import { contextChangedError } from "./source-context.js";
 import { DEFAULT_MAX_TOOL_ROUNDS, RequestError, errorContext, errorSummary, logError } from "./errors.js";
 import { performance } from "node:perf_hooks";
 import { EventJournal } from "./event-journal.js";
@@ -220,7 +221,7 @@ export class AgentRunner {
       console.log(JSON.stringify({ type: "working_context_checkpoint", server: message.server, channel: message.channel, messageId: message.id, runId, before: used, after, inputLimit, schemaBudget }));
     };
     const appendTurn = async (turn: AgentTurn): Promise<void> => {
-      if (turn.version !== sourceVersion) throw new Error("Context changed before tool execution");
+      if (turn.version !== sourceVersion) throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel), { expectedVersion: turn.version, actualVersion: sourceVersion });
       if (signal.aborted) throw new HarnessInterrupted("Request interrupted");
       await step({ type: "ToolsRequested", ids: turn.calls.map((_, index) => `${turn.id}:${index}`) });
       const latestBatchStart = trace.length;
@@ -242,8 +243,6 @@ export class AgentRunner {
           catch (error) { logError("tool_call_failed", error, { stage: "tool execution", tool: turn.calls[index]!.name, operationId: id, server: message.server, channel: message.channel, messageId: message.id }); if (!(error instanceof ToolError)) { await report({ id, name: turn.calls[index]!.name, status: "failed", reason: errorSummary(error), durationMs: Math.round(performance.now() - toolStarted) }); throw errorContext(error, { stage: "tool execution", tool: turn.calls[index]!.name, operationId: id }); } result = { text: errorSummary(error), status: error.status, reason: errorSummary(error) }; }
           durationMs = Math.round(performance.now() - toolStarted);
           await this.store.agentResult(turn.id, index, result);
-          if (!(await this.store.agentTurns(message)).some(saved => saved.id === turn.id)) throw new Error("Context was invalidated during tool execution");
-          sourceVersion = await this.store.contextVersion(message.server, message.channel);
         }
         const output = toolResult(result);
         if (output.ui) ui = output.ui;
@@ -251,6 +250,10 @@ export class AgentRunner {
         if (signal.aborted) throw new HarnessInterrupted("Tool execution ended after interruption; its actual result is retained");
         if (machine.state.kind === "ToolPhase" && machine.state.calls.find(call => call.id === id)?.state === "Running") {
           await step(toolFailed(output) ? { type: "ToolRejected", id } : { type: "ToolResult", id });
+        }
+        if (!reused) {
+          if (!(await this.store.agentTurns(message)).some(saved => saved.id === turn.id)) throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel), { operationId: id, tool: turn.calls[index]!.name });
+          sourceVersion = await this.store.contextVersion(message.server, message.channel);
         }
         for (const source of output.sources ?? []) if (source.kind === "message" && source.server === message.server) sources.add(source.id);
         if (suggested && turn.calls[index]!.name === suggested.name && !toolFailed(output)) directAnswer = displayToolResult(output);
@@ -282,7 +285,7 @@ export class AgentRunner {
         text = fixedText;
       } else { const generated = await this.generate(message, prompt, runId, [...sources]); text = generated.text; generatedCalls = generated.calls; }
       try {
-        if (sourceVersion !== await this.store.contextVersion(message.server, message.channel) || !this.accepts(message)) throw new Error("Context changed during generation; please retry");
+        if (sourceVersion !== await this.store.contextVersion(message.server, message.channel) || !this.accepts(message)) throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel), { expectedVersion: sourceVersion, actualVersion: await this.store.contextVersion(message.server, message.channel) });
         let calls;
         try { calls = fixedAnswer === undefined ? generatedCalls ?? (fixedText !== undefined || !native ? parseToolCalls(text) : undefined) : undefined; }
         catch (error) {

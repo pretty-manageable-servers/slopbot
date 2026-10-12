@@ -126,3 +126,20 @@ test('stream event batches preserve all deltas in an isolated Postgres schema', 
     await cleanup.query(`DROP SCHEMA "${schema}" CASCADE`);await cleanup.end();
   }
 });
+
+ test("Postgres keeps live UI outside semantic context and refreshes source revisions", {skip: !process.env.TEST_DATABASE_URL}, async () => {
+ const store=await PostgresStore.connect(process.env.TEST_DATABASE_URL!);
+ const m:Message={server:'context-audit',channel:'chat',id:'source',author:'human',text:'Original',timestamp:1,revisionTimestamp:10};
+ try {
+ await store.setSetting(m.server,'context_bot_author','bot'); await store.ingest(m);
+ const turn=await store.addAgentTurn(m,'',[{name:'read',arguments:{}}]);
+ await store.ingest({...m,id:'status',author:'bot',isBot:true,transient:true,text:'**Working**\n1. `read`: running'});
+ assert.equal((await store.agentTurns(m))[0]?.id,turn.id);
+ await store.ingest({...m,text:'Corrected',revisionTimestamp:20});
+ assert.equal((await store.canonicalMessage(m.server,m.id))?.text,'Corrected');
+ await assert.rejects(store.agentTurns(m),error=>error instanceof Error && 'code' in error && error.code==='CONTEXT_CHANGED');
+ await store.revise({...m,text:'Stale',revisionTimestamp:15});
+ assert.equal((await store.canonicalMessage(m.server,m.id))?.text,'Corrected');
+ const last=await store.lastContextChange(m.server,m.channel) as {reason:string;sourceId:string};assert.equal(last.reason,'message_edited');assert.equal(last.sourceId,m.id);
+ } finally {await store.close();}
+ });

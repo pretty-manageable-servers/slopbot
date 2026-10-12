@@ -1,3 +1,4 @@
+import { contextChangedError, legacyToolProgress, sourceFingerprint, type ContextChange } from "../source-context.js";
 import { logError } from "../errors.js";
 // PostgreSQL implementation of the existing persistence contract.
 import type { HarnessState, HarnessEvent } from "../harness-state.js";
@@ -332,8 +333,11 @@ export class PostgresStore {
             .run(server, author, JSON.stringify(aliases), bot ? 1 : 0, JSON.stringify({ ...(previous ? JSON.parse(String(previous.identity)) : {}), ...identity })));
     }
     async ingest(message: Message): Promise<boolean> {
+        if (message.transient) { await this.removeTransient(message.server, message.channel, message.id); return false; }
         if ((await this.db.prepare("SELECT 1 FROM message_tombstones WHERE server=? AND id=?").get(message.server, message.id)))
             return false;
+        const previous = await this.canonicalMessage(message.server, message.id);
+        if (previous && message.revisionTimestamp !== undefined && message.revisionTimestamp > (previous.revisionTimestamp ?? previous.timestamp ?? 0)) { await this.revise(message); return false; }
         if (message.authorName)
             (await this.identifyAuthor(message.server, message.author, [message.authorName, ...(message.authorAliases ?? [])], message.isBot, message.authorIdentity));
         const result = (await this.db.prepare("INSERT OR IGNORE INTO messages(server,id,channel,body) VALUES(?,?,?,?)").run(message.server, message.id, message.channel, JSON.stringify(message)));
@@ -386,9 +390,13 @@ export class PostgresStore {
     async finishToolRun(runId: string, text: string): Promise<void> {
         (await this.db.prepare("UPDATE runs SET status='tool_calls',result=? WHERE id=?").run(text, runId));
     }
+    async lastContextChange(server: string, channel: string): Promise<unknown> {
+        const row = await this.db.prepare("SELECT value FROM settings WHERE server=? AND key=?").get(server, `context_change:${channel}`);
+        return row ? JSON.parse(String(row.value)) : undefined;
+    }
     async agentTurns(message: Message): Promise<AgentTurn[]> {
         if ((await this.db.prepare("SELECT 1 FROM agent_turns WHERE server=? AND message_id=? AND valid=0").get(message.server, message.id)))
-            throw new Error("Tool context was invalidated; submit a new request");
+            throw contextChangedError(message, await this.lastContextChange(message.server, message.channel));
         return (await this.db.prepare("SELECT * FROM agent_turns WHERE server=? AND message_id=? AND valid=1 ORDER BY sequence")
             .all(message.server, message.id)).map(row => ({ id: String(row.id), text: String(row.text), calls: JSON.parse(String(row.calls)), results: JSON.parse(String(row.results)), version: Number(row.version) }));
     }
@@ -494,7 +502,7 @@ export class PostgresStore {
         if (message.authorName)
             (await this.identifyAuthor(message.server, message.author, [message.authorName, ...(message.authorAliases ?? [])], message.isBot, message.authorIdentity));
         if ((await this.db.prepare("SELECT 1 FROM message_tombstones WHERE server=? AND id=?").get(message.server, message.id)))
-            throw new Error("Source was deleted or invalidated");
+            throw contextChangedError(message, { reason: "message_deleted", sourceId: message.id });
         (await this.db.exec("BEGIN IMMEDIATE"));
         let added = false;
         try {
@@ -602,7 +610,7 @@ export class PostgresStore {
                 continue;
             (await this.invalidateSource(server, String(row.id)));
             (await this.db.prepare("DELETE FROM messages WHERE server=? AND id=?").run(server, String(row.id)));
-            (await this.invalidate(server, String(row.channel)));
+            (await this.invalidate(server, String(row.channel), { reason: "channel_disabled", sourceId: String(row.id) }));
         }
         const histories = (await this.db.prepare("SELECT key FROM settings WHERE server=? AND key LIKE 'history:%'").all(server));
         for (const row of histories) {
@@ -700,13 +708,14 @@ export class PostgresStore {
         const result = (await this.db.prepare("UPDATE memories SET status='forgotten' WHERE id=? AND server=? AND channel=? AND author=? AND status='active'")
             .run(id, server, channel, actor));
         if (result.changes) {
-            for (const row of (await this.db.prepare("SELECT message_id FROM memory_sources WHERE memory_id=?").all(id))) {
+            const sources = await this.db.prepare("SELECT message_id FROM memory_sources WHERE memory_id=?").all(id);
+            for (const row of sources) {
                 const source = String(row.message_id);
                 (await this.invalidateSource(server, source));
                 (await this.db.prepare("DELETE FROM messages WHERE server=? AND id=?").run(server, source));
                 (await this.db.prepare("INSERT OR IGNORE INTO message_tombstones VALUES(?,?)").run(server, source));
             }
-            (await this.invalidate(server, channel));
+            (await this.invalidate(server, channel, { reason: "memory_forgotten", ...(sources[0] ? { sourceId: String(sources[0].message_id) } : {}) }));
         }
         return Boolean(result.changes);
     }
@@ -827,32 +836,44 @@ export class PostgresStore {
         if (!row)
             return;
         const previous = parseMessage(JSON.parse(String(row.body)));
-        // Discord also emits updates for embeds; unchanged text is not a correction.
-        if (previous.text === message.text && previous.replyTo === message.replyTo)
+        if (message.transient || previous.transient || legacyToolProgress(previous) && previous.author === this.setting(message.server, "context_bot_author")) { await this.removeTransient(message.server, message.channel, message.id); return; }
+        if (message.revisionTimestamp !== undefined && previous.revisionTimestamp !== undefined && message.revisionTimestamp < previous.revisionTimestamp) return;
+        if (sourceFingerprint(previous) === sourceFingerprint(message)) {
+            await this.db.prepare("UPDATE messages SET body=? WHERE server=? AND id=? AND channel=?").run(JSON.stringify(message), message.server, message.id, message.channel);
             return;
+        }
         (await this.invalidateSource(message.server, message.id));
         (await this.db.prepare("UPDATE messages SET body=? WHERE server=? AND id=? AND channel=?")
             .run(JSON.stringify(message), message.server, message.id, message.channel));
-        (await this.invalidate(message.server, message.channel));
+        (await this.invalidate(message.server, message.channel, { reason: "message_edited", sourceId: message.id }));
         this.queueIndex(message);
     }
+    private async removeTransient(server: string, channel: string, id: string): Promise<void> {
+        await this.db.prepare("DELETE FROM embeddings WHERE server=? AND message_id=?").run(server, id);
+        await this.db.prepare("DELETE FROM messages WHERE server=? AND channel=? AND id=?").run(server, channel, id);
+    }
     async remove(server: string, channel: string, id: string): Promise<void> {
+        const existing = await this.canonicalMessage(server, id);
+        if (existing && (existing.transient || legacyToolProgress(existing) && existing.author === this.setting(server, "context_bot_author"))) { await this.removeTransient(server, channel, id); return; }
         (await this.invalidateSource(server, id));
         (await this.db.prepare("INSERT OR IGNORE INTO message_tombstones VALUES(?,?)").run(server, id));
         const result = (await this.db.prepare("DELETE FROM messages WHERE server=? AND channel=? AND id=?").run(server, channel, id));
         if (result.changes)
-            (await this.invalidate(server, channel));
+            (await this.invalidate(server, channel, { reason: "message_deleted", sourceId: id }));
     }
-    private async invalidate(server: string, channel: string): Promise<void> {
+    private async invalidate(server: string, channel: string, change: ContextChange = { reason: "scope_changed" }): Promise<void> {
         // Keep original history and reasoning logs. Only remove them from future prompt assembly.
         (await this.db.prepare("UPDATE task_history SET valid=0 WHERE json_extract(task_key,'$[0]')=? AND json_extract(task_key,'$[1]')=?")
             .run(server, channel));
         (await this.db.prepare("UPDATE task_checkpoints SET valid=0 WHERE json_extract(task_key,'$[0]')=? AND json_extract(task_key,'$[1]')=?").run(server, channel));
-        (await this.db.prepare("UPDATE agent_turns SET valid=0 WHERE server=? AND message_id IN (SELECT id FROM messages WHERE server=? AND channel=?)").run(server, server, channel));
+        (await this.db.prepare("UPDATE agent_turns SET valid=0 WHERE server=? AND (message_id IN (SELECT id FROM messages WHERE server=? AND channel=?) OR message_id IN (SELECT json_extract(message,'$.id') FROM runs WHERE json_extract(message,'$.server')=? AND json_extract(message,'$.channel')=?) OR message_id=?)").run(server, server, channel, server, channel, change.sourceId ?? ""));
         (await this.bumpVersion(server, channel));
+        const record = { reason: change.reason, ...(change.sourceId ? { sourceId: change.sourceId } : {}), originChannel: change.originChannel ?? channel };
+        await this.setSetting(server, `context_change:${channel}`, record);
+        console.log(JSON.stringify({ type: "context_invalidated", server, channel, ...record }));
         for (const task of (this.taskThreads(server))) {
             if (task.parent === channel)
-                (await this.invalidate(server, task.thread));
+                (await this.invalidate(server, task.thread, { ...change, originChannel: change.originChannel ?? channel }));
         }
     }
 }
