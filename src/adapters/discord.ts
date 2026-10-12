@@ -1,6 +1,9 @@
+import { objectStorageTool, UserFileStorage, MAX_STORED_FILE_BYTES } from '../object-storage.js';
+import { sendStoredFile } from './discord-storage.js';
+import { S3StorageProvider } from './s3-storage.js';
 import { contextChangedError, legacyToolProgress, sourceFingerprint, stableAttachmentUrl, toolProgressFooter } from "../source-context.js";
 import { errorReply, logError } from "../errors.js";
-import { sandboxTool } from "../sandbox.js";
+import { sandboxTool, readSandboxFile } from "../sandbox.js";
 import { McpManager, McpSecrets } from '../mcp.js';
 import { remoteMcpConnector } from './mcp-client.js';
 import { E2BSandboxProvider } from "./e2b-sandbox.js";
@@ -21,7 +24,7 @@ import { registerHistoryTools } from '../search/history-search.js';
 import { registerWebSearch, UnconfiguredSearch } from "../web-search.js";
 import { SearxNGSearch } from "./searxng.js";
 import { ReplyRenderer } from "../reply-renderer.js";
-import { registerFileTool } from '../files.js';
+import { registerFileTool, inspectFile } from '../files.js';
 import {
   Client, Events, GatewayIntentBits, Partials, ThreadAutoArchiveDuration,
   MessageFlags, PermissionFlagsBits, ChannelType,
@@ -51,6 +54,7 @@ export class DiscordAdapter implements ChatGateway {
   private readonly uiRuntime: UiRuntime;
   private readonly toolProgress = new DiscordToolProgress();
   private readonly tools: ToolRegistry;
+  private readonly objectStorageProvider: S3StorageProvider | undefined;
   private readonly mcp: McpManager;
   private readonly worker: TaskWorker;
   private readonly history: HistoryImporter;
@@ -163,7 +167,28 @@ export class DiscordAdapter implements ChatGateway {
       return fresh;
     };
     registerFileTool(this.tools, { store, llm, resolve: resolveAttachment });
-    this.tools.register(sandboxTool(store, config.sandboxApiKey ? new E2BSandboxProvider({ apiKey: config.sandboxApiKey, apiUrl: config.sandboxApiUrl!, sandboxUrl: config.sandboxUrl!, ...(config.sandboxTemplate ? { template: config.sandboxTemplate } : {}) }) : undefined, { resolve: (request, id) => resolveAttachment(request, id, true) }));
+    const sandboxProvider = config.sandboxApiKey ? new E2BSandboxProvider({ apiKey: config.sandboxApiKey, apiUrl: config.sandboxApiUrl!, sandboxUrl: config.sandboxUrl!, ...(config.sandboxTemplate ? { template: config.sandboxTemplate } : {}) }) : undefined;
+    this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;
+    const storage = new UserFileStorage(store, this.objectStorageProvider);
+    this.tools.register(sandboxTool(store, sandboxProvider, { resolve: (request, id) => resolveAttachment(request, id, true) }, storage));
+    this.tools.register(objectStorageTool({
+      storage,
+      authorize: message => authorizeFeature(message, message.channel),
+      resolveAttachment: (request, id) => resolveAttachment(request, id, true),
+      inspect: (context, file, bytes, question) => inspectFile({ store, llm, assertCurrent: async () => { const current = await storage.entry(context.message.server, context.message.author, file.owner, file.path); if (current.file.key !== file.key) throw new ToolError('Stored file changed during inspection. Read its current version.'); } }, context, file.path, file.contentType, bytes, question),
+      send: async (context, file, bytes) => {
+        const current = await storage.entry(context.message.server, context.message.author, file.owner, file.path);
+        if (current.file.key !== file.key) throw new ToolError('Stored file changed before sending. Request its current version.');
+        await sendStoredFile(this.client, context, file, bytes);
+      },
+      ...(sandboxProvider ? { sandbox: {
+        read: (context, path) => readSandboxFile(store, sandboxProvider, context, path, MAX_STORED_FILE_BYTES),
+        write: async (context, path, _bytes) => {
+          const output = await this.tools.invokeResult(context.message, 'sandbox', { action: 'import_storage', path, storage_path: context.arguments.path!, ...(context.arguments.owner ? { owner: context.arguments.owner } : {}) }, `${context.operationId}:sandbox-import`, context.source);
+          if (output.status === 'failed' || output.status === 'rejected') throw new ToolError(output.reason ?? output.text, output.status);
+        },
+      } } : {}),
+    }));
     this.app = new Application(store, llm, {
       allowedChannels: this.channels.map(channel => ({ server: config.guildId, channel })),
       recentMessages: savedLimit("reply_context", config.replyContextMessages, 100),
@@ -497,5 +522,6 @@ export class DiscordAdapter implements ChatGateway {
     if (this.historyTimer) clearInterval(this.historyTimer);
     await this.reminders.stop();
     await this.history.stop(); await this.worker.stop(); await this.mcp.close(); await this.client.destroy();
+    this.objectStorageProvider?.close();
   }
 }

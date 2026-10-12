@@ -36,6 +36,14 @@ export class E2BSandboxProvider implements SandboxProvider {
         }
       },
       read: path => read(() => sandbox.files.read(path)),
+      readBytes: (path, maxBytes) => read(async () => {
+        const stream = await sandbox.files.read(path, { format: 'stream' });
+        const reader = stream.getReader(), chunks: Uint8Array[] = []; let size = 0;
+        try {
+          while (true) { const chunk = await reader.read(); if (chunk.done) break; size += chunk.value.length; if (size > maxBytes) throw new ToolError('Sandbox file exceeds the 10 MiB storage limit.'); chunks.push(chunk.value); }
+          return Buffer.concat(chunks);
+        } finally { await reader.cancel(); }
+      }),
       write: (path, data) => write(async () => { await sandbox.files.write(path, typeof data === 'string' ? data : Uint8Array.from(data).buffer); }),
       renew: timeoutMs => read(() => sandbox.setTimeout(timeoutMs)),
       close: () => write(async () => { await sandbox.kill(); }),

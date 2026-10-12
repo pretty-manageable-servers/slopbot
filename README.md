@@ -106,6 +106,12 @@ Current custom fields are scoped to this server. There is no automatic sharing a
 
 Upload a file and ask `@slop summarize this file`, or reply to an attachment and ask about it. The model can call `file_read`; members can also use `/slopbot file_read message_id:<id> question:<question>`.
 
+With object storage configured, ask `@slop save this attachment as receipts/october.pdf`, `list my saved files`, `summarize my stored receipts/october.pdf`, or `send my saved file back to me`. The `file_store` tool stores files privately in your own directory and can DM the original bytes back. You can also save generated sandbox files and load stored files into the task sandbox.
+
+Ask `publish my reports/result.csv` to make it discoverable in this server's public file library and get an expiring download link. Other members can inspect or copy published files using the owner's Discord ID. `unpublish` makes it private again; existing download links remain usable until expiry. Replacing a file requires explicit overwrite and makes the replacement private. `list public files` browses shared files. Stored files have a 10 MiB limit.
+
+Set `OBJECT_STORAGE_BUCKET` and a bucket-scoped read/write `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`; PMServers uses `https://s3.pmservers.org`, region `pms`, and path-style S3. See [storage setup](architecture/DEPLOYMENT.md#object-storage-configuration). `npm run storage:smoke` verifies the configured service with a temporary binary upload and signed download.
+
 Supported: UTF-8 text/code, JSON, CSV, PDF text, DOCX, XLSX, PNG, JPEG, WebP, AVIF, TIFF and GIF. GIFs supply up to five ordered frames to the configured vision-capable model. File inspection has a stable prompt prefix and retains provider reasoning events. Results link to the source message.
 
 Limits: 10 MiB download, 20 seconds decoding, 16 million pixels per image, 16,000 extracted characters and the first 20 PDF pages. Scanned PDFs require text/OCR from elsewhere; audio, video and legacy DOC/XLS are unsupported. Files are inspected on demand, not automatically during history indexing or JEV participation checks. Only sources in the requester's permitted channel can be inspected.

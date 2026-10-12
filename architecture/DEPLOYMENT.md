@@ -74,3 +74,8 @@ the known legacy IDs only when the gateway rejects that model name with
 model_not_allowed or model_not_found. Successful aliases are remembered per
 client. Other authentication failures and generation errors are not retried.
 The Gemma embedding index identity remains unchanged.
+
+
+## Object storage configuration
+
+Use the PMServers console or a current `pms storage` CLI to enable approved-account storage, create a dedicated bucket and create a read/write access key restricted to that bucket. Storage management requires a signed-in user session; the deployment project token and AI key cannot provision it. Add `OBJECT_STORAGE_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION=pms` and `AWS_ENDPOINT_URL=https://s3.pmservers.org` to the bot container's secret environment. A container can instead use `AWS_ENDPOINT_URL=http://garage.pms-storage.svc:3900`; keep `OBJECT_STORAGE_PUBLIC_ENDPOINT=https://s3.pmservers.org` for downloadable links. Restart with these variables, then test an attachment save/list/read/send flow. File metadata lives in the existing Postgres app-record table, so no schema migration is required. Saved bytes survive bot and sandbox restarts. Local configuration belongs in `.env.development`; `npm run storage:smoke` verifies a temporary binary round trip and removes its object.

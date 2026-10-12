@@ -36,3 +36,14 @@ test("invalid reply limits fail startup with actionable errors", () => {
   }
   assert.throws(() => loadConfig({ ...env, JEV_MAX_REPLIES_PER_HOUR: "1001" }), /JEV_MAX_REPLIES_PER_HOUR/);
 });
+
+test('object storage uses PMServers path-style settings and requires a dedicated bucket and credentials', () => {
+  assert.equal(loadConfig(env).objectStorage, undefined);
+  assert.throws(() => loadConfig({ ...env, OBJECT_STORAGE_BUCKET: 'slopbot-files' }), /AWS_ACCESS_KEY_ID/);
+  const storageEnv = { ...env, OBJECT_STORAGE_BUCKET: 'slopbot-files', AWS_ACCESS_KEY_ID: 'test-key', AWS_SECRET_ACCESS_KEY: 'test-secret' };
+  const storage = loadConfig(storageEnv).objectStorage!;
+  assert.equal(storage.endpoint, 'https://s3.pmservers.org'); assert.equal(storage.region, 'pms');
+  assert.equal(loadConfig({ ...storageEnv, AWS_ENDPOINT_URL: 'http://garage.pms-storage.svc:3900' }).objectStorage!.publicEndpoint, 'https://s3.pmservers.org');
+  for (const endpoint of ['http://example.com', 'https://user:pass@example.com', 'https://example.com/path', 'https://example.com/?secret=value']) assert.throws(() => loadConfig({ ...storageEnv, AWS_ENDPOINT_URL: endpoint }));
+  assert.throws(() => loadConfig({ ...storageEnv, OBJECT_STORAGE_PUBLIC_ENDPOINT: 'http://garage.pms-storage.svc:3900' }), /HTTPS/);
+});

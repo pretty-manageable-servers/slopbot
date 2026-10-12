@@ -2,6 +2,7 @@ import { DEFAULT_MAX_TOOL_ROUNDS } from "./errors.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, modelTokenLimits } from "./context.js";
 
 export interface Config {
+  objectStorage?: import("./adapters/s3-storage.js").S3StorageOptions;
   sandboxApiKey?: string;
   sandboxApiUrl?: string;
   sandboxUrl?: string;
@@ -75,11 +76,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const value = new URL(env[key]!);
     if (value.protocol !== "https:" || value.username || value.password || value.search || value.hash) throw new Error(`${key} must be an HTTPS URL without credentials, query or fragment`);
   }
+  let objectStorage: Config['objectStorage'];
+  if (env.OBJECT_STORAGE_BUCKET) {
+    const bucket = env.OBJECT_STORAGE_BUCKET;
+    if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket) || bucket.includes('..')) throw new Error('OBJECT_STORAGE_BUCKET must be a valid S3 bucket name');
+    const endpoint = env.AWS_ENDPOINT_URL ?? 'https://s3.pmservers.org';
+    const publicEndpoint = env.OBJECT_STORAGE_PUBLIC_ENDPOINT ?? 'https://s3.pmservers.org';
+    for (const [key, value] of [['AWS_ENDPOINT_URL', endpoint], ['OBJECT_STORAGE_PUBLIC_ENDPOINT', publicEndpoint]]) {
+      const parsed = new URL(value!);
+      const privateEndpoint = key === 'AWS_ENDPOINT_URL' && value === 'http://garage.pms-storage.svc:3900';
+      if ((!privateEndpoint && parsed.protocol !== 'https:') || parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname !== '/') throw new Error(`${key} must be an HTTPS origin, or the documented private Garage endpoint for AWS_ENDPOINT_URL`);
+    }
+    objectStorage = { bucket, endpoint, publicEndpoint, region: env.AWS_REGION ?? 'pms', accessKeyId: required('AWS_ACCESS_KEY_ID'), secretAccessKey: required('AWS_SECRET_ACCESS_KEY') };
+  }
   const accessId = env.SEARXNG_ACCESS_CLIENT_ID, accessSecret = env.SEARXNG_ACCESS_CLIENT_SECRET;
   if (accessId || accessSecret) {
     if (!accessId || !accessSecret || !env.SEARXNG_URL || new URL(env.SEARXNG_URL).protocol !== "https:") throw new Error("Protected search requires HTTPS SEARXNG_URL and both SEARXNG_ACCESS_CLIENT_ID and SEARXNG_ACCESS_CLIENT_SECRET");
   }
   return {
+    ...(objectStorage ? { objectStorage } : {}),
     ...(accessId && accessSecret ? { searxngAccess: { clientId: accessId, clientSecret: accessSecret } } : {}),
     ...(env.E2B_API_KEY ? { sandboxApiKey: env.E2B_API_KEY, sandboxApiUrl: env.E2B_API_URL ?? "https://api.pmservers.org/sandboxes", sandboxUrl: env.E2B_SANDBOX_URL ?? "https://sandbox.pmservers.org" } : {}),
     ...(env.E2B_TEMPLATE ? { sandboxTemplate: env.E2B_TEMPLATE } : {}),

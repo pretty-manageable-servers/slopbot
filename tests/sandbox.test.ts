@@ -17,6 +17,7 @@ function setup(attachments?: SandboxAttachments) {
         async run(command, timeout) { runs++; assert.ok(timeout <= 60000); return { stdout: command, stderr: '', exitCode: command === 'false' ? 1 : 0 }; },
         async write(path, text) { files.set(path, text); },
         async read(path) { const data = files.get(path); return typeof data === 'string' ? data : Buffer.from(data ?? []).toString('utf8'); },
+        async readBytes(path) { const data = files.get(path); return typeof data === 'string' ? Buffer.from(data) : data ?? new Uint8Array(); },
         async renew() {}, async close() { closed++; sessions.delete(session.id); },
       };
       sessions.set(session.id, session); return session;

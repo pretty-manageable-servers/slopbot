@@ -87,3 +87,27 @@ test('mention-only attachment requests select file inspection', () => {
     assert.equal(registry.suggest({id:'m',server:'s',channel:'c',author:'a',text:'[Attachment a.webp, type unknown: https://media.discordapp.net/a.webp; content not inspected]',attachments:[{name:'a.webp',url:'https://media.discordapp.net/a.webp'}]})?.arguments.question,'Describe this file and explain its likely meaning.');
   } finally {store.close();}
 });
+
+test('attachment save, send and sandbox requests reach the agent instead of stopping at an inspection shortcut', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const registry = new ToolRegistry(store, async () => false);
+  registerFileTool(registry, { store, llm: { async *stream() {} }, resolve: async message => message });
+  for (const text of ['save this attachment as reports/result.csv', 'summarize this and store the report', 'send this file back to me', 'import this into the sandbox', 'run this script']) {
+    assert.equal(registry.suggest({ id: 'request', server: 's', channel: 'c', author: 'a', text, attachments: [{ name: 'file.csv', url: 'https://cdn.discordapp.com/file' }] }), undefined);
+  }
+});
+
+test('stored-file inspection works without a Discord attachment source and checks current authorization', async t => {
+  const { inspectFile } = await import('../src/files.js');
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const message = { id: 'request', server: 's', channel: 'c', author: 'a', text: 'inspect my stored file' };
+  await store.ingest(message); let currentChecks = 0;
+  const llm: LLM = { outputTokenLimit: 32000, contextTokenLimit: 64000, async *stream(prompt) {
+    assert.equal(prompt.purpose, 'inspection'); assert.equal(prompt.maxOutputTokens, 32000);
+    assert.match(prompt.prefix[0]!.content, /untrusted evidence/); assert.match(prompt.inputs[0]!.content, /saved image/);
+    assert.ok(Array.isArray(wireMessages(prompt)[1]!.content));
+    yield { kind: 'text', payload: { text: 'A red image.' } };
+  } };
+  const result = await inspectFile({ store, llm, decoder: { read: async () => ({ text: 'saved image', images: [{ url: 'data:image/png;base64,AA==', label: 'image' }] }) }, assertCurrent: async () => { currentChecks++; } }, { message, operationId: 'stored-inspection', isAdmin: false, source: 'agent', toolName: 'file_store', arguments: {}, resource: null, assertActive: async () => {} }, 'saved.png', 'image/png', new Uint8Array(), 'Describe it');
+  assert.equal(result, 'A red image.'); assert.equal(currentChecks, 1);
+});

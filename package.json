@@ -17,7 +17,8 @@
     "search:stop": "docker compose -f compose.search.yaml down",
     "dev": "node scripts/development/start.mjs",
     "sandbox:smoke": "npm run build && node --env-file-if-exists=.env.development scripts/sandbox-smoke.mjs",
-    "regression:audit": "npm run build && node --test scripts/development/error-regressions.test.mjs"
+    "regression:audit": "npm run build && node --test scripts/development/error-regressions.test.mjs",
+    "storage:smoke": "npm run build && node --env-file-if-exists=.env.development scripts/storage-smoke.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -25,6 +26,8 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1150.0",
+    "@aws-sdk/s3-request-presigner": "^3.1150.0",
     "@fontsource-variable/inter": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@fontsource-variable/source-serif-4": "^5.3.1",
