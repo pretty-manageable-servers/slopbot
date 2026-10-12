@@ -3,7 +3,8 @@ import {test} from 'node:test';
 import {HarnessMachine, restoreHarness, HarnessInterrupted} from '../src/harness-state.js';
 import {Application} from '../src/application.js';
 import {SQLiteStore} from '../src/adapters/sqlite.js';
-import {ToolError,UncertainActionError,ToolRegistry} from '../src/tools.js';
+import {ToolError,ToolRegistry} from '../src/tools.js';
+import { RequestError } from '../src/errors.js';
 import type {LLM} from '../src/ports.js';
 const message={id:'m',server:'s',channel:'c',author:'a',text:'do the task'};
 const policy={allowedChannels:[{server:'s',channel:'c'}]};
@@ -53,12 +54,12 @@ test('restoration never assumes an in-flight stream or tool completed',()=>{
  assert.equal(restored.kind,'ToolPhase');
  if(restored.kind==='ToolPhase')assert.deepEqual(restored.calls.map(call=>call.state),['Undecided','DoneContinue']);
 });
-test('runner journals lifecycle and holds an all-rejected batch without more model calls',async t=>{
+test('runner journals lifecycle and sends an all-rejected batch back to the model',async t=>{
  const store=new SQLiteStore();t.after(()=>store.close());let streams=0;
- const llm: LLM={async *stream(){streams++;yield {kind:'reasoning',payload:{delta:'retained'}};yield {kind:'text',payload:{text:'{"tool_calls":[{"name":"write","arguments":{}}]}'}};}};
+ const llm: LLM={async *stream(){streams++;yield {kind:'reasoning',payload:{delta:'retained'}};yield {kind:'text',payload:{text:streams === 1 ? '{"tool_calls":[{"name":"write","arguments":{}}]}' : 'The write is not allowed.'}};}};
  const app=new Application(store,llm,policy,undefined,{harness:store,tools:{catalog:()=>'',execute:async()=>{throw new ToolError('not allowed');}}});
- assert.match((await app.handle(message))!.text,/write.*blocked:.*not allowed/);
- assert.equal(streams,1);assert.equal((await store.harnessState('s','m'))?.kind,'ToolResultsHeld');
+ assert.equal((await app.handle(message))!.text,'The write is not allowed.');
+ assert.equal(streams,2);assert.equal((await store.harnessState('s','m'))?.kind,'WaitingForUserMessage');
 });
 test('stream interruption preserves partial events and resumes on an explicit retry',async t=>{
  const store=new SQLiteStore();t.after(()=>store.close());let notify!:()=>void;
@@ -78,15 +79,17 @@ test('stream interruption preserves partial events and resumes on an explicit re
  assert.equal((await app.handle(message,true))?.text,'partial complete');
  assert.equal((await store.harnessState('s','m'))?.kind,'WaitingForUserMessage');
 });
-test('uncertain writes remain journaled and are not repeated on restored tool phases',async t=>{
+test('uncertain writes return to the model while remaining journaled and blocking repeated writes',async t=>{
  const store=new SQLiteStore();t.after(()=>store.close());let writes=0;
  const tools=new ToolRegistry(store,async()=>true);
  tools.register({name:'write',description:'write',fields:{},access:'member',effect:'write',retrySafe:false,execute:async()=>{writes++;throw new Error('connection lost after writing');}});
- const llm:LLM={async *stream(){yield {kind:'text',payload:{text:'{"tool_calls":[{"name":"write","arguments":{}}]}'}};}};
+ let rounds=0;
+ const llm:LLM={async *stream(prompt){rounds++;if(rounds > 1) assert.ok(prompt.inputs.some(item=>item.content.includes('ACTION_UNCERTAIN')));yield {kind:'text',payload:{text:rounds === 1 ? '{"tool_calls":[{"name":"write","arguments":{}}]}' : 'Inspect the write before retrying.'}};}};
  const app=new Application(store,llm,policy,undefined,{harness:store,tools:{catalog:()=>tools.catalog(),execute:(m,c,id)=>tools.invokeResult(m,c.name,c.arguments,id,'agent')}});
- await assert.rejects(app.handle(message),UncertainActionError);
- assert.equal((await store.harnessState('s','m'))?.kind,'ToolPhase');
- await assert.rejects(app.handle(message,true),UncertainActionError);
+ assert.equal((await app.handle(message))?.text,'Inspect the write before retrying.');
+ assert.equal((await store.harnessState('s','m'))?.kind,'WaitingForUserMessage');
+ assert.equal((await store.operation(store.agentTurns(message)[0]!.id + ':0'))?.status,'started');
+ await assert.rejects(tools.invokeResult(message,'write',{},'another-write','agent'), /unresolved action/);
  assert.equal(writes,1);
 });
 
@@ -114,7 +117,7 @@ test('restart between tool completion and turn commit reuses the journaled resul
  let writes=0,store=new SQLiteStore(path);
  const registry=()=>{const tools=new ToolRegistry(store,async()=>true);tools.register({name:'write',description:'write',fields:{},access:'member',effect:'write',retrySafe:false,execute:async()=>{writes++;return {text:'confirmed write'};}});return tools;};
  let tools=registry();
- const first=new Application(store,{async *stream(){yield {kind:'text',payload:{text:'{"tool_calls":[{"name":"write","arguments":{}}]}'}};}},policy,undefined,{harness:store,tools:{catalog:()=>tools.catalog(),execute:async(m,c,id)=>{await tools.invokeResult(m,c.name,c.arguments,id,'agent');throw Error('process lost before turn commit');}}});
+ const first=new Application(store,{async *stream(){yield {kind:'text',payload:{text:'{"tool_calls":[{"name":"write","arguments":{}}]}'}};}},policy,undefined,{harness:store,tools:{catalog:()=>tools.catalog(),execute:async(m,c,id)=>{await tools.invokeResult(m,c.name,c.arguments,id,'agent');throw new RequestError('CONTEXT_CHANGED', 'process lost before turn commit', 'Retry');}}});
  await assert.rejects(first.handle(message),/process lost/);assert.equal(writes,1);
  store.close();store=new SQLiteStore(path);t.after(()=>store.close());store.recoverJobs('s');tools=registry();
  const resumed=new Application(store,{async *stream(){yield {kind:'text',payload:{text:'finished'}};}},policy,undefined,{harness:store,tools:{catalog:()=>tools.catalog(),execute:(m,c,id)=>tools.invokeResult(m,c.name,c.arguments,id,'agent')}});

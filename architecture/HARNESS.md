@@ -2,7 +2,7 @@
 
 Slopbot ports the session diagram from [Auger at commit 7e126e0](https://github.com/bushshrub/auger/blob/7e126e04d3cf7f223bd31824a9b95b1531cade64/auger-core/auger-statemachine.mmd). The diagram is retained in [auger-state.mmd](auger-state.mmd), and the corresponding TypeScript reducer is `src/harness-state.ts`.
 
-The model lifecycle is explicit: waiting, streaming, interrupting, interrupted, failed, tool phase and held results. Each tool call is undecided, running, done with a withheld result, or done with automatic continuation. The machine rejects invalid transitions. A batch continues only after every call finishes; any withheld result or an entirely denied batch holds continuation until another message.
+The model lifecycle is explicit: waiting, streaming, interrupting, interrupted, failed, tool phase and held results. Each tool call is undecided, running, done with a withheld result, or done with automatic continuation. The machine rejects invalid transitions. Execution failures count as completed results and return to the model for recovery. A batch continues only after every call finishes; any withheld result or an entirely denied batch holds continuation until another message.
 
 `AgentRunner` drives this machine while retaining the existing model adapter, context builder and central tool registry. SQLite appends transitions to `harness_events`; agent turns and the operation journal retain tool calls and actual results. Recovery reconstructs pending tool phases from those durable turns and consults the operation journal before execution. An uncertain write cannot be replayed as a new attempt just because a process restarted.
 

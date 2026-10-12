@@ -134,7 +134,6 @@ export class DiscordAdapter implements ChatGateway {
       },
       wakeWorker: () => this.worker.wake(),
     });
-    this.tools.register(sandboxTool(store, config.sandboxApiKey ? new E2BSandboxProvider({ apiKey: config.sandboxApiKey, apiUrl: config.sandboxApiUrl!, sandboxUrl: config.sandboxUrl!, ...(config.sandboxTemplate ? { template: config.sandboxTemplate } : {}) }) : undefined));
     const authorizeFeature = async(message:Message,channel:string) => {
       if(!this.bot.accepts(message.server,channel))throw new ToolError('Channel is disabled.');
       await this.validateChannel(message,channel);
@@ -150,18 +149,21 @@ export class DiscordAdapter implements ChatGateway {
     registerUiTool(this.tools);
     registerProfileTools(this.tools, store);
     registerWebSearch(this.tools, config.searxngUrl ? new SearxNGSearch(config.searxngUrl, fetch, Date.now, config.searxngAccess) : new UnconfiguredSearch());
-    registerFileTool(this.tools, { store, llm, resolve: async (request, requestedId) => {
+    const resolveAttachment = async (request: Message, requestedId: string | undefined, allowParent = false): Promise<Message> => {
       const id = requestedId ?? (request.attachments?.length ? request.id : request.replyTo);
       if (!id) throw new ToolError("Reply to a message with a file attached.");
       const known = (await store.canonicalMessage(request.server, id));
-      if (!known || known.channel !== request.channel || !this.bot.accepts(request.server, known.channel)) throw new ToolError("File source must be in this permitted channel.");
+      const parent = allowParent ? store.taskThreads(request.server).find(task => task.thread === request.channel)?.parent : undefined;
+      if (!known || (known.channel !== request.channel && known.channel !== parent) || !this.bot.accepts(request.server, known.channel)) throw new ToolError("File source must be in this permitted channel or the task's permitted parent channel.");
       await this.validateChannel(request, known.channel);
       const channel = await this.client.channels.fetch(known.channel);
       if (!channel || !channel.isTextBased() || !("messages" in channel)) throw new ToolError("Source channel unavailable");
       const fresh = this.normalize(await channel.messages.fetch(id));
       if (sourceFingerprint(fresh) !== sourceFingerprint(known)) { await this.store.revise(fresh); throw contextChangedError(request, { reason: "file_source_changed", sourceId: id }); }
       return fresh;
-    } });
+    };
+    registerFileTool(this.tools, { store, llm, resolve: resolveAttachment });
+    this.tools.register(sandboxTool(store, config.sandboxApiKey ? new E2BSandboxProvider({ apiKey: config.sandboxApiKey, apiUrl: config.sandboxApiUrl!, sandboxUrl: config.sandboxUrl!, ...(config.sandboxTemplate ? { template: config.sandboxTemplate } : {}) }) : undefined, { resolve: (request, id) => resolveAttachment(request, id, true) }));
     this.app = new Application(store, llm, {
       allowedChannels: this.channels.map(channel => ({ server: config.guildId, channel })),
       recentMessages: savedLimit("reply_context", config.replyContextMessages, 100),

@@ -48,21 +48,21 @@ test('tool errors retain distinct reasons and render them as bounded plain text'
   assert.match(toolProgress(calls), /remote_read`: failed: Service unavailable/);
 });
 
-for (const returned of [false, true]) test(`runner explains execution failures from ${returned ? 'results' : 'exceptions'} and holds continuation`, async t => {
+for (const returned of [false, true]) test(`runner explains execution failures from ${returned ? 'results' : 'exceptions'} and lets the model explain the failure`, async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   let rounds = 0;
-  const app = new Application(store, {async *stream(){rounds++;yield {kind:'text',payload:{text:'{"tool_calls":[{"name":"remote_read","arguments":{}}]}'}};}},
+  const app = new Application(store, {async *stream(){rounds++;yield {kind:'text',payload:{text:rounds === 1 ? '{"tool_calls":[{"name":"remote_read","arguments":{}}]}' : 'The remote service is unavailable.'}};}},
     {allowedChannels:[{server:'s',channel:'c'}]}, undefined,
     {harness:store,tools:{catalog:()=>'',execute:async()=>{
       if (returned) return {text:'Remote service unavailable',status:'failed',reason:'Remote service unavailable'};
       throw new ToolError('Remote service unavailable', 'failed');
     }}});
   const reply = await app.handle({server:'s',channel:'c',author:'person',id:'request',text:'Read it',addressed:true});
-  assert.equal(rounds, 1);
-  assert.match(reply!.text, /remote_read.*failed:.*Remote service unavailable/);
+  assert.equal(rounds, 2);
+  assert.equal(reply!.text, 'The remote service is unavailable.');
   assert.equal(reply!.toolActivity![0]!.status, 'failed');
   assert.match(reply!.toolActivity![0]!.reason ?? '', /Remote service unavailable/);
-  assert.equal((await store.harnessState('s', 'request'))?.kind, 'ToolResultsHeld');
+  assert.equal((await store.harnessState('s', 'request'))?.kind, 'WaitingForUserMessage');
 });
 
 test('progress edits one message per request and removes it after delivery', async () => {
@@ -94,7 +94,7 @@ for (const rejected of [false,true]) test(`execution reports ${rejected ? 'rejec
     assert.equal(reply?.toolActivity?.length,1);
     assert.equal(reply?.toolActivity?.[0]?.status,rejected ? 'rejected' : 'completed');
     assert.equal(reply?.toolActivity?.[0]?.reused,false);
-    if (rejected) { assert.match(reply?.toolActivity?.[0]?.reason ?? '', /Unavailable/); assert.match(reply!.text, /web_search.*blocked:.*Unavailable/); }
+    if (rejected) { assert.match(reply?.toolActivity?.[0]?.reason ?? '', /Unavailable/); assert.equal(reply!.text, 'Answer'); }
     assert.ok(Number.isFinite(reply?.toolActivity?.[0]?.durationMs));
     assert.ok(!reply?.text.includes('Tool activity'));
   } finally {store.close();}

@@ -83,3 +83,65 @@ test('schemas include native validation constraints and snapshot the captured ca
   assert.equal(captured.schemas().length,1);
   assert.equal(registry.schemas().length,2);
 });
+
+const callResponse = (id: string, args: object) => response([{index:0,delta:{tool_calls:[{index:0,id,type:'function',function:{name:'lookup',arguments:JSON.stringify(args)}}]},finish_reason:'tool_calls'}]);
+
+test('native validation errors return the original call ID and the model can correct its arguments', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  let requests = 0, reads = 0;
+  const registry = new ToolRegistry(store, async () => true);
+  registry.register({name:'lookup',description:'Lookup',fields:{limit:{type:'integer',min:1,max:10,required:true,description:'At most 10 results'}},access:'member',effect:'read',retrySafe:true,execute:async()=>{reads++;return 'Found results';}});
+  const llm = new ChatCompletionsLLM(options, async (_url, init) => {
+    const body = JSON.parse(String(init?.body)); requests++;
+    if (requests === 1) return callResponse('call_invalid', {limit:14});
+    const errors = body.messages.filter((item: any) => item.role === 'tool');
+    assert.equal(errors[0].tool_call_id, 'call_invalid');
+    assert.match(errors[0].content, /Invalid integer: limit/);
+    assert.match(errors[0].content, /Correct the arguments/);
+    if (requests === 2) return callResponse('call_corrected', {limit:10});
+    assert.equal(errors[1].tool_call_id, 'call_corrected');
+    assert.match(errors[1].content, /Found results/);
+    return response([{index:0,delta:{content:'Found the results.'},finish_reason:'stop'}]);
+  });
+  const app = new Application(store,llm,{allowedChannels:[{server:'s',channel:'c'}]},undefined,{harness:store,tools:{catalog:()=>registry.catalog(),schemas:()=>registry.schemas(),execute:(m,c,id)=>registry.invokeResult(m,c.name,c.arguments,id,'agent')}});
+  assert.equal((await app.handle(message))?.text, 'Found the results.');
+  assert.equal(reads, 1); assert.equal(requests, 3);
+});
+
+test('unexpected tool exceptions are redacted, sent to the model and replayed after a stream failure', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  let requests = 0, reads = 0;
+  const llm = new ChatCompletionsLLM(options, async (_url, init) => {
+    requests++;
+    if (requests === 1) return callResponse('call_exception', {});
+    const body = JSON.parse(String(init?.body));
+    const result = body.messages.find((item: any) => item.role === 'tool');
+    assert.equal(result.tool_call_id, 'call_exception');
+    assert.match(result.content, /connection lost/);
+    assert.ok(!result.content.includes('secret-value'));
+    if (requests === 2) throw Error('model disconnected');
+    return response([{index:0,delta:{content:'The service connection failed.'},finish_reason:'stop'}]);
+  });
+  const tools = {catalog:()=>'',schemas:()=>[],execute:async()=>{reads++;throw new Error('connection lost, Authorization: Bearer secret-value');}};
+  const policy = {allowedChannels:[{server:'s',channel:'c'}]};
+  await assert.rejects(new Application(store,llm,policy,undefined,{harness:store,tools}).handle(message), error => error instanceof Error && 'code' in error && error.code === 'PROVIDER_NETWORK');
+  assert.equal((await new Application(store,llm,policy,undefined,{harness:store,tools}).handle(message,true))?.text, 'The service connection failed.');
+  assert.equal(reads, 1);
+});
+
+test('three failed tool rounds disable tools and still let the model give a final answer', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  let requests = 0, reads = 0;
+  const llm = new ChatCompletionsLLM(options, async (_url, init) => {
+    requests++;
+    const body = JSON.parse(String(init?.body));
+    if (requests <= 3) return callResponse(`call_${requests}`, {});
+    assert.ok(!body.tools?.length);
+    assert.equal(body.messages.filter((item: any) => item.role === 'tool').length, 3);
+    assert.match(body.messages.at(-1).content, /three consecutive failed tool rounds/);
+    return response([{index:0,delta:{content:'The service is still unavailable after three attempts.'},finish_reason:'stop'}]);
+  });
+  const app = new Application(store,llm,{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:{catalog:()=>'',schemas:()=>[],execute:async()=>{reads++;return {text:'Service unavailable',status:'failed'};}}});
+  assert.match((await app.handle(message))!.text, /after three attempts/);
+  assert.equal(reads, 3); assert.equal(requests, 4);
+});

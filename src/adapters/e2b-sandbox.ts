@@ -36,7 +36,7 @@ export class E2BSandboxProvider implements SandboxProvider {
         }
       },
       read: path => read(() => sandbox.files.read(path)),
-      write: (path, text) => write(async () => { await sandbox.files.write(path, text); }),
+      write: (path, data) => write(async () => { await sandbox.files.write(path, typeof data === 'string' ? data : Uint8Array.from(data).buffer); }),
       renew: timeoutMs => read(() => sandbox.setTimeout(timeoutMs)),
       close: () => write(async () => { await sandbox.kill(); }),
     };

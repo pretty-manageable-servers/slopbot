@@ -24,3 +24,19 @@ test('old plain-text operation results remain readable',async t=>{
  store.beginOperation({message:request,operationId:'old',isAdmin:false,source:'agent',toolName:'read',arguments:{},resource:null,assertActive:async()=>{}},'read',{});store.endOperation('old','old result');
  assert.deepEqual(await registry.invokeResult(request,'read',{},'old','agent'),{text:'old result'});
 });
+
+test('request context changes during a tool still abort before another model turn', async t => {
+ const { RequestError } = await import('../src/errors.js');
+ const store=new SQLiteStore();t.after(()=>store.close());let rounds=0;
+ const failure=new RequestError('CONTEXT_CHANGED','Source edited','Retry with fresh context');
+ const app=new Application(store,{async *stream(){rounds++;yield {kind:'text',payload:{text:'{"tool_calls":[{"name":"read","arguments":{}}]}'}};}},{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:{catalog:()=>'',execute:async()=>{throw failure;}}});
+ await assert.rejects(app.handle(request),error=>error===failure);
+ assert.equal(rounds,1);
+});
+
+test('a model that ignores the recovery limit cannot execute a fourth failed tool round', async t => {
+ const store=new SQLiteStore();t.after(()=>store.close());let rounds=0,calls=0;
+ const app=new Application(store,{async *stream(){rounds++;yield {kind:'text',payload:{text:'{"tool_calls":[{"name":"read","arguments":{}}]}'}};}},{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:{catalog:()=>'',execute:async()=>{calls++;return {text:'Unavailable',status:'failed'};}}});
+ assert.match((await app.handle(request))!.text,/Stopped after three consecutive failed tool rounds/);
+ assert.equal(calls,3);assert.equal(rounds,4);
+});

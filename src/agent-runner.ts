@@ -1,5 +1,5 @@
 import { contextChangedError } from "./source-context.js";
-import { DEFAULT_MAX_TOOL_ROUNDS, RequestError, errorContext, errorSummary, logError } from "./errors.js";
+import { DEFAULT_MAX_TOOL_ROUNDS, RequestError, describeError, errorContext, errorSummary, logError } from "./errors.js";
 import { performance } from "node:perf_hooks";
 import { EventJournal } from "./event-journal.js";
 import { requestTimings } from "./request-timing.js";
@@ -220,6 +220,7 @@ export class AgentRunner {
       trace.splice(0, trace.length, checkpoint, ...tail);
       console.log(JSON.stringify({ type: "working_context_checkpoint", server: message.server, channel: message.channel, messageId: message.id, runId, before: used, after, inputLimit, schemaBudget }));
     };
+    let failedToolRounds = 0;
     const appendTurn = async (turn: AgentTurn): Promise<void> => {
       if (turn.version !== sourceVersion) throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel), { expectedVersion: turn.version, actualVersion: sourceVersion });
       if (signal.aborted) throw new HarnessInterrupted("Request interrupted");
@@ -227,29 +228,38 @@ export class AgentRunner {
       const latestBatchStart = trace.length;
       const callIds = turn.calls.map((call, index) => call.id ?? `call_${stableOperationId(turn.id, String(index))}`);
       trace.push({ role: "assistant", content: native && turn.calls.every(call => !call.id) ? "" : turn.text, ...(native ? { toolCalls: turn.calls.map((call, index) => ({ id: callIds[index]!, name: call.name, arguments: call.arguments })) } : {}) });
+      let batchFailed = false;
       for (let index = 0; index < turn.calls.length; index++) {
         if (signal.aborted) throw new HarnessInterrupted("Request interrupted before next tool");
         const id = `${turn.id}:${index}`;
         let result = turn.results[String(index)];
         const reused = result !== undefined;
         let durationMs: number | undefined;
-        if (result !== undefined && toolFailed(result)) await step({ type: "ToolDecision", id, decision: "deny_continue" });
-        else await step({ type: "ToolDecision", id, decision: "approve" });
+        await step({ type: "ToolDecision", id, decision: "approve" });
         if (result === undefined) {
           if (!tools || !this.accepts(message)) throw new Error("Tools unavailable in this scope");
           await report({ id, name: turn.calls[index]!.name, status: "running" });
           const toolStarted = performance.now();
           try { result = await requestTimings.measure(message, `tool:${turn.calls[index]!.name}`, () => tools.execute(message, turn.calls[index]!, `${turn.id}:${index}`, sourceVersion)); }
-          catch (error) { logError("tool_call_failed", error, { stage: "tool execution", tool: turn.calls[index]!.name, operationId: id, server: message.server, channel: message.channel, messageId: message.id }); if (!(error instanceof ToolError)) { await report({ id, name: turn.calls[index]!.name, status: "failed", reason: errorSummary(error), durationMs: Math.round(performance.now() - toolStarted) }); throw errorContext(error, { stage: "tool execution", tool: turn.calls[index]!.name, operationId: id }); } result = { text: errorSummary(error), status: error.status, reason: errorSummary(error) }; }
+          catch (error) {
+            logError("tool_call_failed", error, { stage: "tool execution", tool: turn.calls[index]!.name, operationId: id, server: message.server, channel: message.channel, messageId: message.id });
+            // Request lifecycle failures invalidate the turn rather than a single tool call.
+            if (signal.aborted || error instanceof HarnessInterrupted || error instanceof RequestError && ["CONTEXT_CHANGED", "CONTEXT_BUDGET", "CHECKPOINT_INVALID", "CHECKPOINT_TOO_LARGE"].includes(error.code)) throw error;
+            const info = describeError(error);
+            const reason = errorSummary(error);
+            result = { text: `${reason}\n${info.recovery}`, status: error instanceof ToolError ? error.status : "failed", reason, failure: { causes: info.causes } };
+          }
           durationMs = Math.round(performance.now() - toolStarted);
           await this.store.agentResult(turn.id, index, result);
         }
         const output = toolResult(result);
+        batchFailed ||= toolFailed(output);
         if (output.ui) ui = output.ui;
         await report({ id, name: turn.calls[index]!.name, status: toolFailed(output) ? output.status as "rejected" | "failed" : output.handoff ? "delegated" : "completed", ...(toolFailed(output) ? { reason: output.reason ?? output.text } : {}), reused, ...(durationMs !== undefined ? { durationMs } : {}) });
         if (signal.aborted) throw new HarnessInterrupted("Tool execution ended after interruption; its actual result is retained");
         if (machine.state.kind === "ToolPhase" && machine.state.calls.find(call => call.id === id)?.state === "Running") {
-          await step(toolFailed(output) ? { type: "ToolRejected", id } : { type: "ToolResult", id });
+          // A failed execution is still a result the model must receive.
+          await step({ type: "ToolResult", id });
         }
         if (!reused) {
           if (!(await this.store.agentTurns(message)).some(saved => saved.id === turn.id)) throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel), { operationId: id, tool: turn.calls[index]!.name });
@@ -260,6 +270,7 @@ export class AgentRunner {
         if (!message.taskId && output.handoff) directAnswer = `Task started in <#${output.handoff.threadId}>. Updates will appear there.`;
         trace.push(appendToolEvidence(turn.calls[index]!.name, output, [...prefix, ...history, ...inputs, ...trace], this.counter, Number.POSITIVE_INFINITY, native ? callIds[index] : undefined));
       }
+      failedToolRounds = batchFailed ? failedToolRounds + 1 : 0;
       await compactWorkingContext(latestBatchStart);
     };
     for (const turn of turns) {
@@ -273,7 +284,9 @@ export class AgentRunner {
       if (machine.state.kind === "ToolResultsHeld") directAnswer = "Slopbot could not complete these tool calls:\n" + toolFailureSummary(activity) + "\nNo further tool calls were run.";
       if (machine.state.kind !== "ToolResultsHeld" && this.counter.count([...prefix, ...history, ...inputs, ...trace]) > inputLimit) throw new RequestError("CONTEXT_BUDGET", "Context budget reached; original prompts and tool results are retained.", "Start a fresh request, or increase CONTEXT_TOKENS with enough room for OUTPUT_TOKENS.", { inputLimit: this.inputLimit });
       const runId = randomUUID();
-      const prompt: Prompt = { cacheScope: taskKey??JSON.stringify([message.server,message.channel,message.id]), prefixVersion: (this.policy.prefixVersion ?? "v3") + ":" + stableOperationId(JSON.stringify({ prefix, tools: modelTools ?? [] })), prefix, history, inputs: [...inputs, ...trace], ...(modelTools ? { tools: modelTools } : {}), maxOutputTokens: this.outputLimit, purpose: "reply" };
+      const retriesExhausted = failedToolRounds >= 3;
+      const retryLimitInput: PromptItem[] = retriesExhausted ? [{ role: "user", contextOnly: true, content: "Tool recovery stopped after three consecutive failed tool rounds. No further tools can run in this request. Explain the remaining failure and what the requester can do, using the recorded results. Do not claim success or request more tools." }] : [];
+      const prompt: Prompt = { cacheScope: taskKey??JSON.stringify([message.server,message.channel,message.id]), prefixVersion: (this.policy.prefixVersion ?? "v3") + ":" + stableOperationId(JSON.stringify({ prefix, tools: modelTools ?? [] })), prefix, history, inputs: [...inputs, ...trace, ...retryLimitInput], ...(modelTools ? { tools: retriesExhausted ? [] : modelTools } : {}), maxOutputTokens: this.outputLimit, purpose: "reply" };
       let text: string;
       let generatedCalls: ToolCall[] | undefined;
       const fixedAnswer = quoteAnswer ?? clarificationAnswer ?? directAnswer;
@@ -295,6 +308,10 @@ export class AgentRunner {
           continue;
         }
         if (calls && !this.services.tools) throw new ToolError("Tool request cannot execute: tools are unavailable");
+        if (calls && retriesExhausted) {
+          calls = undefined;
+          text = "Slopbot could not complete these tool calls:\n" + toolFailureSummary(activity) + "\nStopped after three consecutive failed tool rounds. No further tool calls were run.";
+        }
         if (calls) {
           if (round === maxRounds) throw new RequestError("TOOL_ROUND_LIMIT", `Reached the limit of ${maxRounds} tool rounds for this attempt. Completed progress is retained.`, "Continue the task in a new message, or retry this job to resume with a fresh round allowance. Set MAX_TOOL_ROUNDS to change the limit.", { limit: maxRounds, savedRounds: turns.length, completedRounds: round, nextTools: calls.map(call => call.name).join(", ") });
           const turn = await this.store.addAgentTurn(message, text, calls);

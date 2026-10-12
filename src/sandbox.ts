@@ -1,4 +1,7 @@
 import { logError } from "./errors.js";
+import { DiscordFileFetcher, type FileFetcher } from './files.js';
+import type { Message } from './domain.js';
+import { contextChangedError, sourceFingerprint } from './source-context.js';
 import type { RecordStore } from './records.js';
 import { ToolError, type ToolDefinition } from './tools.js';
 import { requestTimings } from './request-timing.js';
@@ -7,7 +10,7 @@ export interface SandboxSession {
   id: string;
   run(command: string, timeoutMs: number): Promise<{ stdout: string; stderr: string; exitCode: number }>;
   read(path: string): Promise<string>;
-  write(path: string, text: string): Promise<void>;
+  write(path: string, data: string | Uint8Array): Promise<void>;
   renew(timeoutMs: number): Promise<void>;
   close(): Promise<void>;
 }
@@ -17,13 +20,20 @@ export interface SandboxProvider {
 }
 const lifetimeMs = 600000;
 const limit = (text: string) => text.length > 16000 ? `${text.slice(0, 16000)}\n[Output truncated; use a narrower command.]` : text;
-export function sandboxTool(store: RecordStore, provider?: SandboxProvider): ToolDefinition {
+export interface SandboxAttachments {
+  resolve(message: Message, id: string | undefined): Promise<Message>;
+  fetcher?: FileFetcher;
+}
+export function sandboxTool(store: RecordStore, provider?: SandboxProvider, attachments?: SandboxAttachments): ToolDefinition {
+  const fetcher = attachments?.fetcher ?? new DiscordFileFetcher();
   return {
-    name: 'sandbox', description: 'Run code and read/write files in an isolated remote PMServers sandbox shared by this task thread. Reuse files across calls. Expires ten minutes after last command or file write. No bot credentials are forwarded. Read status before assuming a workspace still exists.',
+    name: 'sandbox', description: 'Import Discord attachments, run code and read/write files in an isolated remote PMServers sandbox shared by this task thread. Reuse files across calls. Expires ten minutes after last command, file write or attachment import. No bot credentials are forwarded. Read status before assuming a workspace still exists.',
     fields: {
-      action: { type: 'string', required: true, choices: ['run', 'read', 'write', 'status', 'close'], description: 'run/write creates a sandbox when none is recorded; close destroys it' },
+      action: { type: 'string', required: true, choices: ['run', 'read', 'write', 'import_attachment', 'status', 'close'], description: 'run/write/import_attachment creates a sandbox when none is recorded; close destroys it' },
       command: { type: 'string', description: 'Shell command to execute remotely, never on the bot host' },
       path: { type: 'string', description: 'Absolute sandbox file path, e.g. /tmp/example.py' },
+      message_id: { type: 'string', description: 'Attachment source message ID in this thread or its permitted parent channel; omit for current/reply attachment' },
+      attachment: { type: 'integer', min: 0, max: 19, description: 'Zero-based attachment index, default 0' },
       text: { type: 'string', description: 'UTF-8 file content for write, at most 64000 characters' },
       seconds: { type: 'integer', min: 1, max: 60, description: 'Command timeout, default 30 seconds' },
     },
@@ -33,7 +43,7 @@ export function sandboxTool(store: RecordStore, provider?: SandboxProvider): Too
     resource: message => `sandbox:${message.server}:${message.channel}`,
     validate(args) {
       if (args.action === 'run' && (typeof args.command !== 'string' || !args.command.trim() || args.command.length > 16000)) throw new ToolError('run requires a command of 1–16000 characters.');
-      if (['read', 'write'].includes(String(args.action)) && (typeof args.path !== 'string' || !args.path.startsWith('/') || args.path.includes('\0') || args.path.length > 1024)) throw new ToolError('Provide an absolute sandbox file path.');
+      if (['read', 'write', 'import_attachment'].includes(String(args.action)) && (typeof args.path !== 'string' || !args.path.startsWith('/') || args.path.includes('\0') || args.path.length > 1024)) throw new ToolError('Provide an absolute sandbox file path.');
       if (args.action === 'write' && (typeof args.text !== 'string' || args.text.length > 64000)) throw new ToolError('write requires text of at most 64000 characters.');
       return args;
     },
@@ -41,6 +51,18 @@ export function sandboxTool(store: RecordStore, provider?: SandboxProvider): Too
       if (!provider) throw new ToolError('Sandbox is not configured. Set E2B_API_KEY to a PMServers project token.');
       await context.assertActive();
       const { message } = context;
+      let imported: { source: Message; bytes: Uint8Array; name: string } | undefined;
+      if (args.action === 'import_attachment') {
+        if (!attachments) throw new ToolError('Attachment import is not configured.');
+        const source = await attachments.resolve(message, typeof args.message_id === 'string' ? args.message_id : undefined);
+        const attachment = source.attachments?.[Number(args.attachment ?? 0)];
+        if (!attachment) throw new ToolError('No attachment found. Reply to the file or provide its message ID.');
+        const bytes = await requestTimings.wait('attachment download', () => fetcher.fetch(attachment));
+        await context.assertActive();
+        const refreshed = await attachments.resolve(message, source.id);
+        if (sourceFingerprint(refreshed, true) !== sourceFingerprint(source, true)) throw contextChangedError(message, { reason: 'file_source_changed', sourceId: source.id });
+        imported = { source, bytes, name: attachment.name };
+      }
       const record = await store.record(message.server, 'sandbox', message.channel);
       const value = record?.value as { id?: string; expiresAt?: number } | undefined;
       let id = value?.id;
@@ -64,6 +86,11 @@ export function sandboxTool(store: RecordStore, provider?: SandboxProvider): Too
       }
       await requestTimings.wait('sandbox lease', () => session.renew(lifetimeMs));
       if (!await store.putRecord(message.server, 'sandbox', message.channel, { id: session.id, expiresAt: Date.now() + lifetimeMs }, fresh!.revision)) throw new ToolError('Sandbox record changed during lease renewal.');
+      if (imported) {
+        await context.assertActive();
+        await requestTimings.wait('sandbox attachment upload', () => session.write(String(args.path), imported!.bytes));
+        return { text: `Imported ${imported.name} (${imported.bytes.length} bytes) to ${args.path} in sandbox ${session.id}.`, sources: [{ kind: 'message', server: imported.source.server, channel: imported.source.channel, id: imported.source.id }] };
+      }
       if (args.action === 'write') {
         await requestTimings.wait('sandbox write', () => session.write(String(args.path), String(args.text)));
         return `Wrote ${args.path} in sandbox ${session.id}.`;

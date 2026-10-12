@@ -75,7 +75,7 @@ Documentation is versioned with the running build, not proof of live service hea
 ## Remote sandbox
 
 `sandbox` uses the `SandboxProvider` interface, implemented by the E2B SDK adapter.
-It supports `run`, `read`, `write`, `status`, and `close`. Commands and writes
+It supports `run`, `read`, `write`, `import_attachment`, `status`, and `close`. Commands, imports and writes
 belong in a task thread, and each thread owns one recorded workspace. There are
 no model-supplied provider URLs, credentials, or sandbox IDs. Reads/status are
 read operations; mutations share a resource lock and are not automatically
@@ -90,6 +90,8 @@ provider template. TTL is ten minutes, command timeout at most sixty seconds.
 The SDK's external declarations require `skipLibCheck` with our exact optional
 property checks; application code retains strict type checking.
 
+`import_attachment` takes an absolute sandbox `path`, optional `message_id`, and a zero-based `attachment` index. It defaults to the current/reply attachment, resolves a fresh Discord URL, and downloads up to 10 MiB through the existing restricted media fetcher. Sources must belong to the task thread or its permitted parent channel and pass requester access checks. Source changes abort the import before upload. Original binary bytes go through the SDK file API without being passed through the model or a shell. Imports create/reuse the thread workspace, renew its lease and retain a message source link.
+
 Live smoke test: `npm run sandbox:smoke` uses `.env.development`, creates a
 temporary sandbox, verifies remote shell/file operations and reconnect, then
 destroys it. In Discord, ask Slopbot to run a calculation in a sandbox; it
@@ -100,3 +102,5 @@ moves the work into a task thread and selects the shared sandbox tool.
 The production executor exposes a captured, sorted function-schema array from ToolRegistry. Native fields produce JSON Schema constraints; MCP input schemas are preserved. Chat requests send `tools` and `tool_choice:auto`. The system prompt contains behavioral instructions, not the catalog or a JSON-only calling format. Streamed IDs, names and argument fragments are assembled before execution. Assistant function calls and matching tool-role results are persisted and reconstructed together. Ordinary JSON in a native-mode answer cannot trigger execution. Legacy saved calls keep their stable operation IDs when replayed with deterministic conversation call IDs. Missing historical pairs are transmitted as labeled evidence instead of invalid tool messages.
 
 Schemas count against context budgets and have separate hashed cache diagnostics. Registry permissions and revocation checks still enforce execution. A schema does not grant access. Native protocol failures surface as `PROVIDER_TOOL_PROTOCOL`; tool errors include sanitized original reasons and preserved causes. `ToolError(message, "failed", {cause})` marks a known execution failure. Unknown write results use `UncertainActionError` and retain reconciliation behavior. `MAX_TOOL_ROUNDS` controls per-attempt rounds, default 64, range 1-1000.
+
+Tool execution errors are saved as failed results and returned to the model with the matching call ID, a sanitized reason and recovery guidance. An all-failed batch continues so the model can correct its calls or explain a block. Three consecutive rounds containing failures disable further tool execution and give the model a final explanation turn. Successful rounds reset this counter. Request interruption and lifecycle/context failures still stop the attempt. Uncertain writes stay unresolved in the operation journal, blocking another write to the same resource until reconciled.
