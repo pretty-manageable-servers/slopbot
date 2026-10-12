@@ -1,5 +1,6 @@
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends git python3 && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json ./
@@ -7,6 +8,9 @@ COPY src ./src
 COPY tests ./tests
 COPY web ./web
 COPY architecture/BOT_GUIDE.md ./architecture/BOT_GUIDE.md
+COPY scripts/deployment ./scripts/deployment
+COPY scripts/development/error-regressions.test.mjs ./scripts/development/error-regressions.test.mjs
+COPY Dockerfile ./Dockerfile
 RUN npm test
 RUN npm prune --omit=dev
 

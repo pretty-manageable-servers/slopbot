@@ -8,3 +8,4 @@
 - Long failure statuses fit Discord's message limit, and final error replies remove the Working display.
 - Added failing-before-fix regressions for these bugs and historical tool schema, output cap, context packing and deployment cleanup failures. Updated bot_info.
 - Fixed slash-command registration when bot_info topics exceed Discord’s 25-choice limit. All topics remain valid typed inputs.
+- Container builds now include all regression script inputs and their test dependencies; a packaging check prevents this deployment failure from recurring.

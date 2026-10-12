@@ -35,6 +35,8 @@ SLOPBOT_AUDIT_ROOT=/path/to/built-baseline node --test scripts/development/error
 
 Use 7f48d46^ for missing schemas/IDs and eight rounds; 7f48d46 for report caps, tool reserve and active checkpoint failures. Baseline-compatible probes use APIs already present in those revisions. Run scripts/deployment/ci-deploy.test.mjs against f2720af's deploy script for absent-variable failures.
 
-Captured baseline results: 3 native/round failures, 3 inspection cap failures, 2 context failures; 9 initial lifecycle failures, 3 Discord source boundary failures, 2 deletion/ownership failures, 12 provider boundary failures, 3 snapshot/preview failures and 2 progress failures. Each was observed before its corresponding fix. Current isolated release: 274 passing checks and six local PostgreSQL skips; CI supplies PostgreSQL coverage.
+Captured baseline results: 3 native/round failures, 3 inspection cap failures, 2 context failures; 9 initial lifecycle failures, 3 Discord source boundary failures, 2 deletion/ownership failures, 12 provider boundary failures, 3 snapshot/preview failures and 2 progress failures. Each was observed before its corresponding fix. Current isolated release: 275 passing checks and six local PostgreSQL skips; CI supplies PostgreSQL coverage.
 
 Completed tool results, raw provider streams and operation journals remain available. Real source changes stop remaining actions and require a fresh request; no partial provider tool batch is executed after a failed generation.
+
+The first audit deployment (4008e1d) stopped before publication: Docker did not copy the new script regression input. A failing build-context regression now checks every script test path against build-stage COPY directives. The build includes all test scripts and their Git/Python dependencies; runtime dependencies are unchanged.
