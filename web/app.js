@@ -25,10 +25,28 @@ $('theme').onclick = switchTheme;
 const SECTIONS = ['server', 'channels', 'mcp', 'profile', 'bot', 'users', 'servers-admin'];
 // Team tabs. Only team members see them. The old #settings/admin section opens Bot admin.
 const ADMIN_TABS = ['bot', 'users', 'servers-admin'];
+// The settings link is #settings/<tab>[/<id>]. The id is a server (servers-admin) or a user (users).
+let settingsId = '', pendingTab = null;
 function settingsFromUrl() {
-  const params = new URLSearchParams(location.search), match = /^#settings(?:\/([a-z]+))?$/.exec(location.hash);
-  if (params.has('tab')) return { section: params.get('tab') };
-  return match ? { section: match[1] || null } : null;
+  const params = new URLSearchParams(location.search), match = /^#settings(?:\/([a-z-]+)(?:\/([^/]+))?)?$/.exec(location.hash);
+  let id = '';
+  try { id = match?.[2] ? decodeURIComponent(match[2]) : ''; } catch { id = ''; }
+  if (params.has('tab')) return { section: params.get('tab'), id };
+  return match ? { section: match[1] || null, id } : null;
+}
+// The id in the settings link (a user ID for the users tab), or ''. The users page calls this to open that user's modal.
+function settingsUrlId() { return settingsId; }
+// The users page calls this when it opens or closes a user's modal. '' removes the id.
+function setSettingsUrlId(id) { settingsId = id || ''; syncSettingsUrl(); }
+// Writes the open tab (and the open server or user) to the address with replaceState, so a refresh keeps the place.
+function syncSettingsUrl() {
+  if (!settingsOpen || pendingTab) return;
+  if (tab !== 'users') settingsId = '';
+  const id = tab === 'servers-admin' ? adminServer : tab === 'users' ? settingsId : '';
+  const url = new URL(location.href);
+  url.searchParams.delete('tab');
+  url.hash = `#settings/${tab}${id ? '/' + encodeURIComponent(id) : ''}`;
+  if (url.href !== location.href) history.replaceState(history.state, '', url);
 }
 // The chat or channel named in the URL path: /chat/<id> or /team/<id>. Any other path gives null.
 // Old links (#chat/<id>, #channel/<id>) still open. The address changes to the path form.
@@ -48,14 +66,14 @@ function takeHashItem() {
 function chooseView() {
   viewReady = true;
   const want = settingsFromUrl();
-  if (want) openSettings(want.section);
+  if (want) openSettings(want.section, document.activeElement, want.id);
 }
 // Back and forward: a chat or channel in the URL shows that item. The settings link opens or closes the modal.
 window.addEventListener('popstate', () => {
   if (!viewReady || !state) return;
   const item = takeHashItem(), want = settingsFromUrl();
   if (item || !want) { if (!item) { conv.channel = null; conv.run = null; } renderChat(true); }
-  if (want) openSettings(want.section); else closeSettings();
+  if (want) openSettings(want.section, document.activeElement, want.id); else closeSettings();
 });
 // A server picker: a button and a menu. The hidden #server select keeps the value and the change handler.
 function serverPicker(slot) {
@@ -110,11 +128,15 @@ document.addEventListener('pointerdown', event => {
 });
 // The settings modal is a native dialog: focus stays inside while it is open, and Escape closes it.
 // The chat stays under it. A click on the backdrop closes it. Closing gives focus back to the control that opened it.
-function openSettings(section, returnTo = document.activeElement) {
+function openSettings(section, returnTo = document.activeElement, id = '') {
   if (!state) return;
   const dialog = $('settings');
   const wanted = section === 'admin' ? 'bot' : section;
   tab = SECTIONS.includes(wanted) && (!ADMIN_TABS.includes(wanted) || admin) ? wanted : (state.admin ? 'server' : 'profile');
+  // Team status may still be loading. Keep the wanted tab and apply it when loadAdmin finishes.
+  pendingTab = !admin && !adminLoaded && ADMIN_TABS.includes(wanted) ? { tab: wanted, id, fallback: tab } : null;
+  settingsId = tab === 'users' ? id : '';
+  if (tab === 'servers-admin') { adminServer = id; }
   if (!dialog.open) { settingsReturn = returnTo; dialog.showModal(); }
   settingsOpen = true;
   render();
@@ -330,6 +352,7 @@ function render() {
   if (settingsOpen) renderSettings();
 }
 function renderSettings() {
+  syncSettingsUrl();
   document.querySelectorAll('[data-tab]').forEach(button => { button.classList.toggle('selected', button.dataset.tab === tab); button.setAttribute('aria-current', button.dataset.tab === tab ? 'page' : 'false'); button.onclick = () => { tab = button.dataset.tab; render(); }; });
   $('content').classList.toggle('settings-cards', ['server', 'profile'].includes(tab) && !!state.server);
   setPageTitle('Settings');
@@ -408,7 +431,7 @@ function renderMcp() {
     run(button, () => configure({action:button.dataset.mcpAction,id:button.dataset.mcpId}));
   }; });
 }
-let admin = null, adminServer = '';
+let admin = null, adminServer = '', adminLoaded = false;
 const dollars = micros => (micros / 1000000).toFixed(2);
 const money = micros => `$${dollars(micros)}`;
 const priceText = micros => String(Number((micros / 1000000).toFixed(6)));
@@ -417,6 +440,12 @@ const when = ms => new Date(ms).toLocaleString();
 async function loadAdmin() {
   try { admin = await request('/api/admin/me'); } catch { admin = null; }
   $('admin-tab').hidden = !admin;
+  adminLoaded = true;
+  // A team tab from the URL waits for this answer. Apply it only if the user did not pick another tab meanwhile.
+  const wait = pendingTab;
+  pendingTab = null;
+  if (wait && admin && tab === wait.fallback) { tab = wait.tab; settingsId = wait.tab === 'users' ? wait.id : ''; if (wait.tab === 'servers-admin') { adminServer = wait.id; } }
+  if (wait && settingsOpen) render();
 }
 async function adminRun(button, task) {
   const label = button.textContent;
@@ -638,12 +667,16 @@ async function renderUsersAdmin() {
       else if (row) openUser(row.dataset.user);
     };
     await loadUserTable();
+    // A refresh or a shared link: #settings/users/<id> opens that user.
+    const wanted = settingsUrlId();
+    if (wanted && tab === 'users' && !userOpen) openUser(wanted);
   } catch (error) { if (tab === 'users') fail(error); }
 }
 // Opens the user dialog. It shows the loading text until the detail answer comes.
 async function openUser(id) {
   const dialog = $('user-dialog');
   userOpen = id;
+  setSettingsUrlId(id);
   if (!dialog.open) dialog.showModal();
   $('user-body').replaceChildren(busy('md', 'Loading…'));
   try {
@@ -722,6 +755,7 @@ $('user-body').addEventListener('submit', event => {
 $('user-dialog').addEventListener('close', () => {
   const row = $('user-table')?.querySelector(`tr[data-user="${CSS.escape(userOpen)}"] .user-open`);
   userOpen = '';
+  setSettingsUrlId('');
   row?.focus();
 });
 $('user-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) event.currentTarget.close(); });
@@ -910,6 +944,7 @@ function wireBack() {
 }
 // The admin tabs share one entry point: Bot admin, or Manage servers (list or one server).
 async function renderAdmin() {
+  syncSettingsUrl();
   return tab === 'bot' ? renderBotAdmin() : tab === 'users' ? renderUsersAdmin() : renderServersAdmin();
 }
 $('server').onchange = async () => {

@@ -50,7 +50,6 @@ pre{font:12px/1.6 'JetBrains Mono',monospace;white-space:pre-wrap;overflow-wrap:
 @media(max-width:760px){.chan{grid-template-columns:1fr}.chan-actions{justify-content:flex-start}.chan-window input{width:100px}}
 .table-wrap{overflow-x:auto;margin:0 0 16px}table{width:100%;border-collapse:collapse}th,td{text-align:left;vertical-align:top;padding:9px 8px;border-top:1px solid var(--line)}th{font-weight:500;color:var(--muted);font-size:12px}td code{font-size:12px}td .chan-actions{justify-content:flex-start}
 .admin-user{border-top:1px solid var(--line);padding:14px 0}.admin-user p{margin:2px 0}.admin-user .chan-actions{margin-top:10px}
-#admin-find input{width:220px;max-width:100%}#admin-find{margin-top:4px}
 
 .reply-box textarea{width:100%;box-sizing:border-box}
 .admin-head{display:flex;align-items:center;gap:8px;min-width:0}
@@ -62,11 +61,6 @@ pre{font:12px/1.6 'JetBrains Mono',monospace;white-space:pre-wrap;overflow-wrap:
 .admin-search{position:relative;display:flex;align-items:flex-end;flex-wrap:wrap;gap:10px;margin:0 0 8px}
 .admin-search label{flex:1 1 260px;min-width:0;margin:0}
 .admin-search input{width:100%;box-sizing:border-box}
-.admin-matches{position:absolute;top:100%;left:0;right:0;z-index:5;margin-top:4px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:4px;max-height:320px;overflow:auto;display:grid;gap:2px}
-.admin-matches[hidden]{display:none}
-.admin-match{display:block;width:100%;text-align:left;border:0;background:none;padding:8px 10px;border-radius:7px;color:inherit}
-.admin-match:hover,.admin-match:focus-visible{background:var(--pill)}
-.admin-none{margin:8px 10px}
 @media(max-width:760px){.admin-search label{flex-basis:100%}}
 .pick-slot{position:relative;flex:1;min-width:0}.pick{display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--text);text-align:left}.pick:hover:not(:disabled){background:var(--surface);border-color:var(--muted)}.pick:disabled{opacity:1;cursor:default}.pick::after{content:"";margin-left:auto;flex:none;width:6px;height:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:translateY(-2px) rotate(45deg);opacity:.6}.pick:disabled::after{display:none}.pick-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pick-menu{max-height:min(360px,60dvh);overflow-y:auto;position:absolute;left:0;right:0;top:100%;z-index:30;margin-top:4px;padding:4px;border:1px solid var(--line);border-radius:10px;background:var(--surface);box-shadow:0 8px 24px rgb(0 0 0 / .25)}.pick-item{display:block;width:100%;padding:7px 10px;border:0;border-radius:6px;background:none;color:var(--text);font-size:13px;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pick-item:hover,.pick-item:focus-visible{background:var(--pill);color:var(--strong)}.pick-item[aria-checked=true]{color:var(--strong);font-weight:600}
 /* Confirm dialog from askConfirm (web/app.js). Colors come from the tokens above. */
@@ -82,7 +76,7 @@ pre{font:12px/1.6 'JetBrains Mono',monospace;white-space:pre-wrap;overflow-wrap:
 
 .chan-info{min-width:0;overflow-wrap:anywhere}.chan-list{padding:0 14px}.chan{padding:12px 0}.chan-window input{flex:none}.table-wrap{max-width:100%;overscroll-behavior-x:contain}.table-wrap table{min-width:480px}.admin-head{flex-wrap:wrap}summary{cursor:pointer;overflow-wrap:anywhere}
 .confirm-dialog,.share-dialog{max-height:calc(var(--viewport-height) - 32px);overflow-y:auto;overscroll-behavior:contain}.confirm-dialog .actions,.share-dialog .actions{gap:8px}
-@media(max-width:760px){.pick{min-height:40px}.pick-item,.admin-match{min-height:40px}.chan-actions{gap:6px}.chan-actions button{padding:6px 10px;font-size:12px}.chan-window{gap:8px}.chan-window label{flex-wrap:wrap}.chan-window input{width:88px}.chan-list{padding:0 12px}.confirm-dialog,.share-dialog{padding:16px}}
+@media(max-width:760px){.pick{min-height:40px}.pick-item.chan-actions{gap:6px}.chan-actions button{padding:6px 10px;font-size:12px}.chan-window{gap:8px}.chan-window label{flex-wrap:wrap}.chan-window input{width:88px}.chan-list{padding:0 12px}.confirm-dialog,.share-dialog{padding:16px}}
 
 .checkbox-field{display:flex;align-items:flex-start;gap:8px}.checkbox-field input[type=checkbox]{flex:none;margin:2px 0 0}.skip-link{position:fixed;top:8px;left:8px;z-index:120;padding:8px 12px;background:var(--strong);color:var(--bg);border-radius:6px;transform:translateY(-160%)}.skip-link:focus{transform:none}
 @media(max-width:760px){.checkbox-field{min-height:32px;align-items:center}.checkbox-field input[type=checkbox]{margin:0}.server-pick label{margin-bottom:4px}}
