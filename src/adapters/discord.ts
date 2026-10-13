@@ -380,18 +380,17 @@ export class DiscordServer implements ChatGateway {
   async stopResponses(channel: string, user: string, manager: boolean): Promise<string[]> {
     return this.bot.stop(this.guildId, channel, user, await this.stopAdmin(user, manager));
   }
-  /** The /stop command. A stop posts a public notice with a Continue button. Nothing to stop gets a private reply. */
+  /** The /stop command. A public reply; a stop shows a Continue button. */
   private async stopCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     if (interaction.guildId !== this.guildId) return;
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    // Public, so the channel sees that a response was stopped.
+    await interaction.deferReply();
     try {
       const manager = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? false;
       const stopped = await this.stopResponses(interaction.channelId, interaction.user.id, manager);
       if (!stopped.length) { await interaction.editReply({ content: "No response to stop. You can stop only the responses that you started.", allowedMentions: { parse: [] } }); return; }
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId(`slopstop:${stopped[0]}`).setLabel("Continue").setStyle(ButtonStyle.Primary));
-      // Edit the deferred private reply first. Otherwise the first followUp takes its place, and is private.
-      await interaction.editReply({ content: `Stopped ${stopped.length} response${stopped.length === 1 ? "" : "s"}.`, allowedMentions: { parse: [] } });
-      await interaction.followUp({ content: "Slopbot's response was interrupted. Continue?", components: [row], allowedMentions: { parse: [] } });
+      await interaction.editReply({ content: "Slopbot's response was interrupted. Continue?", components: [row], allowedMentions: { parse: [] } });
     } catch (error) {
       logError("command_failed", error, { stage: "stop command", server: this.guildId, messageId: interaction.id });
       await interaction.editReply({ content: errorReply(error), allowedMentions: { parse: [] } });
