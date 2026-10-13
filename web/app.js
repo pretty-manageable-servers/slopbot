@@ -66,7 +66,9 @@ function fail(error) { if (error.status === 401) showScreen('login'); else notic
 async function run(button, task) {
   const label = button.textContent;
   button.disabled = true; button.setAttribute('aria-busy', 'true'); button.replaceChildren(loader('sm'));
-  try { await task(); await refresh(); } catch (error) { fail(error); }
+  // The settings are reloaded after the action, even when it failed, so the page shows what the server holds.
+  try { await task(); } catch (error) { fail(error); }
+  try { await refresh(); } catch (error) { fail(error); }
   finally { button.disabled = false; button.removeAttribute('aria-busy'); button.textContent = label; }
 }
 const refresh = async () => applySettings(await settingsFor(state.server.id));
@@ -94,14 +96,57 @@ function channelAction(button) {
   if (action === 'remove' && !confirm('Stop monitoring this channel? This purges searchable content and dependent task context. Operational logs remain.')) return;
   run(button, () => (action === 'add' || action === 'remove') ? save('channels', { action, channel: id }, id) : save('index', { action }, id));
 }
+// The import progress of a running job. A window job shows the share of its time window it has reached.
+// The bar width is set after the rows are drawn, because the page allows no inline styles.
+function historyProgress(h) {
+  const job = h.job;
+  if (!job) return '';
+  const count = `${job.scanned.toLocaleString()} scanned · ${job.added.toLocaleString()} added`;
+  if (job.kind !== 'window') return `<p class="small chan-progress">Importing older messages… ${count}</p>`;
+  const span = job.started - job.cutoff, pct = job.reachedAt == null || span <= 0 ? 0 : Math.max(0, Math.min(100, Math.round((job.started - job.reachedAt) * 100 / span)));
+  return `<div class="chan-progress"><div class="progress" role="progressbar" aria-label="Import progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span data-pct="${pct}"></span></div><p class="small">Importing… ${pct}% · ${count}</p></div>`;
+}
 function channelRow(c) {
-  const h = c.history || {}, id = esc(c.id), importing = h.paused ? 'Paused' : h.job ? 'Importing' : 'Idle';
+  const h = c.history || {}, id = esc(c.id);
+  const status = h.error ? `Error: ${esc(h.errorReason || 'import failed')}` : h.paused ? 'Paused' : h.job ? 'Importing' : 'Idle';
   const actions = c.monitored
-    ? `<button type="button" data-channel="${id}" data-action="more">Import older</button><button type="button" data-channel="${id}" data-action="${h.paused ? 'resume' : 'pause'}">${h.paused ? 'Resume import' : 'Pause import'}</button><button type="button" data-channel="${id}" data-action="remove">Stop monitoring…</button>`
+    ? `<button type="button" data-channel="${id}" data-action="${h.paused ? 'resume' : 'pause'}">${h.paused ? 'Resume import' : 'Pause import'}</button><button type="button" data-channel="${id}" data-action="remove">Stop monitoring…</button>`
     : `<button type="button" data-channel="${id}" data-action="add">Start monitoring</button>`;
-  const chips = `<span class="chip${c.monitored ? ' on' : ''}">${c.monitored ? 'Monitored' : 'Not monitored'}</span>` + (c.monitored ? `<span class="chip">${importing}</span><span class="chip">${esc(h.days ?? '?')} days</span>` : '');
-  const windowForm = c.monitored ? `<form class="chan-window" data-channel="${id}"><label>History window<input name="days" type="number" min="1" max="3650" value="${esc(h.days ?? '')}" required></label><span class="small">days</span><button>Set</button></form>` : '';
+  const chips = `<span class="chip${c.monitored ? ' on' : ''}">${c.monitored ? 'Monitored' : 'Not monitored'}</span>` + (c.monitored ? `<span class="chip">${status}</span><span class="chip">${esc(h.days ?? '?')} days</span>` : '');
+  const windowForm = c.monitored ? `<form class="chan-window" data-channel="${id}"><label>History window<input name="days" type="number" min="1" max="3650" value="${esc(h.days ?? '')}" required></label><span class="small">days</span><button>Set</button><p class="small chan-note">Lowering the window deletes saved messages older than the new window.</p></form>${historyProgress(h)}` : '';
   return `<li class="chan" title="${id}"><div class="chan-info"><strong>#${esc(c.name)}</strong><span class="chips">${chips}</span></div><div class="chan-actions">${actions}</div>${windowForm}</li>`;
+}
+// Draws the channel rows from state.channels, with the filter text kept between redraws.
+let channelQuery = '', historyTimer = 0;
+function drawChannels() {
+  const list = $('channels');
+  if (!list) return;
+  const q = channelQuery.trim().toLowerCase();
+  const rows = state.channels.filter(c => c.name.toLowerCase().includes(q)).sort((a, b) => Number(b.monitored) - Number(a.monitored) || a.name.localeCompare(b.name));
+  list.innerHTML = !state.channels.length ? '<li class="small">No text channels are visible to both you and Slopbot.</li>' : (rows.map(channelRow).join('') || '<li class="small">No channels match this filter.</li>');
+  for (const bar of list.querySelectorAll('[data-pct]')) bar.style.width = `${bar.dataset.pct}%`;
+  scheduleHistoryPoll();
+}
+// While an import runs on the open Channels tab, the channel data is read again every 2 seconds.
+// The poll stops when no import runs or the tab changes.
+function scheduleHistoryPoll() {
+  clearTimeout(historyTimer); historyTimer = 0;
+  if (tab !== 'channels' || !state.channels.some(c => c.history?.job)) return;
+  historyTimer = setTimeout(pollChannels, 2000);
+}
+async function pollChannels() {
+  historyTimer = 0;
+  if (tab !== 'channels' || !state.server) return;
+  const id = state.server.id;
+  try {
+    const result = await settingsFor(id);
+    if (tab !== 'channels' || state.server?.id !== id) return;
+    csrf = result.csrf;
+    state.channels = result.data.channels;
+    drawChannels();
+  } catch (error) {
+    if (error.status === 401) fail(error); else scheduleHistoryPoll();
+  }
 }
 function render() {
   document.querySelectorAll('[data-tab]').forEach(button => { button.classList.toggle('selected', button.dataset.tab === tab); button.setAttribute('aria-current', button.dataset.tab === tab ? 'page' : 'false'); button.onclick = () => { tab = button.dataset.tab; render(); }; });
@@ -126,15 +171,19 @@ function render() {
   } else if (tab === 'channels') {
     $('content').innerHTML = '<input id="filter" class="filter" type="search" placeholder="Filter channels" aria-label="Filter channels" hidden><ul id="channels" class="chan-list"></ul>';
     const list = $('channels'), filter = $('filter');
-    const draw = query => {
-      const q = query.trim().toLowerCase();
-      const rows = state.channels.filter(c => c.name.toLowerCase().includes(q)).sort((a, b) => Number(b.monitored) - Number(a.monitored) || a.name.localeCompare(b.name));
-      list.innerHTML = !state.channels.length ? '<li class="small">No text channels are visible to both you and Slopbot.</li>' : (rows.map(channelRow).join('') || '<li class="small">No channels match this filter.</li>');
-    };
+    filter.value = channelQuery;
     filter.hidden = state.channels.length <= 8;
-    filter.oninput = () => draw(filter.value);
+    filter.oninput = () => { channelQuery = filter.value; drawChannels(); };
     list.onclick = event => { const button = event.target.closest('button[data-channel]'); if (button) channelAction(button); };
-    list.onsubmit = event => { event.preventDefault(); const form = event.target; run(form.querySelector('button'), () => save('index',{action:'window',days:Number(new FormData(form).get('days'))},form.dataset.channel)); };
+    list.onsubmit = event => {
+      event.preventDefault();
+      const form = event.target, id = form.dataset.channel, days = Number(new FormData(form).get('days'));
+      const channel = state.channels.find(c => c.id === id), current = channel?.history?.days;
+      // A shorter window deletes saved messages. The user must confirm first; Cancel changes nothing.
+      if (current !== undefined && days < current && !confirm(`Delete saved messages older than ${days} days in #${channel.name}? This cannot be undone.`)) return;
+      run(form.querySelector('button'), () => save('index', { action: 'window', days }, id));
+    };
+    drawChannels();
     draw('');
   } else if (tab === 'mcp') {
     renderMcp();
