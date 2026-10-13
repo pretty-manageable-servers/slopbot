@@ -17,6 +17,7 @@ import type { ToolArgs, ToolCall, ToolContext, ToolJournal, ToolOperation } from
 
 import type { HistoryQuery, HistoryPage } from '../search/history-search.js';
 import type { AppRecord } from '../records.js';
+import type { ConversationEvent } from '../run-events.js';
 export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore {
   async record(
     server: string,
@@ -357,6 +358,12 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       CREATE TABLE IF NOT EXISTS settings (server TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(server,key));
       CREATE TABLE IF NOT EXISTS user_limit_counters (server TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, window_start INTEGER NOT NULL, spent INTEGER NOT NULL, PRIMARY KEY(server,user_id,kind));
       CREATE TABLE IF NOT EXISTS user_limit_resets (server TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(server,user_id,kind));
+      CREATE TABLE IF NOT EXISTS reply_runs (server TEXT NOT NULL, message_id TEXT NOT NULL, run_id TEXT NOT NULL, PRIMARY KEY(server,message_id,run_id));
+      CREATE TABLE IF NOT EXISTS conversation_events (
+        stream_id INTEGER PRIMARY KEY AUTOINCREMENT, server TEXT NOT NULL, channel TEXT NOT NULL,
+        kind TEXT NOT NULL, ref TEXT NOT NULL, data TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS conversation_events_channel ON conversation_events(server,channel,stream_id);
     `);
     const operationColumns = this.db.prepare("PRAGMA table_info(tool_operations)").all();
     if (!operationColumns.some(column => column.name === "resource")) this.db.exec("ALTER TABLE tool_operations ADD COLUMN resource TEXT");
@@ -597,6 +604,48 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   events(runId: string): ModelEvent[] {
     return this.db.prepare("SELECT kind,payload FROM events WHERE run_id=? ORDER BY sequence")
       .all(runId).map(row => ({ kind: row.kind, payload: JSON.parse(String(row.payload)) }) as ModelEvent);
+  }
+
+  // Web transcripts (read-only views and the live event store).
+  async conversationActivity(server: string): Promise<{ channel: string; newest: number }[]> {
+    return this.db.prepare("SELECT channel, MAX(COALESCE(json_extract(body,'$.timestamp'),0)) AS newest FROM messages WHERE server=? GROUP BY channel")
+      .all(server).map(row => ({ channel: String(row.channel), newest: Number(row.newest) }));
+  }
+  async conversationMessages(server: string, channel: string, before: { time: number; id: string } | undefined, limit: number): Promise<Message[]> {
+    const rows = before
+      ? this.db.prepare("SELECT body FROM messages WHERE server=? AND channel=? AND (COALESCE(json_extract(body,'$.timestamp'),0)<? OR (COALESCE(json_extract(body,'$.timestamp'),0)=? AND id<?)) ORDER BY COALESCE(json_extract(body,'$.timestamp'),0) DESC,id DESC LIMIT ?")
+        .all(server, channel, before.time, before.time, before.id, limit)
+      : this.db.prepare("SELECT body FROM messages WHERE server=? AND channel=? ORDER BY COALESCE(json_extract(body,'$.timestamp'),0) DESC,id DESC LIMIT ?")
+        .all(server, channel, limit);
+    return rows.map(row => this.namedMessage(parseMessage(JSON.parse(String(row.body)))));
+  }
+  async replyRunIds(server: string, messageId: string): Promise<string[]> {
+    return this.db.prepare("SELECT r.run_id FROM reply_runs r LEFT JOIN runs u ON u.id=r.run_id WHERE r.server=? AND r.message_id=? ORDER BY u.rowid").all(server, messageId).map(row => String(row.run_id));
+  }
+  async requestRunIds(server: string, requestId: string): Promise<string[]> {
+    return this.db.prepare("SELECT id FROM runs WHERE json_extract(message,'$.server')=? AND json_extract(message,'$.id')=? AND COALESCE(json_extract(prompt,'$.purpose'),'reply')='reply' ORDER BY rowid")
+      .all(server, requestId).map(row => String(row.id));
+  }
+  async runRecord(runId: string): Promise<{ id: string; message: Message; purpose: string; status: string; result: string | null } | undefined> {
+    const row = this.db.prepare("SELECT id,message,prompt,status,result FROM runs WHERE id=?").get(runId);
+    if (!row) return undefined;
+    return { id: String(row.id), message: parseMessage(JSON.parse(String(row.message))), purpose: String(JSON.parse(String(row.prompt)).purpose ?? "reply"), status: String(row.status), result: row.result === null ? null : String(row.result) };
+  }
+  async toolTurns(server: string, messageId: string): Promise<{ calls: ToolCall[]; results: Record<string, ToolOutput> }[]> {
+    return this.db.prepare("SELECT calls,results FROM agent_turns WHERE server=? AND message_id=? AND valid=1 ORDER BY sequence")
+      .all(server, messageId).map(row => ({ calls: JSON.parse(String(row.calls)), results: JSON.parse(String(row.results)) }));
+  }
+  async appendConversationEvent(row: { server: string; channel: string; kind: string; ref: string; data: Json; createdAt: number }): Promise<number> {
+    const saved = this.db.prepare("INSERT INTO conversation_events(server,channel,kind,ref,data,created_at) VALUES(?,?,?,?,?,?) RETURNING stream_id")
+      .get(row.server, row.channel, row.kind, row.ref, JSON.stringify(row.data), row.createdAt)!;
+    return Number(saved.stream_id);
+  }
+  async latestStreamId(server: string, channel: string): Promise<number> {
+    return Number(this.db.prepare("SELECT COALESCE(MAX(stream_id),0) AS id FROM conversation_events WHERE server=? AND channel=?").get(server, channel)!.id);
+  }
+  async conversationEventsAfter(server: string, channel: string, after: number, limit: number): Promise<ConversationEvent[]> {
+    return this.db.prepare("SELECT stream_id,server,channel,kind,ref,data,created_at FROM conversation_events WHERE server=? AND channel=? AND stream_id>? ORDER BY stream_id LIMIT ?")
+      .all(server, channel, after, limit).map(row => ({ streamId: Number(row.stream_id), server: String(row.server), channel: String(row.channel), kind: String(row.kind) as ConversationEvent["kind"], ref: String(row.ref), data: JSON.parse(String(row.data)) as Json, createdAt: Number(row.created_at) }));
   }
 
   close(): void { this.db.close(); }
@@ -897,6 +946,10 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       .all(runId, message.server).map(row => String(row.message_id)) : [sourceId];
     const insert = this.db.prepare("INSERT OR IGNORE INTO source_dependents VALUES(?,?,?)");
     for (const source of sources.length ? sources : [sourceId]) insert.run(message.server, source, message.id);
+    // Web transcripts: a Slopbot reply links to every reply run of its request.
+    const runs = new Set([...(runId ? [runId] : []), ...await this.requestRunIds(message.server, sourceId)]);
+    const link = this.db.prepare("INSERT OR IGNORE INTO reply_runs VALUES(?,?,?)");
+    for (const run of runs) link.run(message.server, message.id, run);
   }
 
   private bumpVersion(server: string, channel: string): void {

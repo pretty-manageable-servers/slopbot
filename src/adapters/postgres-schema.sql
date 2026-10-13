@@ -87,6 +87,12 @@ CREATE TABLE IF NOT EXISTS tool_operations (
       , resource TEXT);
 CREATE TABLE IF NOT EXISTS user_limit_counters (server TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, window_start BIGINT NOT NULL, spent BIGINT NOT NULL, PRIMARY KEY(server,user_id,kind));
 CREATE TABLE IF NOT EXISTS user_limit_resets (server TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, count BIGINT NOT NULL, PRIMARY KEY(server,user_id,kind));
+CREATE TABLE IF NOT EXISTS reply_runs (server TEXT NOT NULL, message_id TEXT NOT NULL, run_id TEXT NOT NULL, PRIMARY KEY(server,message_id,run_id));
+CREATE TABLE IF NOT EXISTS conversation_events (
+        stream_id BIGSERIAL PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL,
+        kind TEXT NOT NULL, ref TEXT NOT NULL, data TEXT NOT NULL, created_at BIGINT NOT NULL
+      );
+CREATE INDEX IF NOT EXISTS conversation_events_channel ON conversation_events(server,channel,stream_id);
 CREATE TABLE IF NOT EXISTS worker_leases (server TEXT PRIMARY KEY, owner TEXT NOT NULL, expires BIGINT NOT NULL);
 CREATE OR REPLACE VIEW message_search AS SELECT sequence AS rowid,body::jsonb->>'text' AS text FROM messages;
 CREATE INDEX IF NOT EXISTS jobs_ready ON jobs(server,status,sequence);

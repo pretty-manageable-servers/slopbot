@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { ToolError, type ToolArgs } from './tools.js';
 import type { ChannelAccess } from './channel-access.js';
+import type { TranscriptRoutes } from './web-transcripts.js';
 
 export interface ConsoleBackend {
   snapshot(user: string, server?: string): Promise<unknown>;
@@ -14,6 +15,8 @@ export interface ConsoleBackend {
   setTranscript?(user: string, server: string, channel: string, enabled: boolean): Promise<unknown>;
   /** Live per-user view and send checks for the read and send routes. */
   access?: ChannelAccess;
+  /** Read-only conversation transcripts, runs, search and the live stream. */
+  conversations?: TranscriptRoutes;
 }
 export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string }
 export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOptions | undefined {
@@ -28,6 +31,7 @@ export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOpt
 }
 const token = () => randomBytes(32).toString('hex');
 const allowed = new Set(['monitoring', 'context', 'cooldown', 'channels', 'index', 'profile', 'timing', 'tool_display']);
+const staticAssets: Record<string, string> = { '/': 'index.html', '/app.js': 'app.js', '/conversations.js': 'conversations.js', '/style.css': 'style.css', '/assets/logo-light.svg': 'assets/logo-light.svg', '/assets/logo-dark.svg': 'assets/logo-dark.svg' };
 export function createConsole(options: ConsoleOptions, backend: ConsoleBackend): Server {
   const sessions = new Map<string, { user: string; csrf: string; expires: number }>();
   const states = new Map<string, number>();
@@ -71,6 +75,8 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
       }
       if (routePath.startsWith('/api/')) {
         const id = cookies(req).slopbot_session || '', session = sessions.get(id);
+        // Transcript routes answer 403 without a session; their streams must not get a login redirect.
+        if (req.method === 'GET' && backend.conversations?.handles(routePath)) return void await backend.conversations.handle(req, res, url, session?.user);
         if (!session) return send(res, 401, { error: 'Sign in with Discord to continue.' });
         if (req.method === 'GET' && routePath === '/api/settings') {
           const server = url.searchParams.get('server') ?? undefined;
@@ -106,8 +112,7 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         return send(res, 200, await backend.invoke(session.user, input.server, input.channel, input.name, input.args || {}));
       }
       if (req.method !== 'GET') return send(res, 405, { error: 'Method not allowed.' });
-      const assets: Record<string, string> = { '/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/assets/logo-light.svg': 'assets/logo-light.svg', '/assets/logo-dark.svg': 'assets/logo-dark.svg' };
-      const file = assets[routePath];
+      const file = staticAssets[routePath];
       if (!file && !/^\/assets\/[a-z0-9-]+\.woff2$/.test(routePath)) return send(res, 404, { error: 'Not found.' });
       let content = await readFile(resolve('web', file || routePath.slice(1)));
       res.setHeader('Content-Type', routePath.endsWith('.js') ? 'text/javascript' : routePath.endsWith('.css') ? 'text/css' : routePath.endsWith('.svg') ? 'image/svg+xml' : routePath.endsWith('.woff2') ? 'font/woff2' : 'text/html');

@@ -10,6 +10,8 @@ import { ChatCompletionsLLM } from "./adapters/chat-completions.js";
 import { discordStartupError } from "./startup-error.js";
 import { ProviderEmbeddings } from "./adapters/embeddings.js";
 import { consoleOptions, createConsole } from './web-console.js';
+import { createTranscripts } from './web-transcripts.js';
+import { configuredChannels } from './server-tools.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -25,7 +27,8 @@ async function main(): Promise<void> {
   const discord = new DiscordAdapter(config, store, llm);
   // Embedding calls are charged through the same meter as model calls.
   embeddings?.attachUsage(discord.usage);
-  const web = webOptions ? createConsole(webOptions, { snapshot: (user, server) => discord.consoleSnapshot(user, server), invoke: (user, server, channel, name, args) => discord.consoleInvoke(user, server, channel, name, args), mcp: (user, server, input) => discord.consoleMcp(user, server, input), transcripts: (user, server) => discord.consoleTranscripts(user, server), setTranscript: (user, server, channel, enabled) => discord.consoleSetTranscript(user, server, channel, enabled), access: discord.access }) : undefined;
+  const conversations = createTranscripts({ store, access: discord.access, configured: server => configuredChannels(config, store, server), channelName: (server, channel) => discord.channelName(server, channel) });
+  const web = webOptions ? createConsole(webOptions, { snapshot: (user, server) => discord.consoleSnapshot(user, server), invoke: (user, server, channel, name, args) => discord.consoleInvoke(user, server, channel, name, args), mcp: (user, server, input) => discord.consoleMcp(user, server, input), transcripts: (user, server) => discord.consoleTranscripts(user, server), setTranscript: (user, server, channel, enabled) => discord.consoleSetTranscript(user, server, channel, enabled), access: discord.access, conversations }) : undefined;
   const shutdown = async () => { if (web?.listening) await new Promise<void>((resolve, reject) => web.close(error => error ? reject(error) : resolve())); if (store instanceof PostgresStore) store.stopIndexing(); await discord.stop(); await store.finishIndexing(); await store.close(); process.exit(0); };
   process.once("SIGINT", () => { void shutdown().catch(error => { logError("shutdown_failed", error, { stage: "shutdown" }); process.exitCode = 1; }); });
   process.once("SIGTERM", () => { void shutdown().catch(error => { logError("shutdown_failed", error, { stage: "shutdown" }); process.exitCode = 1; }); });

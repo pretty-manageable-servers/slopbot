@@ -19,3 +19,37 @@
 .filter{margin:0 0 16px}
 .switch{display:flex;align-items:center;gap:8px;margin:0}.switch input{margin:0}
 @media(max-width:760px){.chan{grid-template-columns:1fr}.chan-actions{justify-content:flex-start}.chan-window input{width:100px}}
+
+.conv{display:grid;grid-template-columns:260px minmax(0,1fr);gap:28px;align-items:start}
+.conv-side{border-right:1px solid var(--line);padding-right:20px;max-height:calc(100vh - 170px);overflow:auto}
+.conv-items{list-style:none;margin:0;padding:0}
+.conv-item{display:grid;gap:2px;width:100%;text-align:left;border:0;border-radius:7px;padding:9px 10px;margin-bottom:4px}
+.conv-item strong{color:var(--strong);font-weight:500;overflow-wrap:anywhere}
+.conv-item[aria-current=true]{background:var(--pill)}
+.conv-main{min-width:0}
+.conv-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:12px}
+.conv-head h2{margin:0}
+.conv-log{display:flex;flex-direction:column;gap:14px;max-height:calc(100vh - 260px);min-height:240px;overflow:auto;padding-right:6px}
+.msg{border-top:1px solid var(--line);padding-top:12px}
+.msg:first-child{border-top:0;padding-top:0}
+.msg header{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.msg header time{color:var(--muted);font-size:12px}
+.msg.bot strong{color:var(--accent)}
+.msg-text{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:4px}
+.live .msg-text:empty::after{content:"…";color:var(--muted)}
+.run{margin-top:8px}
+.run-toggle{font-size:12px;padding:4px 10px}
+.run-panel{border-left:2px solid var(--line);margin-top:10px;padding-left:14px;display:grid;gap:10px}
+.run-panel[hidden]{display:none}
+.run-text{white-space:pre-wrap;overflow-wrap:anywhere}
+.run-think summary,.run-tool summary{cursor:pointer;color:var(--muted);font-size:12px}
+.run-tool-line{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.run-tool-line .small{overflow-wrap:anywhere}
+.run-round,.run-error{margin:0}
+.run-error{color:var(--muted)}
+.live-chip{color:var(--accent)}
+.live-tools{display:grid;gap:6px}
+.older{margin:0 0 12px}
+.search-hit{border-top:1px solid var(--line);padding:10px 0}
+.link-button{border:0;padding:0;background:none;color:var(--accent);font-size:12px}
+@media(max-width:760px){.conv{grid-template-columns:1fr}.conv-side{border-right:0;border-bottom:1px solid var(--line);padding:0 0 16px;max-height:none}.conv-log{max-height:none}}
