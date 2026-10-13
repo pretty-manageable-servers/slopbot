@@ -14,6 +14,7 @@ import { privateChannel } from "../src/private-chat.js";
 import type { ParticipationGate } from "../src/participation.js";
 import { registerReportTools } from "../src/search/reports.js";
 import { ShareError, ShareService } from "../src/shares.js";
+import { ChatError, WebChatService, type ChatHost } from "../src/web-chats.js";
 import { ToolRegistry } from "../src/tools.js";
 import { visibleConversations, type TranscriptHost } from "../src/web-transcripts.js";
 import type { Message } from "../src/domain.js";
@@ -160,12 +161,59 @@ test("the admin channel list only ever holds Discord channel IDs", t => {
   assert.deepEqual(configuredChannels(config, store, server), [discord], "a saved private chat is not an admin channel");
 });
 
-test("a private chat cannot be shared", async t => {
+test("a private chat is shared by its owner only, as a snapshot, and deleting it revokes the link", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
-  await seed(store);
-  const shares = new ShareService({ store, access: { check: async () => ({ view: true }) }, rule: { manager: async () => true } } as never);
-  await assert.rejects(shares.create("alice", { server, channel: ownerChat, from: "web-secret", to: "web-secret" }), (error: unknown) => error instanceof ShareError && error.status === 400);
-  assert.deepEqual(await store.listShares(server, 10), []);
+  // Share routes need a real server ID. This test uses one for every row.
+  const guild = "1528063444874432734";
+  await store.insertWebChat({ id: "0123456789abcdef0123456789abcdef", server: guild, owner: "alice", title: "", created: 1, updated: 1, deleted: false });
+  await store.ingest({ ...webMessage("web-secret"), server: guild });
+  await store.ingest({ ...discordMessage("plain-1", "the team picked the beach"), server: guild });
+  // A second private chat of Carol. Its text must never reach Alice's link.
+  await store.insertWebChat({ id: "fedcba9876543210fedcba9876543210", server: guild, owner: "carol", title: "", created: 1, updated: 1, deleted: false });
+  await store.ingest({ ...webMessage("web-other", "carol budget note", otherChat, "carol"), server: guild });
+  const members = new Set(["alice", "bob", "carol", "manager"]);
+  const host = {
+    member: async (user: string, serverId: string) => serverId === guild && members.has(user),
+    handle: async (serverId: string) => serverId === guild ? { openChat() { /* none */ }, closeChat() { /* none */ }, async receiveChat() { /* none */ } } : undefined,
+    limiter: { check: async () => ({ allowed: true }) },
+    access: new ChannelAccess({ async facts() { return undefined; } }),
+  } as unknown as ChatHost;
+  const chats = new WebChatService(store, host, { changed() { /* no live streams here */ } } as never, () => 2_000);
+  const chat = "0123456789abcdef0123456789abcdef";
+  const shares = new ShareService({ store, access: { check: async () => ({ view: true }) }, rule: { manager: async (user: string) => user === "manager" } } as never);
+
+  // Only the owner can create, list or revoke. Others get 404, as for other chat routes.
+  for (const user of ["bob", "carol"]) {
+    await assert.rejects(chats.shareCreate(user, chat), (error: unknown) => error instanceof ChatError && error.status === 404, `${user} cannot create`);
+    await assert.rejects(chats.shareList(user, chat), (error: unknown) => error instanceof ChatError && error.status === 404, `${user} cannot list`);
+    await assert.rejects(chats.shareRevoke(user, chat, "x".repeat(22)), (error: unknown) => error instanceof ChatError && error.status === 404, `${user} cannot revoke`);
+  }
+  // The channel route still refuses a private chat, even for a server manager.
+  await assert.rejects(shares.create("manager", { server: guild, channel: ownerChat }), (error: unknown) => error instanceof ShareError && error.status === 400, "a private channel is not a valid channel for the channel route");
+
+  // The owner shares. The link is a snapshot: a later message is not in it.
+  const { id } = await chats.shareCreate("alice", chat);
+  assert.deepEqual((await chats.shareList("alice", chat)).shares.map(share => share.id), [id]);
+  await store.ingest({ ...webMessage("web-later", "later private line"), server: guild, timestamp: 3_000 });
+  const snapshot = await shares.snapshot(id);
+  const body = JSON.stringify(snapshot);
+  assert.ok(body.includes(secret), "the snapshot has the messages up to the share");
+  assert.ok(!body.includes("later private line"), "a later message is not in the link");
+  assert.ok(!body.includes("carol budget note"), "another chat is not in the link");
+  assert.ok(!body.includes("the team picked the beach"), "server data is not in the link");
+  assert.ok(!(await shares.page(id))?.includes("later private line"), "the public page is the same snapshot");
+
+  // Server managers do not list or revoke a private chat link.
+  assert.deepEqual((await shares.list("manager", guild)).shares, [], "the server list has no chat link");
+  await assert.rejects(shares.revoke("manager", id), (error: unknown) => error instanceof ShareError && error.status === 404);
+  assert.deepEqual(await shares.revokeAll("manager", guild), { revoked: 0 });
+  assert.ok(await shares.snapshot(id), "the owner's link is still live after the manager's calls");
+
+  // Deleting the chat revokes the link and removes its frozen copy.
+  await chats.remove("alice", chat);
+  assert.equal(await shares.snapshot(id), undefined, "deleting the chat revokes the link");
+  assert.equal(await shares.page(id), undefined);
+  assert.equal(await store.getShare(id), undefined, "the frozen copy is removed");
 });
 
 test("a private chat never gets a JEV participation decision", async t => {
