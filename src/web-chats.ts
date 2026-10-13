@@ -198,6 +198,25 @@ export class WebChatService {
     return { id, title };
   }
 
+  /**
+   * Makes a new private chat that starts with one Discord message, for the "Continue in Slopbot web" message command.
+   * The message is saved as earlier history, so the model reads it. Slopbot does not answer until the user writes.
+   */
+  async continueMessage(user: string, server: string, source: Message): Promise<{ id: string }> {
+    await this.requireMember(user, server);
+    const handle = await this.handle(server);
+    const id = newPrivateChatId(), channel = privateChannel(id), at = this.now();
+    const text = [...source.text].slice(0, PRIVATE_CHAT_MAX_CHARS).join("");
+    await this.store.insertWebChat({ id, server, owner: user, title: privateChatTitle(text), created: at, updated: at, deleted: false });
+    await this.store.ingest({
+      id: `chat-message-${randomUUID()}`, server, channel, author: source.author,
+      ...(source.authorName ? { authorName: source.authorName } : {}), ...(source.isBot ? { isBot: true } : {}),
+      text, timestamp: Math.min(source.timestamp ?? at - 1, at - 1), addressed: false,
+    });
+    handle.openChat(channel);
+    return { id };
+  }
+
   async messages(user: string, id: string, limit: number, before: string | null): Promise<{ messages: unknown[]; hasMore: boolean; streamId: number }> {
     const chat = await this.owned(user, id);
     const channel = privateChannel(chat.id);

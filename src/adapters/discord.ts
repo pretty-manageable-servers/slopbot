@@ -36,12 +36,12 @@ import { registerFileTool, inspectFile } from '../files.js';
 import {
   Client, Events, GatewayIntentBits, Partials, ThreadAutoArchiveDuration,
   MessageFlags, PermissionFlagsBits, ChannelType, ActivityType, ActionRowBuilder, ButtonBuilder, ButtonStyle, type ButtonInteraction,
-  type ChatInputCommandInteraction, type Interaction, type Message as DiscordMessage, type PartialMessage,
+  type ChatInputCommandInteraction, type MessageContextMenuCommandInteraction, type Interaction, type Message as DiscordMessage, type PartialMessage,
 } from "discord.js";
 import { BOT_REPLY_LIMIT_KEY, botReplyLimit } from "../bot-reply-limit.js";
 import { MUTED_USERS_KEY, mutedUsers } from "../muted-users.js";
 import { GLOBAL_SETTINGS_SCOPE } from "../usage-cost.js";
-import { buildStopCommand, buildToolCommands, buildUsageCommand, usageReply } from "./discord-commands.js";
+import { buildMessageApps, buildStopCommand, CONTINUE_IN_WEB, buildToolCommands, buildUsageCommand, MESSAGE_APPS, messageAppText, usageReply } from "./discord-commands.js";
 import { registerProfileTools } from "../profiles.js";
 import { Application } from "../application.js";
 import { Bot, splitReply, type ChatGateway, type Incoming } from "../bot.js";
@@ -313,7 +313,7 @@ export class DiscordServer implements ChatGateway {
     this.reminders.start();
     this.fixWatches?.start();
     sync(); this.historyTimer = setInterval(sync, 60000);
-    void this.registerCommands().catch(error => logError("Could not register /slopbot, /usage and /stop commands. Check application command permissions.", error, { server: this.guildId }));
+    void this.registerCommands().catch(error => logError("Could not register /slopbot, /usage, /stop and message app commands. Check application command permissions.", error, { server: this.guildId }));
   }
   interaction(interaction: Interaction): void {
     if ((interaction.isButton() || interaction.isStringSelectMenu()) && interaction.customId.startsWith('slopui:')) {
@@ -323,6 +323,8 @@ export class DiscordServer implements ChatGateway {
     if (interaction.isChatInputCommand() && interaction.commandName === "usage") void this.usageCommand(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isButton() && interaction.customId.startsWith("slopstop:")) void this.continueButton(interaction).catch(error => logError("Continue button failed.", error));
     if (interaction.isChatInputCommand() && interaction.commandName === "stop") void this.stopCommand(interaction).catch(error => logError("Command failed.", error));
+    if (interaction.isMessageContextMenuCommand() && interaction.commandName === CONTINUE_IN_WEB) void this.continueInWeb(interaction).catch(error => logError("Command failed.", error));
+    if (interaction.isMessageContextMenuCommand() && interaction.commandName in MESSAGE_APPS) void this.messageApp(interaction).catch(error => logError("Command failed.", error));
   }
   messageCreate(message: DiscordMessage): void { void this.receive(message).catch(error => logError("Discord event failed. Check channel permissions.", error)); }
   messageUpdate(updated: DiscordMessage | PartialMessage): void {
@@ -367,11 +369,57 @@ export class DiscordServer implements ChatGateway {
     const guild = await this.client.guilds.fetch(this.guildId);
     // set() replaces the whole list, so commands from older versions are removed.
     // /usage is a separate command, so /slopbot stays as it is.
-    await guild.commands.set([buildToolCommands(this.tools).toJSON(), buildUsageCommand().toJSON(), buildStopCommand().toJSON()]);
+    await guild.commands.set([buildToolCommands(this.tools).toJSON(), buildUsageCommand().toJSON(), buildStopCommand().toJSON(), ...buildMessageApps().map(app => app.toJSON())]);
     // Slopbot registers no global commands. Old global commands stay visible and fail, so remove them.
     const global = await this.client.application?.commands.fetch();
     if (global?.size) await this.client.application!.commands.set([]);
   }
+  /**
+   * A message command from the Apps menu. Slopbot gets it as a request from the user who clicked,
+   * so the normal limits, mutes and channel rules apply. The answer replies to the target message.
+   */
+  private async messageApp(interaction: MessageContextMenuCommandInteraction): Promise<void> {
+    if (interaction.guildId !== this.guildId) return;
+    if (!this.bot.accepts(this.guildId, interaction.channelId)) {
+      await interaction.reply({ content: "Slopbot does not reply in this channel. An admin can add it with /slopbot channels.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    await interaction.reply({ content: "Slopbot is on it.", flags: MessageFlags.Ephemeral });
+    try {
+      const target = interaction.targetMessage;
+      const source = { ...this.normalize(target), addressed: false };
+      await this.store.ingest(source);
+      const member = interaction.member && "displayName" in interaction.member ? interaction.member.displayName : undefined;
+      const incoming: Incoming = {
+        id: `app:${interaction.id}`, server: this.guildId, channel: interaction.channelId, author: interaction.user.id,
+        authorName: member ?? interaction.user.globalName ?? interaction.user.username,
+        authorAliases: [interaction.user.username, ...(interaction.user.globalName ? [interaction.user.globalName] : [])],
+        text: messageAppText(interaction.commandName, source.authorName ?? source.author, source.text),
+        replyTo: target.id, timestamp: interaction.createdTimestamp,
+        botAuthor: false, mentionsBot: true, repliesToBot: false,
+      };
+      await this.bot.receive(incoming);
+    } catch (error) {
+      logError("command_failed", error, { stage: "message app", server: this.guildId, messageId: interaction.id });
+      await interaction.editReply({ content: errorReply(error), allowedMentions: { parse: [] } });
+    }
+  }
+  /** The "Continue in Slopbot web" message command. Makes a private web chat with the message and sends a private link to it. */
+  private async continueInWeb(interaction: MessageContextMenuCommandInteraction): Promise<void> {
+    if (interaction.guildId !== this.guildId) return;
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    try {
+      if (!this.webChat) throw new ToolError("The Slopbot website is not set up for this bot.");
+      const url = await this.webChat.continueMessage(interaction.user.id, this.guildId, this.normalize(interaction.targetMessage));
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setURL(url).setLabel("Open in Slopbot web").setStyle(ButtonStyle.Link));
+      await interaction.editReply({ content: "A private chat with this message is ready.", components: [row], allowedMentions: { parse: [] } });
+    } catch (error) {
+      logError("command_failed", error, { stage: "continue in web", server: this.guildId, messageId: interaction.id });
+      await interaction.editReply({ content: errorReply(error), allowedMentions: { parse: [] } });
+    }
+  }
+  /** Set by discord-main when the website runs. Makes a private web chat from a message and gives its link. */
+  webChat: { continueMessage(user: string, server: string, source: Message): Promise<string> } | undefined;
   /** True for Manage Server in this server or a Slopbot team editor. They stop and continue any response. */
   private async stopAdmin(user: string, manager: boolean): Promise<boolean> {
     return manager || (this.team ? await this.team.canEdit(user).catch(() => false) : false);
@@ -597,7 +645,8 @@ export class DiscordServer implements ChatGateway {
       if (id) (await this.store.prepareDelivery(id, message, content));
       const sent = await requestTimings.wait<DiscordMessage>("Discord reply send", async () => channel.send({ ...payload, allowedMentions: { parse: [], repliedUser: false, ...(message.id.startsWith('command:reminder:') ? {users:[message.author]} : {}) },
         ...(id ? { nonce: id, enforceNonce: true } : {}),
-        ...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? { reply: { messageReference: message.id, failIfNotExists: false } } : {}) }));
+        ...(message.id.startsWith("app:") && message.replyTo ? { reply: { messageReference: message.replyTo, failIfNotExists: false } }
+          : !message.id.startsWith("task-seed:") && !message.id.startsWith("command:") && !message.id.startsWith("app:") ? { reply: { messageReference: message.id, failIfNotExists: false } } : {}) }));
       const result = { ...this.normalize(sent), addressed: false };
       if (id) (await this.store.finishDelivery(id, result));
       outputs.push(result);
@@ -808,6 +857,7 @@ export class DiscordAdapter {
     if (!this.allowed(guildId)) return Promise.reject(new ToolError("Slopbot is not enabled for this server."));
     const opening = (async () => {
       const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage, this.access, this.members, this.team);
+      server.webChat = this.webChat;
       await server.start();
       await server.ready(this.botUser!);
       return server;
@@ -827,6 +877,8 @@ export class DiscordAdapter {
     if (!server) return;
     try { handle(await server); } catch (error) { logError("discord_event_failed", error, { server: guildId }); }
   }
+  /** Set by discord-main when the website runs. Given to each server for the "Continue in Slopbot web" command. */
+  webChat: DiscordServer["webChat"];
   /** What the private chat service needs from Discord: membership, the server's handle, limits and access. */
   chatHost(): ChatHost {
     return {
