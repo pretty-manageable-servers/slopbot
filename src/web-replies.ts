@@ -15,10 +15,12 @@ const BOT_PREFIX = /^\*\*((?:[^*\\]|\\.)*)\*\* \(from web\): /;
 export type WebReplyStatus = "pending" | "posted" | "failed";
 /** "webhook": posted through the channel webhook. "bot": posted as Slopbot itself, without Manage Webhooks. */
 export type WebVia = "webhook" | "bot";
+/** "voice": a transcript from a voice channel. It skips the web transcripts setting, and posts as the bot when there is no key. */
+export type WebReplyKind = "web" | "voice";
 export interface WebWebhookRow { server: string; channel: string; webhook_id: string; token_encrypted: string }
 export interface WebReplyRow { id: string; server: string; channel: string; user_id: string; status: WebReplyStatus; message_id: string | null; created_at: number; via: WebVia }
 export interface WebAuthor { name: string; avatarURL: string; aliases: string[]; identity: Record<string, string> }
-export interface WebOrigin { user: string; author: WebAuthor; via: WebVia }
+export interface WebOrigin { user: string; author: WebAuthor; via: WebVia; kind?: WebReplyKind }
 export interface WebHook { id: string; token: string }
 
 /** Thrown by the Discord adapter when Discord says the webhook does not exist (code 10015, or HTTP 404). */
@@ -139,7 +141,7 @@ export class WebReplies {
   private get discord(): WebReplyDiscord { return this.options.discord; }
 
   /** Checks in this order, then posts. Nothing is posted when a check fails. */
-  async reply(input: { user: string; server: string; channel: string; text: string }): Promise<{ id: string; messageId: string; status: "posted" | "failed"; via: WebVia }> {
+  async reply(input: { user: string; server: string; channel: string; text: string; kind?: WebReplyKind }): Promise<{ id: string; messageId: string; status: "posted" | "failed"; via: WebVia }> {
     const { user, server, channel } = input;
     const secret = this.options.secret;
     if (!("key" in secret)) throw new WebReplyError(503, secret.error);

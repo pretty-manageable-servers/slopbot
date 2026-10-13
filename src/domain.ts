@@ -26,7 +26,7 @@ export interface Message {
   readonly authorAliases?: readonly string[];
   readonly isBot?: boolean;
   /** "web" marks a Discord webhook post that a signed-in user sent from the web console. */
-  readonly source?: "web";
+  readonly source?: "web" | "voice";
   readonly transient?: boolean;
   /** Web chat only: short-lived links of the images in this message, for the model. In memory; the saved row keeps attachments only. */
   readonly modelImages?: readonly { url: string; label: string }[];
