@@ -7,6 +7,7 @@ import { ChannelAccess } from "../src/channel-access.js";
 import { createConsole } from "../src/web-console.js";
 import { createChatRoutes, WebChatService, type ChatHost, type PrivateChatHandle } from "../src/web-chats.js";
 import { runEvents } from "../src/run-events.js";
+import { createTranscripts } from "../src/web-transcripts.js";
 import type { UserLimit } from "../src/user-limiter.js";
 import type { Message } from "../src/domain.js";
 
@@ -54,6 +55,7 @@ async function setup(t: TestContext): Promise<Fixture> {
     async snapshot() { return {}; },
     async invoke() { return {}; },
     chats: createChatRoutes(service),
+    conversations: createTranscripts({ store, access: host.access, configured: () => [], channelName: async () => undefined, ownsPrivateChat: (server, channel, user) => service.owns(user, server, channel) }),
   });
   web.listen(0, "127.0.0.1");
   await once(web, "listening");
@@ -217,6 +219,26 @@ test("a usage limit refuses the message before it is saved, with the reset time"
 
   f.limit.current = { allowed: true };
   assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "after the reset" })).status, 201);
+});
+
+test("a reply run of a private chat opens for its owner only", async t => {
+  const f = await setup(t);
+  const id = await newChat(f);
+  const sent = await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "what is the plan?" });
+  const request = await f.store.canonicalMessage(SERVER, sent.json.id);
+  assert.ok(request);
+  await f.store.startRun("run-private-1", request, { prefixVersion: "v1", prefix: [], history: [], inputs: [], purpose: "reply" });
+  await f.store.appendEvent("run-private-1", 0, { kind: "text", payload: { text: "The plan is ready." } });
+  await f.store.complete("run-private-1", undefined, [], "The plan is ready.");
+
+  const own = await f.call(ALICE, "GET", "/api/runs/run-private-1");
+  assert.equal(own.status, 200);
+  assert.equal(own.json.channel, `web:${id}`);
+  assert.deepEqual(own.json.steps, [{ type: "text", text: "The plan is ready." }]);
+  assert.equal((await f.call(BOB, "GET", "/api/runs/run-private-1")).status, 403, "another member cannot read the run");
+  assert.equal((await f.call(CAROL, "GET", "/api/runs/run-private-1")).status, 403, "a non-member cannot read the run");
+  assert.equal((await f.call(null, "GET", "/api/runs/run-private-1")).status, 403, "no session");
+  assert.equal((await f.call(ALICE, "GET", `/api/conversations/${id}/messages?server=${SERVER}`)).status, 400, "the transcript routes do not serve private chats");
 });
 
 test("a sent message is saved as a web message from the user and handed to the bot", async t => {
