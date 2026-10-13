@@ -116,3 +116,6 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
   .topbar .wrap { justify-content: space-between; gap: 8px; }
   .brand { margin-right: auto; }
 }
+@media (max-width: 560px) {
+  .topbar .nav-add, .theme-switch { display: none; }
+}

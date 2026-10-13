@@ -37,7 +37,8 @@ export function Topbar() {
           <a href={links.docs} target="_blank" rel="noopener">Docs</a>
         </nav>
         <button className="theme-switch" onClick={switchTheme}>Theme</button>
-        <a className="btn solid" href={links.addToDiscord}>Add to Discord</a>
+        <a className="btn solid" href={links.chat}>Open Slopbot</a>
+        <a className="btn nav-add" href={links.addToDiscord}>Add to Discord</a>
       </div>
     </header>
   )
