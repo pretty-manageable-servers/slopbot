@@ -758,6 +758,15 @@ export class DiscordAdapter {
       throw error;
     }
   }
+  /** True when the user is in at least one server with Slopbot. Throws when Discord fails and no server matched. */
+  async canSignIn(user: string): Promise<boolean> {
+    let failure: unknown;
+    for (const id of this.servers.keys()) {
+      try { if (await this.isServerMember(user, id)) return true; } catch (error) { failure = error; }
+    }
+    if (failure) throw failure;
+    return false;
+  }
   /** Servers that both Slopbot and the user are in. */
   async consoleServers(user: string): Promise<{ id: string; name: string; icon: string | null; admin: boolean }[]> {
     const found = [];

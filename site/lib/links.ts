@@ -4,6 +4,7 @@ export const links = {
   addToDiscord: '#start',
   docs: 'https://docs.pmservers.org',
   console: '/console',
+  chat: '/console#chat',
   pmservers: 'https://pmservers.org',
   pmsCloudPricing: 'https://pmservers.org/pricing',
 }

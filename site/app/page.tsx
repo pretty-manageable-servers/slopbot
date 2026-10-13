@@ -37,6 +37,7 @@ export default function Home() {
             <AskForm />
             <div className="row">
               <a className="btn solid" href={links.addToDiscord}>Add to Discord</a>
+              <a className="btn" href={links.chat}>Open the chat</a>
               <a className="btn" href={links.docs}>Read the docs</a>
             </div>
           </div>

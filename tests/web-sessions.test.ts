@@ -22,7 +22,7 @@ function databaseFile(t: TestContext): string {
 }
 // Starts a console with a fake Discord login. The store is the only session state.
 async function start(t: TestContext, store: SQLiteStore): Promise<{ base: string; server: Server }> {
-  const server = createConsole(options, { sessions: store, async snapshot(id) { return { user: id }; }, async invoke() { return {}; } });
+  const server = createConsole(options, { sessions: store, async canSignIn() { return true; }, async snapshot(id) { return { user: id }; }, async invoke() { return {}; } });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
   const address = server.address(); assert.ok(address && typeof address !== 'string');

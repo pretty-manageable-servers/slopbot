@@ -378,7 +378,7 @@ test("the console reply route returns 429 with resetAt and posts nothing", async
   const h = harness(); t.after(() => h.store.close());
   await h.limiter.record(SERVER, USER, 1000);
   const options = { origin: "http://localhost:3000", host: "127.0.0.1", port: 3000, clientId: "id", clientSecret: "secret" };
-  const server = createConsole(options, { sessions: new SQLiteStore(),
+  const server = createConsole(options, { sessions: new SQLiteStore(), async canSignIn() { return true; },
     async snapshot() { return {}; }, async invoke() { return {}; },
     async reply(user, _server, channel, text) { return h.service.reply({ user, server: SERVER, channel, text }); },
   });

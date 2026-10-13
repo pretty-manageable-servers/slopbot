@@ -225,7 +225,7 @@ async function login(call: (path: string, init?: RequestInit) => Promise<Respons
 
 test('HTTP routes: public page and JSON, noindex headers, manager-only writes with CSRF', async t => {
   const { service } = await fixture();
-  const web = createConsole({ origin: 'http://localhost:3000', host: '127.0.0.1', port: 0, clientId: 'id', clientSecret: 'secret' }, { sessions: new SQLiteStore(),
+  const web = createConsole({ origin: 'http://localhost:3000', host: '127.0.0.1', port: 0, clientId: 'id', clientSecret: 'secret' }, { sessions: new SQLiteStore(), async canSignIn() { return true; },
     async snapshot(id) { return { user: id }; },
     async invoke() { return {}; },
     shares: service,

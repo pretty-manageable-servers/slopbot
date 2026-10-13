@@ -15,7 +15,7 @@ test("a member uses their own banked reset from the web, and gets the new meter"
   let banked = 1;
   const calls: string[] = [];
   const web = createConsole({ origin: ORIGIN, host: "127.0.0.1", port: 3000, clientId: "id", clientSecret: "secret" }, {
-    sessions: store, async snapshot() { return {}; }, async invoke() { return {}; },
+    sessions: store, async canSignIn() { return true; }, async snapshot() { return {}; }, async invoke() { return {}; },
     async useReset(user, server, kind) {
       calls.push(`${user} ${server} ${kind}`);
       if (!banked) throw new ToolError("You have no banked 5-hour reset.");
