@@ -7,6 +7,8 @@ import { FakeLLM } from "../src/adapters/fake-llm.js";
 import { Bot, type ChatGateway, type Incoming } from "../src/bot.js";
 import { configuredChannels } from "../src/server-tools.js";
 import type { Config } from "../src/config.js";
+import { discordChannelAccessSource } from "../src/adapters/discord-channel-access.js";
+import { ChannelAccess } from "../src/channel-access.js";
 import { HistoryImporter } from "../src/history.js";
 import { privateChannel } from "../src/private-chat.js";
 import type { ParticipationGate } from "../src/participation.js";
@@ -15,6 +17,7 @@ import { ShareError, ShareService } from "../src/shares.js";
 import { ToolRegistry } from "../src/tools.js";
 import { visibleConversations, type TranscriptHost } from "../src/web-transcripts.js";
 import type { Message } from "../src/domain.js";
+import type { Client } from "discord.js";
 
 // Every test seeds one message in a web: (private) channel and one in a Discord channel, then checks
 // that the private one never comes back through a path that other channels or other users can reach.
@@ -124,6 +127,14 @@ test("reports read only the channel they are asked about", async t => {
   registerReportTools(tools, { store, llm, authorize: async () => undefined } as never);
   const result = await tools.invokeResult(discordMessage("ask-3", "summary please"), "conversation_summary", { query: "secret" }, "op-report-1", "agent");
   assert.equal(result.text, "No indexed evidence found for this request.");
+});
+
+test("transcript routes never open a private chat for anyone but its owner", async () => {
+  // A private chat is not a Discord channel. The source answers before it touches the Discord client.
+  const source = discordChannelAccessSource({} as Client);
+  assert.equal(await source.facts(server, ownerChat, "alice"), undefined);
+  const access = new ChannelAccess(source);
+  assert.deepEqual(await access.check(server, ownerChat, "alice"), { view: false, send: false });
 });
 
 test("a channel list never shows a private chat, even when it is configured", async t => {
