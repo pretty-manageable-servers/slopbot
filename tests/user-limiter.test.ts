@@ -9,7 +9,7 @@ import { loadConfig } from "../src/config.js";
 import type { Message, Prompt } from "../src/domain.js";
 import { TaskWorker } from "../src/queue.js";
 import { ToolRegistry } from "../src/tools.js";
-import { UserLimiter, UserLimitError, limitReply } from "../src/user-limiter.js";
+import { UserLimiter, UserLimitError, limitReply, usageView } from "../src/user-limiter.js";
 import { activePrices, DEFAULT_FALLBACK_PRICE, parseFallbackPrice, parseModelPrices, usageCostMicros } from "../src/usage-cost.js";
 import { registerUsageTool } from "../src/usage-tools.js";
 import { ProviderEmbeddings, embeddingPriceModel } from "../src/adapters/embeddings.js";
@@ -395,5 +395,20 @@ test("resetUserUsage with a kind clears only that window", async () => {
   await limits.record("s", "u", 5, 0);
   await store.resetUserUsage("s", "u", "5h");
   assert.deepEqual((await store.userUsage("s", "u")).windows.map(window => window.kind), ["week"]);
+  store.close();
+});
+
+test("the usage meter view has percents and reset times only, with no cost or limit amounts", async () => {
+  const store = new SQLiteStore(":memory:");
+  const limiter = new UserLimiter(store, { fiveHourCostMicros: 1000000, weekCostMicros: 0, gracePercent: 10 });
+  await limiter.record("s", "u", 2500000, 1000);
+  const view = usageView(await limiter.usage("s", "u", 1000));
+  assert.equal(view.plan, "Seed");
+  // Over the 5-hour limit: capped at 100. No weekly limit: percent is null, not a number.
+  assert.deepEqual(view.windows.map(window => [window.kind, window.percent]), [["5h", 100], ["week", null]]);
+  assert.deepEqual(view.windows.map(window => window.resetAt), [1000 + 5 * 3600000, 1000 + 7 * 86400000]);
+  const keys = JSON.stringify(view);
+  assert.doesNotMatch(keys, /cost|spent|limit|micro|dollar|price|\$/i);
+  assert.equal(usageView([{ kind: "5h", spent: 333, limit: 1000, resetAt: null, banked: 0 }]).windows[0]!.percent, 33);
   store.close();
 });

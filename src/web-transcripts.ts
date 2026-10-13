@@ -19,6 +19,8 @@ export interface TranscriptStore extends ConversationEventStore {
   conversationMessages(server: string, channel: string, before: { time: number; id: string } | undefined, limit: number): Promise<Message[]>;
   latestStreamId(server: string, channel: string): Promise<number>;
   replyRunIds(server: string, messageId: string): Promise<string[]>;
+  /** Which of these messages of one channel a reply run used. Participation runs do not count. */
+  usedSourceIds(server: string, channel: string, messageIds: readonly string[]): Promise<string[]>;
   requestRunIds(server: string, requestId: string): Promise<string[]>;
   runRecord(runId: string): Promise<TranscriptRun | undefined>;
   events(runId: string): ModelEvent[] | Promise<ModelEvent[]>;
@@ -49,7 +51,8 @@ export type RunStep =
   | { type: "thinking"; text: string }
   | { type: "tool"; name: string; status: string; args: string; result?: string };
 
-export interface Conversation { id: string; name: string; kind: "channel" | "thread"; parent: string | null; newest: number | null; canSend: boolean }
+/** enabled is false for a channel whose web transcripts are off. Only channels are listed that way, never threads. */
+export interface Conversation { id: string; name: string; kind: "channel" | "thread"; parent: string | null; newest: number | null; canSend: boolean; enabled: boolean }
 
 const SNOWFLAKE = /^\d{17,20}$/;
 const ID = /^[\w:.-]{1,64}$/;
@@ -57,7 +60,10 @@ const RUN_ID = /^[\w:.-]{1,200}$/;
 const MAX_RESULT_CHARS = 500;
 const BACKLOG_PAGE = 200;
 
-/** Lists the channels and threads the user can view now and that are switched on, newest first. */
+/**
+ * Lists the channels Slopbot serves that the user can view now, newest first. A channel with its switch off is listed
+ * with enabled false. A thread is listed only when its switch is on. Reads check the switch again (see granted).
+ */
 export async function visibleConversations(host: TranscriptHost, server: string, user: string): Promise<Conversation[]> {
   const { store } = host;
   const newest = new Map((await store.conversationActivity(server)).map(item => [item.channel, item.newest]));
@@ -70,10 +76,11 @@ export async function visibleConversations(host: TranscriptHost, server: string,
   for (const candidate of candidates) {
     if (seen.has(candidate.id)) continue;
     seen.add(candidate.id);
-    if (!transcriptSwitchOn(store, server, candidate.id)) continue;
+    const enabled = transcriptSwitchOn(store, server, candidate.id);
+    if (!enabled && candidate.kind === "thread") continue;
     const access = await host.access.check(server, candidate.id, user);
     if (!access.view) continue;
-    found.push({ ...candidate, name: (await host.channelName(server, candidate.id)) ?? candidate.id, newest: newest.get(candidate.id) ?? null, canSend: access.send });
+    found.push({ ...candidate, name: (await host.channelName(server, candidate.id)) ?? candidate.id, newest: newest.get(candidate.id) ?? null, canSend: enabled && access.send, enabled });
   }
   return found.sort((a, b) => (b.newest ?? 0) - (a.newest ?? 0) || a.name.localeCompare(b.name));
 }
@@ -243,7 +250,13 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
     // One directory call per page. The directory caches each user for 10 minutes.
     const authors = [...new Set(messages.filter(message => showsProfile(message, slopbot)).map(message => message.author))];
     const profiles = host.members && authors.length ? await host.members.profiles(server, authors) : new Map();
-    return Promise.all(messages.map(async message => transcriptMessage(message, slopbot, message.author === slopbot ? await store.replyRunIds(server, message.id) : [], profiles.get(message.author))));
+    // One query for each channel on the page. Only messages that a reply run used are marked.
+    const used = new Set<string>();
+    const people = messages.filter(message => message.author !== slopbot);
+    for (const channel of new Set(people.map(message => message.channel))) {
+      for (const id of await store.usedSourceIds(server, channel, people.filter(message => message.channel === channel).map(message => message.id))) used.add(id);
+    }
+    return Promise.all(messages.map(async message => transcriptMessage(message, slopbot, message.author === slopbot ? await store.replyRunIds(server, message.id) : [], profiles.get(message.author), used.has(message.id))));
   };
   const parentOf = async (server: string, channel: string): Promise<string | null> =>
     store.taskThreads(server).find(task => task.thread === channel)?.parent ?? null;
@@ -295,7 +308,8 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
     if (query.length < 2 || query.length > 200) return json(res, 400, { error: "Search needs 2 to 200 characters." });
     const mode = url.searchParams.get("mode") ?? "keyword";
     if (!["keyword", "exact", "hybrid", "semantic"].includes(mode)) return json(res, 400, { error: "Invalid search mode." });
-    const visible = (await visibleConversations(host, server, user)).slice(0, 40);
+    // Search reads messages, so it covers only channels whose switch is on.
+    const visible = (await visibleConversations(host, server, user)).filter(item => item.enabled).slice(0, 40);
     const found: Message[] = [];
     for (const conversation of visible) {
       const page = await store.searchHistory({ server, channel: conversation.id, query, mode: mode as HistoryQuery["mode"], limit: 10, requester: user });

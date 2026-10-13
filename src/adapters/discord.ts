@@ -42,7 +42,7 @@ import { LLMClassifier, ParticipationGate } from "../participation.js";
 import { HistoryImporter } from "../history.js";
 import { DecisionClassifier } from "./decisions.js";
 import { TaskWorker } from "../queue.js";
-import { UserLimiter, UserLimitError, limitReply } from "../user-limiter.js";
+import { UserLimiter, UserLimitError, limitReply, usageView } from "../user-limiter.js";
 import { createUsageMeter, type UsageMeter } from "../usage-meter.js";
 import { registerUsageTool } from "../usage-tools.js";
 import { configuredChannels, registerServerTools, webTranscriptKey, webTranscriptsEnabled } from "../server-tools.js";
@@ -537,7 +537,10 @@ export class DiscordServer implements ChatGateway {
         channels.push({ id: channel.id, name: channel.name, monitored: this.channels.includes(channel.id), ...(admin ? { history: this.history.state(channel.id) } : {}) });
       } catch (error) { if (!(error instanceof ToolError)) throw error; }
     }
+    // The signed-in user's name and avatar for the account menu. The member directory gives the same avatar the chat shows.
+    const known = (await this.members?.profiles(guild.id, [user]))?.get(user);
     return { server: { id: guild.id, name: guild.name }, user, admin, channels,
+      me: { id: user, displayName: known?.displayName ?? member.displayName, avatarUrl: known?.avatarUrl ?? member.displayAvatarURL({ size: 64 }) },
       profile: await this.store.profile(guild.id, user),
       mcp: admin ? this.mcp.snapshot() : null,
       settings: admin ? {
@@ -713,6 +716,11 @@ export class DiscordAdapter {
   }
   async consoleTranscripts(user: string, guildId: string): Promise<unknown> {
     return (await this.server(user, guildId)).consoleTranscripts(user);
+  }
+  /** The signed-in user's own meter for one server. Only members of that server can read it. Percents only. */
+  async consoleUsage(user: string, guildId: string): Promise<unknown> {
+    await this.server(user, guildId);
+    return usageView(await this.usage.limiter.usage(guildId, user));
   }
   /** The channel's name for the web transcript list. Undefined when the channel is not in the server. */
   async channelName(server: string, channel: string): Promise<string | undefined> {

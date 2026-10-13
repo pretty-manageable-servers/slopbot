@@ -73,6 +73,8 @@ export interface TranscriptMessage {
   editedAt: number | null;
   slopbot: boolean;
   runIds: string[];
+  /** True for Slopbot's own messages, and for a person's message that a reply run used. Live messages start false. */
+  used: boolean;
 }
 
 /** The ID of Slopbot's own Discord user, saved when the bot becomes ready. */
@@ -86,7 +88,7 @@ export function showsProfile(message: Message, slopbot: string | undefined): boo
   return message.author === slopbot || !message.isBot;
 }
 
-export function transcriptMessage(message: Message, slopbot: string | undefined, runIds: readonly string[] = [], profile?: MemberProfile): TranscriptMessage {
+export function transcriptMessage(message: Message, slopbot: string | undefined, runIds: readonly string[] = [], profile?: MemberProfile, used = false): TranscriptMessage {
   const timestamp = message.timestamp ?? null;
   const edited = message.revisionTimestamp !== undefined && message.revisionTimestamp > (message.timestamp ?? 0);
   const isSlopbot = slopbot !== undefined && message.author === slopbot;
@@ -104,6 +106,7 @@ export function transcriptMessage(message: Message, slopbot: string | undefined,
     editedAt: edited ? message.revisionTimestamp! : null,
     slopbot: isSlopbot,
     runIds: isSlopbot ? [...runIds] : [],
+    used: isSlopbot || used,
   };
 }
 

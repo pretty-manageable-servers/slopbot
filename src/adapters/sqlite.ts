@@ -602,6 +602,14 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
         .all(server, channel, limit);
     return rows.map(row => this.namedMessage(parseMessage(JSON.parse(String(row.body)))));
   }
+  // The messages of one channel that a reply run used. Participation runs are not reply runs, so they do not count.
+  async usedSourceIds(server: string, channel: string, messageIds: readonly string[]): Promise<string[]> {
+    if (!messageIds.length) return [];
+    const marks = messageIds.map(() => "?").join(",");
+    return this.db.prepare(`SELECT DISTINCT s.message_id FROM run_sources s JOIN messages m ON m.server=s.server AND m.id=s.message_id
+      WHERE s.server=? AND m.channel=? AND s.message_id IN (${marks}) AND s.run_id IN (SELECT run_id FROM reply_runs WHERE server=?)`)
+      .all(server, channel, ...messageIds, server).map(row => String(row.message_id));
+  }
   async replyRunIds(server: string, messageId: string): Promise<string[]> {
     return this.db.prepare("SELECT r.run_id FROM reply_runs r LEFT JOIN runs u ON u.id=r.run_id WHERE r.server=? AND r.message_id=? ORDER BY u.rowid").all(server, messageId).map(row => String(row.run_id));
   }
@@ -816,6 +824,14 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       .all(server, ...channels, this.embeddings.model);
     for (const row of rows) this.queueIndex({ server, channel: String(row.channel), author: String(row.author), id: String(row.id), text: String(row.content) }, false);
     return rows.length;
+  }
+
+  // Deletes only saved messages. Memories and embeddings made from them are not changed.
+  async purgeChannelBefore(server: string, channel: string, cutoff: number): Promise<{ id: string; timestamp: number } | null> {
+    const time = "json_extract(body,'$.timestamp')";
+    this.db.prepare(`DELETE FROM messages WHERE server=? AND channel=? AND ${time}<?`).run(server, channel, cutoff);
+    const row = this.db.prepare(`SELECT id,${time} AS timestamp FROM messages WHERE server=? AND channel=? AND ${time} IS NOT NULL ORDER BY ${time} ASC,length(id) ASC,id ASC LIMIT 1`).get(server, channel);
+    return row ? { id: String(row.id), timestamp: Number(row.timestamp) } : null;
   }
 
   purgeUnconfigured(server: string, allowed: readonly string[]): void {

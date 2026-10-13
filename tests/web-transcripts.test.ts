@@ -135,14 +135,17 @@ test("transcript routes answer 403 without a session", async t => {
   assert.equal((await get(f, `/api/conversations/${CHANNEL}/messages?server=${SERVER}`, null)).status, 403);
 });
 
-test("the list has switched-on channels and threads the user can view, newest first", async t => {
+test("the list has the channels and threads the user can view, newest first, with enabled marking the switch", async t => {
   const f = await fixture(t);
   const list = await get(f, `/api/conversations?server=${SERVER}`);
   assert.equal(list.status, 200);
-  assert.deepEqual(list.body.conversations.map((item: { id: string }) => item.id), [THREAD, CHANNEL]);
-  assert.deepEqual(list.body.conversations.map((item: { kind: string }) => item.kind), ["thread", "channel"]);
+  assert.deepEqual(list.body.conversations.map((item: { id: string }) => item.id), [THREAD, OTHER, CHANNEL]);
+  assert.deepEqual(list.body.conversations.map((item: { kind: string }) => item.kind), ["thread", "channel", "channel"]);
+  assert.deepEqual(list.body.conversations.map((item: { enabled: boolean }) => item.enabled), [true, false, true]);
   assert.equal(list.body.conversations[0].name, "task-1");
-  assert.equal(list.body.conversations[1].canSend, true);
+  assert.equal(list.body.conversations[2].canSend, true);
+  // A switched-off channel never offers to send.
+  assert.equal(list.body.conversations[1].canSend, false);
   // A stranger is not in the server, so the list is empty and reads are refused.
   assert.deepEqual((await get(f, `/api/conversations?server=${SERVER}`, STRANGER)).body.conversations, []);
 });
@@ -157,12 +160,34 @@ test("the messages response says who may send and who may share", async t => {
   assert.deepEqual([viewer.body.canSend, viewer.body.canShare], [true, false]);
 });
 
-test("a switched-off channel is 403 and never listed", async t => {
+test("a switched-off channel is listed as off, and its messages, stream and runs stay 403", async t => {
   const f = await fixture(t);
   assert.equal((await get(f, `/api/conversations/${OTHER}/messages?server=${SERVER}`)).status, 403);
   assert.equal((await get(f, `/api/conversations/${OTHER}/messages?server=${SERVER}`, STRANGER)).status, 403);
+  const stream = await fetch(`${f.base}/api/conversations/${OTHER}/stream?server=${SERVER}`, { headers: { "x-user": USER } });
+  assert.equal(stream.status, 403);
+  await stream.body?.cancel();
+  assert.equal((await get(f, `/api/runs/run-3`)).status, 403);
+  const list = await get(f, `/api/conversations?server=${SERVER}`);
+  const off = list.body.conversations.find((item: { id: string }) => item.id === OTHER);
+  assert.equal(off.enabled, false);
+  assert.equal(off.canSend, false);
+});
+
+test("a switched-off channel the user cannot view is not listed", async t => {
+  const f = await fixture(t);
+  f.hidden.add(`${OTHER}:${USER}`);
   const list = await get(f, `/api/conversations?server=${SERVER}`);
   assert.ok(!list.body.conversations.some((item: { id: string }) => item.id === OTHER));
+  assert.deepEqual(list.body.conversations.map((item: { id: string }) => item.id), [THREAD, CHANNEL]);
+});
+
+test("search never reads messages of a switched-off channel", async t => {
+  const f = await fixture(t);
+  const found = await get(f, `/api/conversations/search?server=${SERVER}&q=secret`);
+  assert.equal(found.status, 200);
+  assert.deepEqual(found.body.messages, []);
+  assert.ok(!found.body.channels.some((item: { id: string }) => item.id === OTHER));
 });
 
 test("a user without live View Channel gets 403 on reads, the stream and runs", async t => {
@@ -173,7 +198,7 @@ test("a user without live View Channel gets 403 on reads, the stream and runs", 
   const stream = await fetch(`${f.base}/api/conversations/${CHANNEL}/stream?server=${SERVER}`, { headers: { "x-user": USER } });
   assert.equal(stream.status, 403);
   const list = await get(f, `/api/conversations?server=${SERVER}`);
-  assert.deepEqual(list.body.conversations.map((item: { id: string }) => item.id), [THREAD]);
+  assert.deepEqual(list.body.conversations.map((item: { id: string }) => item.id), [THREAD, OTHER]);
 });
 
 test("a thread uses its parent channel's switch", async t => {
@@ -182,8 +207,9 @@ test("a thread uses its parent channel's switch", async t => {
   f.store.setSetting(SERVER, webTranscriptKey(CHANNEL), false);
   assert.equal((await get(f, `/api/conversations/${THREAD}/messages?server=${SERVER}`)).status, 403);
   assert.equal(transcriptSwitchOn(f.store, SERVER, THREAD), false);
+  // A switched-off thread is not listed. Its parent channel is listed as off.
   const list = await get(f, `/api/conversations?server=${SERVER}`);
-  assert.deepEqual(list.body.conversations, []);
+  assert.deepEqual(list.body.conversations.map((item: { id: string; enabled: boolean }) => [item.id, item.enabled]), [[OTHER, false], [CHANNEL, false]]);
   f.store.setSetting(SERVER, webTranscriptKey(CHANNEL), true);
   assert.equal((await get(f, `/api/conversations/${THREAD}/messages?server=${SERVER}`)).status, 200);
 });

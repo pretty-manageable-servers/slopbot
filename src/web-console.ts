@@ -27,6 +27,8 @@ export interface ConsoleBackend {
   invoke(user: string, server: string | undefined, channel: string, name: string, args: ToolArgs): Promise<unknown>;
   mcp?(user: string, server: string | undefined, input: unknown): Promise<unknown>;
   transcripts?(user: string, server: string): Promise<unknown>;
+  /** The signed-in user's own usage meter for one server. Members only. */
+  usage?(user: string, server: string): Promise<unknown>;
   setTranscript?(user: string, server: string, channel: string, enabled: boolean): Promise<unknown>;
   /** Live per-user view and send checks for the read and send routes. */
   access?: ChannelAccess;
@@ -154,6 +156,12 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
           if (!/^\d{17,20}$/.test(server)) return send(res, 400, { error: 'Invalid server.' });
           if (!backend.transcripts) return send(res, 404, { error: 'Not found.' });
           return send(res, 200, await backend.transcripts(session.user, server));
+        }
+        if (req.method === 'GET' && routePath === '/api/usage') {
+          const server = url.searchParams.get('server') ?? '';
+          if (!/^\d{17,20}$/.test(server)) return send(res, 400, { error: 'Invalid server.' });
+          if (!backend.usage) return send(res, 404, { error: 'Not found.' });
+          return send(res, 200, await backend.usage(session.user, server));
         }
         if (req.method === 'GET' && routePath === '/api/shares') {
           if (!backend.shares) return send(res, 404, { error: 'Not found.' });

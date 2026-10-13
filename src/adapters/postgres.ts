@@ -485,6 +485,14 @@ export class PostgresStore {
         return (await this.db.prepare("SELECT r.run_id FROM reply_runs r LEFT JOIN runs u ON u.id=r.run_id WHERE r.server=? AND r.message_id=? ORDER BY u.rowid")
             .all(server, messageId)).map(row => String(row.run_id));
     }
+    // The messages of one channel that a reply run used. Participation runs are not reply runs, so they do not count.
+    async usedSourceIds(server: string, channel: string, messageIds: readonly string[]): Promise<string[]> {
+        if (!messageIds.length) return [];
+        const marks = messageIds.map(() => "?").join(",");
+        return (await this.db.prepare(`SELECT DISTINCT s.message_id FROM run_sources s JOIN messages m ON m.server=s.server AND m.id=s.message_id
+            WHERE s.server=? AND m.channel=? AND s.message_id IN (${marks}) AND s.run_id IN (SELECT run_id FROM reply_runs WHERE server=?)`)
+            .all(server, channel, ...messageIds, server)).map(row => String(row.message_id));
+    }
     async requestRunIds(server: string, requestId: string): Promise<string[]> {
         return (await this.db.prepare("SELECT id FROM runs WHERE json_extract(message,'$.server')=? AND json_extract(message,'$.id')=? AND COALESCE(json_extract(prompt,'$.purpose'),'reply')='reply' ORDER BY rowid")
             .all(server, requestId)).map(row => String(row.id));
@@ -710,6 +718,13 @@ export class PostgresStore {
     return rows.length;
   }
 
+    // Deletes only saved messages. Memories and embeddings made from them are not changed.
+    async purgeChannelBefore(server: string, channel: string, cutoff: number): Promise<{ id: string; timestamp: number } | null> {
+        const time = "COALESCE(json_extract(body,'$.timestamp'),0)";
+        await this.db.prepare(`DELETE FROM messages WHERE server=? AND channel=? AND json_extract(body,'$.timestamp')<?`).run(server, channel, cutoff);
+        const row = await this.db.prepare(`SELECT id,${time} AS timestamp FROM messages WHERE server=? AND channel=? AND json_extract(body,'$.timestamp') IS NOT NULL ORDER BY ${time} ASC,length(id) ASC,id ASC LIMIT 1`).get(server, channel);
+        return row ? { id: String(row.id), timestamp: Number(row.timestamp) } : null;
+    }
     async purgeUnconfigured(server: string, allowed: readonly string[]): Promise<void> {
         const rows = (await this.db.prepare("SELECT id,channel FROM messages WHERE server=?").all(server));
         for (const row of rows) {
