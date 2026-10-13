@@ -16,6 +16,10 @@ import type { Job } from "../queue.js";
 import type { ToolArgs, ToolCall, ToolContext, ToolOperation } from "../tools.js";
 import type { HistoryQuery, HistoryPage } from '../search/history-search.js';
 import type { AppRecord } from '../records.js';
+import type { ConversationEvent } from '../run-events.js';
+/** Rows deleted by one retention statement, so a large prune never holds locks for long. */
+const CONVERSATION_PRUNE_BATCH = 10000;
+
 export class PostgresStore {
   async record(
     server: string,
@@ -494,6 +498,69 @@ export class PostgresStore {
         return (await this.db.prepare("SELECT kind,payload FROM events WHERE run_id=? ORDER BY sequence")
             .all(runId)).map(row => ({ kind: row.kind, payload: JSON.parse(String(row.payload)) }) as ModelEvent);
     }
+    // Web transcripts (read-only views and the live event store).
+    async conversationActivity(server: string): Promise<{ channel: string; newest: number }[]> {
+        return (await this.db.prepare("SELECT channel, MAX(COALESCE(json_extract(body,'$.timestamp'),0)) AS newest FROM messages WHERE server=? GROUP BY channel")
+            .all(server)).map(row => ({ channel: String(row.channel), newest: Number(row.newest) }));
+    }
+    async conversationMessages(server: string, channel: string, before: { time: number; id: string } | undefined, limit: number): Promise<Message[]> {
+        const rows = before
+            ? await this.db.prepare("SELECT body FROM messages WHERE server=? AND channel=? AND (COALESCE(json_extract(body,'$.timestamp'),0)<? OR (COALESCE(json_extract(body,'$.timestamp'),0)=? AND id<?)) ORDER BY COALESCE(json_extract(body,'$.timestamp'),0) DESC,id DESC LIMIT ?")
+                .all(server, channel, before.time, before.time, before.id, limit)
+            : await this.db.prepare("SELECT body FROM messages WHERE server=? AND channel=? ORDER BY COALESCE(json_extract(body,'$.timestamp'),0) DESC,id DESC LIMIT ?")
+                .all(server, channel, limit);
+        return Promise.all(rows.map(row => this.namedMessage(parseMessage(JSON.parse(String(row.body))))));
+    }
+    async replyRunIds(server: string, messageId: string): Promise<string[]> {
+        return (await this.db.prepare("SELECT r.run_id FROM reply_runs r LEFT JOIN runs u ON u.id=r.run_id WHERE r.server=? AND r.message_id=? ORDER BY u.rowid")
+            .all(server, messageId)).map(row => String(row.run_id));
+    }
+    async requestRunIds(server: string, requestId: string): Promise<string[]> {
+        return (await this.db.prepare("SELECT id FROM runs WHERE json_extract(message,'$.server')=? AND json_extract(message,'$.id')=? AND COALESCE(json_extract(prompt,'$.purpose'),'reply')='reply' ORDER BY rowid")
+            .all(server, requestId)).map(row => String(row.id));
+    }
+    async runRecord(runId: string): Promise<{ id: string; message: Message; purpose: string; status: string; result: string | null } | undefined> {
+        const row = await this.db.prepare("SELECT id,message,prompt,status,result FROM runs WHERE id=?").get(runId);
+        if (!row) return undefined;
+        return { id: String(row.id), message: parseMessage(JSON.parse(String(row.message))), purpose: String(JSON.parse(String(row.prompt)).purpose ?? "reply"), status: String(row.status), result: row.result === null ? null : String(row.result) };
+    }
+    async toolTurns(server: string, messageId: string): Promise<{ calls: ToolCall[]; results: Record<string, ToolOutput> }[]> {
+        return (await this.db.prepare("SELECT calls,results FROM agent_turns WHERE server=? AND message_id=? AND valid=1 ORDER BY sequence")
+            .all(server, messageId)).map(row => ({ calls: JSON.parse(String(row.calls)), results: JSON.parse(String(row.results)) }));
+    }
+    async appendConversationEvent(row: { server: string; channel: string; kind: string; ref: string; data: Json; createdAt: number }): Promise<number> {
+        const saved = await this.db.prepare("INSERT INTO conversation_events(server,channel,kind,ref,data,created_at) VALUES(?,?,?,?,?,?) RETURNING stream_id")
+            .get(row.server, row.channel, row.kind, row.ref, JSON.stringify(row.data), row.createdAt);
+        return Number(saved!.stream_id);
+    }
+    async latestStreamId(server: string, channel: string): Promise<number> {
+        return Number((await this.db.prepare("SELECT COALESCE(MAX(stream_id),0) AS id FROM conversation_events WHERE server=? AND channel=?").get(server, channel))!.id);
+    }
+    async conversationEventsAfter(server: string, channel: string, after: number, limit: number): Promise<ConversationEvent[]> {
+        return (await this.db.prepare("SELECT stream_id,server,channel,kind,ref,data,created_at FROM conversation_events WHERE server=? AND channel=? AND stream_id>? ORDER BY stream_id LIMIT ?")
+            .all(server, channel, after, limit)).map(row => ({ streamId: Number(row.stream_id), server: String(row.server), channel: String(row.channel), kind: String(row.kind) as ConversationEvent["kind"], ref: String(row.ref), data: JSON.parse(String(row.data)) as Json, createdAt: Number(row.created_at) }));
+    }
+    async oldestStreamId(server: string, channel: string): Promise<number | undefined> {
+        const row = (await this.db.prepare("SELECT MIN(stream_id) AS id FROM conversation_events WHERE server=? AND channel=?").get(server, channel))!;
+        return row.id === null ? undefined : Number(row.id);
+    }
+    /** Deletes rows older than olderThan, then the oldest rows beyond maxRows. Each statement deletes at most CONVERSATION_PRUNE_BATCH rows. */
+    async pruneConversationEvents(olderThan: number, maxRows: number): Promise<number> {
+        let deleted = 0;
+        for (;;) {
+            const changes = (await this.db.prepare("DELETE FROM conversation_events WHERE stream_id IN (SELECT stream_id FROM conversation_events WHERE created_at<? LIMIT ?)").run(olderThan, CONVERSATION_PRUNE_BATCH)).changes;
+            deleted += changes;
+            if (changes < CONVERSATION_PRUNE_BATCH) break;
+        }
+        let excess = Number((await this.db.prepare("SELECT COUNT(*) AS n FROM conversation_events").get())!.n) - maxRows;
+        while (excess > 0) {
+            const changes = (await this.db.prepare("DELETE FROM conversation_events WHERE stream_id IN (SELECT stream_id FROM conversation_events ORDER BY stream_id LIMIT ?)").run(Math.min(excess, CONVERSATION_PRUNE_BATCH))).changes;
+            if (!changes) break;
+            deleted += changes;
+            excess -= changes;
+        }
+        return deleted;
+    }
     async close(): Promise<void> { (await this.db.close()); }
     async finishIndexing(): Promise<void> { await this.indexTail; }
     stopIndexing(): void { this.indexingStopped = true; }
@@ -848,6 +915,10 @@ export class PostgresStore {
         const insert = this.db.prepare("INSERT OR IGNORE INTO source_dependents VALUES(?,?,?)");
         for (const source of sources.length ? sources : [sourceId])
             (await insert.run(message.server, source, message.id));
+        // Web transcripts: a Slopbot reply links to every reply run of its request.
+        const runs = new Set([...(runId ? [runId] : []), ...await this.requestRunIds(message.server, sourceId)]);
+        const link = this.db.prepare("INSERT OR IGNORE INTO reply_runs VALUES(?,?,?)");
+        for (const run of runs) (await link.run(message.server, message.id, run));
     }
     private async bumpVersion(server: string, channel: string): Promise<void> {
         (await this.db.prepare("INSERT INTO context_versions VALUES(?,?,1) ON CONFLICT(server,channel) DO UPDATE SET version=version+1")

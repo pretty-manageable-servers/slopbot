@@ -59,7 +59,9 @@ function channelRow(c) {
 function render() {
   document.querySelectorAll('[data-tab]').forEach(button => { button.classList.toggle('selected', button.dataset.tab === tab); button.setAttribute('aria-current', button.dataset.tab === tab ? 'page' : 'false'); button.onclick = () => { tab = button.dataset.tab; render(); }; });
   if (tab === 'admin' && admin) { renderAdmin(); return; }
+  if (tab !== 'conversations') closeConversation();
   if (!state.server) { $('breadcrumb').textContent = 'Settings'; $('title').textContent = 'No servers yet.'; $('description').textContent = ''; $('content').innerHTML = '<section class="card"><h2>Slopbot is not in any of your servers yet.</h2><p class="small">A server admin must invite Slopbot to a server you are in.</p></section>'; return; }
+  if (tab === 'conversations') return renderConversations();
   $('breadcrumb').textContent = `Settings / ${tab === 'profile' ? 'My profile' : tab === 'channels' ? 'Channels' : tab === 'mcp' ? 'MCP connections' : 'Server'}`;
   $('title').textContent = {server:'Make room for good ideas.',channels:'Choose where Slopbot listens.',mcp:'Connect more tools.',profile:'Introduce yourself.'}[tab];
   $('description').textContent = {server:'Set how Slopbot participates in your server.',channels:'Manage monitored channels and their history imports.',mcp:'Add remote MCP servers and choose their tools. Changes apply without restarting or redeploying Slopbot.',profile:'Your profile is public to this Discord server. You control who can edit it.'}[tab];

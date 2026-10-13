@@ -48,6 +48,7 @@ import { registerUsageTool } from "../usage-tools.js";
 import { configuredChannels, registerServerTools, webTranscriptKey, webTranscriptsEnabled } from "../server-tools.js";
 import { ChannelAccess } from "../channel-access.js";
 import { TeamAdmins, discordTeamSource } from "../team-admins.js";
+import { publishMessage, publishMessageDelete, publishTool, runEvents } from "../run-events.js";
 import { discordChannelAccessSource, wireChannelAccessEvents } from "./discord-channel-access.js";
 import { displayToolResult, ToolError, ToolRegistry, UncertainActionError, stableOperationId } from "../tools.js";
 
@@ -206,6 +207,7 @@ export class DiscordServer implements ChatGateway {
       maxOutputTokens: config.outputTokens, checkpointTokens: config.checkpointTokens, maxToolRounds: config.maxToolRounds,
     }, store, { usage, onToolActivity: async (message, activity) => {
       if (!this.bot.accepts(message.server, message.channel)) return;
+      publishTool(message, activity);
       await this.toolProgress.update(JSON.stringify([message.server,message.channel,message.id]), activity, async content => {
         const channel = await this.client.channels.fetch(message.channel);
         if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Status channel unavailable");
@@ -263,11 +265,13 @@ export class DiscordServer implements ChatGateway {
     void (async () => {
       if (!updated.guildId || !this.bot.accepts(updated.guildId, updated.channelId)) return;
       const message = updated.partial ? await updated.fetch() : updated;
-      await this.store.revise(this.normalize(message));
+      const normalized = this.normalize(message);
+      await this.store.revise(normalized);
+      if (!normalized.transient) await publishMessage(this.store, normalized).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
     })().catch(error => logError("Could not update edited message context.", error));
   }
   messageDelete(message: { guildId: string | null; channelId: string; id: string }): void {
-    if (message.guildId && this.bot.accepts(message.guildId, message.channelId)) void this.store.remove(message.guildId, message.channelId, message.id).catch(error => logError("discord_message_delete_failed", error, { messageId: message.id }));
+    if (message.guildId && this.bot.accepts(message.guildId, message.channelId)) void this.store.remove(message.guildId, message.channelId, message.id).then(() => publishMessageDelete(message.guildId!, message.channelId, message.id)).catch(error => logError("discord_message_delete_failed", error, { messageId: message.id }));
   }
   private async purgeAndIndex(): Promise<void> {
     const children = this.store.taskThreads(this.guildId).filter(task => this.channels.includes(task.parent)).map(task => task.thread);
@@ -378,6 +382,8 @@ export class DiscordServer implements ChatGateway {
   }
   private async receive(message: DiscordMessage): Promise<void> {
     if (!message.guildId || message.author.id === this.client.user?.id || !this.bot.accepts(message.guildId, message.channelId)) return;
+    const live = this.normalize(message);
+    if (!live.transient) await publishMessage(this.store, live).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
     const timingScope = { server: message.guildId, channel: message.channelId, id: message.id };
     requestTimings.begin(timingScope); requestTimings.start(timingScope, "references");
     await requestTimings.withScope(timingScope, () => this.receiveScoped(message, timingScope));
@@ -455,6 +461,9 @@ export class DiscordServer implements ChatGateway {
       outputs.push(result);
     }
     await requestTimings.wait("Discord status cleanup", () => this.toolProgress.finish(JSON.stringify([message.server,message.channel,message.id])));
+    // Web transcripts: the reply's runs are already saved, so their IDs are known now.
+    const runIds = await this.store.requestRunIds(message.server, message.id);
+    for (const output of outputs) await publishMessage(this.store, output, runIds).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
     delivered = true;
     return outputs;
     } finally {
@@ -553,6 +562,7 @@ export class DiscordServer implements ChatGateway {
   private async setTranscript(channel: string, enabled: boolean): Promise<unknown> {
     if (!this.channels.includes(channel)) throw new ToolError('Choose a channel that Slopbot serves in this server.');
     await this.store.setSetting(this.guildId, webTranscriptKey(channel), enabled);
+    runEvents.changed(this.guildId);
     return { channel, enabled };
   }
   async start(): Promise<void> { await this.mcp.restore(); }
@@ -582,6 +592,7 @@ export class DiscordAdapter {
     this.team = new TeamAdmins(discordTeamSource(this.client));
     this.access = new ChannelAccess(discordChannelAccessSource(this.client));
     wireChannelAccessEvents(this.client, this.access);
+    runEvents.attach(store);
     this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;
     this.client.once(Events.ClientReady, async client => {
       this.botUser = client.user.id;
@@ -655,6 +666,12 @@ export class DiscordAdapter {
   }
   async consoleTranscripts(user: string, guildId: string): Promise<unknown> {
     return (await this.server(user, guildId)).consoleTranscripts(user);
+  }
+  /** The channel's name for the web transcript list. Undefined when the channel is not in the server. */
+  async channelName(server: string, channel: string): Promise<string | undefined> {
+    const found = await this.client.channels.fetch(channel).catch(() => undefined);
+    if (!found || !("guildId" in found) || found.guildId !== server || !("name" in found) || typeof found.name !== "string") return undefined;
+    return found.name;
   }
   async consoleSetTranscript(user: string, guildId: string, channel: string, enabled: boolean): Promise<unknown> {
     return (await this.server(user, guildId)).consoleSetTranscript(user, channel, enabled);

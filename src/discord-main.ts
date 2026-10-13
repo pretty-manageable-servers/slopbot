@@ -11,6 +11,9 @@ import { discordStartupError } from "./startup-error.js";
 import { ProviderEmbeddings } from "./adapters/embeddings.js";
 import { consoleOptions, createConsole, type ConsoleAdmin } from './web-console.js';
 import { AdminPanel } from './admin-panel.js';
+import { createTranscripts } from './web-transcripts.js';
+import { configuredChannels } from './server-tools.js';
+import { startConversationEventRetention } from './run-events.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -23,17 +26,19 @@ async function main(): Promise<void> {
     baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.model,
     outputTokens: config.outputTokens, contextTokens: config.contextTokens,
   });
+  const retention = startConversationEventRetention(store, { days: config.conversationEventsRetentionDays, maxRows: config.conversationEventsMaxRows });
   const discord = new DiscordAdapter(config, store, llm);
   // Embedding calls are charged through the same meter as model calls.
   embeddings?.attachUsage(discord.usage);
   const panel = new AdminPanel(config, store, discord.usage.limiter);
   const admin: ConsoleAdmin = { role: user => discord.team.role(user), canEdit: user => discord.team.canEdit(user), servers: () => discord.adminServers(), setTranscript: (server, channel, enabled) => discord.adminSetTranscript(server, channel, enabled), panel };
-  const web = webOptions ? createConsole(webOptions, { snapshot: (user, server) => discord.consoleSnapshot(user, server), invoke: (user, server, channel, name, args) => discord.consoleInvoke(user, server, channel, name, args), mcp: (user, server, input) => discord.consoleMcp(user, server, input), transcripts: (user, server) => discord.consoleTranscripts(user, server), setTranscript: (user, server, channel, enabled) => discord.consoleSetTranscript(user, server, channel, enabled), access: discord.access, admin }) : undefined;
-  const shutdown = async () => { if (web?.listening) await new Promise<void>((resolve, reject) => web.close(error => error ? reject(error) : resolve())); if (store instanceof PostgresStore) store.stopIndexing(); await discord.stop(); await store.finishIndexing(); await store.close(); process.exit(0); };
+  const conversations = createTranscripts({ store, access: discord.access, configured: server => configuredChannels(config, store, server), channelName: (server, channel) => discord.channelName(server, channel) });
+  const web = webOptions ? createConsole(webOptions, { snapshot: (user, server) => discord.consoleSnapshot(user, server), invoke: (user, server, channel, name, args) => discord.consoleInvoke(user, server, channel, name, args), mcp: (user, server, input) => discord.consoleMcp(user, server, input), transcripts: (user, server) => discord.consoleTranscripts(user, server), setTranscript: (user, server, channel, enabled) => discord.consoleSetTranscript(user, server, channel, enabled), access: discord.access, admin, conversations }) : undefined;
+  const shutdown = async () => { retention(); if (web?.listening) await new Promise<void>((resolve, reject) => web.close(error => error ? reject(error) : resolve())); if (store instanceof PostgresStore) store.stopIndexing(); await discord.stop(); await store.finishIndexing(); await store.close(); process.exit(0); };
   process.once("SIGINT", () => { void shutdown().catch(error => { logError("shutdown_failed", error, { stage: "shutdown" }); process.exitCode = 1; }); });
   process.once("SIGTERM", () => { void shutdown().catch(error => { logError("shutdown_failed", error, { stage: "shutdown" }); process.exitCode = 1; }); });
   try { await discord.start(); if (web && webOptions) { await new Promise<void>((resolve, reject) => { web.once('error', reject); web.listen(webOptions.port, webOptions.host, resolve); }); console.log(`Slopbot settings: ${webOptions.origin}`); } }
-  catch (error) { await store.close(); await discord.stop(); throw new Error(discordStartupError(error), { cause: error }); }
+  catch (error) { retention(); await store.close(); await discord.stop(); throw new Error(discordStartupError(error), { cause: error }); }
 }
 
 void main().catch(error => {

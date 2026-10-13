@@ -48,6 +48,11 @@ export const webTranscriptKey = (channel: string): string => `web_transcripts:${
 export function webTranscriptsEnabled(store: Pick<ServerToolStore, "setting">, server: string, channelOrParent: string): boolean {
   return store.setting(server, webTranscriptKey(channelOrParent)) === true;
 }
+/** The switch that applies to a channel or thread: a thread uses its parent's switch. */
+export function transcriptSwitchOn(store: Pick<ServerToolStore, "setting"> & { taskThreads(server: string): { thread: string; parent: string }[] }, server: string, channel: string): boolean {
+  const parent = store.taskThreads(server).find(task => task.thread === channel)?.parent ?? channel;
+  return webTranscriptsEnabled(store, server, parent);
+}
 
 export function registerServerTools(registry: ToolRegistry, services: ServerToolServices): void {
   const { config, store, participation, history, server } = services;

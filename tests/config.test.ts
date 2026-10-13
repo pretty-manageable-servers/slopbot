@@ -37,6 +37,17 @@ test("invalid reply limits fail startup with actionable errors", () => {
   assert.throws(() => loadConfig({ ...env, JEV_MAX_REPLIES_PER_HOUR: "1001" }), /JEV_MAX_REPLIES_PER_HOUR/);
 });
 
+test("web transcript event retention defaults and limits", () => {
+  const defaults = loadConfig(env);
+  assert.equal(defaults.conversationEventsRetentionDays, 14);
+  assert.equal(defaults.conversationEventsMaxRows, 2000000);
+  const config = loadConfig({ ...env, CONVERSATION_EVENTS_RETENTION_DAYS: "30", CONVERSATION_EVENTS_MAX_ROWS: "500000" });
+  assert.equal(config.conversationEventsRetentionDays, 30);
+  assert.equal(config.conversationEventsMaxRows, 500000);
+  assert.throws(() => loadConfig({ ...env, CONVERSATION_EVENTS_RETENTION_DAYS: "0" }), /CONVERSATION_EVENTS_RETENTION_DAYS/);
+  assert.throws(() => loadConfig({ ...env, CONVERSATION_EVENTS_MAX_ROWS: "1.5" }), /CONVERSATION_EVENTS_MAX_ROWS/);
+});
+
 test('object storage uses PMServers path-style settings and requires a dedicated bucket and credentials', () => {
   assert.equal(loadConfig(env).objectStorage, undefined);
   assert.throws(() => loadConfig({ ...env, OBJECT_STORAGE_BUCKET: 'slopbot-files' }), /AWS_ACCESS_KEY_ID/);
