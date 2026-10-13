@@ -376,3 +376,24 @@ test("modelsInUse lists the reply, JEV and embedding model ids, with the PMServe
   assert.deepEqual(modelsInUse(loadConfig({ ...base, LLM_BASE_URL: "https://gateway.example.test/v1", LLM_MODEL: "chat-a", JEV_MODEL: "judge-b", EMBEDDING_MODEL: "embed-c" })), ["chat-a", "judge-b", "embed-c"]);
   assert.equal(embeddingPriceModel("https://example.test/v1", "llama.cpp/embeddinggemma-2"), "llama.cpp/embeddinggemma-2");
 });
+
+test("listUserUsage lists one server's users, highest 5-hour spend first, up to the limit", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
+  await limits.record("s", "alice", 50, 0);
+  await limits.record("s", "bob", 90, 0);
+  await limits.record("s", "dave", 10, 0);
+  await store.grantResets("s", "carol", "week", 1);
+  await limits.record("t", "erin", 999, 0);
+  assert.deepEqual((await store.listUserUsage("s", 200)).map(row => row.user), ["bob", "alice", "dave", "carol"]);
+  assert.deepEqual((await store.listUserUsage("s", 2)).map(row => row.user), ["bob", "alice"]);
+  assert.deepEqual((await store.listUserUsage("s", 200)).find(row => row.user === "carol")?.resets, { week: 1 });
+  store.close();
+});
+
+test("resetUserUsage with a kind clears only that window", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
+  await limits.record("s", "u", 5, 0);
+  await store.resetUserUsage("s", "u", "5h");
+  assert.deepEqual((await store.userUsage("s", "u")).windows.map(window => window.kind), ["week"]);
+  store.close();
+});

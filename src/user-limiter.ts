@@ -1,4 +1,4 @@
-import type { Store, UserLimitWindow } from "./ports.js";
+import type { Store, UserLimitState, UserLimitWindow } from "./ports.js";
 
 const HOUR_MS = 3600000;
 // Each window starts at the user's first spend after the previous window ended.
@@ -56,8 +56,12 @@ export class UserLimiter {
 
   /** Spend, limit, reset time and banked resets for each window. */
   async usage(server: string, user: string, now = Date.now()): Promise<UserUsageWindow[]> {
-    const state = await this.store.userUsage(server, user);
-    return (await this.states(server, user, now)).map(window => ({ kind: window.kind, spent: window.spent, limit: window.limit, resetAt: window.running ? window.windowStart + window.durationMs : null, banked: state.resets[window.kind] ?? 0 }));
+    return this.summarize(server, await this.store.userUsage(server, user), now);
+  }
+
+  /** The same view as usage, for a state the caller already read. */
+  summarize(server: string, state: UserLimitState, now = Date.now()): UserUsageWindow[] {
+    return this.windows(server, state.windows, now).map(window => ({ kind: window.kind, spent: window.spent, limit: window.limit, resetAt: window.running ? window.windowStart + window.durationMs : null, banked: state.resets[window.kind] ?? 0 }));
   }
 
   /** Uses one banked reset and clears that window. Returns false when none is banked. */
@@ -81,7 +85,11 @@ export class UserLimiter {
   }
 
   private saved(server: string, key: string, fallback: number, max = 1000000000000): number {
-    const value = this.store.setting(server, key);
-    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= max ? value : fallback;
+    return savedLimit(this.store.setting(server, key), fallback, max);
   }
+}
+
+/** A saved limit setting when it is a safe whole number in range, else the fallback. */
+export function savedLimit(value: unknown, fallback: number, max = 1000000000000): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= max ? value : fallback;
 }

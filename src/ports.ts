@@ -34,7 +34,10 @@ export interface Store {
   userUsage(server: string, user: string): Promise<UserLimitState>;
   // Changes run in one transaction per user, so every window is read and written together.
   updateUserLimits<T>(server: string, user: string, change: (windows: readonly UserLimitWindow[]) => { windows?: readonly UserLimitWindow[]; result: T }): Promise<T>;
-  resetUserUsage(server: string, user: string): Promise<void>;
+  // Clears both windows, or only the given kind.
+  resetUserUsage(server: string, user: string, kind?: string): Promise<void>;
+  // Users with counters or banked resets in one server, highest 5-hour spend first.
+  listUserUsage(server: string, limit: number): Promise<UserLimitRow[]>;
   grantResets(server: string, user: string, kind: string, count: number): Promise<void>;
   // Uses one banked reset and clears that window in the same transaction.
   useReset(server: string, user: string, kind: string): Promise<boolean>;
@@ -43,6 +46,7 @@ export interface Store {
 /** Spend in micro-dollars for one window kind, starting at windowStart. */
 export interface UserLimitWindow { kind: string; windowStart: number; spent: number }
 export interface UserLimitState { windows: readonly UserLimitWindow[]; resets: Readonly<Record<string, number>> }
+export interface UserLimitRow extends UserLimitState { user: string }
 
 export interface Transport {
   send(message: Message, reply: Reply): Promise<void>;

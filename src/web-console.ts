@@ -5,7 +5,17 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { ToolError, type ToolArgs } from './tools.js';
 import type { ChannelAccess } from './channel-access.js';
+import { AdminInputError, snowflake, type AdminPanel } from './admin-panel.js';
+import type { TeamRole } from './team-admins.js';
 
+/** Team admin backend. Roles come from the Developer Portal team; panel holds the limits, prices and usage. */
+export interface ConsoleAdmin {
+  role(user: string): Promise<TeamRole | undefined>;
+  canEdit(user: string): Promise<boolean>;
+  servers(): Promise<unknown>;
+  setTranscript(server: string, channel: string, enabled: boolean): Promise<unknown>;
+  panel: AdminPanel;
+}
 export interface ConsoleBackend {
   snapshot(user: string, server?: string): Promise<unknown>;
   invoke(user: string, server: string | undefined, channel: string, name: string, args: ToolArgs): Promise<unknown>;
@@ -14,6 +24,7 @@ export interface ConsoleBackend {
   setTranscript?(user: string, server: string, channel: string, enabled: boolean): Promise<unknown>;
   /** Live per-user view and send checks for the read and send routes. */
   access?: ChannelAccess;
+  admin?: ConsoleAdmin;
 }
 export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string }
 export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOptions | undefined {
@@ -28,12 +39,42 @@ export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOpt
 }
 const token = () => randomBytes(32).toString('hex');
 const allowed = new Set(['monitoring', 'context', 'cooldown', 'channels', 'index', 'profile', 'timing', 'tool_display']);
+/** Team admin routes. Every one needs team membership; POST also needs an editing role. */
+async function adminRoute(admin: ConsoleAdmin, user: string, method: string, path: string, query: URLSearchParams, body: unknown): Promise<unknown> {
+  const role = await admin.role(user);
+  if (!role) throw new ToolError('Team membership is required.');
+  if (method === 'POST' && !await admin.canEdit(user)) throw new ToolError('Team editor role is required.');
+  const { panel } = admin;
+  if (method === 'GET') {
+    if (path === '/api/admin/me') return { role, canEdit: await admin.canEdit(user) };
+    if (path === '/api/admin/limits') return panel.limits(query.get('server'));
+    if (path === '/api/admin/prices') return panel.prices();
+    if (path === '/api/admin/usage') return panel.usage(query.get('server'), query.get('user') ?? undefined);
+    if (path === '/api/admin/servers') return admin.servers();
+    return undefined;
+  }
+  if (path === '/api/admin/limits') return panel.saveLimits(body);
+  if (path === '/api/admin/prices') return panel.savePrice(body);
+  if (path === '/api/admin/usage/reset') return panel.resetUsage(body);
+  if (path === '/api/admin/usage/grant') return panel.grantResets(body);
+  if (path === '/api/admin/transcripts') {
+    const input = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+    if (typeof input.enabled !== 'boolean') throw new AdminInputError('Invalid web transcript setting.');
+    return admin.setTranscript(snowflake(input.server, 'server'), snowflake(input.channel, 'channel'), input.enabled);
+  }
+  return undefined;
+}
 export function createConsole(options: ConsoleOptions, backend: ConsoleBackend): Server {
   const sessions = new Map<string, { user: string; csrf: string; expires: number }>();
   const states = new Map<string, number>();
   const cookie = (name: string, value: string, age: number) => `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${options.origin.startsWith('https:') ? '; Secure' : ''}`;
   const cookies = (req: IncomingMessage) => Object.fromEntries((req.headers.cookie || '').split(';').map(part => part.trim().split('=')));
   const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
+  const admin = async (res: ServerResponse, user: string, method: string, path: string, query: URLSearchParams, body: unknown) => {
+    if (!backend.admin) return send(res, 404, { error: 'Not found.' });
+    const value = await adminRoute(backend.admin, user, method, path, query, body);
+    return value === undefined ? send(res, 404, { error: 'Not found.' }) : send(res, 200, value);
+  };
   return createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -77,6 +118,7 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
           if (server !== undefined && !/^\d{17,20}$/.test(server)) return send(res, 400, { error: 'Invalid server.' });
           return send(res, 200, { data: await backend.snapshot(session.user, server), csrf: session.csrf });
         }
+        if (req.method === 'GET' && routePath.startsWith('/api/admin/')) return await admin(res, session.user, 'GET', routePath, url.searchParams, undefined);
         if (req.method === 'GET' && routePath === '/api/web-transcripts/channels') {
           const server = url.searchParams.get('server') ?? '';
           if (!/^\d{17,20}$/.test(server)) return send(res, 400, { error: 'Invalid server.' });
@@ -85,12 +127,13 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         }
         if (req.method !== 'POST' || req.headers.origin !== new URL(options.origin).origin || req.headers['x-csrf-token'] !== session.csrf) return send(res, 403, { error: 'Invalid request.' });
         if (routePath === '/api/logout') { sessions.delete(id); res.setHeader('Set-Cookie', cookie('slopbot_session', '', 0)); return send(res, 200, { ok: true }); }
-        if (!['/api/settings', '/api/mcp', '/api/web-transcripts/channels'].includes(routePath)) return send(res, 404, { error: 'Not found.' });
+        if (!routePath.startsWith('/api/admin/') && !['/api/settings', '/api/mcp', '/api/web-transcripts/channels'].includes(routePath)) return send(res, 404, { error: 'Not found.' });
         if (!req.headers['content-type']?.startsWith('application/json')) return send(res, 415, { error: 'Send JSON.' });
         let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > (routePath === '/api/mcp' ? 65536 : 16384)) return send(res, 413, { error: 'Request too large.' }); }
         let input: { server?: string; channel?: string; name?: string; args?: ToolArgs; enabled?: boolean };
         try { input = JSON.parse(body); } catch { return send(res, 400, { error: 'Invalid JSON.' }); }
         if (input?.server !== undefined && (typeof input.server !== 'string' || !/^\d{17,20}$/.test(input.server))) return send(res, 400, { error: 'Invalid server.' });
+        if (routePath.startsWith('/api/admin/')) return await admin(res, session.user, 'POST', routePath, url.searchParams, input);
         if (routePath === '/api/mcp') {
           if (!backend.mcp) return send(res, 404, { error: 'MCP configuration is unavailable.' });
           return send(res, 200, await backend.mcp(session.user, input.server, input));
@@ -113,6 +156,7 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
       res.setHeader('Content-Type', routePath.endsWith('.js') ? 'text/javascript' : routePath.endsWith('.css') ? 'text/css' : routePath.endsWith('.svg') ? 'image/svg+xml' : routePath.endsWith('.woff2') ? 'font/woff2' : 'text/html');
       res.end(content);
     } catch (error) {
+      if (error instanceof AdminInputError) return send(res, 400, { error: error.message });
       logError('web_console_failed', error, { stage: 'web console' });
       const info = describeError(error);
       send(res, error instanceof ToolError && error.status === 'rejected' ? 403 : 502, { error: errorSummary(error), code: info.code, recovery: info.recovery });

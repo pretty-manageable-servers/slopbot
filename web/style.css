@@ -19,3 +19,7 @@
 .filter{margin:0 0 16px}
 .switch{display:flex;align-items:center;gap:8px;margin:0}.switch input{margin:0}
 @media(max-width:760px){.chan{grid-template-columns:1fr}.chan-actions{justify-content:flex-start}.chan-window input{width:100px}}
+.table-wrap{overflow-x:auto;margin:0 0 16px}table{width:100%;border-collapse:collapse}th,td{text-align:left;vertical-align:top;padding:9px 8px;border-top:1px solid var(--line)}th{font-weight:500;color:var(--muted);font-size:12px}td code{font-size:12px}td .chan-actions{justify-content:flex-start}
+.admin-user{border-top:1px solid var(--line);padding:14px 0}.admin-user p{margin:2px 0}.admin-user .chan-actions{margin-top:10px}
+.price-form{border-top:1px solid var(--line);padding-top:16px}.price-form button{margin-top:16px}
+#admin-find input{width:220px}#admin-find{margin-top:4px}

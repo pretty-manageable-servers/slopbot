@@ -6,7 +6,7 @@ import type { ToolOutput } from "../tools.js";
 import { PostgresDatabase, serializeStore } from "./postgres-database.js";
 import { randomUUID } from "node:crypto";
 import { parseMessage, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
-import type { AgentTurn, UserLimitWindow, UserLimitState } from "../ports.js";
+import type { AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow } from "../ports.js";
 import { searchTerms, type Embeddings, type Evidence, type MemoryRecord } from "../memory.js";
 import { attribution, type Attribution } from "../usage-meter.js";
 import { ToolError } from "../tools.js";
@@ -616,8 +616,15 @@ export class PostgresStore {
             return next.result;
         } catch (error) { (await this.db.exec("ROLLBACK")); throw error; }
     }
-    async resetUserUsage(server: string, user: string): Promise<void> {
-        (await this.db.prepare("DELETE FROM user_limit_counters WHERE server=? AND user_id=?").run(server, user));
+    async resetUserUsage(server: string, user: string, kind?: string): Promise<void> {
+        if (kind === undefined) (await this.db.prepare("DELETE FROM user_limit_counters WHERE server=? AND user_id=?").run(server, user));
+        else (await this.db.prepare("DELETE FROM user_limit_counters WHERE server=? AND user_id=? AND kind=?").run(server, user, kind));
+    }
+    async listUserUsage(server: string, limit: number): Promise<UserLimitRow[]> {
+        const users = await this.db.prepare("SELECT u.user_id AS uid FROM (SELECT user_id FROM user_limit_counters WHERE server=? UNION SELECT user_id FROM user_limit_resets WHERE server=?) u LEFT JOIN user_limit_counters c ON c.server=? AND c.user_id=u.user_id AND c.kind='5h' ORDER BY COALESCE(c.spent,0) DESC, u.user_id LIMIT ?").all(server, server, server, limit);
+        const rows: UserLimitRow[] = [];
+        for (const row of users) rows.push({ user: String(row.uid), ...await this.userUsage(server, String(row.uid)) });
+        return rows;
     }
     async grantResets(server: string, user: string, kind: string, count: number): Promise<void> {
         if (!Number.isSafeInteger(count) || count < 1) throw new Error("Reset count must be a positive integer");

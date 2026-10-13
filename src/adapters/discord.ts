@@ -47,10 +47,13 @@ import { createUsageMeter, type UsageMeter } from "../usage-meter.js";
 import { registerUsageTool } from "../usage-tools.js";
 import { configuredChannels, registerServerTools, webTranscriptKey, webTranscriptsEnabled } from "../server-tools.js";
 import { ChannelAccess } from "../channel-access.js";
+import { TeamAdmins, discordTeamSource } from "../team-admins.js";
 import { discordChannelAccessSource, wireChannelAccessEvents } from "./discord-channel-access.js";
 import { displayToolResult, ToolError, ToolRegistry, UncertainActionError, stableOperationId } from "../tools.js";
 
 /** Slopbot state and services for one Discord server. All servers share one client. */
+interface TranscriptChannel { id: string; name: string; enabled: boolean }
+
 export class DiscordServer implements ChatGateway {
   private readonly client: Client;
   private readonly bot: Bot;
@@ -530,11 +533,24 @@ export class DiscordServer implements ChatGateway {
   }
   async consoleTranscripts(user: string): Promise<unknown> {
     await this.assertManager(user);
-    const names = await (await this.client.guilds.fetch(this.guildId)).channels.fetch();
-    return { channels: this.channels.map(id => ({ id, name: names.get(id)?.name ?? id, enabled: webTranscriptsEnabled(this.store, this.guildId, id) })) };
+    return this.transcripts();
   }
   async consoleSetTranscript(user: string, channel: string, enabled: boolean): Promise<unknown> {
     await this.assertManager(user);
+    return this.setTranscript(channel, enabled);
+  }
+  // Team admins skip the Manage Server check. The console checks their team role before it calls these.
+  adminTranscripts(): Promise<{ channels: TranscriptChannel[] }> {
+    return this.transcripts();
+  }
+  adminSetTranscript(channel: string, enabled: boolean): Promise<unknown> {
+    return this.setTranscript(channel, enabled);
+  }
+  private async transcripts(): Promise<{ channels: TranscriptChannel[] }> {
+    const names = await (await this.client.guilds.fetch(this.guildId)).channels.fetch();
+    return { channels: this.channels.map(id => ({ id, name: names.get(id)?.name ?? id, enabled: webTranscriptsEnabled(this.store, this.guildId, id) })) };
+  }
+  private async setTranscript(channel: string, enabled: boolean): Promise<unknown> {
     if (!this.channels.includes(channel)) throw new ToolError('Choose a channel that Slopbot serves in this server.');
     await this.store.setSetting(this.guildId, webTranscriptKey(channel), enabled);
     return { channel, enabled };
@@ -557,10 +573,13 @@ export class DiscordAdapter {
   private botUser: string | undefined;
   /** Live per-user view and send checks for the web console. */
   readonly access: ChannelAccess;
+  /** Team roles of the Developer Portal team that owns the bot. Used by the console admin panel. */
+  readonly team: TeamAdmins;
 
   constructor(private readonly config: Config, private readonly store: RuntimeStore, private readonly llm: LLM, client?: Client) {
     this.usage = createUsageMeter(config, store);
     this.client = client ?? new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent], partials: [Partials.Message, Partials.Channel] });
+    this.team = new TeamAdmins(discordTeamSource(this.client));
     this.access = new ChannelAccess(discordChannelAccessSource(this.client));
     wireChannelAccessEvents(this.client, this.access);
     this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;
@@ -639,6 +658,16 @@ export class DiscordAdapter {
   }
   async consoleSetTranscript(user: string, guildId: string, channel: string, enabled: boolean): Promise<unknown> {
     return (await this.server(user, guildId)).consoleSetTranscript(user, channel, enabled);
+  }
+  /** Every server Slopbot runs in, with its web transcript switches. The console checks the team role first. */
+  async adminServers(): Promise<unknown> {
+    const servers = await Promise.all([...this.servers].map(async ([id, opening]) => ({ id, name: this.client.guilds.cache.get(id)?.name ?? id, ...await (await opening).adminTranscripts() })));
+    return { servers: servers.sort((a, b) => a.name.localeCompare(b.name)) };
+  }
+  async adminSetTranscript(guildId: string, channel: string, enabled: boolean): Promise<unknown> {
+    const opening = this.servers.get(guildId);
+    if (!opening) throw new ToolError('Slopbot is not running in that server.');
+    return (await opening).adminSetTranscript(channel, enabled);
   }
   async start(): Promise<void> { await this.client.login(this.config.discordToken); }
   async stop(): Promise<void> {

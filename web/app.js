@@ -35,7 +35,7 @@ function applySettings(result) {
   const list = state.servers || [], current = list.find(s => s.id === state.server?.id), icon = $('server-icon');
   if (state.server && !state.admin && tab === 'server') tab = 'profile';
   showScreen('console');
-  document.querySelector('nav').hidden = !state.server;
+  document.querySelector('nav').hidden = !state.server && !admin;
   $('server-pick').hidden = !list.length;
   $('server').innerHTML = list.map(s => `<option value="${esc(s.id)}"${s.id === state.server?.id ? ' selected' : ''}>${esc(s.name)}</option>`).join('');
   icon.hidden = !current?.icon; if (current?.icon) icon.src = current.icon;
@@ -58,6 +58,7 @@ function channelRow(c) {
 }
 function render() {
   document.querySelectorAll('[data-tab]').forEach(button => { button.classList.toggle('selected', button.dataset.tab === tab); button.setAttribute('aria-current', button.dataset.tab === tab ? 'page' : 'false'); button.onclick = () => { tab = button.dataset.tab; render(); }; });
+  if (tab === 'admin' && admin) { renderAdmin(); return; }
   if (!state.server) { $('breadcrumb').textContent = 'Settings'; $('title').textContent = 'No servers yet.'; $('description').textContent = ''; $('content').innerHTML = '<section class="card"><h2>Slopbot is not in any of your servers yet.</h2><p class="small">A server admin must invite Slopbot to a server you are in.</p></section>'; return; }
   $('breadcrumb').textContent = `Settings / ${tab === 'profile' ? 'My profile' : tab === 'channels' ? 'Channels' : tab === 'mcp' ? 'MCP connections' : 'Server'}`;
   $('title').textContent = {server:'Make room for good ideas.',channels:'Choose where Slopbot listens.',mcp:'Connect more tools.',profile:'Introduce yourself.'}[tab];
@@ -127,6 +128,117 @@ function renderMcp() {
     run(button, () => configure({action:button.dataset.mcpAction,id:button.dataset.mcpId}));
   }; });
 }
+let admin = null, adminServer = '', adminUser = '';
+const dollars = micros => (micros / 1000000).toFixed(2);
+const money = micros => `$${dollars(micros)}`;
+const priceText = micros => String(Number((micros / 1000000).toFixed(6)));
+const toMicros = amount => Math.round(Number(amount) * 1000000);
+const when = ms => new Date(ms).toLocaleString();
+async function loadAdmin() {
+  try { admin = await request('/api/admin/me'); } catch { admin = null; }
+  $('admin-tab').hidden = !admin;
+  if (admin) document.querySelector('nav').hidden = false;
+}
+async function adminRun(button, task) {
+  const label = button.textContent;
+  button.disabled = true; button.setAttribute('aria-busy', 'true'); button.replaceChildren(loader('sm'));
+  try { await task(); await renderAdmin(); } catch (error) { fail(error); }
+  finally { button.disabled = false; button.removeAttribute('aria-busy'); button.textContent = label; }
+}
+function adminLimits(limits, name, edit, off) {
+  return `<form class="card" id="admin-limits"><h2>Limits</h2><p class="scope">Per user, in ${esc(name)}. Zero means no limit.</p><div class="row"><label>5-hour limit ($)<input name="five" type="number" min="0" max="1000000" step="0.01" value="${dollars(limits.five_hour_cost_micros)}" required${off}></label><label>Weekly limit ($)<input name="week" type="number" min="0" max="1000000" step="0.01" value="${dollars(limits.week_cost_micros)}" required${off}></label></div><label>Grace percent<input name="grace" type="number" min="0" max="1000" step="1" value="${limits.grace_percent}" required${off}></label><p class="small">Defaults: ${money(limits.defaults.five_hour_cost_micros)} for 5 hours, ${money(limits.defaults.week_cost_micros)} for a week, ${limits.defaults.grace_percent}% grace.</p>${edit ? '<button class="primary">Save limits</button>' : ''}</form>`;
+}
+function adminPrices(prices, names, edit) {
+  const row = model => { const price = prices.prices[model], saved = prices.saved_models.includes(model); return `<tr><td><code>${esc(model)}</code></td>${price ? `<td>$${priceText(price.input)}</td><td>$${priceText(price.cached_input)}</td><td>$${priceText(price.output)}</td>` : '<td colspan="3" class="small">Fallback price</td>'}<td>${edit ? `<div class="chan-actions"><button type="button" data-price="edit" data-model="${esc(model)}">Edit</button>${saved ? `<button type="button" data-price="remove" data-model="${esc(model)}">Remove</button>` : ''}</div>` : ''}</td></tr>`; };
+  return `<section class="card"><h2>Model prices</h2><p class="scope">Dollars per 1 million tokens, for all servers. A model without a price uses the fallback: $${priceText(prices.fallback.input)} input, $${priceText(prices.fallback.cached_input)} cached input, $${priceText(prices.fallback.output)} output.</p><div class="table-wrap"><table><thead><tr><th>Model</th><th>Input</th><th>Cached input</th><th>Output</th><th></th></tr></thead><tbody>${names.map(row).join('')}</tbody></table></div>${edit ? '<form id="admin-price" class="price-form"><label>Model<input name="model" maxlength="200" required></label><div class="row"><label>Input ($ per 1M)<input name="input" type="number" min="0" max="1000" step="0.000001" required></label><label>Cached input ($ per 1M)<input name="cached" type="number" min="0" max="1000" step="0.000001" required></label></div><label>Output ($ per 1M)<input name="output" type="number" min="0" max="1000" step="0.000001" required></label><button class="primary">Save price</button></form>' : ''}</section>`;
+}
+function adminUsage(users, name, off) {
+  const row = item => {
+    const pick = kind => item.windows.find(window => window.kind === kind) ?? { spent: 0, limit: 0, resetAt: null, banked: 0 };
+    const line = (label, stat) => `<p class="small">${label}: ${money(stat.spent)} of ${stat.limit ? money(stat.limit) : 'no limit'}. ${stat.resetAt ? `Resets ${esc(when(stat.resetAt))}` : 'No window running'}. Banked resets: ${stat.banked}.</p>`;
+    const button = (action, kind, text) => `<button type="button" data-action="${action}" data-user="${esc(item.user)}" data-kind="${kind}"${off}>${text}</button>`;
+    return `<div class="admin-user"><strong>User ${esc(item.user)}</strong>${line('5 hours', pick('5h'))}${line('Week', pick('week'))}<div class="chan-actions">${button('reset', '5h', 'Reset 5h')}${button('reset', 'week', 'Reset week')}${button('grant', '5h', 'Grant 5h reset')}${button('grant', 'week', 'Grant week reset')}</div></div>`;
+  };
+  return `<section class="card"><h2>Usage</h2><p class="scope">${adminUser ? 'One user.' : `The ${users.length} users with the highest 5-hour spend in ${esc(name)}.`}</p><form id="admin-find" class="chan-window"><label>Discord user ID<input name="user" inputmode="numeric" maxlength="20" placeholder="123456789012345678"></label><button>Find user</button>${adminUser ? '<button type="button" id="admin-all">Show all users</button>' : ''}</form><div id="admin-users">${users.map(row).join('') || '<p class="small">No users have spend or banked resets in this server yet.</p>'}</div></section>`;
+}
+function adminTranscripts(servers, off) {
+  return `<section class="card"><h2>Web transcripts</h2><p class="scope">Per channel, for every server. Off by default. Discord permissions still decide who can see a transcript.</p><div id="admin-transcripts">${servers.map(server => `<p class="eyebrow">${esc(server.name)}</p><ul class="chan-list">${server.channels.map(channel => `<li class="chan"><div class="chan-info"><strong>#${esc(channel.name)}</strong></div><div class="chan-actions"><label class="switch"><input type="checkbox" data-server="${esc(server.id)}" data-channel="${esc(channel.id)}"${channel.enabled ? ' checked' : ''}${off}><span>${channel.enabled ? 'On' : 'Off'}</span></label></div></li>`).join('') || '<li class="small">Slopbot serves no channels in this server yet.</li>'}</ul>`).join('') || '<p class="small">Slopbot is not running in any server yet.</p>'}</div></section>`;
+}
+async function renderAdmin() {
+  const edit = admin.canEdit, off = edit ? '' : ' disabled';
+  $('breadcrumb').textContent = 'Settings / Team admin';
+  $('title').textContent = 'Run Slopbot for your team.';
+  $('description').textContent = 'Limits, model prices, usage and web transcripts. Read-only members can view everything.';
+  $('content').replaceChildren(busy('md', 'Loading…'));
+  try {
+    const servers = (await request('/api/admin/servers')).servers;
+    if (!servers.some(item => item.id === adminServer)) adminServer = servers.find(item => item.id === state.server?.id)?.id ?? servers[0]?.id ?? '';
+    const current = servers.find(item => item.id === adminServer), id = encodeURIComponent(adminServer);
+    const [limits, usage, prices] = await Promise.all([
+      adminServer ? request(`/api/admin/limits?server=${id}`) : null,
+      adminServer ? request(`/api/admin/usage?server=${id}${adminUser ? `&user=${encodeURIComponent(adminUser)}` : ''}`) : null,
+      request('/api/admin/prices'),
+    ]);
+    if (tab !== 'admin') return;
+    const users = !adminServer ? [] : adminUser ? [{ user: usage.user, windows: usage.windows }] : usage.users;
+    const names = [...new Set([...prices.models, ...Object.keys(prices.prices)])].sort();
+    $('content').innerHTML = [
+      `<section class="card"><label for="admin-pick">Server</label><select id="admin-pick"${servers.length ? '' : ' disabled'}>${servers.map(item => `<option value="${esc(item.id)}"${item.id === adminServer ? ' selected' : ''}>${esc(item.name)}</option>`).join('') || '<option value="">No servers yet</option>'}</select><p class="small">Limits and usage apply to the selected server. Model prices and web transcripts apply to all servers.</p></section>`,
+      limits ? adminLimits(limits, current.name, edit, off) : '<p class="small">Slopbot is not running in any server yet.</p>',
+      adminPrices(prices, names, edit),
+      adminServer ? adminUsage(users, current.name, off) : '',
+      adminTranscripts(servers, off),
+    ].join('');
+    $('admin-pick').onchange = () => { adminServer = $('admin-pick').value; adminUser = ''; renderAdmin(); };
+    if (limits && edit) $('admin-limits').onsubmit = event => {
+      event.preventDefault();
+      const form = event.target, data = new FormData(form);
+      adminRun(form.querySelector('button'), async () => { await request('/api/admin/limits', { server: adminServer, five_hour_cost_micros: toMicros(data.get('five')), week_cost_micros: toMicros(data.get('week')), grace_percent: Number(data.get('grace')) }); notice('Limits saved.'); });
+    };
+    if (edit) {
+      $('admin-price').onsubmit = event => {
+        event.preventDefault();
+        const form = event.target, data = new FormData(form);
+        adminRun(form.querySelector('button'), async () => { await request('/api/admin/prices', { model: data.get('model').trim(), input: toMicros(data.get('input')), cached_input: toMicros(data.get('cached')), output: toMicros(data.get('output')) }); notice('Price saved.'); });
+      };
+      document.querySelectorAll('[data-price="edit"]').forEach(button => { button.onclick = () => {
+        const form = $('admin-price'), price = prices.prices[button.dataset.model] ?? prices.fallback;
+        form.elements.model.value = button.dataset.model; form.elements.input.value = priceText(price.input); form.elements.cached.value = priceText(price.cached_input); form.elements.output.value = priceText(price.output);
+        form.scrollIntoView({ block: 'center' });
+      }; });
+      document.querySelectorAll('[data-price="remove"]').forEach(button => { button.onclick = () => {
+        const model = button.dataset.model;
+        if (confirm(`Remove the saved price for ${model}? The configured price applies again.`)) adminRun(button, async () => { await request('/api/admin/prices', { model, remove: true }); notice('Saved price removed.'); });
+      }; });
+    }
+    if (adminServer) {
+      $('admin-find').onsubmit = event => {
+        event.preventDefault();
+        const user = new FormData(event.target).get('user').trim();
+        if (!/^\d{17,20}$/.test(user)) return notice('Enter a Discord user ID of 17 to 20 digits.');
+        adminUser = user; renderAdmin();
+      };
+      if ($('admin-all')) $('admin-all').onclick = () => { adminUser = ''; renderAdmin(); };
+      $('admin-users').onclick = event => {
+        const button = event.target.closest('button[data-action]');
+        if (!button) return;
+        const { action, user, kind } = button.dataset, label = kind === '5h' ? '5-hour' : 'weekly';
+        adminRun(button, async () => {
+          if (action === 'reset') { await request('/api/admin/usage/reset', { server: adminServer, user, kind }); notice(`The ${label} window is cleared for ${user}.`); }
+          else { await request('/api/admin/usage/grant', { server: adminServer, user, kind, count: 1 }); notice(`Granted one ${label} reset to ${user}.`); }
+        });
+      };
+    }
+    $('admin-transcripts').onchange = async event => {
+      const box = event.target;
+      if (!box.dataset.channel) return;
+      box.disabled = true;
+      try { const result = await request('/api/admin/transcripts', { server: box.dataset.server, channel: box.dataset.channel, enabled: box.checked }); box.nextElementSibling.textContent = result.enabled ? 'On' : 'Off'; notice(`Web transcripts ${result.enabled ? 'on' : 'off'} for this channel.`); }
+      catch (error) { box.checked = !box.checked; fail(error); }
+      finally { box.disabled = false; }
+    };
+  } catch (error) { fail(error); }
+}
 $('server').onchange = async () => {
   const select = $('server'), id = select.value;
   select.disabled = true; $('content').replaceChildren(busy('md', 'Loading…'));
@@ -143,5 +255,6 @@ async function boot() {
   try { result = await settingsFor(remembered); }
   catch (error) { if (!remembered || error.status === 401) throw error; result = await settingsFor(); }
   applySettings(result);
+  await loadAdmin();
 }
 boot().catch(error => { if (error.status === 401) showScreen('login'); else { showScreen('none'); notice(error.message); } });
