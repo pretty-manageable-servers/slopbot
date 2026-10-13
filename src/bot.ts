@@ -7,6 +7,7 @@ import type { Message } from "./domain.js";
 import type { Store } from "./ports.js";
 import type { Knowledge } from "./memory.js";
 import type { TaskWorker, QueueStore } from "./queue.js";
+import { DEFAULT_BOT_REPLY_LIMIT, type BotReplyLimit } from "./bot-reply-limit.js";
 import { ToolError, discordOnlyMessage, type ToolCall, type ToolRegistry, type ToolResult } from "./tools.js";
 import type { ParticipationGate } from "./participation.js";
 import { UserLimitError, limitReply } from "./user-limiter.js";
@@ -31,9 +32,6 @@ export interface TaskRegistry {
   taskThreads(server: string): { thread: string; parent: string }[];
 }
 
-const BOT_REPLY_LIMIT = 3;
-const BOT_REPLY_WINDOW_MS = 10 * 60 * 1000;
-
 export class Bot {
   private readonly tasks = new Set<string>();
   /** Times of recent replies to other bots, per channel. Stops bot-to-bot loops. */
@@ -49,7 +47,7 @@ export class Bot {
     private readonly gateway: ChatGateway,
     private readonly server: string,
     private channels: readonly string[],
-    private readonly options: { knowledge?: Knowledge; participation?: ParticipationGate; worker?: TaskWorker; tools?: ToolRegistry; queueStore?: QueueStore; profiles?: ProfileStore } = {},
+    private readonly options: { knowledge?: Knowledge; participation?: ParticipationGate; worker?: TaskWorker; tools?: ToolRegistry; queueStore?: QueueStore; profiles?: ProfileStore; botReplyLimit?: () => BotReplyLimit } = {},
   ) {
     for (const task of registry.taskThreads(server)) {
       if (channels.includes(task.parent)) {
@@ -180,11 +178,12 @@ export class Bot {
     return stopped;
   }
 
-  /** True when Slopbot may answer one more bot message in this channel: at most BOT_REPLY_LIMIT in BOT_REPLY_WINDOW_MS. */
+  /** True when Slopbot may answer one more bot message in this channel. The team sets the limit in Bot admin. */
   private allowBotReply(channel: string): boolean {
+    const limit = this.options.botReplyLimit?.() ?? DEFAULT_BOT_REPLY_LIMIT;
     const now = Date.now();
-    const recent = (this.botReplies.get(channel) ?? []).filter(at => now - at < BOT_REPLY_WINDOW_MS);
-    if (recent.length >= BOT_REPLY_LIMIT) { this.botReplies.set(channel, recent); return false; }
+    const recent = (this.botReplies.get(channel) ?? []).filter(at => now - at < limit.minutes * 60_000);
+    if (recent.length >= limit.replies) { this.botReplies.set(channel, recent); return false; }
     recent.push(now); this.botReplies.set(channel, recent);
     return true;
   }

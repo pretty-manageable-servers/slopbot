@@ -1,3 +1,5 @@
+import { BOT_REPLY_LIMIT_KEY, MAX_BOT_REPLIES, MAX_BOT_REPLY_MINUTES, botReplyLimit } from "./bot-reply-limit.js";
+import { GLOBAL_SETTINGS_SCOPE } from "./usage-cost.js";
 import { isPrivateChannel } from "./private-chat.js";
 import type { Config } from "./config.js";
 import { selfKnowledgeTool } from "./self-knowledge.js";
@@ -70,6 +72,16 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
   });
   add({ name: "tool_display", scope: "discord", description: "Choose tool activity in completed replies: none, summary (one grey line with counts), or full (counts plus failed calls).", fields: { mode: { ...choice("Tool activity display", ["none", "summary", "full"]), required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
     async execute(_context, args) { await store.setSetting(server, "tool_display", args.mode!); return `Tool activity display set to ${args.mode}. Live progress remains enabled.`; }
+  });
+  add({ name: "bot_replies", description: "Read or set how often Slopbot answers other bots in one channel (for all servers). replies=0 means never answer bots. Only the Slopbot team can set it. Use it when the team asks Slopbot to stop or limit replies to bots.", fields: { action: { ...choice("get or set", ["get", "set"]), required: true }, replies: integer("Most replies to bots in the window", MAX_BOT_REPLIES, false), minutes: integer("Window length in minutes", MAX_BOT_REPLY_MINUTES, false, 1) }, access: "member", effect: "write", execution: "inline", retrySafe: true,
+    async execute(context, args) {
+      const current = botReplyLimit(store.setting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY));
+      if (args.action !== "set") return `Slopbot answers other bots at most ${current.replies} times in ${current.minutes} minutes per channel.`;
+      if (!await services.isTeamEditor(context.message.author)) throw new ToolError("Only the Slopbot team can change replies to bots.");
+      const next = botReplyLimit({ replies: args.replies ?? current.replies, minutes: args.minutes ?? current.minutes });
+      await store.setSetting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY, next as unknown as Json);
+      return next.replies === 0 ? "Slopbot now does not answer other bots." : `Slopbot now answers other bots at most ${next.replies} times in ${next.minutes} minutes per channel.`;
+    }
   });
   add(selfKnowledgeTool(registry, services.isTeamEditor, () => `Native function calling: enabled\nObject storage: ${config.objectStorage ? "configured" : "not configured"}; file_store scopes user/server/user_server, with ownership and sharing controls\nTool rounds per attempt: ${config.maxToolRounds}\nPMServers docs reviewed: 2026-10-12; latest changelog: 2026-10-12`));
   const scoped = async (message: Message, target: Json | undefined): Promise<string> => {
