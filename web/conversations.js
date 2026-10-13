@@ -91,28 +91,43 @@ async function fetchChats(id) {
 
 async function loadConversations() {
   const id = state.server.id;
-  // A failed chat list (for example a 404 before the server routes exist) leaves the Private chats group empty. The channels still load.
-  const chats = fetchChats(id).catch(error => { if (error.status === 401) throw error; return []; });
   const run = conv.loadRun = (conv.loadRun || 0) + 1;
-  const [result, privateChats] = await Promise.all([request(`/api/conversations?server=${enc(id)}`), chats]);
-  // A newer load has started, so only that one may choose the view.
-  if (run !== conv.loadRun || conv.server !== id || !$('conv-list')) return;
-  conv.list = result.conversations;
+  const stale = () => run !== conv.loadRun || conv.server !== id || !$('conv-list');
+  // Private chats show first. The channel and thread list loads beside them and fills in later.
+  conv.listLoading = true;
+  const channels = request(`/api/conversations?server=${enc(id)}`);
+  channels.catch(() => {});
+  // A failed chat list (for example a 404 before the server routes exist) leaves the Private chats group empty. The channels still load.
+  const privateChats = await fetchChats(id).catch(error => { if (error.status === 401) throw error; return []; });
+  if (stale()) return;
   conv.chats = conv.ask && conv.ask.server === id && !privateChats.some(c => c.id === conv.ask.chat) ? [{ id: conv.ask.chat, title: '', updated: Date.now() }, ...privateChats] : privateChats;
   drawList();
   // A chat or channel named in the URL opens first. An id that is not listed falls back to the default view.
   const item = takeHashItem();
-  const named = item && (item.kind === 'chat' ? conv.chats : conv.list).find(c => c.id === item.id);
-  if (named) return openConversation(named.id, item.kind, true);
+  const openChat = chatId => openConversation(chatId, 'chat', true).catch(fail);
+  const wantsChannel = (item && item.kind === 'channel') || (conv.channel && conv.kind !== 'chat');
+  if (item && item.kind === 'chat' && conv.chats.some(c => c.id === item.id)) openChat(item.id);
+  else if (!item && conv.channel && conv.kind === 'chat' && conv.chats.some(c => c.id === conv.channel)) openChat(conv.channel);
+  else if (!wantsChannel) {
+    if (item) history.replaceState(null, '', '#chat');
+    else if (!location.hash) history.replaceState(null, '', '#chat');
+    openBlankChat();
+  }
+  const before = { channel: conv.channel, blank: conv.blank };
+  let result;
+  try { result = await channels; } catch (error) { if (!stale()) { conv.listLoading = false; drawList(); } throw error; }
+  if (stale()) return;
+  conv.list = result.conversations;
+  conv.listLoading = false;
+  drawList();
+  if (!wantsChannel) return;
+  // The user chose something else while the channels loaded, so the view stays.
+  if (conv.channel !== before.channel || conv.blank !== before.blank) return;
+  const named = item && item.kind === 'channel' && conv.list.find(c => c.id === item.id);
+  if (named) return openConversation(named.id, 'channel', true);
   if (item) history.replaceState(null, '', '#chat');
-  if (conv.channel && conv.kind === 'chat' && conv.chats.some(c => c.id === conv.channel)) return openConversation(conv.channel, 'chat', true);
   if (conv.channel && conv.kind !== 'chat' && conv.list.some(c => c.id === conv.channel)) return openConversation(conv.channel, 'channel', true);
-  // Opens the newest channel that is on. A channel that is off is opened only when nothing else is listed.
-  const first = conv.list.find(c => c.enabled !== false) || conv.list[0];
-  if (first) return openConversation(first.id, 'channel', true);
-  // With no conversation to view, the default view falls back to Settings.
-  if (viewAuto) return fallbackToSettings();
-  showView(emptyNote('No conversations yet.', 'Turn on web transcripts for a channel in Server settings → Web transcripts.'));
+  openBlankChat();
 }
 
 // The list starts with New chat. Then come Private chats, Channels and Threads.
@@ -127,6 +142,7 @@ function drawList() {
     const items = conv.list.filter(c => (c.kind === 'thread' ? 'thread' : 'channel') === kind);
     if (items.length) groups.push([title, items.map(convItem)]);
   }
+  if (conv.listLoading && !conv.list.length) groups.push(['Channels', [1, 2, 3].map(() => textNode('div', '', 'chat-skel'))]);
   if (!groups.length) { list.append(textNode('p', 'Nothing to show yet.', 'small chat-none')); return; }
   for (const [title, nodes] of groups) {
     const group = document.createElement('section');

@@ -288,6 +288,7 @@ function render() {
   if (tab !== 'conversations') closeConversation();
   if (!state.server) { $('breadcrumb').textContent = 'Settings'; $('title').textContent = 'No servers yet.'; $('description').textContent = ''; $('content').innerHTML = '<section class="card"><h2>Slopbot is not in any of your servers yet.</h2><p class="small">A server admin must invite Slopbot to a server you are in.</p></section>'; return; }
   if (tab === 'conversations') return renderConversations();
+  if (state.partial) { $('breadcrumb').textContent = 'Settings'; $('content').replaceChildren(busy('md', 'Loading…')); return; }
   $('breadcrumb').textContent = `Settings / ${tab === 'profile' ? 'My profile' : tab === 'channels' ? 'Channels' : tab === 'mcp' ? 'MCP connections' : 'Server'}`;
   $('title').textContent = {server:'Make room for good ideas.',channels:'Choose where Slopbot listens.',mcp:'Connect more tools.',profile:'Introduce yourself.'}[tab];
   $('description').textContent = {server:'Set how Slopbot participates in your server.',channels:'Manage monitored channels and saved chat history. Only saved lessons and memories use embeddings.',mcp:'Add remote MCP servers and choose their tools. Changes apply without restarting or redeploying Slopbot.',profile:'Your profile is public to this Discord server. You control who can edit it.'}[tab];
@@ -525,15 +526,45 @@ $('server').onchange = async () => {
 $('server-icon').onerror = () => { $('server-icon').hidden = true; };
 $('brand').onclick = event => { if ($('console').hidden) return; event.preventDefault(); tab = state.admin ? 'server' : 'profile'; render(); window.scrollTo(0, 0); };
 $('logout').onclick = async () => { try { await request('/api/logout',{}); location.reload(); } catch (error) { notice(error.message, true); } };
+// The page starts from the light /api/session answer: the user, the server list and the admin flag of each server.
+// The chat view shows at once. The full snapshot (channels, settings, profile) and the admin data load in the background.
 async function boot() {
   if (/^#ask=/.test(location.hash)) takeAsk();
   const remembered = recall('slopbot-server');
-  let result;
-  try { result = await settingsFor(remembered); }
-  catch (error) { if (!remembered || error.status === 401) throw error; result = await settingsFor(); }
-  applySettings(result);
-  await loadAdmin();
+  let session;
+  try { session = await request('/api/session'); }
+  catch (error) { if (error.status !== 404) throw error; }
+  if (!session) {
+    // A backend without the light route: wait for the full snapshot.
+    let result;
+    try { result = await settingsFor(remembered); }
+    catch (error) { if (!remembered || error.status === 401) throw error; result = await settingsFor(); }
+    applySettings(result);
+    await loadAdmin();
+    await resumeAsk();
+    return;
+  }
+  const servers = session.servers || [], current = servers.find(s => s.id === remembered) || servers[0];
+  applySettings({ csrf: session.csrf, data: { user: session.user, servers, server: current ? { id: current.id, name: current.name } : null, admin: Boolean(current?.admin), channels: [], partial: true } });
+  const full = current ? settingsFor(current.id) : undefined;
+  loadAdmin();
+  const id = current?.id;
+  full?.then(result => {
+    // The user may have switched server meanwhile. That switch loads its own snapshot.
+    if (!state.partial || state.server?.id !== id) return;
+    finishSettings(result);
+  }).catch(fail);
   await resumeAsk();
+}
+// The full snapshot arrives after the light start. The open chat is not drawn again. A settings tab waiting for it is.
+function finishSettings(result) {
+  csrf = result.csrf; state = result.data;
+  const current = (state.servers || []).find(s => s.id === state.server?.id);
+  if (current?.icon) { $('server-icon').src = current.icon; $('server-icon').hidden = false; }
+  $('role').textContent = current ? (state.admin ? 'Admin' : 'Member') : '';
+  document.querySelector('nav').hidden = !state.server && !admin;
+  renderAccount();
+  if (tab !== 'conversations') render();
 }
 boot().catch(error => { if (error.status === 401) { showScreen('login'); if (takeAsk()) notice('Sign in with Discord to send your question to Slopbot.'); } else { showScreen('none'); notice(error.message, true); } });
 

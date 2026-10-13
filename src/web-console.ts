@@ -29,6 +29,8 @@ export interface ConsoleBackend {
   snapshot(user: string, server?: string): Promise<unknown>;
   /** True when the user shares at least one server with Slopbot. Throws when Discord cannot answer, so callers fail closed. */
   canSignIn(user: string): Promise<boolean>;
+  /** The servers the user and Slopbot share, with the user's admin flag. Cached. Light: no channel or settings data. */
+  servers?(user: string): Promise<{ id: string; name: string; icon: string | null; admin: boolean }[]>;
   invoke(user: string, server: string | undefined, channel: string, name: string, args: ToolArgs): Promise<unknown>;
   mcp?(user: string, server: string | undefined, input: unknown): Promise<unknown>;
   transcripts?(user: string, server: string): Promise<unknown>;
@@ -232,6 +234,11 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
             try { chatBody = text ? JSON.parse(text) : {}; } catch { return send(res, 400, { error: 'Invalid JSON.' }); }
           }
           return void await backend.chats.handle(req, res, url, session.user, chatBody);
+        }
+        if (req.method === 'GET' && routePath === '/api/session' && backend.servers) {
+          // The light start of the page: who signs in, the CSRF token and the server list. No channel or settings data.
+          if (!(await backend.canSignIn(session.user))) { await sessions.deleteSession(session.hash); res.setHeader('Set-Cookie', cookie('slopbot_session', '', 0)); return send(res, 401, { error: 'Sign in with Discord to continue.' }); }
+          return send(res, 200, { user: session.user, servers: await backend.servers(session.user), csrf: session.csrf });
         }
         if (req.method === 'GET' && routePath === '/api/settings') {
           const server = url.searchParams.get('server') ?? undefined;
