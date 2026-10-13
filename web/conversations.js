@@ -1858,7 +1858,8 @@ function chatComposer(id) {
         failPending(pending, text, shown, response.status === 429 ? `Limit reached, resets ${new Date(data.resetAt).toLocaleString()}.` : (data.error || 'Message failed.'));
         return;
       }
-      made = null;
+      // The chat has a saved message now, so it is this composer's chat. Later sends use it and do not make a new chat.
+      if (!id) { id = chatId; made = null; }
       // The stream may have shown the saved message already. Otherwise the pending bubble takes the saved id.
       if (pending.isConnected) { pending.classList.remove('pending'); pending.dataset.id = data.id; delete pending.dataset.pending; }
       if (conv.ask && conv.ask.chat === chatId) conv.ask = null;
@@ -1974,12 +1975,12 @@ function paintUsage(meter, data) {
 
 // Uses one banked reset on a window. The button shows how many are banked.
 function resetButton(meter, item) {
-  const label = item.kind === '5h' ? '5-hour' : 'weekly';
+  const label = item.kind === '5h' ? '5-hour' : 'full';
   const button = textNode('button', `Use a ${label} reset (${item.banked} left)`, 'chat-usage-reset');
   button.type = 'button';
   button.onclick = async event => {
     event.stopPropagation();
-    if (!await askConfirm({ title: `Use a ${label} reset?`, body: `Your ${label} usage goes back to 0%.`, confirmLabel: 'Use reset' })) return;
+    if (!await askConfirm({ title: `Use a ${label} reset?`, body: item.kind === '5h' ? 'Your 5-hour usage goes back to 0%.' : 'Your 5-hour and weekly usage go back to 0%.', confirmLabel: 'Use reset' })) return;
     button.disabled = true;
     try {
       const data = await request('/api/usage/reset', { server: state.server.id, kind: item.kind });

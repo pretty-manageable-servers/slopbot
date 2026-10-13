@@ -914,7 +914,9 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       const row = this.db.prepare("SELECT count FROM user_limit_resets WHERE server=? AND user_id=? AND kind=?").get(server, user, kind);
       if (!row || Number(row.count) < 1) { this.db.exec("COMMIT"); return false; }
       this.db.prepare("UPDATE user_limit_resets SET count=count-1 WHERE server=? AND user_id=? AND kind=?").run(server, user, kind);
-      this.db.prepare("DELETE FROM user_limit_counters WHERE server=? AND user_id=? AND kind=?").run(server, user, kind);
+      // A week reset is a full reset: it clears the 5-hour window too.
+      if (kind === "week") this.db.prepare("DELETE FROM user_limit_counters WHERE server=? AND user_id=?").run(server, user);
+      else this.db.prepare("DELETE FROM user_limit_counters WHERE server=? AND user_id=? AND kind=?").run(server, user, kind);
       this.db.exec("COMMIT");
       return true;
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }

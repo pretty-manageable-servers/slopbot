@@ -33,6 +33,8 @@ export interface ServerToolServices {
   startTask(message: Message, goal: string): Promise<string>;
   reconcileTask(message: Message): Promise<string | undefined>;
   wakeWorker(): void;
+  // True for a member of the Developer Portal team that owns Slopbot (owner, admin or developer).
+  isTeamEditor(user: string): Promise<boolean>;
 }
 const channel: ToolField = { type: "channel", description: "Discord channel ID; defaults to the current channel" };
 const choice = (description: string, choices: string[]): ToolField => ({ type: "string", description, choices });
@@ -69,18 +71,13 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
   add({ name: "tool_display", scope: "discord", description: "Choose tool activity in completed replies: none, summary (one grey line with counts), or full (counts plus failed calls).", fields: { mode: { ...choice("Tool activity display", ["none", "summary", "full"]), required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
     async execute(_context, args) { await store.setSetting(server, "tool_display", args.mode!); return `Tool activity display set to ${args.mode}. Live progress remains enabled.`; }
   });
-  add(selfKnowledgeTool(registry, () => `Native function calling: enabled\nObject storage: ${config.objectStorage ? "configured" : "not configured"}; file_store scopes user/server/user_server, with ownership and sharing controls\nTool rounds per attempt: ${config.maxToolRounds}\nPMServers docs reviewed: 2026-10-12; latest changelog: 2026-10-12\nReply model: ${config.model}\nParticipation model: ${config.jevModel}\nMock mode: ${config.mock}\nDatabase adapter: ${config.databaseUrl ? "PostgreSQL/pgvector" : "SQLite"}\nMonitoring enabled: ${participation.options.enabled}\nEmbeddings enabled: ${config.embeddingsEnabled && !config.mock}; model: ${config.embeddingModel}\nContext budget: ${config.contextTokens}; output reserve: ${config.outputTokens}\nReply context messages: ${store.setting(server, "reply_context") ?? config.replyContextMessages}`));
+  add(selfKnowledgeTool(registry, services.isTeamEditor, () => `Native function calling: enabled\nObject storage: ${config.objectStorage ? "configured" : "not configured"}; file_store scopes user/server/user_server, with ownership and sharing controls\nTool rounds per attempt: ${config.maxToolRounds}\nPMServers docs reviewed: 2026-10-12; latest changelog: 2026-10-12`));
   const scoped = async (message: Message, target: Json | undefined): Promise<string> => {
     const id = target === undefined ? (await services.originMessage(message)).channel : String(target);
     if (!services.accepts(id)) throw new ToolError("That channel is not configured for Slopbot.");
     await services.validateChannel(message, id);
     return id;
   };
-  add({ name: "status", description: "Show models, context budgets, cache usage and monitored channels", fields: {}, access: "admin", effect: "read", retrySafe: true,
-    async execute() {
-      const usage = await store.llmUsage(server);
-      return `Reply model: ${config.model}\nJEV model: ${config.jevModel}\nMonitoring: ${participation.options.enabled}\nJEV context: ${participation.options.contextMessages} messages\nReply context: ${store.setting(server, "reply_context") ?? config.replyContextMessages} messages\nUnsolicited limits per channel: ${participation.options.cooldownMs / 1000}s, ${participation.options.maxUnsolicitedPerHour}/hour\nChannels: ${services.channels().map(id => `<#${id}>`).join(", ") || "none"}\nContext: ${config.contextTokens} token budget, ${config.outputTokens} reserved for output; conservative UTF-8 byte counter\nEmbeddings: ${config.embeddingsEnabled && !config.mock}; saved lesson/memory semantic search; chat uses SQL keywords\nLLM reported usage: ${usage.input} input, ${usage.output} output, ${usage.cached} cached input tokens from ${usage.requests} usage events. Missing provider usage is not inferred.`;
-    } });
   add({ name: "monitoring", scope: "discord", description: "Enable or disable JEV monitoring", fields: { enabled: { type: "boolean", description: "Whether JEV monitors unaddressed messages", required: true } }, access: "admin", effect: "write", retrySafe: true,
     async execute(_context, args) {
       await store.setSetting(server, "monitoring", args.enabled!);
