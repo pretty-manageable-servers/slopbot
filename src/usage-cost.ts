@@ -44,12 +44,18 @@ export function activePrices(saved: unknown, defaults: PriceTable): PriceTable {
   return { ...defaults, ...Object.fromEntries(valid) };
 }
 
-/** Cost in micro-dollars of one model call. Rounds up, so any real usage costs at least 1. */
-export function usageCostMicros(usage: unknown, model: string, prices: PriceTable, fallback: ModelPrice): number {
+/** Token counts of one model call. input is the uncached prompt; cached is the cached part of the prompt. */
+export function usageTokens(usage: unknown): { input: number; output: number; cached: number } {
   const tokens = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
   const value = (usage && typeof usage === "object" ? usage : {}) as { prompt_tokens?: unknown; completion_tokens?: unknown; prompt_tokens_details?: { cached_tokens?: unknown } };
   const prompt = tokens(value.prompt_tokens), completion = tokens(value.completion_tokens);
   const cached = Math.min(prompt, tokens(value.prompt_tokens_details?.cached_tokens));
+  return { input: prompt - cached, output: completion, cached };
+}
+
+/** Cost in micro-dollars of one model call. Rounds up, so any real usage costs at least 1. */
+export function usageCostMicros(usage: unknown, model: string, prices: PriceTable, fallback: ModelPrice): number {
+  const { input, output, cached } = usageTokens(usage);
   const price = prices[model] ?? fallback;
-  return Math.ceil(((prompt - cached) * price.input + cached * price.cached_input + completion * price.output) / 1000000);
+  return Math.ceil((input * price.input + cached * price.cached_input + output * price.output) / 1000000);
 }

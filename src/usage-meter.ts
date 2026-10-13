@@ -2,9 +2,10 @@ import type { Config } from "./config.js";
 import { ByteTokenCounter, DEFAULT_OUTPUT_TOKENS } from "./context.js";
 import { promptItems, type Json, type Message, type ModelEvent, type Prompt } from "./domain.js";
 import { embeddingPriceModel } from "./adapters/embeddings.js";
-import type { LLM } from "./ports.js";
+import { logError } from "./errors.js";
+import type { LLM, Store } from "./ports.js";
 import { UserLimiter, type UserLimitStore } from "./user-limiter.js";
-import { activePrices, GLOBAL_SETTINGS_SCOPE, usageCostMicros, type ModelPrice, type PriceTable } from "./usage-cost.js";
+import { activePrices, GLOBAL_SETTINGS_SCOPE, usageCostMicros, usageTokens, type ModelPrice, type PriceTable } from "./usage-cost.js";
 
 /** The user who pays for a model call: the author of the message that caused it. */
 export interface Attribution { server: string; user: string }
@@ -27,14 +28,23 @@ export function promptEstimate(prompt: Prompt, outputTokens: number): Json {
   return { prompt_tokens: counter.count(promptItems(prompt)) + tools, completion_tokens: prompt.maxOutputTokens ?? outputTokens };
 }
 
+export type UsageStore = UserLimitStore & Pick<Store, "addTokenTotals">;
+
 /** Charges model calls to users. Prices come from the saved settings over the configured table. */
 export class UsageMeter {
-  constructor(readonly limiter: UserLimiter, private readonly prices: () => PriceTable, private readonly fallback: ModelPrice) {}
+  constructor(readonly limiter: UserLimiter, private readonly prices: () => PriceTable, private readonly fallback: ModelPrice, private readonly totals?: Pick<Store, "addTokenTotals">) {}
 
-  /** Adds one model call's cost, priced with the given model id. Nothing is charged without a payer. */
+  /** Adds one model call's cost, priced with the given model id, and counts its tokens in the lifetime totals. Nothing is charged without a payer. */
   async record(who: Attribution | undefined, model: string, usage: Json): Promise<void> {
     if (!who) return;
-    await this.limiter.record(who.server, who.user, usageCostMicros(usage, model, this.prices(), this.fallback));
+    const costMicros = usageCostMicros(usage, model, this.prices(), this.fallback);
+    await this.limiter.record(who.server, who.user, costMicros);
+    // Totals are for stats only. A failed write is logged and never fails the user's request.
+    try {
+      await this.totals?.addTokenTotals(who.server, who.user, model, { ...usageTokens(usage), costMicros }, Date.now());
+    } catch (error) {
+      logError("token_totals_record_failed", error, { stage: "token totals", server: who.server });
+    }
   }
 
   /** True when the payer is past the grace limit. Bot work has no payer, so it is never stopped here. */
@@ -64,7 +74,7 @@ export function modelsInUse(config: Pick<Config, "model" | "jevModel" | "embeddi
 }
 
 /** Builds the one meter for the process. Limits and prices come from the config and the saved settings. */
-export function createUsageMeter(config: Config, store: UserLimitStore): UsageMeter {
+export function createUsageMeter(config: Config, store: UsageStore): UsageMeter {
   const limiter = new UserLimiter(store, { fiveHourCostMicros: config.userLimit5hCostMicros, weekCostMicros: config.userLimitWeekCostMicros, gracePercent: config.userLimitGracePercent });
-  return new UsageMeter(limiter, () => activePrices(store.setting(GLOBAL_SETTINGS_SCOPE, "model_prices"), config.modelPrices), config.fallbackPrice);
+  return new UsageMeter(limiter, () => activePrices(store.setting(GLOBAL_SETTINGS_SCOPE, "model_prices"), config.modelPrices), config.fallbackPrice, store);
 }
