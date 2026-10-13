@@ -1,5 +1,6 @@
 import { contextChangedError, legacyToolProgress, sourceFingerprint, type ContextChange } from "../source-context.js";
 import { logError } from "../errors.js";
+import { promptInventory, saveRunRuntime } from '../run-diagnostics.js';
 // PostgreSQL implementation of the existing persistence contract.
 import type { HarnessState, HarnessEvent } from "../harness-state.js";
 import type { ToolOutput } from "../tools.js";
@@ -467,6 +468,7 @@ export class PostgresStore {
     async startRun(runId: string, message: Message, prompt: Prompt): Promise<void> {
         (await this.db.prepare("INSERT INTO runs(id,message,prompt,status,result,context_version) VALUES(?,?,?,?,NULL,?)")
             .run(runId, JSON.stringify(message), JSON.stringify(prompt), "running", await (await this.contextVersion(message.server, message.channel))));
+        await saveRunRuntime(this, message.server, runId);
     }
     async appendEvent(runId: string, sequence: number, event: ModelEvent): Promise<void> {
         (await this.db.prepare("INSERT INTO events VALUES(?,?,?,?)")
@@ -576,10 +578,10 @@ export class PostgresStore {
         return (await this.db.prepare("SELECT id FROM runs WHERE json_extract(message,'$.server')=? AND json_extract(message,'$.id')=? AND COALESCE(json_extract(prompt,'$.purpose'),'reply')='reply' ORDER BY rowid")
             .all(server, requestId)).map(row => String(row.id));
     }
-    async runRecord(runId: string): Promise<{ id: string; message: Message; purpose: string; status: string; result: string | null } | undefined> {
+    async runRecord(runId: string): Promise<import('../web-transcripts.js').TranscriptRun | undefined> {
         const row = await this.db.prepare("SELECT id,message,prompt,status,result FROM runs WHERE id=?").get(runId);
         if (!row) return undefined;
-        return { id: String(row.id), message: parseMessage(JSON.parse(String(row.message))), purpose: String(JSON.parse(String(row.prompt)).purpose ?? "reply"), status: String(row.status), result: row.result === null ? null : String(row.result) };
+        return { id: String(row.id), message: parseMessage(JSON.parse(String(row.message))), purpose: String(JSON.parse(String(row.prompt)).purpose ?? "reply"), status: String(row.status), result: row.result === null ? null : String(row.result), context: promptInventory(JSON.parse(String(row.prompt))) };
     }
     async toolTurns(server: string, messageId: string): Promise<{ calls: ToolCall[]; results: Record<string, ToolOutput> }[]> {
         return (await this.db.prepare("SELECT calls,results FROM agent_turns WHERE server=? AND message_id=? AND valid=1 ORDER BY sequence")

@@ -30,7 +30,7 @@ export function redactErrorText(text: string): string {
     .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[redacted]@')
     .replace(/([?&](?:token|key|api_key|access_token|secret|password)=)[^&\s]+/gi, '$1[redacted]')
     .replace(/((?:["']?)(?:[\w-]*(?:token|secret|password|api[_-]?key)|authorization|cookie)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi, '$1[redacted]')
-    .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|pms_(?:sk_)?[A-Za-z0-9_-]{20,})\b/g, '[redacted]')
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,}|pms_(?:sk_)?[A-Za-z0-9_-]{20,})\b/g, '[redacted]')
     .replace(/[\u0000-\u001f\u007f]/g, ' ');
 }
 export function describeError(error: unknown) {

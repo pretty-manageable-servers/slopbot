@@ -65,6 +65,9 @@ import { WebReplies, asWebUser, webReplyKey } from "../web-replies.js";
 import { MemberDirectory, discordMemberSource } from "../member-directory.js";
 import { discordWebReplies } from "./discord-web-replies.js";
 import { isPrivateChannel } from "../private-chat.js";
+import { registerOperationsTools } from '../operations.js';
+import { HttpOperationsClient } from './operations-client.js';
+import { FixWatchWorker } from '../fix-watch-worker.js';
 import { WebChatGateway, type ChatHost } from "../web-chats.js";
 
 /** Slopbot state and services for one Discord server. All servers share one client. */
@@ -76,6 +79,7 @@ export class DiscordServer implements ChatGateway {
   private readonly app: Application;
   private readonly renderer: ReplyRenderer;
   private readonly reminders: ReminderWorker;
+  private readonly fixWatches: FixWatchWorker | undefined;
   private readonly uiRuntime: UiRuntime;
   private readonly toolProgress = new DiscordToolProgress();
   private readonly tools: ToolRegistry;
@@ -174,6 +178,13 @@ export class DiscordServer implements ChatGateway {
     };
     this.uiRuntime = new UiRuntime(store,this.tools,authorizeFeature);
     registerTimingTools(this.tools, { store, authorize: authorizeFeature });
+    if (config.operations?.servers.includes(guildId)) {
+      const operations = registerOperationsTools(this.tools, { store, config: config.operations, client: new HttpOperationsClient(config.operations), authorize: authorizeFeature });
+      this.fixWatches = new FixWatchWorker(guildId, operations, async message => {
+        await authorizeFeature(message, message.channel);
+        await this.tools.checkAccess(message, 'fix_watch');
+      }, async (message, text, id) => { await this.reply(message, text, id); });
+    }
     registerHistoryTools(this.tools,{store,authorize:authorizeFeature});
     registerReportTools(this.tools,{store,llm,authorize:authorizeFeature,usage});
     registerPollTool(this.tools);
@@ -294,6 +305,7 @@ export class DiscordServer implements ChatGateway {
     this.worker.start();
     const sync = () => { for (const channel of this.channels) void this.history.start(channel).catch(error => logError("History import startup failed", error, { server: this.guildId })); };
     this.reminders.start();
+    this.fixWatches?.start();
     sync(); this.historyTimer = setInterval(sync, 60000);
     void this.registerCommands().catch(error => logError("Could not register /slopbot and /usage commands. Check application command permissions.", error, { server: this.guildId }));
   }
@@ -678,6 +690,7 @@ export class DiscordServer implements ChatGateway {
   async stop(): Promise<void> {
     if (this.historyTimer) clearInterval(this.historyTimer);
     await this.reminders.stop();
+    await this.fixWatches?.stop();
     await this.history.stop(); await this.worker.stop(); await this.mcp.close();
   }
 }
