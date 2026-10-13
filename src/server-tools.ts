@@ -1,3 +1,4 @@
+import { MAX_MUTE_MINUTES, MUTED_USERS_KEY, mutedUsers, userId } from "./muted-users.js";
 import { BOT_REPLY_LIMIT_KEY, MAX_BOT_REPLIES, MAX_BOT_REPLY_MINUTES, botReplyLimit } from "./bot-reply-limit.js";
 import { GLOBAL_SETTINGS_SCOPE } from "./usage-cost.js";
 import { isPrivateChannel } from "./private-chat.js";
@@ -81,6 +82,24 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
       const next = botReplyLimit({ replies: args.replies ?? current.replies, minutes: args.minutes ?? current.minutes });
       await store.setSetting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY, next as unknown as Json);
       return next.replies === 0 ? "Slopbot now does not answer other bots." : `Slopbot now answers other bots at most ${next.replies} times in ${next.minutes} minutes per channel.`;
+    }
+  });
+  add({ name: "mute_users", description: "Stop Slopbot from answering a user (a person or a bot) in this server for some minutes, end a mute, or list mutes. Only the Slopbot team can mute or unmute, and team members cannot be muted. Use it when the team asks Slopbot to ignore or not reply to someone.", fields: { action: { ...choice("mute, unmute or list", ["mute", "unmute", "list"]), required: true }, user: { type: "string", description: "Discord user ID or mention, for mute and unmute", max: 40 }, minutes: integer("Mute length in minutes, for mute", MAX_MUTE_MINUTES, false, 1) }, access: "member", effect: "write", execution: "inline", retrySafe: true,
+    async execute(context, args) {
+      const mutes = mutedUsers(store.setting(server, MUTED_USERS_KEY));
+      if (args.action === "list") {
+        const rows = Object.entries(mutes);
+        return rows.length ? `Muted users: ${rows.map(([user, until]) => `<@${user}> until ${new Date(until).toISOString()}`).join(", ")}.` : "No users are muted.";
+      }
+      if (!await services.isTeamEditor(context.message.author)) throw new ToolError("Only the Slopbot team can mute or unmute users.");
+      const user = userId(args.user);
+      if (!user) throw new ToolError("Give a Discord user ID or mention.");
+      if (args.action === "unmute") { delete mutes[user]; await store.setSetting(server, MUTED_USERS_KEY, mutes); return `<@${user}> is not muted now.`; }
+      if (await services.isTeamEditor(user)) throw new ToolError("Slopbot team members cannot be muted.");
+      const minutes = Number(args.minutes ?? 60);
+      mutes[user] = Date.now() + minutes * 60_000;
+      await store.setSetting(server, MUTED_USERS_KEY, mutes);
+      return `Slopbot will not answer <@${user}> in this server until ${new Date(mutes[user]!).toISOString()}.`;
     }
   });
   add(selfKnowledgeTool(registry, services.isTeamEditor, () => `Native function calling: enabled\nObject storage: ${config.objectStorage ? "configured" : "not configured"}; file_store scopes user/server/user_server, with ownership and sharing controls\nTool rounds per attempt: ${config.maxToolRounds}\nPMServers docs reviewed: 2026-10-12; latest changelog: 2026-10-12`));
