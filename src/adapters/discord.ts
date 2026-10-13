@@ -692,7 +692,7 @@ export class DiscordAdapter {
     wireChannelAccessEvents(this.client, this.access);
     runEvents.attach(store);
     this.shareRule = { manager: (user, server) => this.hasManageServer(user, server), teamAdmin: user => this.team.canEdit(user) };
-    this.shares = new ShareService({ store, access: this.access, rule: this.shareRule });
+    this.shares = new ShareService({ store, access: this.access, rule: this.shareRule, member: (user, server) => this.isServerMember(user, server) });
     this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;
     this.client.once(Events.ClientReady, async client => {
       this.botUser = client.user.id;
@@ -744,6 +744,23 @@ export class DiscordAdapter {
       access: this.access,
       members: this.members,
     };
+  }
+  /**
+   * True when Discord says the user is in the server, false when Discord says they are not. Any other error throws,
+   * so a caller can answer "try again" instead of "not a member". Slopbot must have the server in its cache.
+   */
+  async isServerMember(user: string, server: string): Promise<boolean> {
+    const guild = this.client.guilds.cache.get(server);
+    if (!guild) throw new Error(`Server ${server} is not in the Discord cache.`);
+    try {
+      await guild.members.fetch({ user, force: true });
+      return true;
+    } catch (error) {
+      // Discord error 10007 is Unknown Member, 10013 is Unknown User. discord.js puts the code on the error.
+      const code = (error as { code?: unknown } | undefined)?.code;
+      if (code === 10007 || code === 10013) return false;
+      throw error;
+    }
   }
   /** Servers that both Slopbot and the user are in. */
   async consoleServers(user: string): Promise<{ id: string; name: string; icon: string | null; admin: boolean }[]> {

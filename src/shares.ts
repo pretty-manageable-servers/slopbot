@@ -56,6 +56,8 @@ export class ShareError extends Error {
 }
 
 export const MAX_SHARE_MESSAGES = 200;
+/** How long a private chat link remembers that its owner is (or is not) in the server. */
+export const MEMBER_CACHE_MS = 60_000;
 const snowflake = /^\d{17,20}$/;
 const shareId = /^[A-Za-z0-9_-]{22}$/;
 export const isShareId = (id: string): boolean => shareId.test(id);
@@ -151,6 +153,8 @@ async function snapshotOf(store: Pick<ShareStore, "shareMessages" | "shareReques
 }
 
 export interface ShareDeps {
+  /** Is this user in the server? Throws when Discord cannot say. Private chat links need it; without it they are not served. */
+  member?: (user: string, server: string) => Promise<boolean>;
   store: ShareStore & {
     setting(server: string, key: string): unknown;
     taskThreads(server: string): { thread: string; parent: string }[];
@@ -163,7 +167,27 @@ export interface ShareDeps {
 /** Operations for the console. Errors carry an HTTP status. */
 export class ShareService {
   private readonly now: () => number;
+  private readonly memberCache = new Map<string, { member: boolean; at: number }>();
   constructor(private readonly deps: ShareDeps) { this.now = deps.now ?? Date.now; }
+
+  /**
+   * Is the chat owner still in the home server? Cached for MEMBER_CACHE_MS so a busy link does not call Discord each time.
+   * A Discord error is not cached and throws 503.
+   */
+  private async ownerIsMember(owner: string, server: string): Promise<boolean> {
+    if (!this.deps.member) return false;
+    const key = `${server}:${owner}`, now = this.now();
+    const hit = this.memberCache.get(key);
+    if (hit && now - hit.at < MEMBER_CACHE_MS) return hit.member;
+    let member: boolean;
+    try {
+      member = await this.deps.member(owner, server);
+    } catch {
+      throw new ShareError(503, "Could not check the server right now. Try again.");
+    }
+    this.memberCache.set(key, { member, at: now });
+    return member;
+  }
 
   private async requireManager(user: string, server: string): Promise<void> {
     if (!(await canCreateShare(user, server, this.deps.rule))) throw new ShareError(403, "Only server managers can manage share links.");
@@ -196,6 +220,8 @@ export class ShareService {
     if (!isShareId(id)) return undefined;
     const row = await this.deps.store.getShare(id);
     if (!row || row.revoked_at !== null) return undefined;
+    // A private chat link works only while its owner is still in the home server. Otherwise it is not found.
+    if (isPrivateChannel(row.channel) && !(await this.ownerIsMember(row.created_by, row.server))) return undefined;
     return { id: row.id, ...JSON.parse(row.body) as Omit<ShareSnapshot, "id"> };
   }
 

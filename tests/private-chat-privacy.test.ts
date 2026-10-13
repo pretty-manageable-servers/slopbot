@@ -180,7 +180,7 @@ test("a private chat is shared by its owner only, as a snapshot, and deleting it
   } as unknown as ChatHost;
   const chats = new WebChatService(store, host, { changed() { /* no live streams here */ } } as never, () => 2_000);
   const chat = "0123456789abcdef0123456789abcdef";
-  const shares = new ShareService({ store, access: { check: async () => ({ view: true }) }, rule: { manager: async (user: string) => user === "manager" } } as never);
+  const shares = new ShareService({ store, access: { check: async () => ({ view: true }) }, rule: { manager: async (user: string) => user === "manager" }, member: async (user: string, serverId: string) => serverId === guild && members.has(user) } as never);
 
   // Only the owner can create, list or revoke. Others get 404, as for other chat routes.
   for (const user of ["bob", "carol"]) {

@@ -21,6 +21,10 @@ interface Fixture {
   store: SQLiteStore;
   members: Set<string>;
   limit: { current: UserLimit };
+  /** Set to true to make the Discord membership check fail, as a Discord outage would. */
+  membership: { fail: boolean };
+  /** The clock of the share service. Moving it past 60 seconds expires the membership cache. */
+  shareNow: { now: number };
   received: Message[];
   base: string;
   cookie(user: string): string;
@@ -34,6 +38,8 @@ async function setup(t: TestContext): Promise<Fixture> {
   // Live events are saved and sent only once the global bus has a store, as in production.
   runEvents.attach(store);
   const members = new Set([ALICE, BOB]);
+  const membership = { fail: false };
+  const shareNow = { now: Date.now() };
   const limit: { current: UserLimit } = { current: { allowed: true } };
   const received: Message[] = [];
   const handle: PrivateChatHandle = { openChat() { /* no bot in these tests */ }, closeChat() { /* none */ }, async receiveChat(message) { received.push(message); } };
@@ -57,7 +63,13 @@ async function setup(t: TestContext): Promise<Fixture> {
     async invoke() { return {}; },
     chats: createChatRoutes(service),
     // The public share pages read the same store. Channel share writes are not used in these tests.
-    shares: new ShareService({ store, access: host.access, rule: { manager: async () => false } } as never),
+    shares: new ShareService({
+      store, access: host.access, rule: { manager: async () => false }, now: () => shareNow.now,
+      async member(user: string, server: string) {
+        if (membership.fail) throw new Error("discord is down");
+        return server === SERVER && members.has(user);
+      },
+    } as never),
     conversations: createTranscripts({ store, access: host.access, configured: () => [], channelName: async () => undefined, ownsPrivateChat: (server, channel, user) => service.owns(user, server, channel) }),
   });
   web.listen(0, "127.0.0.1");
@@ -77,7 +89,7 @@ async function setup(t: TestContext): Promise<Fixture> {
     const text = await response.text();
     return { status: response.status, json: text ? JSON.parse(text) : undefined };
   }
-  return { store, members, limit, received, base, cookie: user => logins[user]!.cookie, call };
+  return { store, members, limit, membership, shareNow, received, base, cookie: user => logins[user]!.cookie, call };
 }
 
 async function newChat(f: Fixture, user = ALICE): Promise<string> {
@@ -347,4 +359,34 @@ test("bad input gets a status and an {error} body; writes need the session, CSRF
   assert.equal((await f.call(ALICE, "POST", messages, { text: "no csrf" }, { "X-CSRF-Token": "wrong" })).status, 403, "wrong CSRF token");
   assert.equal((await f.call(ALICE, "POST", messages, { text: "other origin" }, { Origin: "https://evil.example" })).status, 403, "wrong origin");
   assert.equal((await f.call(ALICE, "DELETE", `/api/chats/${id}`, undefined, { "X-CSRF-Token": "wrong" })).status, 403);
+});
+
+test("a chat link works only while its owner is in the server; a Discord error is 503 and not cached", async t => {
+  const f = await setup(t);
+  const id = await newChat(f);
+  await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "shared line" });
+  const shareId = (await f.call(ALICE, "POST", `/api/chats/${id}/shares`, {})).json.id as string;
+  const later = () => f.shareNow.now += 61_000;
+  assert.equal((await f.call(null, "GET", `/api/shares/${shareId}`)).status, 200);
+
+  // Discord is down: the link answers 503, not 404 and not a leak.
+  f.membership.fail = true;
+  later();
+  assert.equal((await f.call(null, "GET", `/api/shares/${shareId}`)).status, 503);
+  assert.equal((await fetch(`${f.base}/s/${shareId}`)).status, 503);
+  f.membership.fail = false;
+  assert.equal((await f.call(null, "GET", `/api/shares/${shareId}`)).status, 200, "a 503 is not cached");
+
+  // The owner leaves the server: the link is not found. The owner's own share routes are 404 too.
+  f.members.delete(ALICE);
+  later();
+  assert.equal((await f.call(null, "GET", `/api/shares/${shareId}`)).status, 404, "owner left");
+  assert.equal((await fetch(`${f.base}/s/${shareId}`)).status, 404, "owner left, page");
+
+  // The owner rejoins: the link works again.
+  f.members.add(ALICE);
+  later();
+  const back = await f.call(null, "GET", `/api/shares/${shareId}`);
+  assert.equal(back.status, 200, "owner rejoined");
+  assert.equal(back.json.messages[0].text, "shared line");
 });
