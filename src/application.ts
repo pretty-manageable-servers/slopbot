@@ -8,7 +8,8 @@ import type { Recall } from "./memory.js";
 import type { ProfileStore } from "./profiles.js";
 import type { ToolExecutor } from "./tools.js";
 import type { TokenCounter } from "./context.js";
-import { AgentRunner, type UsageMeter } from "./agent-runner.js";
+import { AgentRunner } from "./agent-runner.js";
+import type { UsageMeter } from "./usage-meter.js";
 export type { Policy } from "./agent-runner.js";
 import type { Policy } from "./agent-runner.js";
 

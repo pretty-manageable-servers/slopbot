@@ -3,6 +3,8 @@ import type { ToolCall, ToolOutput } from "./tools.js";
 import type { Message, ModelEvent, Prompt, PromptItem, Reply } from "./domain.js";
 
 export interface LLM {
+  // The model id that prices this LLM's calls. Unnamed LLMs get the fallback price.
+  readonly model?: string;
   readonly outputTokenLimit?: number;
   readonly contextTokenLimit?: number;
   stream(prompt: Prompt, signal?: AbortSignal): AsyncIterable<ModelEvent>;

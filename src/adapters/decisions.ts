@@ -6,6 +6,7 @@ import type { Json, Message, Prompt } from "../domain.js";
 import type { Classifier, ParticipationDecision } from "../participation.js";
 import type { Store } from "../ports.js";
 import { ProviderError, providerError } from "../errors.js";
+import { attribution, DECISION_OUTPUT_TOKENS, promptEstimate, type UsageMeter } from "../usage-meter.js";
 
 import { decisionQuestions as questions } from "../participation-prompts.js";
 
@@ -18,7 +19,7 @@ export class DecisionClassifier implements Classifier {
   private readonly aliases: ModelAliases;
   private unsupported = false;
   constructor(
-    private readonly options: { baseUrl: string; apiKey: string; model: string },
+    private readonly options: { baseUrl: string; apiKey: string; model: string; usage?: UsageMeter },
     private readonly store: Store, private readonly fetcher: typeof fetch = fetch,
     private readonly fallback?: Classifier,
   ) { this.aliases = new ModelAliases(options.baseUrl); }
@@ -41,6 +42,8 @@ export class DecisionClassifier implements Classifier {
       })));
       if (!response.ok) { throw await providerError(response); }
       const raw = await requestTimings.wait("decision response body", () => response.json()) as { answers?: { addressed?: { probabilities?: { yes?: unknown; no?: unknown } }; respond?: { probabilities?: { yes?: unknown; no?: unknown } }; funny?: { probabilities?: { yes?: unknown; no?: unknown } } } };
+      // The endpoint reports no usage, so the answer is charged as an estimate of the input and a fixed answer size.
+      await this.options.usage?.record(attribution(message), this.options.model, promptEstimate(prompt, DECISION_OUTPUT_TOKENS));
       await this.store.appendEvent(runId, 0, { kind: "opaque", payload: raw as Json });
       const direct = probability(raw.answers?.addressed?.probabilities?.yes);
       const useful = probability(raw.answers?.respond?.probabilities?.yes);

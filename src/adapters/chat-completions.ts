@@ -103,12 +103,14 @@ export async function* sseData(body: ReadableStream<Uint8Array>, waitLabel = "mo
 }
 
 export class ChatCompletionsLLM implements LLM {
+  readonly model: string;
   readonly outputTokenLimit: number;
   readonly contextTokenLimit: number;
   private readonly aliases: ModelAliases;
   private readonly cacheDiagnostics = new PromptCacheDiagnostics();
   constructor(private readonly options: ProviderOptions, private readonly fetcher: typeof fetch = fetch) {
     this.aliases = new ModelAliases(options.baseUrl);
+    this.model = options.model;
     const limits = modelTokenLimits(options.model, options.baseUrl);
     this.outputTokenLimit = options.outputTokens ?? limits?.output ?? DEFAULT_OUTPUT_TOKENS;
     this.contextTokenLimit = options.contextTokens ?? limits?.context ?? DEFAULT_CONTEXT_TOKENS;

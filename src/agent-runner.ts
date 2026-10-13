@@ -11,9 +11,10 @@ import { HarnessMachine, HarnessInterrupted, type HarnessJournal, type HarnessEv
 import { ContextBuilder } from "./context-builder.js";
 import { ReplyRenderer } from "./reply-renderer.js";
 import { randomUUID } from "node:crypto";
-import { type Json, type Message, type Prompt, type PromptItem, type Reply } from "./domain.js";
+import { type Message, type Prompt, type PromptItem, type Reply } from "./domain.js";
 import type { AgentTurn, LLM, Store } from "./ports.js";
 import type { Recall } from "./memory.js";
+import { attribution, streamMetered, type UsageMeter } from "./usage-meter.js";
 import { ByteTokenCounter, DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, type TokenCounter } from "./context.js";
 import { type ProfileStore } from "./profiles.js";
 import { displayToolResult, toolResult, toolFailed, parseToolCalls, toolInstructions, nativeToolInstructions, ToolError, stableOperationId, type ToolExecutor, type ToolCall } from "./tools.js";
@@ -28,12 +29,6 @@ export interface Policy {
   readonly maxToolRounds?: number;
   readonly prefixVersion?: string;
   readonly instructions?: string;
-}
-
-/** Records what each model call of a user's run costs, and tells the loop when tools must stop. */
-export interface UsageMeter {
-  record(message: Message, payload: Json): Promise<void>;
-  overGrace(message: Message): Promise<boolean>;
 }
 
 export class AgentRunner {
@@ -131,10 +126,11 @@ export class AgentRunner {
     let firstOutput = false;
     requestTimings.start(message, timingName);
     const journal = new EventJournal(this.store, runId, message, timingName);
-    let metered = false;
     try {
       const signal = this.active.get(JSON.stringify([message.server, message.id]))?.controller.signal;
-      for await (const event of this.llm.stream(prompt, signal)) {
+      // A provider that sends no usage is charged the estimated input and the full output budget.
+      const estimate = { prompt_tokens: required, completion_tokens: prompt.maxOutputTokens ?? this.outputLimit };
+      for await (const event of streamMetered(this.llm, prompt, { usage: this.services.usage, who: attribution(message), signal, estimate })) {
         if (!firstOutput && (event.kind === "text" || event.kind === "reasoning" || event.kind === "tool_call")) {
           firstOutput = true; requestTimings.firstOutput(message, performance.now() - modelStarted);
         }
@@ -142,10 +138,7 @@ export class AgentRunner {
         if (signal?.aborted) throw new HarnessInterrupted("Request interrupted; partial events are retained");
         if (event.kind === "text") chunks.push(event.payload.text);
         if (event.kind === "tool_call") nativeCalls = event.payload;
-        if (event.kind === "usage") { metered = true; await this.services.usage?.record(message, event.payload); }
       }
-      // A provider that sends no usage is charged the estimated input and the full output budget.
-      if (!metered) await this.services.usage?.record(message, { prompt_tokens: required, completion_tokens: prompt.maxOutputTokens ?? this.outputLimit });
       await journal.close();
       return { text: chunks.join(""), ...(nativeCalls !== undefined ? { calls: parseToolCalls(JSON.stringify({ tool_calls: nativeCalls }))! } : {}) };
     } catch (error) {
@@ -297,7 +290,7 @@ export class AgentRunner {
       const runId = randomUUID();
       const retriesExhausted = failedToolRounds >= 3;
       // Read at each round, so a run cannot start new tools after the user passes the grace limit.
-      const toolsStopped = retriesExhausted || (await this.services.usage?.overGrace(message)) === true;
+      const toolsStopped = retriesExhausted || (await this.services.usage?.overGrace(attribution(message))) === true;
       const retryLimitInput: PromptItem[] = toolsStopped ? [{ role: "user", contextOnly: true, content: retriesExhausted ? "Tool recovery stopped after three consecutive failed tool rounds. No further tools can run in this request. Explain the remaining failure and what the requester can do, using the recorded results. Do not claim success or request more tools." : "The usage limit for this requester was reached during this request. No further tools can run. Give the final answer from the recorded results. Do not claim success or request more tools." }] : [];
       const prompt: Prompt = { cacheScope: taskKey??JSON.stringify([message.server,message.channel,message.id]), prefixVersion: (this.policy.prefixVersion ?? "v3") + ":" + stableOperationId(JSON.stringify({ prefix, tools: modelTools ?? [] })), prefix, history, inputs: [...inputs, ...trace, ...retryLimitInput], ...(modelTools ? { tools: toolsStopped ? [] : modelTools } : {}), maxOutputTokens: this.outputLimit, purpose: "reply" };
       let text: string;
@@ -322,7 +315,7 @@ export class AgentRunner {
         }
         if (calls && !this.services.tools) throw new ToolError("Tool request cannot execute: tools are unavailable");
         // Spend from this model call may have passed the grace limit, so no new tool round starts.
-        if (calls && (toolsStopped || (await this.services.usage?.overGrace(message)) === true)) {
+        if (calls && (toolsStopped || (await this.services.usage?.overGrace(attribution(message))) === true)) {
           calls = undefined;
           text = retriesExhausted ? "Slopbot could not complete these tool calls:\n" + toolFailureSummary(activity) + "\nStopped after three consecutive failed tool rounds. No further tool calls were run." : "Usage limit reached during this request. No further tool calls were run.";
         }

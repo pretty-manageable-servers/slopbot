@@ -23,6 +23,8 @@ async function main(): Promise<void> {
     outputTokens: config.outputTokens, contextTokens: config.contextTokens,
   });
   const discord = new DiscordAdapter(config, store, llm);
+  // Embedding calls are charged through the same meter as model calls.
+  embeddings?.attachUsage(discord.usage);
   const web = webOptions ? createConsole(webOptions, { snapshot: (user, server) => discord.consoleSnapshot(user, server), invoke: (user, server, channel, name, args) => discord.consoleInvoke(user, server, channel, name, args), mcp: (user, server, input) => discord.consoleMcp(user, server, input) }) : undefined;
   const shutdown = async () => { if (web?.listening) await new Promise<void>((resolve, reject) => web.close(error => error ? reject(error) : resolve())); if (store instanceof PostgresStore) store.stopIndexing(); await discord.stop(); await store.finishIndexing(); await store.close(); process.exit(0); };
   process.once("SIGINT", () => { void shutdown().catch(error => { logError("shutdown_failed", error, { stage: "shutdown" }); process.exitCode = 1; }); });

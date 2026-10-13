@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { parseMessage, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
 import type { AgentTurn, UserLimitWindow, UserLimitState } from "../ports.js";
 import { searchTerms, type Embeddings, type Evidence, type MemoryRecord } from "../memory.js";
+import { attribution, type Attribution } from "../usage-meter.js";
 import { ToolError } from "../tools.js";
 import type { ProfileField, UserProfile } from "../profiles.js";
 import type { TaskContext } from "../context.js";
@@ -137,6 +138,7 @@ export class PostgresStore {
               text: request.query,
             },
             "query",
+            request.requester ? { server: request.server, user: request.requester } : undefined,
           );
           const ranked = await this.db
             .prepare(
@@ -641,7 +643,7 @@ export class PostgresStore {
       (SELECT 1 FROM embeddings e WHERE e.server=m.server AND e.message_id=m.id AND e.model=?)`)
             .all(server, ...channels, this.embeddings.model));
         for (const row of rows)
-            this.queueIndex(parseMessage(JSON.parse(String(row.body))));
+            this.queueIndex(parseMessage(JSON.parse(String(row.body))), false);
         return rows.length;
     }
     async purgeUnconfigured(server: string, allowed: readonly string[]): Promise<void> {
@@ -665,18 +667,20 @@ export class PostgresStore {
             if (!allowed.includes(String(row.channel)))
                 (await this.db.prepare("UPDATE jobs SET status='cancelled',error='Channel disabled' WHERE id=?").run(String(row.id)));
     }
-    private queueIndex(message: Message): void {
+    // charge is false for an admin reindex: old messages are not charged to their authors again.
+    private queueIndex(message: Message, charge = true): void {
         if (this.indexingStopped || !this.embeddings || !message.text.trim())
             return;
-        this.indexTail = this.indexTail.then(() => this.indexingStopped ? undefined : this.indexMessage(message)).catch((error: unknown) => {
+        this.indexTail = this.indexTail.then(() => this.indexingStopped ? undefined : this.indexMessage(message, charge)).catch((error: unknown) => {
             logError("embedding_index_failed_keyword_search_available", error, { stage: "embedding indexing", server: message.server, channel: message.channel, messageId: message.id });
         });
     }
-    private async indexMessage(message: Message): Promise<void> {
+    private async indexMessage(message: Message, charge: boolean): Promise<void> {
             const existing = (await this.db.prepare("SELECT 1 FROM embeddings WHERE server=? AND message_id=? AND model=?").get(message.server, message.id, this.embeddings!.model));
             if (existing)
                 return;
-            const vector = await this.embed(message, "index");
+            // Index work is charged to the message author. A bot message has no payer, so attribution() skips its charge.
+            const vector = await this.embed(message, "index", charge ? attribution(message) : undefined);
             const current = (await this.db.prepare("SELECT body FROM messages WHERE server=? AND id=?").get(message.server, message.id));
             if (!current || parseMessage(JSON.parse(String(current.body))).text !== message.text)
                 return;
@@ -702,9 +706,9 @@ export class PostgresStore {
         const usage = (await this.db.prepare("SELECT * FROM embedding_usage WHERE server=? AND channel=?").all(server, channel)).map(value => ({ model: String(value.model), purpose: String(value.purpose), requests: Number(value.requests), tokens: Number(value.tokens), unknown: Number(value.unknown_tokens) }));
         return { messages: Number(row.count), vectors: Number(vectors.count), oldest: row.oldest === null ? null : Number(row.oldest), newest: row.newest === null ? null : Number(row.newest), usage };
     }
-    private async embed(message: Message, purpose: "index" | "query"): Promise<readonly number[]> {
+    private async embed(message: Message, purpose: "index" | "query", who?: Attribution): Promise<readonly number[]> {
         const result = this.embeddings!.embedWithUsage
-            ? await this.embeddings!.embedWithUsage(message.text)
+            ? await this.embeddings!.embedWithUsage(message.text, who)
             : { vector: await this.embeddings!.embed(message.text), tokens: null };
         (await this.db.prepare(`INSERT INTO embedding_usage VALUES(?,?,?,?,1,?,?)
       ON CONFLICT(server,channel,model,purpose) DO UPDATE SET requests=requests+1,tokens=tokens+excluded.tokens,unknown_tokens=unknown_tokens+excluded.unknown_tokens`)
@@ -805,7 +809,7 @@ export class PostgresStore {
         }).slice(0, Math.min(limit, 4));
         for (const memory of relevant)
             evidence.push({ kind: "memory", content: memory.content, author: memory.author, sourceIds: memory.sourceIds });
-    const recalled=await this.searchHistory({server:message.server,channel:message.channel,query:message.text,mode:'hybrid',limit,excludeId:message.id});
+    const recalled=await this.searchHistory({server:message.server,channel:message.channel,query:message.text,mode:'hybrid',limit,excludeId:message.id,requester:message.isBot?undefined:message.author});
     const selected=new Map(recalled.messages.map(item=>[item.id,item]));
         for (const item of selected.values()) {
             if (evidence.length >= limit)

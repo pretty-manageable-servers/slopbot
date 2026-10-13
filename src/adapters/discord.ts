@@ -43,7 +43,7 @@ import { HistoryImporter } from "../history.js";
 import { DecisionClassifier } from "./decisions.js";
 import { TaskWorker } from "../queue.js";
 import { UserLimiter, UserLimitError, limitReply } from "../user-limiter.js";
-import { activePrices, GLOBAL_SETTINGS_SCOPE, usageCostMicros } from "../usage-cost.js";
+import { createUsageMeter, type UsageMeter } from "../usage-meter.js";
 import { registerUsageTool } from "../usage-tools.js";
 import { configuredChannels, registerServerTools } from "../server-tools.js";
 import { displayToolResult, ToolError, ToolRegistry, UncertainActionError, stableOperationId } from "../tools.js";
@@ -65,7 +65,7 @@ export class DiscordServer implements ChatGateway {
   private channels: string[];
   private historyTimer: ReturnType<typeof setInterval> | undefined;
 
-  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined) {
+  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store)) {
     this.client = client;
     this.renderer = new ReplyRenderer(store, discordPresentation);
     this.channels = configuredChannels(config, store, guildId);
@@ -84,7 +84,7 @@ export class DiscordServer implements ChatGateway {
       return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= max ? value : fallback;
     };
     const savedMonitoring = store.setting(guildId, "monitoring");
-    const participation = new ParticipationGate(new DecisionClassifier({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.jevModel }, store, undefined, new LLMClassifier(llm, store)), {
+    const participation = new ParticipationGate(new DecisionClassifier({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.jevModel, usage }, store, undefined, new LLMClassifier(llm, store, usage)), {
       enabled: (typeof savedMonitoring === "boolean" ? savedMonitoring : config.jevEnabled) && !config.mock,
       reactionFrequency: savedLimit("reaction_frequency", store.setting(guildId, "reactions_enabled") === false ? 0 : 60, 100),
       contextMessages: savedLimit("classifier_context", config.jevContextMessages, 100),
@@ -149,7 +149,7 @@ export class DiscordServer implements ChatGateway {
     this.uiRuntime = new UiRuntime(store,this.tools,authorizeFeature);
     registerTimingTools(this.tools, { store, authorize: authorizeFeature });
     registerHistoryTools(this.tools,{store,authorize:authorizeFeature});
-    registerReportTools(this.tools,{store,llm,authorize:authorizeFeature});
+    registerReportTools(this.tools,{store,llm,authorize:authorizeFeature,usage});
     registerPollTool(this.tools);
     registerTaskTools(this.tools,{store,authorize:authorizeFeature});
     registerReminderTools(this.tools,{store,authorize:authorizeFeature});
@@ -170,7 +170,7 @@ export class DiscordServer implements ChatGateway {
       if (sourceFingerprint(fresh) !== sourceFingerprint(known)) { await this.store.revise(fresh); throw contextChangedError(request, { reason: "file_source_changed", sourceId: id }); }
       return fresh;
     };
-    registerFileTool(this.tools, { store, llm, resolve: resolveAttachment });
+    registerFileTool(this.tools, { store, llm, resolve: resolveAttachment, usage });
     const sandboxProvider = config.sandboxApiKey ? new E2BSandboxProvider({ apiKey: config.sandboxApiKey, apiUrl: config.sandboxApiUrl!, sandboxUrl: config.sandboxUrl!, ...(config.sandboxTemplate ? { template: config.sandboxTemplate } : {}) }) : undefined;
     const storage = new UserFileStorage(store, objectStorageProvider);
     this.tools.register(sandboxTool(store, sandboxProvider, { resolve: (request, id) => resolveAttachment(request, id, true) }, storage));
@@ -178,7 +178,7 @@ export class DiscordServer implements ChatGateway {
       storage,
       authorize: message => authorizeFeature(message, message.channel),
       resolveAttachment: (request, id) => resolveAttachment(request, id, true),
-      inspect: (context, file, bytes, question) => inspectFile({ store, llm, assertCurrent: async () => { const current = await storage.entry(context.message.server, context.message.author, file.owner, file.path, false, fileStorageScope(file), context.isAdmin); if (current.file.key !== file.key) throw new ToolError('Stored file changed during inspection. Read its current version.'); } }, context, file.path, file.contentType, bytes, question),
+      inspect: (context, file, bytes, question) => inspectFile({ store, llm, usage, assertCurrent: async () => { const current = await storage.entry(context.message.server, context.message.author, file.owner, file.path, false, fileStorageScope(file), context.isAdmin); if (current.file.key !== file.key) throw new ToolError('Stored file changed during inspection. Read its current version.'); } }, context, file.path, file.contentType, bytes, question),
       send: async (context, file, bytes) => {
         const current = await storage.entry(context.message.server, context.message.author, file.owner, file.path, false, fileStorageScope(file), context.isAdmin);
         if (current.file.key !== file.key) throw new ToolError('Stored file changed before sending. Request its current version.');
@@ -192,17 +192,14 @@ export class DiscordServer implements ChatGateway {
         },
       } } : {}),
     }));
-    this.limiter = new UserLimiter(store, { fiveHourCostMicros: config.userLimit5hCostMicros, weekCostMicros: config.userLimitWeekCostMicros, gracePercent: config.userLimitGracePercent });
+    this.limiter = usage.limiter;
     registerUsageTool(this.tools, this.limiter);
     this.app = new Application(store, llm, {
       allowedChannels: this.channels.map(channel => ({ server: guildId, channel })),
       recentMessages: savedLimit("reply_context", config.replyContextMessages, 100),
       maxContextTokens: config.contextTokens, maxInputChars: config.contextTokens,
       maxOutputTokens: config.outputTokens, checkpointTokens: config.checkpointTokens, maxToolRounds: config.maxToolRounds,
-    }, store, { usage: {
-      record: async (message, payload) => { await this.limiter.record(message.server, message.author, usageCostMicros(payload, config.model, activePrices(store.setting(GLOBAL_SETTINGS_SCOPE, "model_prices"), config.modelPrices), config.fallbackPrice)); },
-      overGrace: message => this.limiter.overGrace(message.server, message.author),
-    }, onToolActivity: async (message, activity) => {
+    }, store, { usage, onToolActivity: async (message, activity) => {
       if (!this.bot.accepts(message.server, message.channel)) return;
       await this.toolProgress.update(JSON.stringify([message.server,message.channel,message.id]), activity, async content => {
         const channel = await this.client.channels.fetch(message.channel);
@@ -537,9 +534,12 @@ export class DiscordAdapter {
   private readonly client: Client;
   private readonly servers = new Map<string, Promise<DiscordServer>>();
   private readonly objectStorageProvider: S3StorageProvider | undefined;
+  // One meter for the process. Its limiter is shared by every server, and discord-main attaches it to the embeddings.
+  readonly usage: UsageMeter;
   private botUser: string | undefined;
 
   constructor(private readonly config: Config, private readonly store: RuntimeStore, private readonly llm: LLM, client?: Client) {
+    this.usage = createUsageMeter(config, store);
     this.client = client ?? new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent], partials: [Partials.Message, Partials.Channel] });
     this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;
     this.client.once(Events.ClientReady, async client => {
@@ -563,7 +563,7 @@ export class DiscordAdapter {
     if (existing) return existing;
     if (!this.allowed(guildId)) return Promise.reject(new ToolError("Slopbot is not enabled for this server."));
     const opening = (async () => {
-      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider);
+      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage);
       await server.start();
       await server.ready(this.botUser!);
       return server;

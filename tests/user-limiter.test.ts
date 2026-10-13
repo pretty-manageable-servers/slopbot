@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { Application } from "../src/application.js";
-import type { UsageMeter } from "../src/agent-runner.js";
 import { loadConfig } from "../src/config.js";
 import type { Message, Prompt } from "../src/domain.js";
 import { TaskWorker } from "../src/queue.js";
@@ -13,6 +12,11 @@ import { ToolRegistry } from "../src/tools.js";
 import { UserLimiter, UserLimitError, limitReply } from "../src/user-limiter.js";
 import { activePrices, DEFAULT_FALLBACK_PRICE, parseFallbackPrice, parseModelPrices, usageCostMicros } from "../src/usage-cost.js";
 import { registerUsageTool } from "../src/usage-tools.js";
+import { ProviderEmbeddings, embeddingPriceModel } from "../src/adapters/embeddings.js";
+import { DecisionClassifier } from "../src/adapters/decisions.js";
+import { ByteTokenCounter } from "../src/context.js";
+import { inspectFile } from "../src/files.js";
+import { attribution, DECISION_OUTPUT_TOKENS, modelsInUse, streamMetered, UsageMeter } from "../src/usage-meter.js";
 
 const HOUR = 3600000, WEEK = 7 * 24 * HOUR;
 const DOLLAR = 1000000;
@@ -186,10 +190,7 @@ test("TaskWorker.enqueue lets bot messages and task seeds through an over-limit 
 const call = '{"tool_calls":[{"name":"read","arguments":{}}]}';
 const request = { id: "request", server: "s", channel: "c", author: "alice", text: "Do the task", addressed: true };
 function meterFor(limits: UserLimiter): UsageMeter {
-  return {
-    record: (message, payload) => limits.record(message.server, message.author, usageCostMicros(payload, "m", {}, ONE_MICRO_PER_TOKEN)),
-    overGrace: message => limits.overGrace(message.server, message.author),
-  };
+  return new UsageMeter(limits, () => ({}), ONE_MICRO_PER_TOKEN);
 }
 
 test("a run pays for each model call, and past grace it starts no new tool round", async () => {
@@ -239,7 +240,11 @@ test("entry points check the user limiter before work starts", () => {
   const discord = read("adapters/discord.ts");
   assert.match(discord, /this\.limiter\.check\(/);
   assert.ok(discord.indexOf("this.limiter.check(") < discord.indexOf("this.tools.invokeResult(message, name, args, `command:"), "slash commands must check before invoking the tool");
-  assert.match(read("agent-runner.ts"), /this\.services\.usage\?\.record\(/);
+  assert.match(read("agent-runner.ts"), /streamMetered\(this\.llm, prompt, \{ usage: this\.services\.usage, who: attribution\(message\)/);
+  assert.match(read("participation.ts"), /streamMetered\(this\.llm, prompt, \{ usage: this\.usage, who: attribution\(message\) \}\)/);
+  assert.match(read("files.ts"), /streamMetered\(options\.llm, prompt, \{ usage: options\.usage/);
+  assert.match(read("search/reports.ts"), /streamMetered\(services\.llm, prompt, \{ usage: services\.usage/);
+  assert.match(read("adapters/decisions.ts"), /options\.usage\?\.record\(attribution\(message\)/);
   // Jobs are created only through TaskWorker.enqueue, so no other entry point can skip the check.
   for (const file of sourceFiles(src)) {
     if (file.endsWith("/queue.ts")) continue;
@@ -258,4 +263,116 @@ test("config reads the cost limits, grace and prices from the environment", () =
   assert.equal(priced.userLimit5hCostMicros, 0);
   assert.deepEqual(priced.modelPrices.nimbus, { input: 1, cached_input: 1, output: 2 });
   assert.throws(() => loadConfig({ ...base, USER_LIMIT_WEEK_COST_MICROS: "-1" }), /USER_LIMIT_WEEK_COST_MICROS/);
+});
+
+// Model calls made outside a reply are charged to the user whose message caused them.
+const prompt: Prompt = { prefixVersion: "test", prefix: [], history: [], inputs: [] };
+const payer = { server: "s", user: "alice" };
+const spentBy = async (limits: UserLimiter, user = "alice") => (await limits.usage("s", user))[0]?.spent;
+
+test("JEV decisions are charged to the message author at the JEV model price", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
+  // The JEV price is output only, so only the answer size is charged. Any other price would give a different total.
+  const meter = new UsageMeter(limits, () => ({ vane: { input: 0, cached_input: 0, output: DOLLAR }, nimbus: { input: 100 * DOLLAR, cached_input: 100 * DOLLAR, output: 100 * DOLLAR } }), DEFAULT_FALLBACK_PRICE);
+  const classifier = new DecisionClassifier({ baseUrl: "https://example.test", apiKey: "test", model: "vane", usage: meter }, store,
+    async () => Response.json({ answers: { addressed: { probabilities: { yes: 0.1 } }, respond: { probabilities: { yes: 0.1 } } } }));
+  await classifier.classify(message("jev"), []);
+  assert.equal(await spentBy(limits), DECISION_OUTPUT_TOKENS);
+  store.close();
+});
+
+test("file inspection is charged to the member who asked, at the model price", async t => {
+  const store = new SQLiteStore(), limits = limiter(store, 0, 0); t.after(() => store.close());
+  const meter = new UsageMeter(limits, () => ({ nimbus: { input: DOLLAR, cached_input: DOLLAR, output: 2 * DOLLAR } }), DEFAULT_FALLBACK_PRICE);
+  const llm = { model: "nimbus", async *stream() {
+    yield { kind: "text" as const, payload: { text: "A file." } };
+    yield { kind: "usage" as const, payload: { prompt_tokens: 10, completion_tokens: 5 } };
+  } };
+  const inspect = message("inspect", { text: "What is this?" });
+  await store.ingest(inspect);
+  const text = await inspectFile({ store, llm, usage: meter, decoder: { read: async () => ({ text: "contents", images: [] }) } },
+    { message: inspect, operationId: "inspect-op", isAdmin: false, source: "agent", toolName: "file_read", arguments: {}, resource: null, assertActive: async () => {} },
+    "notes.txt", "text/plain", new Uint8Array(), "What is this?");
+  assert.equal(text, "A file.");
+  assert.equal(await spentBy(limits), 10 * 1 + 5 * 2);
+});
+
+test("embedding calls are priced as input, charged to the requester, and skipped without a payer", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
+  const meter = new UsageMeter(limits, () => ({ "embedding-test": { input: DOLLAR, cached_input: DOLLAR, output: 100 * DOLLAR } }), DEFAULT_FALLBACK_PRICE);
+  const reported = new ProviderEmbeddings("https://example.test", "test", "embedding-test", async () => Response.json({ data: [{ embedding: [1, 2] }], usage: { prompt_tokens: 7, total_tokens: 7 } }));
+  reported.attachUsage(meter);
+  await reported.embedWithUsage("hello", payer);
+  assert.equal(await spentBy(limits), 7);
+  // Without usage in the response, the sent text is estimated as input.
+  const unreported = () => new ProviderEmbeddings("https://example.test", "test", "embedding-test", async () => Response.json({ data: [{ embedding: [1, 2] }] }));
+  const estimate = new ByteTokenCounter().count([{ role: "user", content: "hello" }]);
+  const second = unreported();
+  second.attachUsage(meter);
+  await second.embedWithUsage("hello", payer);
+  assert.equal(await spentBy(limits), 7 + estimate);
+  // Without a payer, such as a bot message or a background job, nothing is charged.
+  const third = unreported();
+  third.attachUsage(meter);
+  await third.embedWithUsage("hello");
+  assert.equal(await spentBy(limits), 7 + estimate);
+  store.close();
+});
+
+test("a reply is charged at the reply model price", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
+  const meter = new UsageMeter(limits, () => ({ nimbus: { input: 2 * DOLLAR, cached_input: 0, output: 3 * DOLLAR }, vane: { input: 0, cached_input: 0, output: 0 } }), DEFAULT_FALLBACK_PRICE);
+  const llm = { model: "nimbus", async *stream() {
+    yield { kind: "text" as const, payload: { text: "Hello" } };
+    yield { kind: "usage" as const, payload: { prompt_tokens: 5, completion_tokens: 5 } };
+  } };
+  const app = new Application(store, llm, { allowedChannels: [{ server: "s", channel: "c" }] }, undefined, { usage: meter });
+  assert.equal((await app.handle({ ...request, text: "Hi" }))?.text, "Hello");
+  assert.equal(await spentBy(limits), 5 * 2 + 5 * 3);
+  store.close();
+});
+
+test("bot messages are not charged for their model calls", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
+  const meter = new UsageMeter(limits, () => ({ nimbus: ONE_MICRO_PER_TOKEN }), ONE_MICRO_PER_TOKEN);
+  const llm = { model: "nimbus", async *stream() {
+    yield { kind: "text" as const, payload: { text: "Hello" } };
+    yield { kind: "usage" as const, payload: { prompt_tokens: 100, completion_tokens: 0 } };
+  } };
+  const app = new Application(store, llm, { allowedChannels: [{ server: "s", channel: "c" }] }, undefined, { usage: meter });
+  assert.equal(attribution({ ...request, isBot: true }), undefined);
+  await app.handle({ ...request, isBot: true });
+  await meter.record(attribution({ ...request, isBot: true }), "nimbus", { prompt_tokens: 100 });
+  assert.equal(await spentBy(limits), 0);
+  store.close();
+});
+
+test("an unpriced model is charged the fallback price, including a model that names no id", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
+  const fallback = { input: 2 * DOLLAR, cached_input: 2 * DOLLAR, output: 2 * DOLLAR };
+  const meter = new UsageMeter(limits, () => ({ nimbus: ONE_MICRO_PER_TOKEN }), fallback);
+  await meter.record(payer, "mystery", { prompt_tokens: 10 });
+  assert.equal(await spentBy(limits), 20);
+  // An LLM with no model id is priced under the unknown model id, which has no price, so the fallback applies.
+  const unnamed = { async *stream() { yield { kind: "usage" as const, payload: { prompt_tokens: 10 } }; } };
+  for await (const event of streamMetered(unnamed, prompt, { usage: meter, who: payer })) void event;
+  assert.equal(await spentBy(limits), 40);
+  store.close();
+});
+
+test("a model stream with no usage is charged the estimate: no input plus the full output budget", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
+  // Prices are per million tokens, so the 1000 estimated output tokens at 2 per token cost 2000 micro-dollars.
+  const meter = new UsageMeter(limits, () => ({}), { input: DOLLAR, cached_input: DOLLAR, output: 2 * DOLLAR });
+  const silent = { model: "nimbus", outputTokenLimit: 1000, async *stream() { yield { kind: "text" as const, payload: { text: "No usage" } }; } };
+  for await (const event of streamMetered(silent, prompt, { usage: meter, who: payer })) void event;
+  assert.equal(await spentBy(limits), 2000);
+  store.close();
+});
+
+test("modelsInUse lists the reply, JEV and embedding model ids, with the PMServers embedding name", () => {
+  const base = { DISCORD_BOT_TOKEN: "test", LLM_MODE: "mock" };
+  assert.deepEqual(modelsInUse(loadConfig(base)), ["nimbus", "vane", "stratus"]);
+  assert.deepEqual(modelsInUse(loadConfig({ ...base, LLM_BASE_URL: "https://gateway.example.test/v1", LLM_MODEL: "chat-a", JEV_MODEL: "judge-b", EMBEDDING_MODEL: "embed-c" })), ["chat-a", "judge-b", "embed-c"]);
+  assert.equal(embeddingPriceModel("https://example.test/v1", "llama.cpp/embeddinggemma-2"), "llama.cpp/embeddinggemma-2");
 });
