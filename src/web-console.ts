@@ -179,6 +179,13 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         res.writeHead(302, { Location: '/console', 'Set-Cookie': [cookie('slopbot_session', id, SESSION_AGE), cookie('slopbot_state', '', 0)] }); res.end(); return;
       }
       // Public share pages and snapshots. They never need a login and are never indexed.
+      const shareImage = req.method === 'GET' && backend.shares ? routePath.match(/^\/s\/([A-Za-z0-9_-]{22})\/images\/([0-9a-f]{32}\.(?:png|jpg|gif|webp))$/) : null;
+      if (shareImage && backend.shares) {
+        res.setHeader('X-Robots-Tag', 'noindex');
+        const image = await backend.shares.image(shareImage[1]!, shareImage[2]!);
+        if (!image) return send(res, 404, { error: 'Not found.' });
+        res.writeHead(200, { 'Content-Type': image.contentType, 'Content-Length': image.bytes.length, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(image.bytes); return;
+      }
       if (req.method === 'GET' && backend.shares && (/^\/s\/[A-Za-z0-9_-]{22}$/.test(routePath) || /^\/api\/shares\/[A-Za-z0-9_-]{22}$/.test(routePath))) {
         res.setHeader('X-Robots-Tag', 'noindex');
         const shareId = routePath.slice(routePath.lastIndexOf('/') + 1);

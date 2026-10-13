@@ -1,3 +1,4 @@
+import { LocalDiskStorage } from "../web-chat-images.js";
 import { objectStorageTool, UserFileStorage, MAX_STORED_FILE_BYTES, fileStorageScope } from '../object-storage.js';
 import { sendStoredFile } from './discord-storage.js';
 import { S3StorageProvider } from './s3-storage.js';
@@ -688,8 +689,8 @@ export class DiscordAdapter {
     wireChannelAccessEvents(this.client, this.access);
     runEvents.attach(store);
     this.shareRule = { manager: (user, server) => this.hasManageServer(user, server), teamAdmin: user => this.team.canEdit(user) };
-    this.shares = new ShareService({ store, access: this.access, rule: this.shareRule, member: (user, server) => this.isServerMember(user, server) });
     this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;
+    this.shares = new ShareService({ store, access: this.access, rule: this.shareRule, member: (user, server) => this.isServerMember(user, server), images: this.objectStorageProvider ?? new LocalDiskStorage() });
     this.client.once(Events.ClientReady, async client => {
       this.botUser = client.user.id;
       console.log(`Slopbot connected as ${client.user.tag}. LLM mode: ${config.mock ? "mock" : "provider"}. Servers: ${client.guilds.cache.size}`);

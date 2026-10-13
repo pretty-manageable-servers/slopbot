@@ -75,7 +75,7 @@ export interface TranscriptMessage {
   slopbot: boolean;
   runIds: string[];
   /** Web chat images as saved placeholders. The page loads the bytes from the chat's image route. */
-  images: { imageId: string; name: string; contentType: string; size: number }[];
+  images?: { imageId: string; name: string; contentType: string; size: number }[];
   /** True for Slopbot's own messages, and for a person's message that a reply run used. Live messages start false. */
   used: boolean;
 }
@@ -109,7 +109,7 @@ export function transcriptMessage(message: Message, slopbot: string | undefined,
     editedAt: edited ? message.revisionTimestamp! : null,
     slopbot: isSlopbot,
     runIds: isSlopbot ? [...runIds] : [],
-    images: imageAttachments(message.attachments),
+    ...(imageAttachments(message.attachments).length ? { images: imageAttachments(message.attachments) } : {}),
     used: isSlopbot || used,
   };
 }
