@@ -1,12 +1,15 @@
 // Conversations tab: a chat view of channel and thread transcripts (read-only), private chats with a composer, Slopbot runs and the live stream.
 // Uses globals from app.js: $, request, busy, fail, notice, state, csrf, showScreen.
-const conv = { server: '', list: [], chats: [], chatNote: '', kind: 'channel', channel: null, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, folded: new Set() };
+const conv = { server: '', list: [], chats: [], chatNote: '', kind: 'channel', channel: null, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, folded: new Set(), renaming: null };
 const NEW_CHAT = 'New chat';
 const chatTitle = c => c.title || NEW_CHAT;
 // Times may be a number or a date string. A missing time counts as 0.
 const timeValue = v => (typeof v === 'number' ? v : Date.parse(v)) || 0;
 const LOCK_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
 const PENCIL_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>';
+const MORE_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>';
+// The longest chat title. Same limit as PRIVATE_CHAT_TITLE_CHARS on the server.
+const CHAT_TITLE_MAX = 60;
 const enc = encodeURIComponent;
 const GROUP_MS = 5 * 60 * 1000;
 const DONE_STATUS = /^(completed|delegated|done|ok)$/;
@@ -66,7 +69,7 @@ function renderChatServers() {
 }
 
 function renderConversations() {
-  if (conv.server !== state.server.id) { closeConversation(); conv.server = state.server.id; conv.channel = null; conv.list = []; conv.chats = []; conv.chatNote = ''; }
+  if (conv.server !== state.server.id) { closeConversation(); conv.server = state.server.id; conv.channel = null; conv.list = []; conv.chats = []; conv.chatNote = ''; conv.renaming = null; }
   setChatMode(true);
   $('content').innerHTML = '<div id="chat-root" class="chat"><aside id="chat-side" class="chat-side"><div id="chat-server" class="chat-server" hidden></div><input id="conv-search" class="chat-search" type="search" placeholder="Search messages" aria-label="Search messages"><div id="conv-list" class="chat-list"></div></aside><section id="conv-main" class="chat-pane"><header class="chat-head"><button id="chat-drawer" class="chat-drawer" type="button" aria-expanded="false" aria-controls="chat-side">Conversations</button><h2 id="chat-title" class="chat-title"></h2><div class="chat-tools"><span id="chat-private" class="chat-private" hidden>' + LOCK_ICON + '<span>Private</span></span><span id="conv-status" class="chat-status"></span><div id="conv-share" class="chat-share" hidden></div></div></header><div id="conv-view" class="chat-view"></div><div id="conv-reply" class="chat-composer" hidden></div></section></div>';
   $('conv-search').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); searchConversations($('conv-search').value); } };
@@ -137,8 +140,11 @@ function newChatButton() {
   return button;
 }
 
-// One private chat: a lock, the title and the relative time.
+// One private chat: a lock, the title, the relative time and the "⋯" menu. While the chat is renamed, the row holds the rename box.
 function chatItem(c) {
+  if (conv.renaming === c.id) return renameRow(c);
+  const row = document.createElement('div');
+  row.className = 'chat-row';
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'chat-item';
@@ -148,7 +154,123 @@ function chatItem(c) {
   lock.innerHTML = LOCK_ICON;
   button.append(lock, textNode('span', chatTitle(c), 'chat-item-name'), textNode('span', relTime(timeValue(c.updated)), 'chat-item-time'));
   button.onclick = () => openConversation(c.id, 'chat');
+  row.append(button, ...chatMenu(c, row));
+  return row;
+}
+
+// The "⋯" button and its menu, Rename and Delete. Escape closes the menu from anywhere in the row.
+function chatMenu(c, row) {
+  const more = document.createElement('button');
+  more.type = 'button';
+  more.className = 'chat-more';
+  more.innerHTML = MORE_ICON;
+  more.setAttribute('aria-label', `Options for ${chatTitle(c)}`);
+  more.setAttribute('aria-haspopup', 'menu');
+  more.setAttribute('aria-expanded', 'false');
+  const menu = document.createElement('div');
+  menu.className = 'chat-menu';
+  menu.setAttribute('role', 'menu');
+  menu.hidden = true;
+  const del = menuItem('Delete', () => { closeMenu(row, false); deleteChat(c); });
+  del.classList.add('danger');
+  menu.append(menuItem('Rename', () => { closeMenu(row, false); startRename(c.id); }), del);
+  more.onclick = () => (menu.hidden ? openMenu(row) : closeMenu(row, true));
+  row.addEventListener('keydown', event => { if (event.key === 'Escape' && !menu.hidden) { event.preventDefault(); closeMenu(row, true); } });
+  return [more, menu];
+}
+
+function menuItem(text, onClick) {
+  const button = textNode('button', text, 'chat-menu-item');
+  button.type = 'button';
+  button.setAttribute('role', 'menuitem');
+  button.onclick = onClick;
   return button;
+}
+
+// Only one menu is open at a time. Its first item takes focus.
+function openMenu(row) {
+  for (const other of document.querySelectorAll('.chat-menu:not([hidden])')) closeMenu(other.parentElement, false);
+  row.querySelector('.chat-menu').hidden = false;
+  row.querySelector('.chat-more').setAttribute('aria-expanded', 'true');
+  row.querySelector('.chat-menu-item').focus();
+}
+
+// Closes a row's menu. Refocus puts the focus back on the "⋯" button.
+function closeMenu(row, refocus) {
+  const more = row.querySelector('.chat-more');
+  row.querySelector('.chat-menu').hidden = true;
+  more.setAttribute('aria-expanded', 'false');
+  if (refocus) more.focus();
+}
+
+// A click or tap outside an open menu closes it.
+document.addEventListener('pointerdown', event => {
+  for (const menu of document.querySelectorAll('.chat-menu:not([hidden])')) {
+    if (!menu.parentElement.contains(event.target)) closeMenu(menu.parentElement, false);
+  }
+});
+
+// The rename box. Enter saves. Escape, or leaving the box, cancels.
+function renameRow(c) {
+  const row = document.createElement('div');
+  row.className = 'chat-row';
+  const field = document.createElement('input');
+  field.type = 'text';
+  field.className = 'chat-rename';
+  field.maxLength = CHAT_TITLE_MAX;
+  field.value = c.title || '';
+  field.placeholder = NEW_CHAT;
+  field.setAttribute('aria-label', 'Chat title');
+  field.onkeydown = event => {
+    if (event.isComposing) return;
+    if (event.key === 'Enter') { event.preventDefault(); commitRename(c, field.value); }
+    else if (event.key === 'Escape') { event.preventDefault(); endRename(c.id); }
+  };
+  field.onblur = () => endRename(c.id);
+  row.append(field);
+  return row;
+}
+
+function startRename(id) {
+  conv.renaming = id;
+  drawList();
+  const field = document.querySelector('.chat-rename');
+  if (field) { field.focus(); field.select(); }
+}
+
+function endRename(id) {
+  if (conv.renaming !== id) return;
+  conv.renaming = null;
+  drawList();
+}
+
+// An empty or unchanged title is not sent. Otherwise the title is saved, then the list reloads for the new order.
+async function commitRename(c, raw) {
+  if (conv.renaming !== c.id) return;
+  const title = raw.replace(/\s+/g, ' ').trim();
+  if (!title || title === (c.title || '')) return endRename(c.id);
+  conv.renaming = null;
+  try {
+    await sendJson('PATCH', `/api/chats/${enc(c.id)}`, { title });
+    await refreshChats();
+  } catch (error) { fail(error); }
+  drawList();
+}
+
+// Deletes a private chat after a confirm. An open chat goes to the empty state.
+async function deleteChat(c) {
+  if (!confirm(`Delete "${chatTitle(c)}"? Its messages and runs are removed. This cannot be undone.`)) return;
+  try { await sendJson('DELETE', `/api/chats/${enc(c.id)}`); } catch (error) { return fail(error); }
+  conv.chats = conv.chats.filter(item => item.id !== c.id);
+  if (conv.kind === 'chat' && conv.channel === c.id) {
+    closeConversation();
+    setHeading('');
+    $('chat-private').hidden = true;
+    $('conv-status').hidden = true;
+    setComposer(null);
+    showPick();
+  }
+  drawList();
 }
 
 function convItem(c) {
