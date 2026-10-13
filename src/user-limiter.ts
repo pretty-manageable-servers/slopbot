@@ -1,4 +1,8 @@
 import type { Store, UserLimitState, UserLimitWindow } from "./ports.js";
+import { GLOBAL_SETTINGS_SCOPE } from "./usage-cost.js";
+
+/** Limits are shared by one user across all servers and web chats. Counters, resets and limit settings use this scope. */
+export const USER_LIMIT_SCOPE = GLOBAL_SETTINGS_SCOPE;
 
 const HOUR_MS = 3600000;
 // Each window starts at the user's first spend after the previous window ended.
@@ -33,59 +37,59 @@ export class UserLimiter {
   constructor(private readonly store: UserLimitStore, private readonly defaults: UserLimitDefaults) {}
 
   /** Refuses when any window with a limit has spent at least that much. Records nothing. */
-  async check(server: string, user: string, now = Date.now()): Promise<UserLimit> {
-    const blocked = (await this.states(server, user, now)).filter(window => window.limit > 0 && window.spent >= window.limit);
+  async check(user: string, now = Date.now()): Promise<UserLimit> {
+    const blocked = (await this.states(user, now)).filter(window => window.limit > 0 && window.spent >= window.limit);
     if (!blocked.length) return { allowed: true };
     return { allowed: false, resetAt: Math.max(...blocked.map(window => window.windowStart + window.durationMs)) };
   }
 
   /** Adds one model call's cost to both windows. */
-  async record(server: string, user: string, costMicros: number, now = Date.now()): Promise<void> {
+  async record(user: string, costMicros: number, now = Date.now()): Promise<void> {
     if (!Number.isSafeInteger(costMicros) || costMicros <= 0) return;
-    await this.store.updateUserLimits(server, user, rows => ({
-      windows: this.windows(server, rows, now).map(window => ({ kind: window.kind, windowStart: window.windowStart, spent: window.spent + costMicros })),
+    await this.store.updateUserLimits(USER_LIMIT_SCOPE, user, rows => ({
+      windows: this.windows(rows, now).map(window => ({ kind: window.kind, windowStart: window.windowStart, spent: window.spent + costMicros })),
       result: undefined,
     }));
   }
 
   /** True when a window has spent more than its limit plus the grace percent. Used between tool rounds. */
-  async overGrace(server: string, user: string, now = Date.now()): Promise<boolean> {
-    const grace = this.saved(server, "user_limit_grace_percent", this.defaults.gracePercent, 1000);
-    return (await this.states(server, user, now)).some(window => window.limit > 0 && window.spent * 100 > window.limit * (100 + grace));
+  async overGrace(user: string, now = Date.now()): Promise<boolean> {
+    const grace = this.saved("user_limit_grace_percent", this.defaults.gracePercent, 1000);
+    return (await this.states(user, now)).some(window => window.limit > 0 && window.spent * 100 > window.limit * (100 + grace));
   }
 
   /** Spend, limit, reset time and banked resets for each window. */
-  async usage(server: string, user: string, now = Date.now()): Promise<UserUsageWindow[]> {
-    return this.summarize(server, await this.store.userUsage(server, user), now);
+  async usage(user: string, now = Date.now()): Promise<UserUsageWindow[]> {
+    return this.summarize(await this.store.userUsage(USER_LIMIT_SCOPE, user), now);
   }
 
   /** The same view as usage, for a state the caller already read. */
-  summarize(server: string, state: UserLimitState, now = Date.now()): UserUsageWindow[] {
-    return this.windows(server, state.windows, now).map(window => ({ kind: window.kind, spent: window.spent, limit: window.limit, resetAt: window.running ? window.windowStart + window.durationMs : null, banked: state.resets[window.kind] ?? 0 }));
+  summarize(state: UserLimitState, now = Date.now()): UserUsageWindow[] {
+    return this.windows(state.windows, now).map(window => ({ kind: window.kind, spent: window.spent, limit: window.limit, resetAt: window.running ? window.windowStart + window.durationMs : null, banked: state.resets[window.kind] ?? 0 }));
   }
 
   /** Uses one banked reset and clears that window. Returns false when none is banked. */
-  useReset(server: string, user: string, kind: string): Promise<boolean> {
-    return this.store.useReset(server, user, kind);
+  useReset(user: string, kind: string): Promise<boolean> {
+    return this.store.useReset(USER_LIMIT_SCOPE, user, kind);
   }
 
-  private async states(server: string, user: string, now: number): Promise<WindowState[]> {
-    const state = await this.store.userUsage(server, user);
-    return this.windows(server, state.windows, now);
+  private async states(user: string, now: number): Promise<WindowState[]> {
+    const state = await this.store.userUsage(USER_LIMIT_SCOPE, user);
+    return this.windows(state.windows, now);
   }
 
   /** Current state of each window. A window that has ended counts as empty until the next spend. */
-  private windows(server: string, rows: readonly UserLimitWindow[], now: number): WindowState[] {
+  private windows(rows: readonly UserLimitWindow[], now: number): WindowState[] {
     return USER_LIMIT_WINDOWS.map(window => {
       const stored = rows.find(row => row.kind === window.kind);
       const running = stored !== undefined && now < stored.windowStart + window.durationMs;
       const fallback = window.kind === "5h" ? this.defaults.fiveHourCostMicros : this.defaults.weekCostMicros;
-      return { kind: window.kind, durationMs: window.durationMs, limit: this.saved(server, window.setting, fallback), running, windowStart: running ? stored.windowStart : now, spent: running ? stored.spent : 0 };
+      return { kind: window.kind, durationMs: window.durationMs, limit: this.saved(window.setting, fallback), running, windowStart: running ? stored.windowStart : now, spent: running ? stored.spent : 0 };
     });
   }
 
-  private saved(server: string, key: string, fallback: number, max = 1000000000000): number {
-    return savedLimit(this.store.setting(server, key), fallback, max);
+  private saved(key: string, fallback: number, max = 1000000000000): number {
+    return savedLimit(this.store.setting(USER_LIMIT_SCOPE, key), fallback, max);
   }
 }
 

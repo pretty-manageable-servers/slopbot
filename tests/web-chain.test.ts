@@ -87,14 +87,14 @@ class FakeCharge implements WebCharge {
 
 class FakeLimiter {
   checks: string[] = [];
-  records: {server: string; user: string; cost: number}[] = [];
+  records: {user: string; cost: number}[] = [];
   constructor(private readonly limit: UserLimit = {allowed: true}) {}
-  async check(server: string, user: string): Promise<UserLimit> {
-    this.checks.push(`${server}/${user}`);
+  async check(user: string): Promise<UserLimit> {
+    this.checks.push(user);
     return this.limit;
   }
-  async record(server: string, user: string, cost: number): Promise<void> {
-    this.records.push({server, user, cost});
+  async record(user: string, cost: number): Promise<void> {
+    this.records.push({user, cost});
   }
 }
 
@@ -234,11 +234,11 @@ test('charges go to the right providers with the default and saved costs', async
     charge,
   });
   assert.deepEqual(await search.search('q', 3, who), [hit('f')]);
-  assert.deepEqual(limiter.checks, ['s/u', 's/u', 's/u']);
+  assert.deepEqual(limiter.checks, ['u', 'u', 'u']);
   assert.deepEqual(limiter.records, [
-    {server: 's', user: 'u', cost: WEB_COSTS_MICROS.searxng},
-    {server: 's', user: 'u', cost: 7},
-    {server: 's', user: 'u', cost: WEB_COSTS_MICROS.firecrawl_search},
+    {user: 'u', cost: WEB_COSTS_MICROS.searxng},
+    {user: 'u', cost: 7},
+    {user: 'u', cost: WEB_COSTS_MICROS.firecrawl_search},
   ]);
 });
 

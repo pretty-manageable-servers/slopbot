@@ -1,7 +1,7 @@
 import type { Config } from "./config.js";
 import type { Json } from "./domain.js";
 import type { Store, TokenSums } from "./ports.js";
-import { savedLimit, type UserLimiter } from "./user-limiter.js";
+import { savedLimit, USER_LIMIT_SCOPE, type UserLimiter } from "./user-limiter.js";
 import { activePrices, GLOBAL_SETTINGS_SCOPE, type ModelPrice } from "./usage-cost.js";
 import { modelsInUse } from "./usage-meter.js";
 import type { MemberDirectory, MemberProfile } from "./member-directory.js";
@@ -152,9 +152,9 @@ export class AdminPanel {
       week_cost_micros: wholeNumber(input.week_cost_micros, MAX_COST_MICROS, "The weekly limit must be a whole number of micro-dollars from 0 to 1000000000000."),
       grace_percent: wholeNumber(input.grace_percent, MAX_GRACE_PERCENT, "The grace percent must be a whole number from 0 to 1000."),
     };
-    await this.store.setSetting(server, LIMIT_KEYS.five, values.five_hour_cost_micros);
-    await this.store.setSetting(server, LIMIT_KEYS.week, values.week_cost_micros);
-    await this.store.setSetting(server, LIMIT_KEYS.grace, values.grace_percent);
+    await this.store.setSetting(USER_LIMIT_SCOPE, LIMIT_KEYS.five, values.five_hour_cost_micros);
+    await this.store.setSetting(USER_LIMIT_SCOPE, LIMIT_KEYS.week, values.week_cost_micros);
+    await this.store.setSetting(USER_LIMIT_SCOPE, LIMIT_KEYS.grace, values.grace_percent);
     return this.limitsView(server);
   }
 
@@ -162,9 +162,9 @@ export class AdminPanel {
     const defaults = { five_hour_cost_micros: this.config.userLimit5hCostMicros, week_cost_micros: this.config.userLimitWeekCostMicros, grace_percent: this.config.userLimitGracePercent };
     return {
       server,
-      five_hour_cost_micros: savedLimit(this.store.setting(server, LIMIT_KEYS.five), defaults.five_hour_cost_micros),
-      week_cost_micros: savedLimit(this.store.setting(server, LIMIT_KEYS.week), defaults.week_cost_micros),
-      grace_percent: savedLimit(this.store.setting(server, LIMIT_KEYS.grace), defaults.grace_percent, MAX_GRACE_PERCENT),
+      five_hour_cost_micros: savedLimit(this.store.setting(USER_LIMIT_SCOPE, LIMIT_KEYS.five), defaults.five_hour_cost_micros),
+      week_cost_micros: savedLimit(this.store.setting(USER_LIMIT_SCOPE, LIMIT_KEYS.week), defaults.week_cost_micros),
+      grace_percent: savedLimit(this.store.setting(USER_LIMIT_SCOPE, LIMIT_KEYS.grace), defaults.grace_percent, MAX_GRACE_PERCENT),
       defaults,
     };
   }
@@ -228,13 +228,13 @@ export class AdminPanel {
   async usage(server: unknown, user?: unknown): Promise<unknown> {
     const id = snowflake(server, "server");
     if (user === undefined) {
-      const rows = await this.store.listUserUsage(id, USAGE_LIST_LIMIT);
+      const rows = await this.store.listUserUsage(USER_LIMIT_SCOPE, USAGE_LIST_LIMIT);
       const profiles = await this.directory.profiles(id, rows.map(row => row.user));
-      return { server: id, users: rows.map(row => ({ user: profiles.get(row.user)!, windows: this.limiter.summarize(id, row) })) };
+      return { server: id, users: rows.map(row => ({ user: profiles.get(row.user)!, windows: this.limiter.summarize(row) })) };
     }
     const member = snowflake(user, "user");
     const profile = (await this.directory.profiles(id, [member])).get(member)!;
-    return { server: id, user: profile, windows: await this.limiter.usage(id, member) };
+    return { server: id, user: profile, windows: await this.limiter.usage(member) };
   }
 
   /** Server members whose name starts with the query, for the user picker. An empty query finds nobody. */
@@ -251,8 +251,8 @@ export class AdminPanel {
     const input = object(body, "Send a reset as an object.");
     const server = snowflake(input.server, "server"), user = snowflake(input.user, "user");
     const kind = input.kind === undefined ? undefined : windowKind(input.kind);
-    await this.store.resetUserUsage(server, user, kind);
-    return { server, user, kind: kind ?? "all", windows: await this.limiter.usage(server, user) };
+    await this.store.resetUserUsage(USER_LIMIT_SCOPE, user, kind);
+    return { server, user, kind: kind ?? "all", windows: await this.limiter.usage(user) };
   }
 
   /** Adds banked resets for one window. */
@@ -261,8 +261,8 @@ export class AdminPanel {
     const server = snowflake(input.server, "server"), user = snowflake(input.user, "user"), kind = windowKind(input.kind);
     const count = wholeNumber(input.count, MAX_GRANT, "Grant between 1 and 100 resets.");
     if (count < 1) throw new AdminInputError("Grant between 1 and 100 resets.");
-    await this.store.grantResets(server, user, kind, count);
-    return { server, user, kind, granted: count, windows: await this.limiter.usage(server, user) };
+    await this.store.grantResets(USER_LIMIT_SCOPE, user, kind, count);
+    return { server, user, kind, granted: count, windows: await this.limiter.usage(user) };
   }
 
   /** The team web search keys with this month's use and last error. Any team member may read them. Never includes a secret. */

@@ -229,7 +229,7 @@ export class WebChatService {
     if (!text && !images.length) throw new ChatError(400, "Write a message.");
     const body = text || "Please look at the attached image" + (images.length > 1 ? "s." : ".");
     if ([...body].length > PRIVATE_CHAT_MAX_CHARS) throw new ChatError(400, `Write ${PRIVATE_CHAT_MAX_CHARS} characters or fewer.`);
-    const limit = await this.host.limiter.check(chat.server, user);
+    const limit = await this.host.limiter.check(user);
     if (!limit.allowed) throw new ChatError(429, "Usage limit reached.", limit.resetAt);
     const handle = await this.handle(chat.server);
     const channel = privateChannel(chat.id), at = this.now();
@@ -257,7 +257,7 @@ export class WebChatService {
     const at = this.now();
     for (const [key, item] of this.pending) if (at - item.at > PENDING_IMAGE_MS) { this.pending.delete(key); void this.storage.delete(chatImageKey(chat.server, item.chat, key)).catch(error => logError("web_chat_image_sweep_failed", error, { server: chat.server }, true)); }
     if ([...this.pending.values()].filter(item => item.chat === chat.id && item.user === user).length >= CHAT_IMAGE_MAX_COUNT) throw new ChatError(400, `Attach ${CHAT_IMAGE_MAX_COUNT} images or fewer.`);
-    const limit = await this.host.limiter.check(chat.server, user);
+    const limit = await this.host.limiter.check(user);
     if (!limit.allowed) throw new ChatError(429, "Usage limit reached.", limit.resetAt);
     const imageId = newChatImageId(kind.extension), name = imageName(rawName, kind.extension);
     await this.storage.put(chatImageKey(chat.server, chat.id, imageId), bytes, kind.contentType);

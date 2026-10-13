@@ -13,14 +13,14 @@ export function registerUsageTool(registry: ToolRegistry, limiter: UserLimiter):
     access: "member", effect: "read", retrySafe: false,
     writes: args => args.action === "reset",
     async execute(context, args) {
-      const { server, author } = context.message;
+      const { author } = context.message;
       if (args.action === "reset") {
         const kind = String(args.window ?? "");
         if (!["5h", "week"].includes(kind)) throw new ToolError("Choose window 5h or week to reset.");
-        if (!await limiter.useReset(server, author, kind)) throw new ToolError(`You have no banked ${kind} reset.`);
+        if (!await limiter.useReset(author, kind)) throw new ToolError(`You have no banked ${kind} reset.`);
         return kind === "week" ? "Used one full reset. The 5-hour and weekly windows are cleared." : "Used one 5h reset. The 5-hour window is cleared.";
       }
-      const windows = usageView(await limiter.usage(server, author)).windows;
+      const windows = usageView(await limiter.usage(author)).windows;
       return windows.map(window => `${window.kind}: ${window.percent === null ? "no limit" : `${window.percent}% used`}${window.resetAt ? `, resets <t:${Math.ceil(window.resetAt / 1000)}:R>` : ""}. Banked resets: ${window.banked}.`).join("\n");
     },
   });

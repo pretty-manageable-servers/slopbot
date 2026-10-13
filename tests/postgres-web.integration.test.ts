@@ -8,7 +8,7 @@ import type { Message } from "../src/domain.js";
 import type { UserLimitState, UserLimitWindow } from "../src/ports.js";
 import type { WebReplyRow, WebWebhookRow } from "../src/web-replies.js";
 import type { ShareRow } from "../src/shares.js";
-import { UserLimiter } from "../src/user-limiter.js";
+import { USER_LIMIT_SCOPE, UserLimiter } from "../src/user-limiter.js";
 
 const WEB = "web-parity";
 const SHARES = "share-parity";
@@ -338,14 +338,14 @@ test("concurrent UserLimiter records from two Postgres instances add both charge
   try {
     const limiterA = new UserLimiter(first, options);
     const limiterB = new UserLimiter(second, options);
-    await Promise.all([limiterA.record(WEB, "racer", cost, now), limiterB.record(WEB, "racer", cost, now)]);
-    const pair = await first.userUsage(WEB, "racer");
+    await Promise.all([limiterA.record("racer", cost, now), limiterB.record("racer", cost, now)]);
+    const pair = await first.userUsage(USER_LIMIT_SCOPE, "racer");
     assert.equal(pair.windows.find(row => row.kind === "5h")?.spent, 2 * cost);
     assert.equal(pair.windows.find(row => row.kind === "week")?.spent, 2 * cost);
 
     // A burst from both instances at once must not lose a charge.
-    await Promise.all(Array.from({ length: 20 }, (_, index) => (index % 2 ? limiterA : limiterB).record(WEB, "racer", cost, now)));
-    const burst = await second.userUsage(WEB, "racer");
+    await Promise.all(Array.from({ length: 20 }, (_, index) => (index % 2 ? limiterA : limiterB).record("racer", cost, now)));
+    const burst = await second.userUsage(USER_LIMIT_SCOPE, "racer");
     assert.equal(burst.windows.find(row => row.kind === "5h")?.spent, 22 * cost);
   } finally {
     await first.close();

@@ -93,7 +93,7 @@ test("a web reply posts through the channel webhook and stores the returned mess
 
 test("over the usage limit: 429 with the reset time and nothing posted", async t => {
   const h = harness(); t.after(() => h.store.close());
-  await h.limiter.record(SERVER, USER, 1000);
+  await h.limiter.record(USER, 1000);
   const error = await reply(h.service).then(() => undefined, (failure: unknown) => failure);
   assert.ok(error instanceof WebReplyError);
   assert.equal(error.status, 429);
@@ -376,7 +376,7 @@ test("web replies skip JEV and reach the answer path; the source flag survives p
 
 test("the console reply route returns 429 with resetAt and posts nothing", async t => {
   const h = harness(); t.after(() => h.store.close());
-  await h.limiter.record(SERVER, USER, 1000);
+  await h.limiter.record(USER, 1000);
   const options = { origin: "http://localhost:3000", host: "127.0.0.1", port: 3000, clientId: "id", clientSecret: "secret" };
   const server = createConsole(options, { sessions: new SQLiteStore(), async canSignIn() { return true; },
     async snapshot() { return {}; }, async invoke() { return {}; },

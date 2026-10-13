@@ -190,7 +190,7 @@ test('team admin routes need team membership, and only editors can change settin
   assert.deepEqual(await (await get('/api/admin/me', reader)).json(), { role: 'read_only', canEdit: false });
   for (const path of reads) assert.equal((await get(path, reader)).status, 200, path);
   for (const [path, body] of writes) assert.equal((await post(path, body, reader)).status, 403, path);
-  assert.equal(store.setting(SERVER, 'user_limit_5h_cost_micros'), undefined);
+  assert.equal(store.setting('global', 'user_limit_5h_cost_micros'), undefined);
   assert.equal((await post('/api/admin/limits', writes[0]![1], { ...reader, 'X-CSRF-Token': 'wrong', Origin: 'https://evil.example' })).status, 403);
 
   // Developer: reads and writes work.
@@ -198,12 +198,12 @@ test('team admin routes need team membership, and only editors can change settin
   const limits = await post('/api/admin/limits', writes[0]![1], developer);
   assert.equal(limits.status, 200);
   assert.deepEqual(await limits.json(), { server: SERVER, five_hour_cost_micros: 5000000, week_cost_micros: 20000000, grace_percent: 15, defaults: { five_hour_cost_micros: 100, week_cost_micros: 0, grace_percent: 10 } });
-  assert.equal(store.setting(SERVER, 'user_limit_week_cost_micros'), 20000000);
+  assert.equal(store.setting('global', 'user_limit_week_cost_micros'), 20000000);
   for (const bad of [{ five_hour_cost_micros: -1, week_cost_micros: 0, grace_percent: 0 }, { five_hour_cost_micros: 1.5, week_cost_micros: 0, grace_percent: 0 }, { five_hour_cost_micros: 1, week_cost_micros: 0, grace_percent: 1001 }, { five_hour_cost_micros: 1, week_cost_micros: 'x', grace_percent: 0 }]) {
     assert.equal((await post('/api/admin/limits', { server: SERVER, ...bad }, developer)).status, 400, JSON.stringify(bad));
   }
   assert.equal((await post('/api/admin/limits', { server: 'nope', five_hour_cost_micros: 1, week_cost_micros: 0, grace_percent: 0 }, developer)).status, 400);
-  assert.equal(store.setting(SERVER, 'user_limit_5h_cost_micros'), 5000000, 'bad input saves nothing');
+  assert.equal(store.setting('global', 'user_limit_5h_cost_micros'), 5000000, 'bad input saves nothing');
   assert.equal((await get(`/api/admin/limits?server=${SERVER}`, developer)).status, 200);
 
   // Rotate: refused members rotate nothing; an editor rotates one channel's webhook and bad input rotates nothing.
@@ -235,8 +235,8 @@ test('team admin routes need team membership, and only editors can change settin
   assert.equal((await post('/api/admin/prices', { model: 'stratus', remove: true }, outsider)).status, 403);
 
   // Usage: list, one user, grant, reset. Banked resets survive a window reset.
-  await limiter.record(SERVER, USER, 60, Date.now());
-  await store.grantResets(SERVER, USER, '5h', 1);
+  await limiter.record(USER, 60, Date.now());
+  await store.grantResets('global', USER, '5h', 1);
   const listed = await (await get(`/api/admin/usage?server=${SERVER}`, developer)).json() as { users: { user: { id: string; displayName: string; username: string | null; avatarUrl: string | null }; windows: { kind: string; spent: number; banked: number }[] }[] };
   assert.deepEqual(listed.users[0]!.user, { id: USER, displayName: 'Ada L', username: 'ada', avatarUrl: AVATAR });
   assert.deepEqual(listed.users[0]!.windows.map(window => [window.kind, window.spent, window.banked]), [['5h', 60, 1], ['week', 60, 0]]);
@@ -254,16 +254,16 @@ test('team admin routes need team membership, and only editors can change settin
   assert.equal((await get('/api/admin/usage?server=bad', developer)).status, 400);
   const granted = await post('/api/admin/usage/grant', { server: SERVER, user: USER, kind: 'week', count: 2 }, developer);
   assert.equal(granted.status, 200);
-  assert.equal((await store.userUsage(SERVER, USER)).resets.week, 2);
+  assert.equal((await store.userUsage('global', USER)).resets.week, 2);
   for (const bad of [{ kind: 'week', count: 0 }, { kind: 'week', count: 101 }, { kind: 'month', count: 1 }]) {
     assert.equal((await post('/api/admin/usage/grant', { server: SERVER, user: USER, ...bad }, developer)).status, 400, JSON.stringify(bad));
   }
   const reset5h = await post('/api/admin/usage/reset', { server: SERVER, user: USER, kind: '5h' }, developer);
   assert.equal(reset5h.status, 200);
   assert.deepEqual((await reset5h.json() as { windows: { kind: string; spent: number }[] }).windows.map(window => [window.kind, window.spent]), [['5h', 0], ['week', 60]]);
-  assert.equal((await store.userUsage(SERVER, USER)).resets['5h'], 1, 'an admin reset does not use a banked reset');
+  assert.equal((await store.userUsage('global', USER)).resets['5h'], 1, 'an admin reset does not use a banked reset');
   await post('/api/admin/usage/reset', { server: SERVER, user: USER }, developer);
-  assert.deepEqual((await store.userUsage(SERVER, USER)).windows, []);
+  assert.deepEqual((await store.userUsage('global', USER)).windows, []);
 
   // Web transcripts: the team editor can switch a channel, and the value is checked.
   assert.equal((await post('/api/admin/transcripts', { server: SERVER, channel: '300000000000000001', enabled: 'yes' }, developer)).status, 400);
