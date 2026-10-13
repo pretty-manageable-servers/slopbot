@@ -96,6 +96,8 @@ test("deleting a private chat removes its messages, runs and events and keeps ot
 import { Application } from "../src/application.js";
 import { Bot, type ChatGateway, type Incoming } from "../src/bot.js";
 import { FakeLLM } from "../src/adapters/fake-llm.js";
+import { WebChatGateway } from "../src/web-chats.js";
+import type { ToolActivity } from "../src/tool-activity.js";
 
 function botFor(store: SQLiteStore, tools?: ToolRegistry) {
   const app = new Application(store, new FakeLLM(), { allowedChannels: [{ server: "s", channel: "100000000000000001" }] });
@@ -158,4 +160,15 @@ test("a private chat cannot run a write tool through the bot", async t => {
   bot.openPrivateChat("s", privateChannel(privateId));
   await assert.rejects(bot.executeTool(privateMessage, { name: "writer", arguments: {} }, "op-bot-write"), (error: unknown) => error instanceof ToolError);
   assert.equal(created(), 0);
+});
+
+test("a private chat reply keeps the tool footer that Discord shows, unless tool display is off", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const gateway = new WebChatGateway(store, "s");
+  const activity: ToolActivity[] = [{ id: "t1", name: "status", status: "completed" }];
+  const [full] = await gateway.reply(privateMessage, "Answer", "delivery-1", activity);
+  assert.match(full!.text, /^Answer\n\n-# /);
+  await store.setSetting("s", "tool_display", "none");
+  const [plain] = await gateway.reply(privateMessage, "Answer", "delivery-2", activity);
+  assert.equal(plain!.text, "Answer");
 });

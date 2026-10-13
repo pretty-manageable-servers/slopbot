@@ -250,6 +250,10 @@ test("entry points check the user limiter before work starts", () => {
   assert.ok(usageStart > 0 && usageBody.includes("usageReply(this.limiter"), "/usage must reply through usageReply");
   assert.doesNotMatch(usageBody, /limiter\.check\(/, "/usage is exempt from the limiter gate");
   assert.doesNotMatch(read("adapters/discord-commands.ts"), /limiter\.check\(/, "usageReply must not check the limiter gate");
+  // A private chat message is checked before it is saved, so a refused message never reaches the store.
+  const chats = read("web-chats.ts");
+  assert.match(chats, /this\.host\.limiter\.check\(/, "a private chat message must check the limiter");
+  assert.ok(chats.indexOf("this.host.limiter.check(") < chats.indexOf("await this.store.ingest(message)"), "the private chat limiter check must come before the message is saved");
   assert.match(read("agent-runner.ts"), /streamMetered\(this\.llm, prompt, \{ usage: this\.services\.usage, who: attribution\(message\)/);
   assert.match(read("participation.ts"), /streamMetered\(this\.llm, prompt, \{ usage: this\.usage, who: attribution\(message\) \}\)/);
   assert.match(read("files.ts"), /streamMetered\(options\.llm, prompt, \{ usage: options\.usage/);

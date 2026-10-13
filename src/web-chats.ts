@@ -4,13 +4,14 @@ import { logError } from "./errors.js";
 import type { ChatGateway } from "./bot.js";
 import type { Message } from "./domain.js";
 import type { ToolActivity } from "./tool-activity.js";
+import { toolDisplayMode, toolFooter } from "./presentation/tool-activity.js";
 import type { UiDocument } from "./ui/schema.js";
 import type { ChannelAccess } from "./channel-access.js";
 import type { MemberDirectory } from "./member-directory.js";
 import type { UserLimiter } from "./user-limiter.js";
 import { ToolError, stableOperationId } from "./tools.js";
 import { requestTimings } from "./request-timing.js";
-import { PRIVATE_CHAT_MAX_CHARS, PRIVATE_CHAT_TITLE_CHARS, newPrivateChatId, privateChannel, privateChatTitle } from "./private-chat.js";
+import { PRIVATE_CHANNEL_PREFIX, PRIVATE_CHAT_MAX_CHARS, PRIVATE_CHAT_TITLE_CHARS, isPrivateChannel, newPrivateChatId, privateChannel, privateChatTitle } from "./private-chat.js";
 import { publishMessage, runEvents, slopbotId, type ConversationEventStore, type RunEvents } from "./run-events.js";
 import { messageViews, openStream, type TranscriptStore } from "./web-transcripts.js";
 import type { WebChatRow } from "./web-chat-store.js";
@@ -58,12 +59,17 @@ const MESSAGE_ID = /^[\w:.-]{1,64}$/;
 export class WebChatGateway implements ChatGateway {
   constructor(private readonly store: Pick<ChatStore, "setting" | "taskThreads" | "requestRunIds" | "replyRunIds">, private readonly server: string) {}
 
-  async reply(message: Message, text: string, deliveryId?: string, _activity?: readonly ToolActivity[], _ui?: UiDocument): Promise<readonly Message[]> {
+  /**
+   * Saves the reply with the same tool footer that Discord shows, so the transcript matches. Live tool progress is
+   * published by the bot's tool observer. A UI document has no place in a saved Message, so it is not kept here.
+   */
+  async reply(message: Message, text: string, deliveryId?: string, activity: readonly ToolActivity[] = [], _ui?: UiDocument): Promise<readonly Message[]> {
+    const footer = toolFooter(activity, toolDisplayMode(this.store.setting(this.server, "tool_display")));
     const output: Message = {
       id: `chat-reply-${deliveryId ? stableOperationId(deliveryId) : randomUUID()}`,
       server: this.server, channel: message.channel,
       author: slopbotId(this.store, this.server) ?? "slopbot", authorName: "Slopbot", isBot: true,
-      text, timestamp: Date.now(), addressed: false,
+      text: text + footer, timestamp: Date.now(), addressed: false,
     };
     const runIds = await this.store.requestRunIds(this.server, message.id);
     await publishMessage(this.store, output, runIds);
@@ -164,6 +170,12 @@ export class WebChatService {
     res.on("close", () => stop());
   }
 
+  /** True when the user owns the private chat in this channel, and the chat is in this server. Errors count as no. */
+  async owns(user: string, server: string, channel: string): Promise<boolean> {
+    if (!isPrivateChannel(channel)) return false;
+    return this.owned(user, channel.slice(PRIVATE_CHANNEL_PREFIX.length)).then(chat => chat.server === server, () => false);
+  }
+
   /** The chat, when the user owns it and is still in its server. Anything else is a 404. */
   private async owned(user: string, id: string): Promise<WebChatRow> {
     const chat = CHAT_ID.test(id) ? await this.store.webChat(id) : undefined;
@@ -215,7 +227,7 @@ export function createChatRoutes(service: WebChatService): ChatRoutes {
             const raw = url.searchParams.get("limit");
             const limit = raw === null || raw === "" ? 50 : Number(raw);
             if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new ChatError(400, "Invalid limit.");
-            return json(res, 200, await service.messages(user, id, limit, url.searchParams.get("before")));
+            return json(res, 200, await service.messages(user, id, limit, url.searchParams.get("before") || null));
           }
           if (req.method === "POST") return json(res, 201, await service.send(user, id, input.text));
         }

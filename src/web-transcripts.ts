@@ -39,6 +39,8 @@ export interface TranscriptHost {
   shareRule?: ShareRule;
   /** Names and avatars of human authors. Without it, messages have no username or avatarUrl. */
   members?: Pick<MemberDirectory, "profiles">;
+  /** True when the user owns this private chat and is in its server. A private chat has no Discord channel, so only its run view uses this. */
+  ownsPrivateChat?(server: string, channel: string, user: string): Promise<boolean>;
 }
 
 export interface TranscriptRoutes {
@@ -296,7 +298,9 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
     const record = await store.runRecord(runId);
     if (!record || record.purpose !== "reply") return json(res, 404, { error: "Run not found." });
     const { server, channel } = record.message;
-    if (!(await granted(host, server, channel, user))) return json(res, 403, { error: "You cannot view this run." });
+    // A private chat has no Discord channel, so the owner check replaces the channel access check.
+    const visible = isPrivateChannel(channel) ? await host.ownsPrivateChat?.(server, channel, user) === true : Boolean(await granted(host, server, channel, user));
+    if (!visible) return json(res, 403, { error: "You cannot view this run." });
     const events = await store.events(runId);
     const turns = await store.toolTurns(server, record.message.id);
     const fallback = record.status === "tool_calls" ? textCalls(record.result) : [];
