@@ -42,7 +42,7 @@ async function setup(t: TestContext): Promise<Fixture> {
   const shareNow = { now: Date.now() };
   const limit: { current: UserLimit } = { current: { allowed: true } };
   const received: Message[] = [];
-  const handle: PrivateChatHandle = { openChat() { /* no bot in these tests */ }, closeChat() { /* none */ }, async receiveChat(message) { received.push(message); }, async stopResponses() { return 0; } };
+  const handle: PrivateChatHandle = { openChat() { /* no bot in these tests */ }, closeChat() { /* none */ }, async receiveChat(message) { received.push(message); }, async stopResponses() { return []; } };
   let clock = 1_000;
   const host: ChatHost = {
     async member(user, server) { return server === SERVER && members.has(user); },

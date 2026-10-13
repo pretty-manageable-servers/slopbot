@@ -162,20 +162,31 @@ export class Bot {
   /**
    * Stops the responses in a channel: cancels queued jobs and interrupts running ones.
    * An admin stops all of them. Other users stop only the responses that their own messages started.
-   * Returns the number of stopped responses.
+   * Returns the IDs of the stopped jobs.
    */
-  async stop(server: string, channel: string, user: string, admin: boolean): Promise<number> {
+  async stop(server: string, channel: string, user: string, admin: boolean): Promise<string[]> {
     const store = this.options.queueStore;
-    if (server !== this.server || !store) return 0;
-    let stopped = 0;
+    if (server !== this.server || !store) return [];
+    const stopped: string[] = [];
     for (const job of await store.jobs(server, channel)) {
       if (!["pending", "ready", "running", "sending"].includes(job.status)) continue;
       if (!admin && job.message.author !== user) continue;
       if (!await store.cancelJob(job.id)) continue;
       await this.app.interrupt(server, job.message.id).catch(error => logError("stop_interrupt_failed", error, { server, jobId: job.id }));
-      stopped++;
+      stopped.push(job.id);
     }
     return stopped;
+  }
+
+  /** Continues a stopped job from its recorded progress. The same rule as stop: an admin, or the author of the message that started it. */
+  async resume(server: string, channel: string, jobId: string, user: string, admin: boolean): Promise<boolean> {
+    const store = this.options.queueStore;
+    if (server !== this.server || !store) return false;
+    const job = (await store.jobs(server, channel)).find(item => item.id === jobId);
+    if (!job || job.status !== "cancelled" || (!admin && job.message.author !== user)) return false;
+    if (!await store.resumeJob(job.id)) return false;
+    this.options.worker?.wake();
+    return true;
   }
 
   /** True when Slopbot may answer one more bot message in this channel. The team sets the limit in Bot admin. */
