@@ -1047,7 +1047,10 @@ function removeMessage(id) {
 // The status line on top has the pulsing mark, a verb, and the elapsed time and output tokens.
 function liveFor(requestId) {
   let card = [...conv.live.values()].find(item => item.requestId === requestId);
-  if (card) return card;
+  if (card) { if (requestId !== PENDING_CARD) dropPendingCard(); return card; }
+  // A card shown before the run started takes the first real request id.
+  const early = requestId !== PENDING_CARD && conv.live.get(PENDING_CARD);
+  if (early) { conv.live.delete(PENDING_CARD); early.requestId = requestId; conv.live.set(requestId, early); unadopted = Math.max(0, unadopted - 1); return early; }
   const log = $('conv-log');
   if (!log) return undefined;
   const stick = nearBottom(log);
@@ -1124,9 +1127,6 @@ function formatTokens(n) { return n < 1000 ? String(n) : `${(n / 1000).toFixed(1
 function findRunCard(runId) { return [...conv.live.values()].find(item => item.runs.has(runId)); }
 
 function startLive(runId, requestId) {
-  // A card shown before the run started takes this request id.
-  const early = conv.live.get(PENDING_CARD);
-  if (early && !conv.live.has(requestId)) { conv.live.delete(PENDING_CARD); early.requestId = requestId; conv.live.set(requestId, early); }
   const card = liveFor(requestId);
   if (!card) return;
   card.runs.add(runId);
@@ -1248,7 +1248,7 @@ function finishLiveRun(runId) {
 
 function dropLive() {
   for (const card of conv.live.values()) { clearInterval(card.timer); clearTimeout(card.verbTimer); }
-  conv.live.clear();
+  conv.live.clear(); unadopted = 0;
 }
 
 function revealText(card, to) {
@@ -1314,10 +1314,15 @@ function pendingBubble(text, images = [], chatId = '') {
 
 // The thinking card shows before the run starts. startLive gives it the real request id.
 const PENDING_CARD = 'pending';
+let unadopted = 0; // Sends whose run has not started yet.
 function addPendingCard() {
+  unadopted++;
   if (!conv.live.has(PENDING_CARD)) liveFor(PENDING_CARD);
 }
-function dropPendingCard() {
+// Removes the placeholder when no send waits for it. force counts one send as ended.
+function dropPendingCard(force) {
+  if (force) unadopted = Math.max(0, unadopted - 1);
+  if (unadopted > 0) return;
   const card = conv.live.get(PENDING_CARD);
   if (!card) return;
   clearInterval(card.timer); clearTimeout(card.verbTimer); card.node.remove(); conv.live.delete(PENDING_CARD);
@@ -1422,7 +1427,7 @@ function chatComposer(id) {
       if (!id && effort.chosen) await sendJson('PATCH', `/api/chats/${enc(chatId)}`, { effort: effort.chosen }).catch(() => {});
       const response = await fetch(`/api/chats/${enc(chatId)}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ text, images: shown.map(item => item.imageId) }) });
       const data = await response.json().catch(() => ({}));
-      if (response.status === 401) { dropPendingCard(); showScreen('login'); return; }
+      if (response.status === 401) { dropPendingCard(true); showScreen('login'); return; }
       if (!response.ok) {
         // A 4xx answer means nothing was saved, so a chat made just for this send is removed. A 5xx may have saved the message, so that chat is kept for a retry.
         if (!id && response.status < 500) { made = null; discardChat(chatId); if (conv.channel === chatId) detachNewChat(chatId); }
@@ -1435,7 +1440,7 @@ function chatComposer(id) {
       if (conv.ask && conv.ask.chat === chatId) conv.ask = null;
       refreshChats();
     } catch (error) {
-      if (error.status === 401) { dropPendingCard(); return showScreen('login'); }
+      if (error.status === 401) { dropPendingCard(true); return showScreen('login'); }
       if (!id && !made && conv.channel === chatId) detachNewChat(chatId);
       failPending(pending, text, shown, error.message);
     }
@@ -1443,7 +1448,7 @@ function chatComposer(id) {
   }
   // The failed bubble keeps a Retry button. The text is back in the field when it is empty.
   function failPending(pending, text, shown, message) {
-    dropPendingCard();
+    dropPendingCard(true);
     pending.classList.remove('pending'); pending.classList.add('failed');
     const retry = textNode('button', 'Retry', 'chat-retry');
     retry.type = 'button';
