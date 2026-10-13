@@ -28,7 +28,7 @@ A signed-in user talks to Slopbot one to one in the web console, like claude.ai.
 
 - History search (`src/search/history-search.ts`), context building for other channels, reports, participation (JEV), history import and indexing: exclude `channel LIKE 'web:%'`, or filter in the query.
 - The memory extractor does not run on `web:` channels on its own.
-- The channel list, transcripts, shares and the admin transcript list never show `web:` channels.
+- The channel list, transcripts, the server's share list and the admin transcript list never show `web:` channels. The one exception is a chat link: the owner can make it, list and revoke it. It is a frozen copy of the messages up to the share, and it is deleted with the chat.
 - Retention: chats are kept until the user deletes them. Delete removes messages, runs and events of that chat.
 - Tests for each rule.
 
