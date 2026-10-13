@@ -9,9 +9,9 @@ const limiter = (store: SQLiteStore, fiveHour: number, week: number) => new User
 
 test("the /usage embed shows percents, a 10-block bar and banked resets, never dollars", async () => {
   const store = new SQLiteStore(":memory:"), limits = limiter(store, 1000000, 3000000);
-  await limits.record("s", "alice", 300000);
-  await store.grantResets("s", "alice", "week", 2);
-  const embed = usageEmbed(usageView(await limits.usage("s", "alice")));
+  await limits.record("alice", 300000);
+  await store.grantResets("global", "alice", "week", 2);
+  const embed = usageEmbed(usageView(await limits.usage("alice")));
   assert.equal(embed.title, "Your Slopbot usage");
   assert.equal(embed.description, "Plan: Seed (free)");
   const [fiveHour, weekly] = embed.fields ?? [];
@@ -25,7 +25,7 @@ test("the /usage embed shows percents, a 10-block bar and banked resets, never d
 
 test("a window with no limit shows No limit and no reset time until it runs", async () => {
   const store = new SQLiteStore(":memory:"), limits = limiter(store, 1000000, 0);
-  const embed = usageEmbed(usageView(await limits.usage("s", "alice")));
+  const embed = usageEmbed(usageView(await limits.usage("alice")));
   assert.equal(embed.fields?.[1]?.value, "▱▱▱▱▱▱▱▱▱▱ No limit\nBanked resets: 0");
   assert.equal(embed.fields?.[0]?.value, "▱▱▱▱▱▱▱▱▱▱\n0% used\nBanked resets: 0");
   store.close();
@@ -40,32 +40,32 @@ test("usageBar draws 10 blocks for any percent", () => {
 
 test("a user over the limit can still run /usage and use a banked reset, and /usage charges nothing", async () => {
   const store = new SQLiteStore(":memory:"), limits = limiter(store, 100, 0);
-  await limits.record("s", "alice", 100);
-  await store.grantResets("s", "alice", "5h", 1);
-  assert.equal((await limits.check("s", "alice")).allowed, false);
-  const shown = await usageReply(limits, "s", "alice", null);
+  await limits.record("alice", 100);
+  await store.grantResets("global", "alice", "5h", 1);
+  assert.equal((await limits.check("alice")).allowed, false);
+  const shown = await usageReply(limits, "alice", null);
   assert.equal(shown.content, undefined);
   assert.match(JSON.stringify(shown.embeds), /100% used/);
-  assert.equal((await limits.usage("s", "alice"))[0]!.spent, 100);
-  assert.equal((await limits.check("s", "alice")).allowed, false);
-  const reset = await usageReply(limits, "s", "alice", "5h");
+  assert.equal((await limits.usage("alice"))[0]!.spent, 100);
+  assert.equal((await limits.check("alice")).allowed, false);
+  const reset = await usageReply(limits, "alice", "5h");
   assert.equal(reset.content, "Used one 5-hour reset. That window is cleared.");
-  assert.equal((await limits.check("s", "alice")).allowed, true);
+  assert.equal((await limits.check("alice")).allowed, true);
   store.close();
 });
 
 test("/usage reset uses one banked reset per window, then says none is left", async () => {
   const store = new SQLiteStore(":memory:"), limits = limiter(store, 100, 1000);
-  await limits.record("s", "alice", 100);
-  await store.grantResets("s", "alice", "5h", 1);
-  assert.equal((await usageReply(limits, "s", "alice", "week")).content, "You have no banked weekly reset.");
-  const first = await usageReply(limits, "s", "alice", "5h");
+  await limits.record("alice", 100);
+  await store.grantResets("global", "alice", "5h", 1);
+  assert.equal((await usageReply(limits, "alice", "week")).content, "You have no banked weekly reset.");
+  const first = await usageReply(limits, "alice", "5h");
   assert.equal(first.content, "Used one 5-hour reset. That window is cleared.");
   assert.match(JSON.stringify(first.embeds), /0% used/);
   // The weekly window keeps its spend and is not cleared.
   assert.match(JSON.stringify(first.embeds), /10% used/);
-  assert.equal((await limits.usage("s", "alice"))[1]!.spent, 100);
-  const second = await usageReply(limits, "s", "alice", "5h");
+  assert.equal((await limits.usage("alice"))[1]!.spent, 100);
+  const second = await usageReply(limits, "alice", "5h");
   assert.equal(second.content, "You have no banked 5-hour reset.");
   assert.deepEqual(second.embeds, []);
   store.close();
@@ -73,9 +73,9 @@ test("/usage reset uses one banked reset per window, then says none is left", as
 
 test("/usage rejects an unknown window without touching any banked reset", async () => {
   const store = new SQLiteStore(":memory:"), limits = limiter(store, 100, 0);
-  await store.grantResets("s", "alice", "5h", 1);
-  assert.equal((await usageReply(limits, "s", "alice", "month")).content, "Choose 5-hour or weekly to reset.");
-  assert.equal((await limits.usage("s", "alice"))[0]!.banked, 1);
+  await store.grantResets("global", "alice", "5h", 1);
+  assert.equal((await usageReply(limits, "alice", "month")).content, "Choose 5-hour or weekly to reset.");
+  assert.equal((await limits.usage("alice"))[0]!.banked, 1);
   store.close();
 });
 

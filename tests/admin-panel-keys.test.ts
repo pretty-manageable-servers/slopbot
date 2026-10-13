@@ -6,7 +6,7 @@ import { UserLimiter } from '../src/user-limiter.js';
 import { MemberDirectory } from '../src/member-directory.js';
 import { fakeSource } from './member-fakes.js';
 import { WebKeySecrets } from '../src/web-keys.js';
-import { DEFAULT_KEY_CAPS, KEY_CAPS_SETTING, usageMonth } from '../src/web-providers.js';
+import { DEFAULT_KEY_CAPS, KEY_CAPS_SETTING, KEY_ERRORS_SETTING, usageMonth } from '../src/web-providers.js';
 import { GLOBAL_SETTINGS_SCOPE } from '../src/usage-cost.js';
 
 // A fixed base64 encoding of 32 bytes, for the sealing key.
@@ -40,7 +40,7 @@ test('the key list shows owner, last four and use, and never the secret', async 
     ['tavily', 'mine', '1234', OWNER, true, 3, true],
     ['firecrawl', '', '5678', OTHER, false, 0, false],
   ]);
-  assert.deepEqual(Object.keys(view.keys[0]!).sort(), ['createdAt', 'exhausted', 'id', 'label', 'last4', 'mine', 'owner', 'provider', 'used']);
+  assert.deepEqual(Object.keys(view.keys[0]!).sort(), ['createdAt', 'exhausted', 'id', 'label', 'last4', 'lastError', 'mine', 'owner', 'provider', 'used']);
   assert.deepEqual((await panel.webKeys(OTHER)).keys.map(key => key.mine), [false, true], 'mine is per member');
 });
 
@@ -130,4 +130,60 @@ test('key caps are whole numbers from 1 to 100000 and are saved for all servers'
 
   await store.setSetting(GLOBAL_SETTINGS_SCOPE, KEY_CAPS_SETTING, { tavily: 0, firecrawl: 'many' });
   assert.deepEqual((await panel.webKeys(OWNER)).caps, DEFAULT_KEY_CAPS, 'a bad saved value falls back to the default');
+});
+
+test('the key list shows the last error of each key and ignores bad saved data', async t => {
+  const { store, panel } = setup(); t.after(() => store.close());
+  await panel.addWebKey(OWNER, { provider: 'tavily', label: 'good', secret: SECRET });
+  await panel.addWebKey(OWNER, { provider: 'tavily', label: 'bad', secret: 'tvly-bad-1111' });
+  await panel.addWebKey(OTHER, { provider: 'firecrawl', label: 'none', secret: 'fc-other-5678' });
+  const ids = Object.fromEntries((await panel.webKeys(OWNER)).keys.map(key => [key.label, key.id]));
+  const at = 1_800_000_000_000;
+  await store.setSetting(GLOBAL_SETTINGS_SCOPE, KEY_ERRORS_SETTING, {
+    [ids.good!]: { at, status: '432', message: 'Plan limit reached', exhausted: true },
+    [ids.bad!]: { at: 'soon', status: 500, message: 'Tavily could not answer', exhausted: false },
+    [ids.none!]: ['500'],
+    'no-such-key': { at, status: '500', message: 'ghost', exhausted: false },
+  });
+
+  const errorsByLabel = (view: { keys: { label: string; lastError: unknown }[] }) => Object.fromEntries(view.keys.map(key => [key.label, key.lastError]));
+  assert.deepEqual(errorsByLabel(await panel.webKeys(OWNER)), {
+    good: { at, status: '432', message: 'Plan limit reached', exhausted: true },
+    bad: null,
+    none: null,
+  });
+
+  await store.setSetting(GLOBAL_SETTINGS_SCOPE, KEY_ERRORS_SETTING, ['not', 'a', 'table']);
+  assert.deepEqual(Object.values(errorsByLabel(await panel.webKeys(OWNER))), [null, null, null], 'a saved list is ignored');
+  await store.setSetting(GLOBAL_SETTINGS_SCOPE, KEY_ERRORS_SETTING, 'broken');
+  assert.deepEqual(Object.values(errorsByLabel(await panel.webKeys(OWNER))), [null, null, null], 'a saved text is ignored');
+});
+
+test('reset is for editors and clears the last error of one key', async t => {
+  const { store, panel } = setup(); t.after(() => store.close());
+  await panel.addWebKey(OWNER, { provider: 'tavily', label: 'a', secret: SECRET });
+  await panel.addWebKey(OWNER, { provider: 'tavily', label: 'b', secret: 'tvly-second-1111' });
+  const ids = Object.fromEntries((await panel.webKeys(OWNER)).keys.map(key => [key.label, key.id]));
+  const error = { at: 1_800_000_000_000, status: '432', message: 'Plan limit reached', exhausted: true };
+  await store.setSetting(GLOBAL_SETTINGS_SCOPE, KEY_ERRORS_SETTING, { [ids.a!]: error, [ids.b!]: { ...error, status: 'timeout', exhausted: false } });
+  await store.exhaustProviderKey(ids.a!, usageMonth());
+
+  await assert.rejects(panel.resetWebKey(OWNER, false, { id: ids.a }), (error: unknown) => error instanceof AdminInputError && error.message === 'Only a team editor can reset a key.');
+  await assert.rejects(panel.resetWebKey(OTHER, false, { id: ids.a }), AdminInputError);
+  await assert.rejects(panel.resetWebKey(EDITOR, true, { id: 'no-such-key' }), (error: unknown) => error instanceof AdminInputError && /does not exist/.test(error.message));
+  await assert.rejects(panel.resetWebKey(EDITOR, true, { id: 5 }), AdminInputError);
+  await assert.rejects(panel.resetWebKey(EDITOR, true, null), AdminInputError);
+  assert.equal((await panel.webKeys(OWNER)).keys.find(key => key.label === 'a')?.lastError?.status, '432', 'a refused reset changes nothing');
+
+  // The store here has no resetProviderKey, so the reset still clears the error and leaves the exhausted flag.
+  const view = await panel.resetWebKey(EDITOR, true, { id: ids.a });
+  assert.deepEqual(Object.fromEntries(view.keys.map(key => [key.label, key.lastError])), { a: null, b: { ...error, status: 'timeout', exhausted: false } }, 'only the reset key loses its error');
+
+  // A store with resetProviderKey gets the key and this month.
+  const resets: [string, string][] = [];
+  Object.assign(store, { resetProviderKey: async (id: string, month: string) => { resets.push([id, month]); } });
+  await store.setSetting(GLOBAL_SETTINGS_SCOPE, KEY_ERRORS_SETTING, { [ids.a!]: error });
+  await panel.resetWebKey(EDITOR, true, { id: ids.a });
+  assert.deepEqual(resets, [[ids.a, usageMonth()]]);
+  assert.deepEqual(store.setting(GLOBAL_SETTINGS_SCOPE, KEY_ERRORS_SETTING), {}, 'the error entry is removed');
 });

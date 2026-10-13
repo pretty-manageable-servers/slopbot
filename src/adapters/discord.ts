@@ -358,10 +358,12 @@ export class DiscordServer implements ChatGateway {
   }
   private async registerCommands(): Promise<void> {
     const guild = await this.client.guilds.fetch(this.guildId);
-    const command = buildToolCommands(this.tools);
-    await guild.commands.create(command.toJSON());
-    // A separate command, so /slopbot stays as it is.
-    await guild.commands.create(buildUsageCommand().toJSON());
+    // set() replaces the whole list, so commands from older versions are removed.
+    // /usage is a separate command, so /slopbot stays as it is.
+    await guild.commands.set([buildToolCommands(this.tools).toJSON(), buildUsageCommand().toJSON()]);
+    // Slopbot registers no global commands. Old global commands stay visible and fail, so remove them.
+    const global = await this.client.application?.commands.fetch();
+    if (global?.size) await this.client.application!.commands.set([]);
   }
   /**
    * The /usage command. Read-only, so it never checks the UserLimiter gate: a user over the limit
@@ -371,7 +373,7 @@ export class DiscordServer implements ChatGateway {
     if (interaction.guildId !== this.guildId) return;
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
-      const reply = await usageReply(this.limiter, this.guildId, interaction.user.id, interaction.options.getString("reset"));
+      const reply = await usageReply(this.limiter, interaction.user.id, interaction.options.getString("reset"));
       await interaction.editReply({ ...(reply.content ? { content: reply.content } : {}), embeds: reply.embeds, allowedMentions: { parse: [] } });
     } catch (error) {
       logError("command_failed", error, { stage: "usage command", server: this.guildId, messageId: interaction.id });
@@ -395,7 +397,7 @@ export class DiscordServer implements ChatGateway {
       const definition = this.tools.definitions().find(tool => tool.name === name);
       if (!definition) throw new ToolError("Unknown Slopbot tool");
       // The usage tool stays available over the limit, so a user can see their spend and use a reset.
-      if (name !== "usage") { const limit = await this.limiter.check(this.guildId, interaction.user.id); if (!limit.allowed) throw new UserLimitError(limit.resetAt); }
+      if (name !== "usage") { const limit = await this.limiter.check(interaction.user.id); if (!limit.allowed) throw new UserLimitError(limit.resetAt); }
       let args: Record<string, unknown> = {};
       if (subcommand === "run") {
         let parsed: unknown;
@@ -872,13 +874,13 @@ export class DiscordAdapter {
   /** The signed-in user's own meter for one server. Only members of that server can read it. Percents only. */
   async consoleUsage(user: string, guildId: string): Promise<unknown> {
     await this.server(user, guildId);
-    return usageView(await this.usage.limiter.usage(guildId, user));
+    return usageView(await this.usage.limiter.usage(user));
   }
   /** Uses one of the user's own banked resets on a window. Members only. The limiter refuses when none is banked. */
   async consoleUseReset(user: string, guildId: string, kind: string): Promise<unknown> {
     await this.server(user, guildId);
-    if (!await this.usage.limiter.useReset(guildId, user, kind)) throw new ToolError(`You have no banked ${kind === "5h" ? "5-hour" : "weekly"} reset.`);
-    return usageView(await this.usage.limiter.usage(guildId, user));
+    if (!await this.usage.limiter.useReset(user, kind)) throw new ToolError(`You have no banked ${kind === "5h" ? "5-hour" : "weekly"} reset.`);
+    return usageView(await this.usage.limiter.usage(user));
   }
   /** The channel's name for the web transcript list. Undefined when the channel is not in the server. */
   async channelName(server: string, channel: string): Promise<string | undefined> {

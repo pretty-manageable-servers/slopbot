@@ -110,6 +110,7 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
   }
   if (path === '/api/admin/limits') return panel.saveLimits(body);
   if (path === '/api/admin/web-keys/caps') return panel.saveKeyCaps(body);
+  if (path === '/api/admin/web-keys/reset') return panel.resetWebKey(user, await admin.canEdit(user), body);
   if (path === '/api/admin/prices') return panel.savePrice(body);
   if (path === '/api/admin/system-prompt') return panel.saveSystemPrompt(body);
   if (path === '/api/admin/usage/reset') return panel.resetUsage(body);

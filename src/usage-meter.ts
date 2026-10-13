@@ -38,7 +38,7 @@ export class UsageMeter {
   async record(who: Attribution | undefined, model: string, usage: Json): Promise<void> {
     if (!who) return;
     const costMicros = usageCostMicros(usage, model, this.prices(), this.fallback);
-    await this.limiter.record(who.server, who.user, costMicros);
+    await this.limiter.record(who.user, costMicros);
     // Totals are for stats only. A failed write is logged and never fails the user's request.
     try {
       await this.totals?.addTokenTotals(who.server, who.user, model, { ...usageTokens(usage), costMicros }, Date.now());
@@ -49,7 +49,7 @@ export class UsageMeter {
 
   /** True when the payer is past the grace limit. Bot work has no payer, so it is never stopped here. */
   async overGrace(who: Attribution | undefined): Promise<boolean> {
-    return who ? this.limiter.overGrace(who.server, who.user) : false;
+    return who ? this.limiter.overGrace(who.user) : false;
   }
 }
 

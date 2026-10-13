@@ -46,14 +46,14 @@ test("price settings merge over defaults, and invalid configuration fails", () =
 
 test("a window starts at the first spend after the previous window ended", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 0);
-  await limits.record("s", "u", 60, 0);
-  assert.deepEqual(await limits.check("s", "u", 1), { allowed: true });
-  await limits.record("s", "u", 60, 1);
-  assert.deepEqual(await limits.check("s", "u", 2), { allowed: false, resetAt: 5 * HOUR });
+  await limits.record("u", 60, 0);
+  assert.deepEqual(await limits.check("u", 1), { allowed: true });
+  await limits.record("u", 60, 1);
+  assert.deepEqual(await limits.check("u", 2), { allowed: false, resetAt: 5 * HOUR });
   const later = 9 * HOUR + 123;
-  assert.deepEqual(await limits.check("s", "u", later), { allowed: true });
-  await limits.record("s", "u", 60, later);
-  assert.deepEqual(await limits.usage("s", "u", later + 1), [
+  assert.deepEqual(await limits.check("u", later), { allowed: true });
+  await limits.record("u", 60, later);
+  assert.deepEqual(await limits.usage("u", later + 1), [
     { kind: "5h", spent: 60, limit: 100, resetAt: later + 5 * HOUR, banked: 0 },
     { kind: "week", spent: 180, limit: 0, resetAt: WEEK, banked: 0 },
   ]);
@@ -62,65 +62,65 @@ test("a window starts at the first spend after the previous window ended", async
 
 test("check refuses at the limit and allows just under it", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 0);
-  await limits.record("s", "u", 99, 0);
-  assert.deepEqual(await limits.check("s", "u", 1), { allowed: true });
-  await limits.record("s", "u", 1, 1);
-  assert.deepEqual(await limits.check("s", "u", 2), { allowed: false, resetAt: 5 * HOUR });
+  await limits.record("u", 99, 0);
+  assert.deepEqual(await limits.check("u", 1), { allowed: true });
+  await limits.record("u", 1, 1);
+  assert.deepEqual(await limits.check("u", 2), { allowed: false, resetAt: 5 * HOUR });
   store.close();
 });
 
 test("either window can refuse, and both windows blocking reports the latest reset", async () => {
   const store = new SQLiteStore();
   const weekOnly = limiter(store, 1000, 100);
-  await weekOnly.record("s", "week", 100, 0);
-  assert.deepEqual(await weekOnly.check("s", "week", 1), { allowed: false, resetAt: WEEK });
+  await weekOnly.record("week", 100, 0);
+  assert.deepEqual(await weekOnly.check("week", 1), { allowed: false, resetAt: WEEK });
   const both = limiter(store, 100, 100);
-  await both.record("s", "both", 100, 0);
-  assert.deepEqual(await both.check("s", "both", 1), { allowed: false, resetAt: WEEK });
+  await both.record("both", 100, 0);
+  assert.deepEqual(await both.check("both", 1), { allowed: false, resetAt: WEEK });
   store.close();
 });
 
 test("0 means no limit for that window, and spend is still shown", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 0, 0);
-  await limits.record("s", "u", 10 * DOLLAR, 0);
-  assert.deepEqual(await limits.check("s", "u", 1), { allowed: true });
-  assert.deepEqual((await limits.usage("s", "u", 1)).map(window => [window.kind, window.spent, window.limit]), [["5h", 10 * DOLLAR, 0], ["week", 10 * DOLLAR, 0]]);
+  await limits.record("u", 10 * DOLLAR, 0);
+  assert.deepEqual(await limits.check("u", 1), { allowed: true });
+  assert.deepEqual((await limits.usage("u", 1)).map(window => [window.kind, window.spent, window.limit]), [["5h", 10 * DOLLAR, 0], ["week", 10 * DOLLAR, 0]]);
   store.close();
 });
 
 test("grace allows a run to pass its limit, and stops tools past limit times (1 + grace)", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 0, 10);
-  await limits.record("s", "u", 100, 0);
-  assert.equal(await limits.overGrace("s", "u", 1), false);
-  await limits.record("s", "u", 10, 1);
-  assert.equal(await limits.overGrace("s", "u", 2), false);
-  await limits.record("s", "u", 1, 2);
-  assert.equal(await limits.overGrace("s", "u", 3), true);
+  await limits.record("u", 100, 0);
+  assert.equal(await limits.overGrace("u", 1), false);
+  await limits.record("u", 10, 1);
+  assert.equal(await limits.overGrace("u", 2), false);
+  await limits.record("u", 1, 2);
+  assert.equal(await limits.overGrace("u", 3), true);
   store.close();
 });
 
 test("a banked reset clears its window once and leaves the other window alone", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 1000);
-  await store.grantResets("s", "u", "5h", 1);
-  await limits.record("s", "u", 100, 0);
-  assert.deepEqual(await limits.check("s", "u", 1), { allowed: false, resetAt: 5 * HOUR });
-  assert.deepEqual((await limits.usage("s", "u", 1))[0], { kind: "5h", spent: 100, limit: 100, resetAt: 5 * HOUR, banked: 1 });
-  assert.equal(await limits.useReset("s", "u", "5h"), true);
-  assert.deepEqual(await limits.check("s", "u", 2), { allowed: true });
-  assert.deepEqual(await limits.usage("s", "u", 2), [
+  await store.grantResets("global", "u", "5h", 1);
+  await limits.record("u", 100, 0);
+  assert.deepEqual(await limits.check("u", 1), { allowed: false, resetAt: 5 * HOUR });
+  assert.deepEqual((await limits.usage("u", 1))[0], { kind: "5h", spent: 100, limit: 100, resetAt: 5 * HOUR, banked: 1 });
+  assert.equal(await limits.useReset("u", "5h"), true);
+  assert.deepEqual(await limits.check("u", 2), { allowed: true });
+  assert.deepEqual(await limits.usage("u", 2), [
     { kind: "5h", spent: 0, limit: 100, resetAt: null, banked: 0 },
     { kind: "week", spent: 100, limit: 1000, resetAt: WEEK, banked: 0 },
   ]);
-  assert.equal(await limits.useReset("s", "u", "5h"), false);
+  assert.equal(await limits.useReset("u", "5h"), false);
   store.close();
 });
 
 test("a banked week reset is a full reset: it clears the 5-hour and weekly windows", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 1000);
-  await store.grantResets("s", "u", "week", 1);
-  await limits.record("s", "u", 100, 0);
-  assert.equal(await limits.useReset("s", "u", "week"), true);
-  assert.deepEqual(await limits.usage("s", "u", 1), [
+  await store.grantResets("global", "u", "week", 1);
+  await limits.record("u", 100, 0);
+  assert.equal(await limits.useReset("u", "week"), true);
+  assert.deepEqual(await limits.usage("u", 1), [
     { kind: "5h", spent: 0, limit: 100, resetAt: null, banked: 0 },
     { kind: "week", spent: 0, limit: 1000, resetAt: null, banked: 0 },
   ]);
@@ -129,40 +129,41 @@ test("a banked week reset is a full reset: it clears the 5-hour and weekly windo
 
 test("an admin week reset clears the 5-hour and weekly windows", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 1000);
-  await limits.record("s", "u", 100, 0);
-  await store.resetUserUsage("s", "u", "week");
-  assert.deepEqual((await limits.usage("s", "u", 1)).map(window => window.spent), [0, 0]);
+  await limits.record("u", 100, 0);
+  await store.resetUserUsage("global", "u", "week");
+  assert.deepEqual((await limits.usage("u", 1)).map(window => window.spent), [0, 0]);
   store.close();
 });
 
 test("two concurrent resets of one banked reset cannot both succeed", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 0);
-  await store.grantResets("s", "u", "5h", 1);
-  const results = await Promise.all([limits.useReset("s", "u", "5h"), limits.useReset("s", "u", "5h")]);
+  await store.grantResets("global", "u", "5h", 1);
+  const results = await Promise.all([limits.useReset("u", "5h"), limits.useReset("u", "5h")]);
   assert.deepEqual(results.sort(), [false, true]);
-  await assert.rejects(store.grantResets("s", "u", "5h", 0));
+  await assert.rejects(store.grantResets("global", "u", "5h", 0));
   store.close();
 });
 
-test("settings override the defaults per server, and invalid settings fall back", async () => {
+test("global settings override the defaults, settings for one server are ignored, and invalid settings fall back", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 0);
-  store.setSetting("s", "user_limit_5h_cost_micros", 50);
-  await limits.record("s", "u", 50, 0);
-  assert.deepEqual(await limits.check("s", "u", 1), { allowed: false, resetAt: 5 * HOUR });
-  await limits.record("t", "u", 50, 0);
-  assert.deepEqual(await limits.check("t", "u", 1), { allowed: true });
-  store.setSetting("s", "user_limit_5h_cost_micros", "many");
-  assert.deepEqual(await limits.check("s", "u", 1), { allowed: true });
+  store.setSetting("s", "user_limit_5h_cost_micros", 10);
+  store.setSetting("global", "user_limit_5h_cost_micros", 50);
+  await limits.record("u", 49, 0);
+  assert.deepEqual(await limits.check("u", 1), { allowed: true });
+  await limits.record("u", 1, 0);
+  assert.deepEqual(await limits.check("u", 1), { allowed: false, resetAt: 5 * HOUR });
+  store.setSetting("global", "user_limit_5h_cost_micros", "many");
+  assert.deepEqual(await limits.check("u", 1), { allowed: true });
   store.close();
 });
 
-test("users and servers have separate counters, and resetUserUsage clears one user", async () => {
+test("users have separate counters, and resetUserUsage clears one user", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 0);
-  await limits.record("s", "u", 100, 0);
-  assert.deepEqual(await limits.check("s", "v", 1), { allowed: true });
-  assert.deepEqual(await limits.check("t", "u", 1), { allowed: true });
-  await store.resetUserUsage("s", "u");
-  assert.deepEqual(await limits.check("s", "u", 2), { allowed: true });
+  await limits.record("u", 100, 0);
+  assert.deepEqual(await limits.check("v", 1), { allowed: true });
+  assert.deepEqual(await limits.check("u", 1), { allowed: false, resetAt: 5 * HOUR });
+  await store.resetUserUsage("global", "u");
+  assert.deepEqual(await limits.check("u", 2), { allowed: true });
   store.close();
 });
 
@@ -175,8 +176,8 @@ test("the usage tool shows percents and uses a banked reset, with no dollar amou
   const store = new SQLiteStore(), limits = limiter(store, 100 * DOLLAR, 0);
   const registry = new ToolRegistry(store, async () => false);
   registerUsageTool(registry, limits);
-  await limits.record("s", "alice", 100 * DOLLAR);
-  await store.grantResets("s", "alice", "5h", 1);
+  await limits.record("alice", 100 * DOLLAR);
+  await store.grantResets("global", "alice", "5h", 1);
   const shown = await registry.invokeResult(message("1"), "usage", {}, "usage-show-1", "command");
   assert.match(shown.text, /^5h: 100% used, resets <t:\d+:R>\. Banked resets: 1\./m);
   assert.match(shown.text, /^week: no limit, resets <t:\d+:R>\. Banked resets: 0\./m);
@@ -192,7 +193,7 @@ test("the usage tool shows percents and uses a banked reset, with no dollar amou
 
 test("TaskWorker.enqueue refuses an over-limit user and queues nothing for them", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 0);
-  await limits.record("s", "alice", 100);
+  await limits.record("alice", 100);
   const worker = new TaskWorker("s", store, limits, async () => undefined, async () => {}, () => true);
   await assert.rejects(worker.enqueue(message("1")), error => error instanceof UserLimitError && error.resetAt > Date.now());
   assert.equal(store.jobs("s", "c").length, 0);
@@ -201,7 +202,7 @@ test("TaskWorker.enqueue refuses an over-limit user and queues nothing for them"
 
 test("TaskWorker.enqueue lets bot messages and task seeds through an over-limit user's gate", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 0);
-  await limits.record("s", "alice", 100);
+  await limits.record("alice", 100);
   const worker = new TaskWorker("s", store, limits, async () => undefined, async () => {}, () => true);
   await worker.enqueue(message("3", { isBot: true }));
   await worker.enqueue(message("task-seed:4"));
@@ -228,13 +229,13 @@ test("a run pays for each model call, and past grace it starts no new tool round
   // Round 1 starts at 0 spend and runs its tool. Round 2 runs at 60 and its model call takes spend to 120, past 110.
   assert.equal(toolRuns, 1);
   assert.match(reply?.text ?? "", /Usage limit reached during this request/);
-  assert.equal((await limits.usage("s", "alice"))[0]?.spent, 120);
+  assert.equal((await limits.usage("alice"))[0]?.spent, 120);
   store.close();
 });
 
 test("when the user is already past grace, the model answers without tools", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 0, 10);
-  await limits.record("s", "alice", 200);
+  await limits.record("alice", 200);
   let toolRuns = 0;
   const llm = { async *stream(prompt: Prompt) {
     const stopped = JSON.stringify(prompt.inputs).includes("usage limit");
@@ -302,7 +303,7 @@ test("config reads the cost limits, grace and prices from the environment", () =
 // Model calls made outside a reply are charged to the user whose message caused them.
 const prompt: Prompt = { prefixVersion: "test", prefix: [], history: [], inputs: [] };
 const payer = { server: "s", user: "alice" };
-const spentBy = async (limits: UserLimiter, user = "alice") => (await limits.usage("s", user))[0]?.spent;
+const spentBy = async (limits: UserLimiter, user = "alice") => (await limits.usage(user))[0]?.spent;
 
 test("JEV decisions are charged to the message author at the JEV model price", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 0, 0);
@@ -411,32 +412,32 @@ test("modelsInUse lists the reply, JEV and embedding model ids, with the PMServe
   assert.equal(embeddingPriceModel("https://example.test/v1", "llama.cpp/embeddinggemma-2"), "llama.cpp/embeddinggemma-2");
 });
 
-test("listUserUsage lists one server's users, highest 5-hour spend first, up to the limit", async () => {
+test("listUserUsage lists the users of one scope, highest 5-hour spend first, up to the limit", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 0, 0);
-  await limits.record("s", "alice", 50, 0);
-  await limits.record("s", "bob", 90, 0);
-  await limits.record("s", "dave", 10, 0);
-  await store.grantResets("s", "carol", "week", 1);
-  await limits.record("t", "erin", 999, 0);
-  assert.deepEqual((await store.listUserUsage("s", 200)).map(row => row.user), ["bob", "alice", "dave", "carol"]);
-  assert.deepEqual((await store.listUserUsage("s", 2)).map(row => row.user), ["bob", "alice"]);
-  assert.deepEqual((await store.listUserUsage("s", 200)).find(row => row.user === "carol")?.resets, { week: 1 });
+  await limits.record("alice", 50, 0);
+  await limits.record("bob", 90, 0);
+  await limits.record("dave", 10, 0);
+  await store.grantResets("global", "carol", "week", 1);
+  await store.updateUserLimits("t", "erin", () => ({ windows: [{ kind: "5h", windowStart: 0, spent: 999 }], result: undefined }));
+  assert.deepEqual((await store.listUserUsage("global", 200)).map(row => row.user), ["bob", "alice", "dave", "carol"]);
+  assert.deepEqual((await store.listUserUsage("global", 2)).map(row => row.user), ["bob", "alice"]);
+  assert.deepEqual((await store.listUserUsage("global", 200)).find(row => row.user === "carol")?.resets, { week: 1 });
   store.close();
 });
 
 test("resetUserUsage with a kind clears only that window", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 0, 0);
-  await limits.record("s", "u", 5, 0);
-  await store.resetUserUsage("s", "u", "5h");
-  assert.deepEqual((await store.userUsage("s", "u")).windows.map(window => window.kind), ["week"]);
+  await limits.record("u", 5, 0);
+  await store.resetUserUsage("global", "u", "5h");
+  assert.deepEqual((await store.userUsage("global", "u")).windows.map(window => window.kind), ["week"]);
   store.close();
 });
 
 test("the usage meter view has percents and reset times only, with no cost or limit amounts", async () => {
   const store = new SQLiteStore(":memory:");
   const limiter = new UserLimiter(store, { fiveHourCostMicros: 1000000, weekCostMicros: 0, gracePercent: 10 });
-  await limiter.record("s", "u", 2500000, 1000);
-  const view = usageView(await limiter.usage("s", "u", 1000));
+  await limiter.record("u", 2500000, 1000);
+  const view = usageView(await limiter.usage("u", 1000));
   assert.equal(view.plan, "Seed");
   // Over the 5-hour limit: capped at 100. No weekly limit: percent is null, not a number.
   assert.deepEqual(view.windows.map(window => [window.kind, window.percent]), [["5h", 100], ["week", null]]);
@@ -445,4 +446,28 @@ test("the usage meter view has percents and reset times only, with no cost or li
   assert.doesNotMatch(keys, /cost|spent|limit|micro|dollar|price|\$/i);
   assert.equal(usageView([{ kind: "5h", spent: 333, limit: 1000, resetAt: null, banked: 0 }]).windows[0]!.percent, 33);
   store.close();
+});
+
+test("one limit covers a user in all servers, and old rows for each server merge on open", async () => {
+  const dir = (await import("node:fs")).mkdtempSync(join((await import("node:os")).tmpdir(), "limits-"));
+  const file = join(dir, "db.sqlite");
+  const now = Date.now();
+  const before = new SQLiteStore(file);
+  // Rows as the old code wrote them: one counter set for each server.
+  await before.updateUserLimits("s1", "alice", () => ({ windows: [{ kind: "5h", windowStart: now - HOUR, spent: 2 * DOLLAR }, { kind: "week", windowStart: now - 2 * HOUR, spent: 2 * DOLLAR }], result: undefined }));
+  await before.updateUserLimits("s2", "alice", () => ({ windows: [{ kind: "5h", windowStart: now - 6 * HOUR, spent: 9 * DOLLAR }, { kind: "week", windowStart: now - 3 * HOUR, spent: 3 * DOLLAR }], result: undefined }));
+  await before.grantResets("s1", "alice", "5h", 1);
+  await before.grantResets("s2", "alice", "5h", 2);
+  before.close();
+  const store = new SQLiteStore(file);
+  assert.deepEqual((await store.userUsage("s1", "alice")).windows, [], "no rows stay for each server");
+  const shared = limiter(store, 4 * DOLLAR, 100 * DOLLAR);
+  const usage = await shared.usage("alice", now);
+  // The ended 5h window in s2 is dropped; the week windows add up and keep the earliest start.
+  assert.deepEqual(usage.map(window => [window.kind, window.spent, window.resetAt, window.banked]), [["5h", 2 * DOLLAR, now - HOUR + 5 * HOUR, 3], ["week", 5 * DOLLAR, now - 3 * HOUR + WEEK, 0]]);
+  await shared.record("alice", 2 * DOLLAR, now);
+  assert.equal((await shared.check("alice", now)).allowed, false, "spend in one server blocks the user in another");
+  assert.equal((await shared.check("bob", now)).allowed, true);
+  assert.equal(await shared.useReset("alice", "5h"), true);
+  assert.equal((await shared.check("alice", now)).allowed, true);
 });

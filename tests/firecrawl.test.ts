@@ -180,3 +180,40 @@ test('Firecrawl never puts the secret in an error message', async () => {
   const leaking = fakeFetch(() => { throw new Error(`socket with ${key.secret}`); });
   await assert.rejects(new FirecrawlSearch(leaking.request).search(key, 'q', 1), (error: unknown) => { assertFailed(error, 'firecrawl_search', false); return true; });
 });
+
+test('Firecrawl search sets the status of each failure', async () => {
+  const cases: [string, () => Response | Promise<Response>][] = [
+    ['402', () => new Response('{}', {status: 402})],
+    ['401', () => new Response('{}', {status: 401})],
+    ['500', () => new Response('{}', {status: 500})],
+    ['empty', () => new Response(null)],
+    ['too_large', () => new Response('x'.repeat(1024 * 1024 + 1))],
+    ['bad_response', () => new Response('{not json')],
+    ['bad_response', () => Response.json({success: false})],
+  ];
+  for (const [status, reply] of cases) {
+    const {request} = fakeFetch(reply);
+    await assert.rejects(new FirecrawlSearch(request).search(key, 'q', 1), (error: unknown) => error instanceof ProviderFailed && error.status === status, status);
+  }
+  const timeout = (async () => { throw Object.assign(new Error('timed out'), {name: 'TimeoutError'}); }) as typeof fetch;
+  await assert.rejects(new FirecrawlSearch(timeout).search(key, 'q', 1), (error: unknown) => error instanceof ProviderFailed && error.status === 'timeout');
+  const network = (async () => { throw new TypeError('socket hang up'); }) as typeof fetch;
+  await assert.rejects(new FirecrawlSearch(network).search(key, 'q', 1), (error: unknown) => error instanceof ProviderFailed && error.status === 'network');
+});
+
+test('Firecrawl scrape sets the status of each failure', async () => {
+  const cases: [string, () => Response | Promise<Response>][] = [
+    ['402', () => new Response('{}', {status: 402})],
+    ['401', () => new Response('{}', {status: 401})],
+    ['500', () => new Response('{}', {status: 500})],
+    ['empty', () => new Response(null)],
+    ['too_large', () => new Response('x'.repeat(4 * 1024 * 1024 + 1))],
+    ['bad_response', () => new Response('{not json')],
+    ['bad_response', () => Response.json({success: true})],
+    ['empty', () => Response.json({success: true, data: {markdown: '   ', metadata: {}}})],
+  ];
+  for (const [status, reply] of cases) {
+    const {request} = fakeFetch(reply);
+    await assert.rejects(new FirecrawlScrape(request).fetch(key, 'https://page.example/'), (error: unknown) => error instanceof ProviderFailed && error.status === status, status);
+  }
+});

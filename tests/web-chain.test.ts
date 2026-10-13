@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {test} from 'node:test';
+import {test, type TestContext} from 'node:test';
 import {FallbackFetch, FallbackSearch, LimiterWebCharge, StoreKeyPool} from '../src/web-chain.js';
 import {registerWebFetch} from '../src/web-fetch.js';
 import {SQLiteStore} from '../src/adapters/sqlite.js';
@@ -7,8 +7,8 @@ import {ToolError, ToolRegistry} from '../src/tools.js';
 import {UserLimitError, type UserLimit} from '../src/user-limiter.js';
 import {GLOBAL_SETTINGS_SCOPE} from '../src/usage-cost.js';
 import {
-  CALL_CREDITS, DEFAULT_KEY_CAPS, FETCH_TEXT_LIMIT, KEY_CAPS_SETTING, ProviderFailed, WEB_COSTS_MICROS, WEB_COSTS_SETTING, usageMonth,
-  type KeyedFetch, type KeyedProvider, type KeyedSearch, type PageText, type ProviderKey, type ProviderKeyPool,
+  CALL_CREDITS, DEFAULT_KEY_CAPS, FETCH_TEXT_LIMIT, KEY_CAPS_SETTING, KEY_ERRORS_SETTING, ProviderFailed, WEB_COSTS_MICROS, WEB_COSTS_SETTING, usageMonth,
+  type KeyError, type KeyedFetch, type KeyedProvider, type KeyedSearch, type PageText, type ProviderKey, type ProviderKeyPool,
   type ProviderKeyRow, type ProviderKeyStore, type ProviderKeyUsage, type WebCharge, type WebFetch, type WebProvider,
 } from '../src/web-providers.js';
 import type {SearchHit, WebSearch, WebUser} from '../src/web-search.js';
@@ -87,14 +87,14 @@ class FakeCharge implements WebCharge {
 
 class FakeLimiter {
   checks: string[] = [];
-  records: {server: string; user: string; cost: number}[] = [];
+  records: {user: string; cost: number}[] = [];
   constructor(private readonly limit: UserLimit = {allowed: true}) {}
-  async check(server: string, user: string): Promise<UserLimit> {
-    this.checks.push(`${server}/${user}`);
+  async check(user: string): Promise<UserLimit> {
+    this.checks.push(user);
     return this.limit;
   }
-  async record(server: string, user: string, cost: number): Promise<void> {
-    this.records.push({server, user, cost});
+  async record(user: string, cost: number): Promise<void> {
+    this.records.push({user, cost});
   }
 }
 
@@ -106,9 +106,15 @@ class FakeKeyStore implements ProviderKeyStore {
   row: ProviderKeyRow | undefined;
   reserveCalls: {provider: KeyedProvider; month: string; credits: number; cap: number}[] = [];
   exhaustCalls: {id: string; month: string}[] = [];
-  constructor(private readonly values: Record<string, unknown>) {}
+  settingWrites: string[] = [];
+  constructor(readonly values: Record<string, unknown>) {}
   setting(server: string, key: string): unknown {
     return server === GLOBAL_SETTINGS_SCOPE ? this.values[key] : undefined;
+  }
+  setSetting(server: string, key: string, value: unknown): void {
+    if (server !== GLOBAL_SETTINGS_SCOPE) return;
+    this.settingWrites.push(key);
+    this.values[key] = value;
   }
   async listProviderKeys(): Promise<ProviderKeyRow[]> { return []; }
   async addProviderKey(): Promise<void> {}
@@ -118,6 +124,7 @@ class FakeKeyStore implements ProviderKeyStore {
     return this.row;
   }
   async exhaustProviderKey(id: string, month: string): Promise<void> { this.exhaustCalls.push({id, month}); }
+  async resetProviderKey(): Promise<void> {}
   async providerKeyUsage(): Promise<ProviderKeyUsage[]> { return []; }
 }
 
@@ -227,11 +234,11 @@ test('charges go to the right providers with the default and saved costs', async
     charge,
   });
   assert.deepEqual(await search.search('q', 3, who), [hit('f')]);
-  assert.deepEqual(limiter.checks, ['s/u', 's/u', 's/u']);
+  assert.deepEqual(limiter.checks, ['u', 'u', 'u']);
   assert.deepEqual(limiter.records, [
-    {server: 's', user: 'u', cost: WEB_COSTS_MICROS.searxng},
-    {server: 's', user: 'u', cost: 7},
-    {server: 's', user: 'u', cost: WEB_COSTS_MICROS.firecrawl_search},
+    {user: 'u', cost: WEB_COSTS_MICROS.searxng},
+    {user: 'u', cost: 7},
+    {user: 'u', cost: WEB_COSTS_MICROS.firecrawl_search},
   ]);
 });
 
@@ -392,7 +399,7 @@ test('StoreKeyPool uses the saved caps, the UTC usage month and the opened secre
   const now = Date.UTC(2026, 9, 13, 12);
   assert.equal(usageMonth(now), '2026-10');
 
-  assert.deepEqual(await pool.reserve('tavily', 1, now), {id: 'k1', provider: 'tavily', secret: 'open:k1'});
+  assert.deepEqual(await pool.reserve('tavily', 1, now), {id: 'k1', provider: 'tavily', secret: 'open:k1', last4: '1234'});
   assert.deepEqual(store.reserveCalls, [{provider: 'tavily', month: '2026-10', credits: 1, cap: 300}]);
 
   // Firecrawl has an invalid saved cap (0), so the default applies.
@@ -412,3 +419,160 @@ test('StoreKeyPool falls back to the default caps when no caps are saved', async
   assert.deepEqual(store.reserveCalls, [{provider: 'tavily', month: '2026-01', credits: 1, cap: DEFAULT_KEY_CAPS.tavily}]);
 });
 
+/** Keys with recordError and clearError. Records each call. */
+class ErrorPool extends FakePool {
+  recorded: {id: string; error: KeyError}[] = [];
+  cleared: string[] = [];
+  async recordError(id: string, error: KeyError): Promise<void> { this.recorded.push({id, error}); }
+  async clearError(id: string): Promise<void> { this.cleared.push(id); }
+}
+
+/** Key error writes that always fail. */
+class BrokenErrorPool extends FakePool {
+  async recordError(): Promise<void> { throw new Error('store down'); }
+  async clearError(): Promise<void> { throw new Error('store down'); }
+}
+
+/** Collects each console.log line. */
+function captureLogs(t: TestContext): string[] {
+  const lines: string[] = [];
+  t.mock.method(console, 'log', (line: string) => { lines.push(line); });
+  return lines;
+}
+
+type StepLine = {type: string; provider: string; outcome: string; status?: string; message?: string; key?: string; ms: number; server?: string; host?: string};
+/** The web_provider_step lines among the log lines. */
+function stepLines(lines: string[]): StepLine[] {
+  return lines.map(line => JSON.parse(line) as StepLine).filter(line => line.type === 'web_provider_step');
+}
+
+test('each provider step logs one web_provider_step line with no secret, query or URL', async t => {
+  const lines = captureLogs(t);
+  const pool = new FakePool([
+    {id: 't1', provider: 'tavily', secret: 'tvly-secret-value-xyz', last4: '9876'},
+    {id: 't2', provider: 'tavily', secret: 'other-secret-abc', last4: '1111'},
+    {id: 'f1', provider: 'firecrawl', secret: 'fc-secret-qq', last4: '2222'},
+  ]);
+  const search = new FallbackSearch({
+    searxng: new FakeWebSearch(() => { throw new ProviderFailed('searxng', 'SearXNG failed at https://searx.example/search?q=private+words', false, {status: '500'}); }),
+    tavily: new FakeKeyedSearch(found => {
+      if (found.id === 't1') throw new ProviderFailed('tavily', 'quota', true, {status: '432'});
+      return [];
+    }),
+    firecrawl: new FakeKeyedSearch(() => [hit('f')]),
+    pool,
+  });
+  assert.deepEqual(await search.search('private search words', 3, who), [hit('f')]);
+
+  const steps = stepLines(lines);
+  assert.deepEqual(steps.map(step => [step.provider, step.outcome, step.key]), [
+    ['searxng', 'failed', undefined], ['tavily', 'key_exhausted', '9876'], ['tavily', 'empty', '1111'], ['firecrawl_search', 'ok', '2222'],
+  ]);
+  assert.equal(steps[0]?.status, '500');
+  assert.equal(steps[0]?.message, 'SearXNG failed at [url]');
+  assert.equal(steps[1]?.status, '432');
+  assert.ok(steps.every(step => step.server === 's' && typeof step.ms === 'number' && step.host === undefined));
+  const text = lines.join('\n');
+  for (const leak of ['tvly-secret-value-xyz', 'other-secret-abc', 'fc-secret-qq', 'private', 'searx.example', '/search']) {
+    assert.equal(text.includes(leak), false, leak);
+  }
+});
+
+test('fetch step logs carry the host only, never the path or query', async t => {
+  const lines = captureLogs(t);
+  const fetch = new FallbackFetch({
+    plain: new FakePlainFetch(() => { throw new ProviderFailed('plain_fetch', 'No text at https://page.example/private/path?token=abc', false, {status: 'empty'}); }),
+    firecrawl: new FakeKeyedFetch(() => page('scraped')),
+    pool: new FakePool([{id: 'f1', provider: 'firecrawl', secret: 'fc-secret-zz', last4: '3333'}]),
+  });
+  assert.deepEqual(await fetch.fetch('https://page.example/private/path?token=abc', who), page('scraped'));
+
+  const steps = stepLines(lines);
+  assert.deepEqual(steps.map(step => [step.provider, step.outcome, step.host]), [['plain_fetch', 'failed', 'page.example'], ['firecrawl_scrape', 'ok', 'page.example']]);
+  assert.equal(steps[0]?.status, 'empty');
+  assert.equal(steps[1]?.key, '3333');
+  const text = lines.join('\n');
+  for (const leak of ['/private/path', 'token=abc', 'fc-secret-zz']) assert.equal(text.includes(leak), false, leak);
+});
+
+test('a keyed step with no key room logs skipped_no_key', async t => {
+  const lines = captureLogs(t);
+  const search = new FallbackSearch({tavily: new FakeKeyedSearch(() => [hit('t')]), firecrawl: new FakeKeyedSearch(() => [hit('f')]), pool: new FakePool([key('firecrawl', 'f1')])});
+  assert.deepEqual(await search.search('q', 3), [hit('f')]);
+  assert.deepEqual(stepLines(lines).map(step => [step.provider, step.outcome]), [['tavily', 'skipped_no_key'], ['firecrawl_search', 'ok']]);
+});
+
+test('a failed key call is recorded with its status, message and exhausted flag', async () => {
+  const cases: [string, boolean][] = [['401', true], ['432', true], ['500', false], ['network', false]];
+  for (const [status, exhausted] of cases) {
+    const pool = new ErrorPool([key('tavily', 't1')]);
+    const search = new FallbackSearch({tavily: new FakeKeyedSearch(() => { throw new ProviderFailed('tavily', 'Tavily failed', exhausted, {status}); }), pool});
+    await assert.rejects(search.search('q', 3), ToolError);
+    assert.deepEqual(pool.recorded.map(({id, error}) => ({id, status: error.status, message: error.message, exhausted: error.exhausted})), [{id: 't1', status, message: 'Tavily failed', exhausted}], status);
+    assert.equal(typeof pool.recorded[0]?.error.at, 'number');
+  }
+});
+
+test('an error that is not a ProviderFailed is recorded as unexpected, without its text', async () => {
+  const pool = new ErrorPool([key('tavily', 't1')]);
+  const search = new FallbackSearch({tavily: new FakeKeyedSearch(() => { throw new Error('leaked secret-x'); }), pool});
+  await assert.rejects(search.search('q', 3), ToolError);
+  assert.deepEqual(pool.recorded.map(({error}) => [error.status, error.message, error.exhausted]), [['unexpected', 'The provider call threw an unexpected error.', false]]);
+});
+
+test('a success clears the saved error of its key', async () => {
+  const pool = new ErrorPool([key('tavily', 't1')]);
+  const search = new FallbackSearch({tavily: new FakeKeyedSearch(() => [hit('t')]), pool});
+  assert.deepEqual(await search.search('q', 3), [hit('t')]);
+  assert.deepEqual(pool.cleared, ['t1']);
+  assert.deepEqual(pool.recorded, []);
+});
+
+test('a key error that cannot be saved is logged, and the search still answers', async t => {
+  const warnings: string[] = [];
+  t.mock.method(console, 'warn', (line: string) => { warnings.push(line); });
+  captureLogs(t);
+  const search = new FallbackSearch({
+    tavily: new FakeKeyedSearch(() => { throw new ProviderFailed('tavily', 'down', false, {status: '500'}); }),
+    firecrawl: new FakeKeyedSearch(() => [hit('f')]),
+    pool: new BrokenErrorPool([key('tavily', 't1'), key('firecrawl', 'f1')]),
+  });
+  assert.deepEqual(await search.search('q', 3), [hit('f')]);
+  assert.match(warnings.join('\n'), /web_key_error_record_failed/);
+  const cleared = new FallbackSearch({tavily: new FakeKeyedSearch(() => [hit('t')]), pool: new BrokenErrorPool([key('tavily', 't1')])});
+  assert.deepEqual(await cleared.search('q', 3), [hit('t')]);
+  assert.match(warnings.join('\n'), /web_key_error_clear_failed/);
+});
+
+test('StoreKeyPool saves key errors in the global setting and clears them', async () => {
+  const store = new FakeKeyStore({});
+  const pool = new StoreKeyPool(store, () => 'secret');
+  const error: KeyError = {at: 5, status: '401', message: 'bad key', exhausted: true};
+  await pool.recordError('k1', error);
+  assert.deepEqual(store.values[KEY_ERRORS_SETTING], {k1: error});
+  await pool.clearError('k1');
+  assert.deepEqual(store.values[KEY_ERRORS_SETTING], {});
+  assert.equal(store.settingWrites.length, 2);
+  await pool.clearError('k1');
+  assert.equal(store.settingWrites.length, 2, 'clearError writes nothing when the key has no saved error');
+});
+
+test('a success through StoreKeyPool clears the saved error of the key', async () => {
+  const store = new FakeKeyStore({[KEY_ERRORS_SETTING]: {k1: {at: 5, status: '500', message: 'down', exhausted: false}}});
+  store.row = {id: 'k1', provider: 'tavily', owner: 'o', label: 'main', last4: '1234', secretEncrypted: 'sealed', createdAt: 1};
+  const search = new FallbackSearch({tavily: new FakeKeyedSearch(() => [hit('t')]), pool: new StoreKeyPool(store, () => 'secret')});
+  assert.deepEqual(await search.search('q', 3), [hit('t')]);
+  assert.deepEqual(store.values[KEY_ERRORS_SETTING], {});
+});
+
+test('StoreKeyPool keeps the newest 50 key errors and ignores saved entries of the wrong shape', async () => {
+  const store = new FakeKeyStore({[KEY_ERRORS_SETTING]: {bad: 'not an error'}});
+  const pool = new StoreKeyPool(store, () => 'secret');
+  for (let i = 1; i <= 51; i++) await pool.recordError(`k${i}`, {at: i, status: '500', message: 'down', exhausted: false});
+  const saved = store.values[KEY_ERRORS_SETTING] as Record<string, unknown>;
+  assert.equal(Object.keys(saved).length, 50);
+  assert.equal('k1' in saved, false);
+  assert.equal('k2' in saved, true);
+  assert.equal('k51' in saved, true);
+  assert.equal('bad' in saved, false);
+});

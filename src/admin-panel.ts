@@ -1,14 +1,14 @@
 import type { Config } from "./config.js";
 import type { Json } from "./domain.js";
 import type { Store, TokenSums } from "./ports.js";
-import { savedLimit, type UserLimiter } from "./user-limiter.js";
+import { savedLimit, USER_LIMIT_SCOPE, type UserLimiter } from "./user-limiter.js";
 import { activePrices, GLOBAL_SETTINGS_SCOPE, type ModelPrice } from "./usage-cost.js";
 import { modelsInUse } from "./usage-meter.js";
 import type { MemberDirectory, MemberProfile } from "./member-directory.js";
 import { DEFAULT_INSTRUCTIONS, fullSystemText } from "./agent-runner.js";
 import type { PresentationPolicy } from "./presentation/policy.js";
 import { newProviderKeyRow, WebKeySecrets } from "./web-keys.js";
-import { DEFAULT_KEY_CAPS, KEY_CAPS_SETTING, KEYED_PROVIDERS, usageMonth, type KeyedProvider } from "./web-providers.js";
+import { DEFAULT_KEY_CAPS, KEY_CAPS_SETTING, KEY_ERRORS_SETTING, KEYED_PROVIDERS, usageMonth, type KeyedProvider, type KeyError } from "./web-providers.js";
 
 /** A bad value sent by a team admin. The console answers 400 with the message. */
 export class AdminInputError extends Error { override name = "AdminInputError"; }
@@ -32,7 +32,8 @@ const MAX_KEYS_PER_OWNER = 10;
 const MAX_KEY_CAP = 100000;
 
 export type AdminConfig = Pick<Config, "model" | "jevModel" | "embeddingModel" | "baseUrl" | "modelPrices" | "fallbackPrice" | "userLimit5hCostMicros" | "userLimitWeekCostMicros" | "userLimitGracePercent">;
-export type AdminStore = Pick<Store, "listUserUsage" | "resetUserUsage" | "grantResets" | "tokenTotalsSummary" | "listProviderKeys" | "addProviderKey" | "deleteProviderKey" | "providerKeyUsage"> & { setting(server: string, key: string): unknown; setSetting(server: string, key: string, value: Json): void | Promise<void> };
+/** resetProviderKey is optional: a store without it keeps the exhausted flag of a key until it has it. */
+export type AdminStore = Pick<Store, "listUserUsage" | "resetUserUsage" | "grantResets" | "tokenTotalsSummary" | "listProviderKeys" | "addProviderKey" | "deleteProviderKey" | "providerKeyUsage"> & { setting(server: string, key: string): unknown; setSetting(server: string, key: string, value: Json): void | Promise<void>; resetProviderKey?(id: string, month: string): void | Promise<void> };
 export type WindowKind = "5h" | "week";
 export interface LimitValues { five_hour_cost_micros: number; week_cost_micros: number; grace_percent: number }
 export interface LimitsView extends LimitValues { server: string; defaults: LimitValues }
@@ -55,7 +56,7 @@ export interface ServerPage { q: string; offset: number; limit: number }
 /** One row of the server list. transcriptsOn counts the channels with web transcripts on. */
 export interface ServerListRow { id: string; name: string; icon?: string | null; channelCount: number; transcriptsOn: number }
 /** One team key. Never holds the secret. owner is the Discord user ID of the member who added it; mine is true for the signed-in member. */
-export interface WebKeyView { id: string; provider: KeyedProvider; label: string; last4: string; owner: string; createdAt: number; used: number; exhausted: boolean; mine: boolean }
+export interface WebKeyView { id: string; provider: KeyedProvider; label: string; last4: string; owner: string; createdAt: number; used: number; exhausted: boolean; lastError: KeyError | null; mine: boolean }
 /** The team web search keys. enabled is false when WEB_KEYS_SECRET is not set. caps is the monthly credit cap of each key. */
 export interface WebKeysView { enabled: boolean; month: string; caps: Record<KeyedProvider, number>; keys: WebKeyView[] }
 
@@ -89,6 +90,15 @@ function object(value: unknown, message: string): Record<string, unknown> {
 function wholeNumber(value: unknown, max: number, message: string): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > max) throw new AdminInputError(message);
   return value;
+}
+
+/** One saved key error, or null when the value does not have the KeyError shape. */
+function keyError(value: unknown): KeyError | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (!Number.isSafeInteger(row.at) || (row.at as number) < 0) return null;
+  if (typeof row.status !== "string" || typeof row.message !== "string" || typeof row.exhausted !== "boolean") return null;
+  return { at: row.at as number, status: row.status, message: row.message, exhausted: row.exhausted };
 }
 
 function windowKind(value: unknown): WindowKind {
@@ -142,9 +152,9 @@ export class AdminPanel {
       week_cost_micros: wholeNumber(input.week_cost_micros, MAX_COST_MICROS, "The weekly limit must be a whole number of micro-dollars from 0 to 1000000000000."),
       grace_percent: wholeNumber(input.grace_percent, MAX_GRACE_PERCENT, "The grace percent must be a whole number from 0 to 1000."),
     };
-    await this.store.setSetting(server, LIMIT_KEYS.five, values.five_hour_cost_micros);
-    await this.store.setSetting(server, LIMIT_KEYS.week, values.week_cost_micros);
-    await this.store.setSetting(server, LIMIT_KEYS.grace, values.grace_percent);
+    await this.store.setSetting(USER_LIMIT_SCOPE, LIMIT_KEYS.five, values.five_hour_cost_micros);
+    await this.store.setSetting(USER_LIMIT_SCOPE, LIMIT_KEYS.week, values.week_cost_micros);
+    await this.store.setSetting(USER_LIMIT_SCOPE, LIMIT_KEYS.grace, values.grace_percent);
     return this.limitsView(server);
   }
 
@@ -152,9 +162,9 @@ export class AdminPanel {
     const defaults = { five_hour_cost_micros: this.config.userLimit5hCostMicros, week_cost_micros: this.config.userLimitWeekCostMicros, grace_percent: this.config.userLimitGracePercent };
     return {
       server,
-      five_hour_cost_micros: savedLimit(this.store.setting(server, LIMIT_KEYS.five), defaults.five_hour_cost_micros),
-      week_cost_micros: savedLimit(this.store.setting(server, LIMIT_KEYS.week), defaults.week_cost_micros),
-      grace_percent: savedLimit(this.store.setting(server, LIMIT_KEYS.grace), defaults.grace_percent, MAX_GRACE_PERCENT),
+      five_hour_cost_micros: savedLimit(this.store.setting(USER_LIMIT_SCOPE, LIMIT_KEYS.five), defaults.five_hour_cost_micros),
+      week_cost_micros: savedLimit(this.store.setting(USER_LIMIT_SCOPE, LIMIT_KEYS.week), defaults.week_cost_micros),
+      grace_percent: savedLimit(this.store.setting(USER_LIMIT_SCOPE, LIMIT_KEYS.grace), defaults.grace_percent, MAX_GRACE_PERCENT),
       defaults,
     };
   }
@@ -218,13 +228,13 @@ export class AdminPanel {
   async usage(server: unknown, user?: unknown): Promise<unknown> {
     const id = snowflake(server, "server");
     if (user === undefined) {
-      const rows = await this.store.listUserUsage(id, USAGE_LIST_LIMIT);
+      const rows = await this.store.listUserUsage(USER_LIMIT_SCOPE, USAGE_LIST_LIMIT);
       const profiles = await this.directory.profiles(id, rows.map(row => row.user));
-      return { server: id, users: rows.map(row => ({ user: profiles.get(row.user)!, windows: this.limiter.summarize(id, row) })) };
+      return { server: id, users: rows.map(row => ({ user: profiles.get(row.user)!, windows: this.limiter.summarize(row) })) };
     }
     const member = snowflake(user, "user");
     const profile = (await this.directory.profiles(id, [member])).get(member)!;
-    return { server: id, user: profile, windows: await this.limiter.usage(id, member) };
+    return { server: id, user: profile, windows: await this.limiter.usage(member) };
   }
 
   /** Server members whose name starts with the query, for the user picker. An empty query finds nobody. */
@@ -241,8 +251,8 @@ export class AdminPanel {
     const input = object(body, "Send a reset as an object.");
     const server = snowflake(input.server, "server"), user = snowflake(input.user, "user");
     const kind = input.kind === undefined ? undefined : windowKind(input.kind);
-    await this.store.resetUserUsage(server, user, kind);
-    return { server, user, kind: kind ?? "all", windows: await this.limiter.usage(server, user) };
+    await this.store.resetUserUsage(USER_LIMIT_SCOPE, user, kind);
+    return { server, user, kind: kind ?? "all", windows: await this.limiter.usage(user) };
   }
 
   /** Adds banked resets for one window. */
@@ -251,22 +261,23 @@ export class AdminPanel {
     const server = snowflake(input.server, "server"), user = snowflake(input.user, "user"), kind = windowKind(input.kind);
     const count = wholeNumber(input.count, MAX_GRANT, "Grant between 1 and 100 resets.");
     if (count < 1) throw new AdminInputError("Grant between 1 and 100 resets.");
-    await this.store.grantResets(server, user, kind, count);
-    return { server, user, kind, granted: count, windows: await this.limiter.usage(server, user) };
+    await this.store.grantResets(USER_LIMIT_SCOPE, user, kind, count);
+    return { server, user, kind, granted: count, windows: await this.limiter.usage(user) };
   }
 
-  /** The team web search keys with this month's use. Any team member may read them. Never includes a secret. */
+  /** The team web search keys with this month's use and last error. Any team member may read them. Never includes a secret. */
   async webKeys(user: string): Promise<WebKeysView> {
     const month = usageMonth();
     const [rows, usage] = await Promise.all([this.store.listProviderKeys(), this.store.providerKeyUsage(month)]);
     const useOf = new Map(usage.map(row => [row.keyId, row]));
+    const errors = this.keyErrors();
     return {
       enabled: this.secrets.enabled,
       month,
       caps: this.keyCaps(),
       keys: rows.map((row): WebKeyView => {
         const use = useOf.get(row.id);
-        return { id: row.id, provider: row.provider, label: row.label, last4: row.last4, owner: row.owner, createdAt: row.createdAt, used: use?.used ?? 0, exhausted: use?.exhausted ?? false, mine: row.owner === user };
+        return { id: row.id, provider: row.provider, label: row.label, last4: row.last4, owner: row.owner, createdAt: row.createdAt, used: use?.used ?? 0, exhausted: use?.exhausted ?? false, lastError: Object.hasOwn(errors, row.id) ? keyError(errors[row.id]) : null, mine: row.owner === user };
       }),
     };
   }
@@ -299,6 +310,19 @@ export class AdminPanel {
     return this.webKeys(user);
   }
 
+  /** Clears this month's exhausted flag and the last error of one key. Only a team editor may reset a key. */
+  async resetWebKey(user: string, canEdit: boolean, body: unknown): Promise<WebKeysView> {
+    const input = object(body, "Send a key as an object.");
+    if (!canEdit) throw new AdminInputError("Only a team editor can reset a key.");
+    const row = typeof input.id === "string" ? (await this.store.listProviderKeys()).find(item => item.id === input.id) : undefined;
+    if (!row) throw new AdminInputError("That key does not exist. It may already be removed.");
+    await this.store.resetProviderKey?.(row.id, usageMonth());
+    const errors = this.keyErrors();
+    delete errors[row.id];
+    await this.store.setSetting(GLOBAL_SETTINGS_SCOPE, KEY_ERRORS_SETTING, errors as Json);
+    return this.webKeys(user);
+  }
+
   /** Saves the monthly credit cap of one or both providers. Each cap is a whole number from 1 to 100000. Caps not sent keep their value. */
   async saveKeyCaps(body: unknown): Promise<Record<KeyedProvider, number>> {
     const input = object(body, "Send the caps as an object.");
@@ -322,6 +346,12 @@ export class AdminPanel {
       caps[provider] = typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_KEY_CAPS[provider];
     }
     return caps;
+  }
+
+  /** The saved last error of each key, as stored. Entries are checked by keyError when they are read. */
+  private keyErrors(): Record<string, unknown> {
+    const saved = this.store.setting(GLOBAL_SETTINGS_SCOPE, KEY_ERRORS_SETTING);
+    return saved && typeof saved === "object" && !Array.isArray(saved) ? { ...saved } as Record<string, unknown> : {};
   }
 
   private savedCaps(): Record<string, Json> {
