@@ -30,8 +30,12 @@ import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, l
 import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatEffort, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../web-chat-store.js';
 import { isPrivateChannel } from '../private-chat.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
+import type { InboxItem } from '../inbox.js';
 import { getWebSession, saveWebSession, deleteWebSession, deleteExpiredWebSessions } from '../web-session-store.js';
 import type { WebSessionRow } from '../web-session-store.js';
+function inboxItemFromRow(row: Record<string, any>): InboxItem {
+  return { id: String(row.id), server: String(row.server), target: String(row.target), sender: String(row.sender), channel: String(row.channel), sourceIds: JSON.parse(String(row.source_ids)) as string[], summary: String(row.summary), created_at: Number(row.created_at), done_at: row.done_at === null ? null : Number(row.done_at) };
+}
 function providerKeyRow(row: Record<string, any>): ProviderKeyRow {
     return { id: String(row.id), provider: String(row.provider) as KeyedProvider, owner: String(row.owner), label: String(row.label), last4: String(row.last4), secretEncrypted: String(row.secret_encrypted), createdAt: Number(row.created_at) };
 }
@@ -469,6 +473,25 @@ export class PostgresStore {
     async saveSession(row: WebSessionRow): Promise<void> { return saveWebSession(this.db, row); }
     async deleteSession(idHash: string): Promise<void> { return deleteWebSession(this.db, idHash); }
     async deleteExpiredSessions(now: number): Promise<number> { return deleteExpiredWebSessions(this.db, now); }
+    async addInboxItem(item: InboxItem): Promise<void> {
+        await this.db.prepare("INSERT INTO inbox_items (id,server,target,sender,channel,source_ids,summary,created_at,done_at) VALUES(?,?,?,?,?,?,?,?,?)").run(item.id, item.server, item.target, item.sender, item.channel, JSON.stringify(item.sourceIds), item.summary, item.created_at, item.done_at);
+    }
+    async inboxItems(server: string, target: string, options: { includeDone: boolean; limit: number }): Promise<InboxItem[]> {
+        const open = options.includeDone ? "" : " AND done_at IS NULL";
+        return (await this.db.prepare(`SELECT id,server,target,sender,channel,source_ids,summary,created_at,done_at FROM inbox_items WHERE server=? AND target=?${open} ORDER BY created_at DESC LIMIT ?`).all(server, target, options.limit)).map(inboxItemFromRow);
+    }
+    async markInboxDone(server: string, target: string, ids: string[] | "all", at: number): Promise<number> {
+        if (ids !== "all" && ids.length === 0) return 0;
+        const scope = ids === "all" ? "" : ` AND id IN (${ids.map(() => "?").join(",")})`;
+        const values = ids === "all" ? [] : ids;
+        return Number((await this.db.prepare(`UPDATE inbox_items SET done_at=? WHERE server=? AND target=? AND done_at IS NULL${scope}`).run(at, server, target, ...values)).changes);
+    }
+    async countInboxSent(server: string, sender: string, since: number): Promise<number> {
+        return Number((await this.db.prepare("SELECT COUNT(*) AS n FROM inbox_items WHERE server=? AND sender=? AND created_at>=?").get(server, sender, since))!.n);
+    }
+    async deleteExpiredInbox(before: number): Promise<number> {
+        return Number((await this.db.prepare("DELETE FROM inbox_items WHERE created_at<?").run(before)).changes);
+    }
     async startRun(runId: string, message: Message, prompt: Prompt): Promise<void> {
         (await this.db.prepare("INSERT INTO runs(id,message,prompt,status,result,context_version) VALUES(?,?,?,?,NULL,?)")
             .run(runId, JSON.stringify(message), JSON.stringify(prompt), "running", await (await this.contextVersion(message.server, message.channel))));

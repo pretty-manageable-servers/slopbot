@@ -133,6 +133,9 @@ ALTER TABLE web_chats ADD COLUMN IF NOT EXISTS effort TEXT;
 CREATE INDEX IF NOT EXISTS web_chats_owner ON web_chats(server,owner,updated);
 CREATE TABLE IF NOT EXISTS web_provider_keys (id TEXT PRIMARY KEY, provider TEXT NOT NULL, owner TEXT NOT NULL, label TEXT NOT NULL, last4 TEXT NOT NULL, secret_encrypted TEXT NOT NULL, created_at BIGINT NOT NULL);
 CREATE TABLE IF NOT EXISTS web_provider_usage (key_id TEXT NOT NULL, month TEXT NOT NULL, used BIGINT NOT NULL, exhausted BIGINT NOT NULL DEFAULT 0, PRIMARY KEY(key_id, month));
+CREATE TABLE IF NOT EXISTS inbox_items (id TEXT PRIMARY KEY, server TEXT NOT NULL, target TEXT NOT NULL, sender TEXT NOT NULL, channel TEXT NOT NULL, source_ids TEXT NOT NULL, summary TEXT NOT NULL, created_at BIGINT NOT NULL, done_at BIGINT);
+CREATE INDEX IF NOT EXISTS inbox_items_target ON inbox_items(server,target,done_at,created_at);
+CREATE INDEX IF NOT EXISTS inbox_items_sender ON inbox_items(server,sender,created_at);
 
 -- Remove legacy chat vectors only in this schema; chat history stays in messages.
 DO $$ BEGIN
