@@ -187,6 +187,13 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         res.writeHead(302, { Location: '/console', 'Set-Cookie': [cookie('slopbot_session', id, SESSION_AGE), cookie('slopbot_state', '', 0)] }); res.end(); return;
       }
       // Public share pages and snapshots. They never need a login and are never indexed.
+      const shareImage = req.method === 'GET' && backend.shares ? routePath.match(/^\/s\/([A-Za-z0-9_-]{22})\/images\/([0-9a-f]{32}\.(?:png|jpg|gif|webp))$/) : null;
+      if (shareImage && backend.shares) {
+        res.setHeader('X-Robots-Tag', 'noindex');
+        const image = await backend.shares.image(shareImage[1]!, shareImage[2]!);
+        if (!image) return send(res, 404, { error: 'Not found.' });
+        res.writeHead(200, { 'Content-Type': image.contentType, 'Content-Length': image.bytes.length, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(image.bytes); return;
+      }
       if (req.method === 'GET' && backend.shares && (/^\/s\/[A-Za-z0-9_-]{22}$/.test(routePath) || /^\/api\/shares\/[A-Za-z0-9_-]{22}$/.test(routePath))) {
         res.setHeader('X-Robots-Tag', 'noindex');
         const shareId = routePath.slice(routePath.lastIndexOf('/') + 1);
@@ -208,6 +215,17 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
           if (req.method === 'GET') return void await backend.chats.handle(req, res, url, session.user, undefined);
           if (!['POST', 'PATCH', 'DELETE'].includes(req.method ?? '') || req.headers.origin !== new URL(options.origin).origin || req.headers['x-csrf-token'] !== session.csrf) return send(res, 403, { error: 'Invalid request.' });
           let chatBody: unknown;
+          if (req.method === 'POST' && /^\/api\/chats\/[^/]+\/images$/.test(routePath)) {
+            // One raw image per request. The size is checked on the header and again while reading.
+            const limit = 25 * 1024 * 1024;
+            if (!req.headers['content-type']?.startsWith('image/')) return send(res, 415, { error: 'Send an image.' });
+            if (Number(req.headers['content-length']) > limit) { req.resume(); return send(res, 413, { error: 'Images can be 25 MB or smaller.' }); }
+            const chunks: Buffer[] = []; let size = 0;
+            // Past the limit nothing is kept. The rest of the body is read and dropped, so the 413 reaches the client.
+            for await (const chunk of req) { size += chunk.length; if (size <= limit) chunks.push(chunk); }
+            if (size > limit) return send(res, 413, { error: 'Images can be 25 MB or smaller.' });
+            return void await backend.chats.handle(req, res, url, session.user, Buffer.concat(chunks));
+          }
           if (req.method !== 'DELETE') {
             if (!req.headers['content-type']?.startsWith('application/json')) return send(res, 415, { error: 'Send JSON.' });
             let text = ''; for await (const chunk of req) { text += chunk; if (Buffer.byteLength(text) > 65536) return send(res, 413, { error: 'Request too large.' }); }

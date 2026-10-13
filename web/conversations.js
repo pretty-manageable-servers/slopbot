@@ -600,6 +600,7 @@ function messageNode(m) {
     const bubble = textNode('div', '', 'chat-text');
     if (m.timestamp) bubble.title = timeLabel(m.timestamp);
     renderText(bubble, m.text);
+    if (m.images && m.images.length) article.append(imageStrip(m));
     article.append(bubble);
     if (m.editedAt) article.append(textNode('span', 'edited', 'chat-edited'));
     return article;
@@ -1300,9 +1301,9 @@ function spoilerClick(event) {
 // The composer of a chat. With id null it is the blank chat: the chat is made on the first send, then opened.
 // A message that is not saved yet. The saved message from the stream replaces it (see upsertMessage).
 let pendingSeq = 0;
-function pendingBubble(text) {
+function pendingBubble(text, images = [], chatId = '') {
   const log = $('conv-log');
-  const node = messageNode({ id: `pending-${++pendingSeq}`, author: state.user, text, timestamp: Date.now() });
+  const node = messageNode({ id: `pending-${++pendingSeq}`, author: state.user, text, timestamp: Date.now(), ...(images.length ? { images, channel: 'web:' + chatId } : {}) });
   node.dataset.pending = text;
   log.append(node);
   regroup(log);
@@ -1346,6 +1347,8 @@ function detachNewChat(chatId) {
 }
 
 function chatComposer(id) {
+  // The id of a chat made for this blank composer (by the first send or the first attached image). It is kept when a send fails without a clear reason, so a retry reuses it.
+  let made = null;
   const form = document.createElement('form');
   form.className = 'chat-form';
   const status = textNode('p', '', 'chat-status-line');
@@ -1362,7 +1365,8 @@ function chatComposer(id) {
   send.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const meter = usageMeter();
   conv.meter = meter;
-  box.append(field, meter.wrap, effortPicker(id), send);
+  const effort = effortPicker(id, () => id || made);
+  box.append(field, meter.wrap, effort, send);
   const linked = conv.ask && conv.ask.chat === id ? conv.ask.text : '';
   if (linked) {
     field.value = linked;
@@ -1376,11 +1380,11 @@ function chatComposer(id) {
     form.addEventListener('submit', () => { if (field.value.trim()) { banner.remove(); conv.ask = null; } });
     requestAnimationFrame(() => { fitField(field); box.classList.add('has-text'); field.focus(); });
   }
-  form.append(status, box, textNode('p', 'Slopbot is AI and can make mistakes.', 'chat-foot'));
+  const pics = imageTray(form, box, field, status, ensureChat);
+  form.append(status, pics.tray, box, textNode('p', 'Slopbot is AI and can make mistakes.', 'chat-foot'));
   const sync = () => { box.classList.toggle('has-text', field.value.trim() !== ''); fitField(field); };
   let sending = false;
   // The id of a chat made for this blank composer. It is kept when a send fails without a clear reason, so a retry reuses it.
-  let made = null;
   field.addEventListener('input', () => { sync(); status.textContent = ''; });
   field.addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); }
@@ -1388,32 +1392,41 @@ function chatComposer(id) {
   form.addEventListener('submit', event => {
     event.preventDefault();
     const text = field.value.trim();
-    if (!text || sending) return;
+    if ((!text && !pics.ids().length) || sending) return;
+    if (pics.uploading()) { status.textContent = 'Wait for the images to finish uploading.'; return; }
+    const shown = pics.take();
     field.value = ''; sync(); status.textContent = '';
-    deliver(text);
+    deliver(text, shown);
   });
+  // Makes the chat of a blank composer once, from the first attached image or the first send.
+  let making = null;
+  function ensureChat() {
+    if (id || made) return Promise.resolve(id || made);
+    if (!making) making = sendJson('POST', '/api/chats', { server: state.server.id }).then(chat => { made = chat.id; if (conv.blank) attachNewChat(chat.id); return chat.id; }).finally(() => { making = null; });
+    return making;
+  }
   // Shows the message and the thinking card at once, then saves and sends in the background.
-  async function deliver(text, again) {
+  async function deliver(text, shown, again) {
     sending = true;
     // The first message moves the composer to the bottom.
     leaveEmpty(form.closest('.chat-hero'));
-    const pending = again || pendingBubble(text);
+    const pending = again || pendingBubble(text, shown, id || made || '');
     pending.classList.remove('failed'); pending.classList.add('pending');
     pending.querySelector('.chat-retry')?.remove();
     addPendingCard();
     let chatId = id || made, fresh = false;
     try {
       if (!chatId) {
-        chatId = (await sendJson('POST', '/api/chats', { server: state.server.id })).id; made = chatId; fresh = true;
-        if (conv.blank) attachNewChat(chatId);
+        chatId = await ensureChat(); fresh = true;
       }
-      const response = await fetch(`/api/chats/${enc(chatId)}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ text }) });
+      if (!id && effort.chosen) await sendJson('PATCH', `/api/chats/${enc(chatId)}`, { effort: effort.chosen }).catch(() => {});
+      const response = await fetch(`/api/chats/${enc(chatId)}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ text, images: shown.map(item => item.imageId) }) });
       const data = await response.json().catch(() => ({}));
       if (response.status === 401) { dropPendingCard(); showScreen('login'); return; }
       if (!response.ok) {
         // A 4xx answer means nothing was saved, so a chat made just for this send is removed. A 5xx may have saved the message, so that chat is kept for a retry.
         if (!id && response.status < 500) { made = null; discardChat(chatId); if (conv.channel === chatId) detachNewChat(chatId); }
-        failPending(pending, text, response.status === 429 ? `Limit reached, resets ${new Date(data.resetAt).toLocaleString()}.` : (data.error || 'Message failed.'));
+        failPending(pending, text, shown, response.status === 429 ? `Limit reached, resets ${new Date(data.resetAt).toLocaleString()}.` : (data.error || 'Message failed.'));
         return;
       }
       made = null;
@@ -1424,17 +1437,17 @@ function chatComposer(id) {
     } catch (error) {
       if (error.status === 401) { dropPendingCard(); return showScreen('login'); }
       if (!id && !made && conv.channel === chatId) detachNewChat(chatId);
-      failPending(pending, text, error.message);
+      failPending(pending, text, shown, error.message);
     }
     finally { sending = false; }
   }
   // The failed bubble keeps a Retry button. The text is back in the field when it is empty.
-  function failPending(pending, text, message) {
+  function failPending(pending, text, shown, message) {
     dropPendingCard();
     pending.classList.remove('pending'); pending.classList.add('failed');
     const retry = textNode('button', 'Retry', 'chat-retry');
     retry.type = 'button';
-    retry.onclick = () => { if (!sending) { if (field.value.trim() === text) { field.value = ''; sync(); } deliver(text, pending); } };
+    retry.onclick = () => { if (!sending) { if (field.value.trim() === text) { field.value = ''; sync(); } deliver(text, shown, pending); } };
     pending.append(retry);
     status.textContent = message;
     if (!field.value) { field.value = text; sync(); field.focus(); }
@@ -1602,9 +1615,10 @@ function textNode(tag, text, className = '') {
 
 // Reasoning effort of one chat. A small menu button next to Send. The choice is saved on the chat.
 const EFFORT_LEVELS = [['low', 'Low'], ['medium', 'Medium'], ['xhigh', 'Extra high']];
-function effortPicker(id) {
+function effortPicker(id, current_id = () => id) {
   const chat = () => conv.chats.find(c => c.id === id);
   const wrap = textNode('div', '', 'effort-pick');
+  wrap.chosen = null;
   const button = document.createElement('button');
   button.type = 'button'; button.className = 'effort-button';
   button.setAttribute('aria-haspopup', 'menu'); button.setAttribute('aria-expanded', 'false');
@@ -1618,10 +1632,13 @@ function effortPicker(id) {
     item.onclick = async () => {
       close(true);
       const before = current;
-      current = value; paint();
+      current = value; paint(); wrap.chosen = value;
+      // A blank chat has no id yet. The send saves the choice after it makes the chat.
+      const target = current_id();
+      if (!target) return;
       try {
-        await sendJson('PATCH', `/api/chats/${enc(id)}`, { effort: value });
-        if (chat()) chat().effort = value;
+        await sendJson('PATCH', `/api/chats/${enc(target)}`, { effort: value });
+        if (conv.chats.find(c => c.id === target)) conv.chats.find(c => c.id === target).effort = value;
       } catch (error) { current = before; paint(); fail(error); }
     };
     return item;
@@ -1650,4 +1667,96 @@ function effortPicker(id) {
   paint();
   wrap.append(button, menu);
   return wrap;
+}
+
+// Chat images. The server stores them privately and sends them to the model. The page loads them from the chat's image route.
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
+const IMAGE_MAX_COUNT = 10;
+const imageUrl = (chat, imageId) => `/api/chats/${enc(chat)}/images/${enc(imageId)}`;
+const sizeLabel = bytes => bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+
+// Thumbnails of a sent message. After a reload they come from the stored image.
+function imageStrip(m) {
+  const strip = textNode('div', '', 'chat-images');
+  const chat = String(m.channel || '').replace(/^web:/, '');
+  for (const image of m.images) {
+    const img = document.createElement('img');
+    img.src = imageUrl(chat, image.imageId); img.alt = image.name; img.loading = 'lazy';
+    img.title = `${image.name} (${sizeLabel(image.size)})`;
+    img.addEventListener('error', () => img.replaceWith(textNode('span', `${image.name} (${sizeLabel(image.size)})`, 'chat-image-chip')));
+    strip.append(img);
+  }
+  return strip;
+}
+
+// Paste, drop and attach for the composer. Each image uploads at once; the message sends only the image IDs.
+function imageTray(form, box, field, status, ensure) {
+  const tray = textNode('div', '', 'chat-tray');
+  tray.hidden = true;
+  const items = [];
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'image/*'; input.multiple = true; input.hidden = true;
+  const attach = document.createElement('button');
+  attach.type = 'button'; attach.className = 'chat-attach'; attach.textContent = '+';
+  attach.setAttribute('aria-label', 'Attach images'); attach.title = 'Attach images';
+  box.prepend(attach);
+  form.append(input);
+  const show = () => { tray.hidden = items.length === 0; };
+  const remove = item => {
+    items.splice(items.indexOf(item), 1); item.node.remove(); show();
+    if (item.id) fetch(imageUrl(item.chat, item.id), { method: 'DELETE', headers: { 'X-CSRF-Token': csrf } }).catch(() => {});
+  };
+  const add = async file => {
+    if (!IMAGE_TYPES.includes(file.type)) { status.textContent = `${file.name || 'This file'} is not a PNG, JPEG, GIF or WebP image.`; return; }
+    if (file.size > IMAGE_MAX_BYTES) { status.textContent = `${file.name || 'This image'} is larger than 25 MB.`; return; }
+    if (items.length >= IMAGE_MAX_COUNT) { status.textContent = `Attach ${IMAGE_MAX_COUNT} images or fewer.`; return; }
+    const item = { id: null, chat: null, node: textNode('div', '', 'chat-thumb') };
+    const label = textNode('span', `${file.name || 'image'} (uploading…)`, 'chat-image-chip');
+    const close = document.createElement('button');
+    close.type = 'button'; close.textContent = '\u00d7'; close.setAttribute('aria-label', `Remove ${file.name || 'image'}`);
+    close.addEventListener('click', () => remove(item));
+    item.node.append(label, close); items.push(item); tray.append(item.node); show();
+    item.upload = (async () => {
+      try {
+        item.chat = await ensure();
+        const chat = item.chat;
+        const response = await fetch(`/api/chats/${enc(chat)}/images?name=${enc(file.name || '')}`, { method: 'POST', headers: { 'Content-Type': file.type, 'X-CSRF-Token': csrf }, body: file });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(response.status === 429 ? 'Limit reached.' : data.error || 'Upload failed.');
+        item.id = data.imageId; item.name = data.name; item.size = data.size;
+        if (!items.includes(item)) { fetch(imageUrl(chat, item.id), { method: 'DELETE', headers: { 'X-CSRF-Token': csrf } }).catch(() => {}); return; }
+        const img = document.createElement('img');
+        img.src = imageUrl(chat, item.id); img.alt = data.name; img.title = `${data.name} (${sizeLabel(data.size)})`;
+        label.replaceWith(img);
+      } catch (error) {
+        status.textContent = error.message;
+        if (items.includes(item)) { items.splice(items.indexOf(item), 1); item.node.remove(); show(); }
+      } finally { item.done = true; }
+    })();
+  };
+  const addAll = files => { for (const file of files) void add(file); };
+  attach.addEventListener('click', () => input.click());
+  input.addEventListener('change', () => { addAll([...input.files]); input.value = ''; });
+  field.addEventListener('paste', event => {
+    const files = [...(event.clipboardData ? event.clipboardData.files : [])].filter(file => file.type.startsWith('image/'));
+    if (files.length) { event.preventDefault(); addAll(files); }
+  });
+  const hasFiles = event => event.dataTransfer && [...event.dataTransfer.types].includes('Files');
+  const over = event => { if (!form.isConnected) return document.removeEventListener('dragover', over); if (hasFiles(event)) { event.preventDefault(); form.classList.add('dragging'); } };
+  const drop = event => {
+    if (!form.isConnected) return document.removeEventListener('drop', drop);
+    form.classList.remove('dragging');
+    if (!hasFiles(event)) return;
+    event.preventDefault(); addAll([...event.dataTransfer.files]);
+  };
+  document.addEventListener('dragover', over); document.addEventListener('drop', drop);
+  document.addEventListener('dragleave', event => { if (!event.relatedTarget) form.classList.remove('dragging'); });
+  return {
+    tray,
+    ids: () => items.filter(item => item.id).map(item => item.id),
+    uploading: () => items.some(item => !item.done),
+    // The images of a send. The tray empties at once; the server keeps the uploads for the send.
+    take: () => { const taken = items.filter(item => item.id).map(item => ({ imageId: item.id, name: item.name, size: item.size })); items.splice(0); tray.replaceChildren(); show(); return taken; },
+  };
 }

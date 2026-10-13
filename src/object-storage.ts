@@ -9,7 +9,8 @@ import { sourceFingerprint } from './source-context.js';
 export const MAX_STORED_FILE_BYTES = 10 * 1024 * 1024;
 export interface ObjectStorageProvider {
   put(key: string, bytes: Uint8Array, contentType: string): Promise<void>;
-  get(key: string): Promise<Uint8Array>;
+  /** maxBytes defaults to MAX_STORED_FILE_BYTES. */
+  get(key: string, maxBytes?: number): Promise<Uint8Array>;
   delete(key: string): Promise<void>;
   link(key: string, name: string, seconds: number): Promise<string>;
 }

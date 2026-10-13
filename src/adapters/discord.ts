@@ -1,3 +1,4 @@
+import { LocalDiskStorage } from "../web-chat-images.js";
 import { objectStorageTool, UserFileStorage, MAX_STORED_FILE_BYTES, fileStorageScope } from '../object-storage.js';
 import { sendStoredFile } from './discord-storage.js';
 import { S3StorageProvider } from './s3-storage.js';
@@ -666,6 +667,8 @@ export class DiscordServer implements ChatGateway {
 const MEMBER_TTL_MS = 60_000;
 
 export class DiscordAdapter {
+  /** Users known to be members of a server, kept for MEMBER_TTL_MS. Only "yes" is kept, so a Discord error or a "no" is always checked again. */
+  private readonly signInCache = new Map<string, number>();
   private readonly memberCache = new Map<string, { at: number; servers: { id: string; name: string; icon: string | null; admin: boolean }[] }>();
   private readonly client: Client;
   private readonly servers = new Map<string, Promise<DiscordServer>>();
@@ -693,15 +696,15 @@ export class DiscordAdapter {
     wireChannelAccessEvents(this.client, this.access);
     runEvents.attach(store);
     this.shareRule = { manager: (user, server) => this.hasManageServer(user, server), teamAdmin: user => this.team.canEdit(user) };
-    this.shares = new ShareService({ store, access: this.access, rule: this.shareRule, member: (user, server) => this.isServerMember(user, server) });
     this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;
+    this.shares = new ShareService({ store, access: this.access, rule: this.shareRule, member: (user, server) => this.isServerMember(user, server), images: this.objectStorageProvider ?? new LocalDiskStorage() });
     this.client.once(Events.ClientReady, async client => {
       this.botUser = client.user.id;
       console.log(`Slopbot connected as ${client.user.tag}. LLM mode: ${config.mock ? "mock" : "provider"}. Servers: ${client.guilds.cache.size}`);
       for (const guild of client.guilds.cache.values()) void this.open(guild.id).catch(error => logError("server_start_failed", error, { server: guild.id }));
     });
     // A server or member change drops the remembered membership at once.
-    const forget = () => this.memberCache.clear();
+    const forget = () => { this.memberCache.clear(); this.signInCache.clear(); };
     this.client.on(Events.GuildMemberRemove, forget); this.client.on(Events.GuildMemberUpdate, forget);
     this.client.on(Events.GuildCreate, guild => { forget(); if (this.botUser) void this.open(guild.id).catch(error => logError("server_start_failed", error, { server: guild.id })); });
     this.client.on(Events.GuildDelete, guild => { forget(); void this.close(guild.id).catch(error => logError("server_stop_failed", error, { server: guild.id })); });
@@ -747,6 +750,7 @@ export class DiscordAdapter {
       limiter: this.usage.limiter,
       access: this.access,
       members: this.members,
+      ...(this.objectStorageProvider ? { images: this.objectStorageProvider } : {}),
     };
   }
   /**
@@ -768,9 +772,20 @@ export class DiscordAdapter {
   }
   /** True when the user is in at least one server with Slopbot. Throws when Discord fails and no server matched. */
   async canSignIn(user: string): Promise<boolean> {
+    const now = Date.now();
+    const listed = this.memberCache.get(user);
+    if (listed && listed.at > now - MEMBER_TTL_MS && listed.servers.length) return true;
+    const seen = this.signInCache.get(user);
+    if (seen !== undefined && seen > now - MEMBER_TTL_MS) return true;
     let failure: unknown;
     for (const id of this.servers.keys()) {
-      try { if (await this.isServerMember(user, id)) return true; } catch (error) { failure = error; }
+      try {
+        if (await this.isServerMember(user, id)) {
+          this.signInCache.set(user, Date.now());
+          if (this.signInCache.size > 500) for (const [key, at] of this.signInCache) if (at < Date.now() - MEMBER_TTL_MS) this.signInCache.delete(key);
+          return true;
+        }
+      } catch (error) { failure = error; }
     }
     if (failure) throw failure;
     return false;
