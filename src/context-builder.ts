@@ -17,7 +17,7 @@ export class ContextBuilder {
     boundedHistory: (message: Message, taskKey: string, limit: number) => Promise<readonly PromptItem[]>,
     prefix = this.options.prefix, tools = this.options.tools, schemaBudget = 0) {
     const sourceVersion = await this.options.store.contextVersion(message.server, message.channel);
-    let request: PromptItem = { role: "user", content: message.text, author: message.author, sourceIds: [message.id] };
+    let request: PromptItem = { role: "user", content: message.text, author: message.author, sourceIds: [message.id], ...(message.modelImages?.length ? { images: message.modelImages } : {}) };
     const metadata: PromptItem[] = this.options.tools ? [{ role: "user", contextOnly: true, content: JSON.stringify({ request_context: { server_id: message.server, channel_id: message.channel, requester_id: message.author, task_id: message.taskId ?? null, is_task: Boolean(message.taskId) } }) }] : [];
     let budget = this.options.inputLimit - schemaBudget - this.options.counter.count([...prefix, ...metadata, request]);
     if (budget < 0) throw new RequestError("CONTEXT_BUDGET", `Request exceeds context budget: request and schemas are ${-budget} estimated input units over the limit.`, "Reduce the request or increase CONTEXT_TOKENS while leaving room for OUTPUT_TOKENS.", { inputLimit: this.options.inputLimit, schemaBudget });

@@ -739,6 +739,7 @@ export class DiscordAdapter {
       limiter: this.usage.limiter,
       access: this.access,
       members: this.members,
+      ...(this.objectStorageProvider ? { images: this.objectStorageProvider } : {}),
     };
   }
   /**

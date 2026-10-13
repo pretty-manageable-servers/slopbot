@@ -3,6 +3,7 @@ import type { Json, Message, ModelEvent } from "./domain.js";
 import type { ToolActivity } from "./tool-activity.js";
 import { transcriptSwitchOn } from "./server-tools.js";
 import type { MemberDirectory, MemberProfile } from "./member-directory.js";
+import { imageAttachments } from "./web-chat-images.js";
 
 /** Kinds of events a web transcript stream sends. */
 export type ConversationKind = "message" | "run.start" | "run.delta" | "run.tool" | "run.end";
@@ -73,6 +74,8 @@ export interface TranscriptMessage {
   editedAt: number | null;
   slopbot: boolean;
   runIds: string[];
+  /** Web chat images as saved placeholders. The page loads the bytes from the chat's image route. */
+  images: { imageId: string; name: string; contentType: string; size: number }[];
   /** True for Slopbot's own messages, and for a person's message that a reply run used. Live messages start false. */
   used: boolean;
 }
@@ -106,6 +109,7 @@ export function transcriptMessage(message: Message, slopbot: string | undefined,
     editedAt: edited ? message.revisionTimestamp! : null,
     slopbot: isSlopbot,
     runIds: isSlopbot ? [...runIds] : [],
+    images: imageAttachments(message.attachments),
     used: isSlopbot || used,
   };
 }

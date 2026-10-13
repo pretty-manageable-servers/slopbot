@@ -200,6 +200,17 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
           if (req.method === 'GET') return void await backend.chats.handle(req, res, url, session.user, undefined);
           if (!['POST', 'PATCH', 'DELETE'].includes(req.method ?? '') || req.headers.origin !== new URL(options.origin).origin || req.headers['x-csrf-token'] !== session.csrf) return send(res, 403, { error: 'Invalid request.' });
           let chatBody: unknown;
+          if (req.method === 'POST' && /^\/api\/chats\/[^/]+\/images$/.test(routePath)) {
+            // One raw image per request. The size is checked on the header and again while reading.
+            const limit = 25 * 1024 * 1024;
+            if (!req.headers['content-type']?.startsWith('image/')) return send(res, 415, { error: 'Send an image.' });
+            if (Number(req.headers['content-length']) > limit) { req.resume(); return send(res, 413, { error: 'Images can be 25 MB or smaller.' }); }
+            const chunks: Buffer[] = []; let size = 0;
+            // Past the limit nothing is kept. The rest of the body is read and dropped, so the 413 reaches the client.
+            for await (const chunk of req) { size += chunk.length; if (size <= limit) chunks.push(chunk); }
+            if (size > limit) return send(res, 413, { error: 'Images can be 25 MB or smaller.' });
+            return void await backend.chats.handle(req, res, url, session.user, Buffer.concat(chunks));
+          }
           if (req.method !== 'DELETE') {
             if (!req.headers['content-type']?.startsWith('application/json')) return send(res, 415, { error: 'Send JSON.' });
             let text = ''; for await (const chunk of req) { text += chunk; if (Buffer.byteLength(text) > 65536) return send(res, 413, { error: 'Request too large.' }); }
