@@ -1219,18 +1219,22 @@ document.addEventListener('keydown', event => {
   conv.meter.button.focus();
 });
 
-// Relative reset time, such as "Resets in 3 hours".
+// Reset time with two units: "Resets in 3d 4h" over a day, else "Resets in 2h 15m".
 function resetsLabel(ts) {
-  const diff = ts - Date.now();
-  const units = [['day', 86400000], ['hour', 3600000], ['minute', 60000]];
-  const [unit, size] = units.find(([, ms]) => Math.abs(diff) >= ms) || units[2];
-  return `Resets ${new Intl.RelativeTimeFormat([], { numeric: 'auto' }).format(Math.round(diff / size), unit)}`;
+  const minutes = Math.max(1, Math.ceil((ts - Date.now()) / 60000));
+  const days = Math.floor(minutes / 1440), hours = Math.floor(minutes % 1440 / 60), rest = minutes % 60;
+  return `Resets in ${days ? `${days}d ${hours}h` : hours ? `${hours}h ${rest}m` : `${rest}m`}`;
 }
+
+// The usage color: blue below 50%, orange from 50%, red from 80%.
+function usageLevel(percent) { return percent >= 80 ? 'high' : percent >= 50 ? 'mid' : 'low'; }
 
 // Fills the ring to the larger window percent, and writes the popover rows. A window without a limit shows "No limit".
 function paintUsage(meter, data) {
   const windows = data.windows || [];
-  meter.arc.setAttribute('stroke-dasharray', `${Math.max(0, ...windows.map(item => item.percent ?? 0))} 100`);
+  const most = Math.max(0, ...windows.map(item => item.percent ?? 0));
+  meter.arc.setAttribute('stroke-dasharray', `${most} 100`);
+  meter.button.dataset.level = usageLevel(most);
   const rows = [textNode('p', `Plan: ${data.plan} (free)`, 'chat-usage-plan')];
   for (const item of windows) {
     const title = item.kind === '5h' ? '5-hour limit' : 'Weekly limit';
@@ -1241,6 +1245,7 @@ function paintUsage(meter, data) {
       const track = textNode('div', '', 'chat-usage-track');
       const fill = textNode('div', '', 'chat-usage-fill');
       fill.style.width = `${item.percent}%`;
+      fill.dataset.level = usageLevel(item.percent);
       track.append(fill);
       row.append(track);
     }
