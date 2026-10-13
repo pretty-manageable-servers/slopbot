@@ -1,4 +1,4 @@
-import { objectStorageTool, UserFileStorage, MAX_STORED_FILE_BYTES } from '../object-storage.js';
+import { objectStorageTool, UserFileStorage, MAX_STORED_FILE_BYTES, fileStorageScope } from '../object-storage.js';
 import { sendStoredFile } from './discord-storage.js';
 import { S3StorageProvider } from './s3-storage.js';
 import { contextChangedError, legacyToolProgress, sourceFingerprint, stableAttachmentUrl, toolProgressFooter } from "../source-context.js";
@@ -175,16 +175,16 @@ export class DiscordAdapter implements ChatGateway {
       storage,
       authorize: message => authorizeFeature(message, message.channel),
       resolveAttachment: (request, id) => resolveAttachment(request, id, true),
-      inspect: (context, file, bytes, question) => inspectFile({ store, llm, assertCurrent: async () => { const current = await storage.entry(context.message.server, context.message.author, file.owner, file.path); if (current.file.key !== file.key) throw new ToolError('Stored file changed during inspection. Read its current version.'); } }, context, file.path, file.contentType, bytes, question),
+      inspect: (context, file, bytes, question) => inspectFile({ store, llm, assertCurrent: async () => { const current = await storage.entry(context.message.server, context.message.author, file.owner, file.path, false, fileStorageScope(file), context.isAdmin); if (current.file.key !== file.key) throw new ToolError('Stored file changed during inspection. Read its current version.'); } }, context, file.path, file.contentType, bytes, question),
       send: async (context, file, bytes) => {
-        const current = await storage.entry(context.message.server, context.message.author, file.owner, file.path);
+        const current = await storage.entry(context.message.server, context.message.author, file.owner, file.path, false, fileStorageScope(file), context.isAdmin);
         if (current.file.key !== file.key) throw new ToolError('Stored file changed before sending. Request its current version.');
         await sendStoredFile(this.client, context, file, bytes);
       },
       ...(sandboxProvider ? { sandbox: {
         read: (context, path) => readSandboxFile(store, sandboxProvider, context, path, MAX_STORED_FILE_BYTES),
         write: async (context, path, _bytes) => {
-          const output = await this.tools.invokeResult(context.message, 'sandbox', { action: 'import_storage', path, storage_path: context.arguments.path!, ...(context.arguments.owner ? { owner: context.arguments.owner } : {}) }, `${context.operationId}:sandbox-import`, context.source);
+          const output = await this.tools.invokeResult(context.message, 'sandbox', { action: 'import_storage', path, storage_path: context.arguments.path!, ...(context.arguments.storage_scope ? { storage_scope: context.arguments.storage_scope } : {}), ...(context.arguments.owner ? { owner: context.arguments.owner } : {}) }, `${context.operationId}:sandbox-import`, context.source);
           if (output.status === 'failed' || output.status === 'rejected') throw new ToolError(output.reason ?? output.text, output.status);
         },
       } } : {}),

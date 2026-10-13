@@ -1,4 +1,4 @@
-import { storagePath, type UserFileStorage } from './object-storage.js';
+import { storagePath, storageScopes, type StorageScope, type UserFileStorage } from './object-storage.js';
 import { logError } from "./errors.js";
 import { DiscordFileFetcher, type FileFetcher } from './files.js';
 import type { Message } from './domain.js';
@@ -34,6 +34,7 @@ export function sandboxTool(store: RecordStore, provider?: SandboxProvider, atta
       action: { type: 'string', required: true, choices: ['run', 'read', 'write', 'import_attachment', 'import_storage', 'status', 'close'], description: 'run/write/import_attachment/import_storage creates a sandbox when none is recorded; close destroys it' },
       command: { type: 'string', description: 'Shell command to execute remotely, never on the bot host' },
       path: { type: 'string', description: 'Absolute sandbox file path, e.g. /tmp/example.py' },
+      storage_scope: { type: 'string', choices: storageScopes, description: 'Stored-file namespace for import_storage: user, server or user_server (default)' },
       storage_path: { type: 'string', max: 300, description: 'Relative stored-file path for import_storage' },
       owner: { type: 'string', max: 20, description: 'Stored-file owner Discord ID; defaults to requester; other users must have published the file' },
       message_id: { type: 'string', description: 'Attachment source message ID in this thread or its permitted parent channel; omit for current/reply attachment' },
@@ -49,13 +50,14 @@ export function sandboxTool(store: RecordStore, provider?: SandboxProvider, atta
       if (args.action === 'run' && (typeof args.command !== 'string' || !args.command.trim() || args.command.length > 16000)) throw new ToolError('run requires a command of 1–16000 characters.');
       if (['read', 'write', 'import_attachment', 'import_storage'].includes(String(args.action)) && (typeof args.path !== 'string' || !args.path.startsWith('/') || args.path.includes('\0') || args.path.length > 1024)) throw new ToolError('Provide an absolute sandbox file path.');
       if (args.action === 'write' && (typeof args.text !== 'string' || args.text.length > 64000)) throw new ToolError('write requires text of at most 64000 characters.');
+      if (args.storage_scope === 'server' && args.owner !== undefined) throw new ToolError('Server scope uses this server directory. Omit owner.');
       if (args.action === 'import_storage') { storagePath(args.storage_path); if (args.owner !== undefined && !/^\d{17,20}$/.test(String(args.owner))) throw new ToolError('owner must be a Discord user ID.'); }
       return args;
     },
     async authorize(context, args) {
       if (args.action === 'import_storage') {
         if (!storage) throw new ToolError('Object storage is not configured.');
-        await storage.entry(context.message.server, context.message.author, String(args.owner ?? context.message.author), String(args.storage_path));
+        await storage.entry(context.message.server, context.message.author, String(args.owner ?? context.message.author), String(args.storage_path), false, (args.storage_scope ?? 'user_server') as StorageScope, context.isAdmin);
       }
     },
     async execute(context, args) {
@@ -76,7 +78,7 @@ export function sandboxTool(store: RecordStore, provider?: SandboxProvider, atta
       }
       if (args.action === 'import_storage') {
         if (!storage) throw new ToolError('Object storage is not configured.');
-        const { file, bytes } = await storage.read(message.server, message.author, String(args.owner ?? message.author), String(args.storage_path));
+        const { file, bytes } = await storage.read(message.server, message.author, String(args.owner ?? message.author), String(args.storage_path), (args.storage_scope ?? 'user_server') as StorageScope, context.isAdmin);
         await context.assertActive();
         imported = { bytes, name: file.path };
       }
