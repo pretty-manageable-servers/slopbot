@@ -38,6 +38,8 @@ import {
   MessageFlags, PermissionFlagsBits, ChannelType, ActivityType,
   type ChatInputCommandInteraction, type Interaction, type Message as DiscordMessage, type PartialMessage,
 } from "discord.js";
+import { BOT_REPLY_LIMIT_KEY, botReplyLimit } from "../bot-reply-limit.js";
+import { GLOBAL_SETTINGS_SCOPE } from "../usage-cost.js";
 import { buildStopCommand, buildToolCommands, buildUsageCommand, usageReply } from "./discord-commands.js";
 import { registerProfileTools } from "../profiles.js";
 import { Application } from "../application.js";
@@ -286,7 +288,7 @@ export class DiscordServer implements ChatGateway {
       if (!this.bot.accepts(job.message.server, job.message.channel)) return;
       await this.reply(job.message, errorReply(error, job.id), `job-error:${job.id}`);
     });
-    this.bot = new Bot(this.app, store, store, this, guildId, this.channels, { profiles: store, knowledge: store, participation, worker: this.worker, tools: this.tools, queueStore: store });
+    this.bot = new Bot(this.app, store, store, this, guildId, this.channels, { profiles: store, knowledge: store, participation, worker: this.worker, tools: this.tools, queueStore: store, botReplyLimit: () => botReplyLimit(store.setting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY)) });
   }
   /** Private chats: the chat service opens, closes and hands messages in through these. */
   openChat(channel: string): void { this.bot.openPrivateChat(this.guildId, channel); }

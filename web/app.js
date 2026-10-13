@@ -492,6 +492,10 @@ function priceCardKey(event) {
   if (event.key === 'Enter' && save) { event.preventDefault(); save.click(); }
   else if (event.key === 'Escape' && cancel) { event.preventDefault(); cancel.click(); }
 }
+// Replies to other bots: at most this many in this many minutes, per channel. Zero replies means Slopbot never answers bots.
+function adminBotReplies(limit, off) {
+  return `<form class="card" id="admin-bot-replies"><h2>Replies to other bots</h2><p class="scope">For all servers, counted for each channel. Default: ${limit.default.replies} in ${limit.default.minutes} minutes. Zero replies stops all replies to bots.</p><div class="row">${input('Replies','replies',limit.replies,1000)}${input('Minutes','minutes',limit.minutes,1440,1)}</div><button class="primary" id="admin-bot-replies-save"${off}>Save limit</button></form>`;
+}
 function adminSystemPrompt(prompt, full, off) {
   // The field shows the saved text, or the default when nothing is saved.
   const text = prompt.text ?? prompt.default;
@@ -680,22 +684,28 @@ async function renderBotAdmin() {
   $('description').textContent = 'Usage, model prices, web search keys and the system prompt for all servers. Read-only members can view everything and add their own web search keys.';
   $('content').replaceChildren(busy('md', 'Loading…'));
   try {
-    const [totals, prices, webKeys, systemPrompt, full] = await Promise.all([
+    const [totals, prices, webKeys, systemPrompt, full, botReplies] = await Promise.all([
       request('/api/admin/usage/total'),
       request('/api/admin/prices'),
       request('/api/admin/web-keys'),
       request('/api/admin/system-prompt'),
       request('/api/admin/system-prompt/full'),
+      request('/api/admin/bot-replies'),
     ]);
     if (tab !== 'bot') return;
     priceState = { prices, edit, editing: '' };
-    $('content').innerHTML = [adminTotals(totals), '<section class="card" id="admin-prices"></section>', adminWebKeys(webKeys, edit), adminSystemPrompt(systemPrompt, full.text, off)].join('');
+    $('content').innerHTML = [adminTotals(totals), '<section class="card" id="admin-prices"></section>', adminWebKeys(webKeys, edit), adminBotReplies(botReplies, off), adminSystemPrompt(systemPrompt, full.text, off)].join('');
     paintPrices();
     wireSystemPrompt(systemPrompt);
     wireWebKeys(edit);
     if (edit) {
       $('admin-prices').onclick = priceCardClick;
       $('admin-prices').onkeydown = priceCardKey;
+      $('admin-bot-replies').onsubmit = event => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        adminRun($('admin-bot-replies-save'), async () => { await request('/api/admin/bot-replies', { replies: Number(form.replies.value), minutes: Number(form.minutes.value) }); notice('Bot reply limit saved.'); });
+      };
       $('admin-system-prompt').onsubmit = event => {
         event.preventDefault();
         adminRun($('admin-system-prompt-save'), async () => { await request('/api/admin/system-prompt', { text: $('admin-system-prompt-text').value }); notice('System prompt saved.'); });

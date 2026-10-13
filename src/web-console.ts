@@ -99,6 +99,7 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
     if (path === '/api/admin/limits') return panel.limits(query.get('server'));
     if (path === '/api/admin/prices') return panel.prices();
     if (path === '/api/admin/system-prompt') return panel.systemPrompt();
+    if (path === '/api/admin/bot-replies') return panel.botReplies();
     if (path === '/api/admin/usage') return panel.usage(query.get('server'), query.get('user') ?? undefined);
     if (path === '/api/admin/members') return panel.members(query.get('server'), query.get('q') ?? '');
     if (path === '/api/admin/servers') return admin.servers(serverPage(query));
@@ -113,6 +114,7 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
   if (path === '/api/admin/web-keys/reset') return panel.resetWebKey(user, await admin.canEdit(user), body);
   if (path === '/api/admin/prices') return panel.savePrice(body);
   if (path === '/api/admin/system-prompt') return panel.saveSystemPrompt(body);
+  if (path === '/api/admin/bot-replies') return panel.saveBotReplies(body);
   if (path === '/api/admin/usage/reset') return panel.resetUsage(body);
   if (path === '/api/admin/usage/grant') return panel.grantResets(body);
   if (path === '/api/admin/transcripts') {
