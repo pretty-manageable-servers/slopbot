@@ -1166,7 +1166,8 @@ function chatComposer(id) {
     banner.append(textNode('strong', 'This question came from a link. Read it before you send it.'), textNode('span', ' ' + ASK_WARNING));
     form.append(banner);
     field.addEventListener('input', () => { if (!field.value.trim()) banner.remove(); });
-    form.addEventListener('submit', () => setTimeout(() => { if (!field.value) banner.remove(); }, 0));
+    // The user read the text and sent it, so the warning goes.
+    form.addEventListener('submit', () => { if (field.value.trim()) banner.remove(); });
     requestAnimationFrame(() => { fitField(field); box.classList.add('has-text'); field.focus(); });
   }
   form.append(status, box, textNode('p', 'Slopbot is AI and can make mistakes.', 'chat-foot'));
