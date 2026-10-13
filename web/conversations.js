@@ -344,6 +344,8 @@ async function openConversation(id, kind = 'channel', replace = false) {
     const page = await request(messagesUrl(id));
     if (conv.channel !== id) return;
     if (chat) {
+      // Only the owner opens a private chat, so the owner always gets the Share button here.
+      if (window.SlopbotShares) { $('conv-share').hidden = false; window.SlopbotShares.renderChatShare($('conv-share'), id); }
       // A chat with no messages shows the greeting, with the composer under it. Otherwise the composer is at the bottom.
       const composer = chatComposer(id);
       const empty = !page.messages.length;
