@@ -387,8 +387,9 @@ export class DiscordServer implements ChatGateway {
       const stopped = await this.stopResponses(interaction.channelId, interaction.user.id, manager);
       if (!stopped.length) { await interaction.editReply({ content: "No response to stop. You can stop only the responses that you started.", allowedMentions: { parse: [] } }); return; }
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId(`slopstop:${stopped[0]}`).setLabel("Continue").setStyle(ButtonStyle.Primary));
+      // Edit the deferred private reply first. Otherwise the first followUp takes its place, and is private.
+      await interaction.editReply({ content: `Stopped ${stopped.length} response${stopped.length === 1 ? "" : "s"}.`, allowedMentions: { parse: [] } });
       await interaction.followUp({ content: "Slopbot's response was interrupted. Continue?", components: [row], allowedMentions: { parse: [] } });
-      await interaction.deleteReply().catch(() => undefined);
     } catch (error) {
       logError("command_failed", error, { stage: "stop command", server: this.guildId, messageId: interaction.id });
       await interaction.editReply({ content: errorReply(error), allowedMentions: { parse: [] } });
