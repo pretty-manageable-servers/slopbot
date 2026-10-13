@@ -1,4 +1,5 @@
 import { LocalDiskStorage } from "../web-chat-images.js";
+import { DiscordVoice } from './discord-voice.js';
 import { contextChangedError, legacyToolProgress, sourceFingerprint, stableAttachmentUrl, toolProgressFooter } from "../source-context.js";
 import { errorReply, logError } from "../errors.js";
 import { sandboxTool, readSandboxFile } from "../sandbox.js";
@@ -97,6 +98,7 @@ export class DiscordServer implements ChatGateway {
   private readonly chatGateway: WebChatGateway;
   private channels: string[];
   private historyTimer: ReturnType<typeof setInterval> | undefined;
+  private readonly voice: DiscordVoice | undefined;
 
   constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">, private readonly team?: Pick<TeamAdmins, "canEdit">) {
     this.client = client;
@@ -142,6 +144,10 @@ export class DiscordServer implements ChatGateway {
       }
     });
     this.mcp = new McpManager(guildId, store, this.tools, remoteMcpConnector({ allowPrivate: process.env.MCP_ALLOW_PRIVATE === 'true' }), new McpSecrets(process.env.MCP_SECRET_KEY), message => this.validateChannel(message, message.channel));
+    if (config.voice) {
+      this.voice = new DiscordVoice(client, guildId, config, llm, usage, user => Boolean(mutedUsers(store.setting(guildId, MUTED_USERS_KEY))[user]));
+      this.voice.register(this.tools);
+    }
     registerServerTools(this.tools, {
       config, server: guildId, store, participation, history: this.history,
       isTeamEditor: async user => team ? await team.canEdit(user).catch(() => false) : false,
@@ -781,6 +787,7 @@ export class DiscordServer implements ChatGateway {
   }
   async start(): Promise<void> { await this.mcp.restore(); }
   async stop(): Promise<void> {
+    this.voice?.stop();
     if (this.historyTimer) clearInterval(this.historyTimer);
     await this.reminders.stop();
     await this.fixWatches?.stop();
@@ -817,7 +824,7 @@ export class DiscordAdapter {
 
   constructor(private readonly config: Config, private readonly store: RuntimeStore, private readonly llm: LLM, client?: Client) {
     this.usage = createUsageMeter(config, store);
-    this.client = client ?? new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent], partials: [Partials.Message, Partials.Channel] });
+    this.client = client ?? new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates], partials: [Partials.Message, Partials.Channel] });
     this.members = new MemberDirectory(discordMemberSource(this.client));
     this.team = new TeamAdmins(discordTeamSource(this.client));
     this.access = new ChannelAccess(discordChannelAccessSource(this.client));

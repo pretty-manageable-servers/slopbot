@@ -37,7 +37,7 @@ test("bot_info documents native calling, budgets and the current provider change
   assert.match(changes.text,/2026-10-11/); assert.match(changes.text,/2026-11-10/);
   assert.ok(changes.sources?.some(source=>source.kind==='web' && source.url==='https://docs.pmservers.org/changelog/'));
   const ai = await registry.invokeResult(message,'bot_info',{topic:'pmservers_ai'},'ai','agent');
-  assert.match(ai.text,/systemone/); assert.match(ai.text,/not a Slopbot feature/);
+  assert.match(ai.text,/systemone/); assert.match(ai.text,/Slopbot voice uses squall PCM WAV transcription and thunder WAV speech/);
   const prompt = await registry.invokeResult({...message,id:'t',author:'team'},'bot_info',{topic:'decision_prompt'},'prompt','agent');
   assert.match(prompt.text, /"type": "choice"/); assert.ok(!prompt.text.includes('noul'));
 });

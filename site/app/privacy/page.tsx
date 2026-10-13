@@ -21,6 +21,7 @@ export default function Privacy() {
         </li>
         <li><b>Prompts and replies.</b> What you send to Slopbot, in Discord or in the web console, and its replies.</li>
         <li><b>Files.</b> Files and images that you share with Slopbot.</li>
+        <li><b>Voice conversations.</b> While Slopbot is in a voice channel, it sends human speech to PMS Cloud AI for transcription and uses the transcript to generate spoken replies. It posts a listening notice in the voice channel&apos;s text chat.</li>
         <li><b>Memories.</b> Statements from your team that Slopbot saves, each with its source message.</li>
         <li><b>Usage.</b> Token and cost totals for each member and each server.</li>
         <li><b>Safety flags.</b> Requests that our safety check flags, with a copy of the flagged content (see section 4).</li>
@@ -78,6 +79,7 @@ export default function Privacy() {
         <li>Safety flags: 14 days.</li>
         <li>Messages, chats and memories: until you or an admin delete them.</li>
         <li>Usage totals: while the server uses Slopbot.</li>
+        <li>Voice audio and conversation history: in Slopbot&apos;s memory for the live session, without a saved voice transcript. Processing by model providers is described in section 5.</li>
         <li>Logs and error reports: only as long as we need them to run and fix the service. Logs are anonymized.</li>
         <li>When Slopbot is removed from a server, you can ask us to delete that server&apos;s data.</li>
       </ul>
@@ -86,6 +88,7 @@ export default function Privacy() {
       <ul>
         <li>Forget your own memories with <code>memory_forget</code>.</li>
         <li>Delete your private chats and revoke your shared links in the web console.</li>
+        <li>Stop a voice session with <code>/slopbot voice action:leave</code> while you are in that channel. Server admins can also stop it.</li>
         <li>Ask us for a copy of your data, or to delete it, in the PMServers Discord server.</li>
         <li>Depending on where you live, you can have more rights by law.</li>
       </ul>

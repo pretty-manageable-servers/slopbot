@@ -10,6 +10,8 @@ COPY architecture/BOT_GUIDE.md ./architecture/BOT_GUIDE.md
 # Tests run in the CI test job before deploy, not in the image build.
 RUN npm run build
 RUN npm prune --omit=dev
+# The runtime is Alpine; retain its DAVE encryption binary alongside the build's glibc binary.
+RUN node -e 'const {version}=require("@snazzah/davey/package.json"); const r=require("node:child_process").spawnSync("npm",["install","--no-save","--omit=dev","--package-lock=false","--force",`@snazzah/davey-linux-${process.arch}-musl@${version}`],{stdio:"inherit"}); process.exit(r.status ?? 1)'
 COPY site ./site
 RUN cd site && npm ci && npm run build
 

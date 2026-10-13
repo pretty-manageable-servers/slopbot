@@ -37,6 +37,11 @@ LLM_MODEL=nimbus
 
 Restart with `npm start`. The adapter sends streaming requests to `/chat/completions`. The configured model is PMServers’ `nimbus`. Use the exact model ID accepted by the provider. Run `npm run models` to list available IDs when changing models.
 
+Join a Discord voice channel and use `/slopbot voice action:join` to talk with Slopbot. Use `action:leave` to disconnect and `action:status` to check the session. Natural-language requests can also invoke the voice tool. Voice is enabled by default; set `VOICE_ENABLED=false` to disable it or `VOICE_NAME` to choose a Thunder voice, default `alloy`. The AI key needs access to `squall`, the configured chat model, and `thunder`.
+
+Slopbot needs View Channel, Connect, Speak and Send Messages permissions in the voice channel. It posts a listening notice in that channel's text chat, then processes one human speaker at a time. Listening pauses during reply generation and playback. Each utterance is limited to 30 seconds; transcription, chat and speech-generation costs count toward the speaker's usage limits. Voice history is separate from text conversations, has no tools, and stays in memory for the session. Audio is sent to PMServers for transcription, and replies use its chat and speech endpoints. Slopbot leaves an empty channel or after five minutes of inactivity. Stage channels are unsupported.
+
+
 Test actual continuity: inside a task thread, say "The budget is $200", then ask "What budget did I give you?" Try the same after a restart. Outside the thread, reply to an older bot answer and ask a follow-up; it should use the reference without continuing that task session.
 
 ## Context and memory, about 3 minutes to test

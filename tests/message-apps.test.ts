@@ -33,7 +33,7 @@ test("Continue in Slopbot web makes a private chat that starts with the message"
 
   await assert.rejects(chats.continueMessage("carol", guild, source), (error: unknown) => error instanceof ChatError, "a non-member gets no chat");
   const { id } = await chats.continueMessage("alice", guild, source);
-  assert.deepEqual((await chats.list("alice", guild)).map(chat => [chat.id, chat.title]), [[id, "the build is broken"]]);
+  assert.deepEqual((await chats.list("alice")).map(chat => [chat.id, chat.title]), [[id, "the build is broken"]]);
   assert.equal(opened.length, 1);
   assert.match(JSON.stringify((await chats.messages("alice", id, 50, null)).messages), /the build is broken/);
   await assert.rejects(chats.messages("bob", id, 50, null), (error: unknown) => error instanceof ChatError && error.status === 404, "only the owner sees the chat");
