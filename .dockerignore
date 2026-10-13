@@ -2,6 +2,9 @@
 .env
 .env.*
 node_modules
+site/node_modules
+site/out
+site/.next
 dist
 data
 .tools

@@ -384,7 +384,7 @@ function heroNode(composer) {
   const logo = document.createElement('img');
   logo.className = 'chat-hero-logo';
   logo.alt = ''; logo.width = 56; logo.height = 56;
-  logo.src = document.documentElement.classList.contains('light') ? '/assets/logo-dark.svg' : '/assets/logo-light.svg';
+  logo.src = document.documentElement.classList.contains('light') ? '/console/assets/logo-dark.svg' : '/console/assets/logo-light.svg';
   const slot = textNode('div', '', 'chat-hero-composer');
   slot.append(composer);
   hero.append(logo, textNode('h2', "What's growing today?", 'chat-hero-title'), slot);

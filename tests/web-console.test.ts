@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { consoleOptions, createConsole } from '../src/web-console.js';
 import { ToolError } from '../src/tools.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
@@ -43,6 +46,7 @@ test('Discord login binds state to browser, protects writes, and destroys logout
   assert.equal((await call(`/auth/callback?state=${state}&code=x`,{redirect:'manual'})).status,400);
   const callback = await call(`/auth/callback?state=${state}&code=x`,{redirect:'manual',headers:{Cookie:`slopbot_state=${state}`}});
   assert.equal(callback.status,302);
+  assert.equal(callback.headers.get('location'),'/console');
   const cookie = callback.headers.getSetCookie()[0]!.split(';')[0]!;
   assert.ok(cookie.includes('slopbot_session='));
   assert.equal((await call(`/auth/callback?state=${state}&code=x`,{headers:{Cookie:`slopbot_state=${state}`}})).status,400);
@@ -70,17 +74,54 @@ test('Discord login binds state to browser, protects writes, and destroys logout
   assert.equal((await call('/api/logout',{method:'POST',headers,body:'{}'})).status,200);
   assert.equal((await call('/api/settings',{headers:{Cookie:cookie}})).status,401);
 });
-test('static console serves branding and blocks path traversal',async t=>{
-  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'},{ sessions: new SQLiteStore(),async snapshot(){return {};},async invoke(){return {};}});
+test('landing serves the static export, console serves under /console, and traversal is blocked',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'slopbot-site-'));
+  t.after(()=>rm(dir,{recursive:true,force:true}));
+  await mkdir(join(dir,'site/out/_next/static/chunks'),{recursive:true});
+  await writeFile(join(dir,'site/out/index.html'),'<!doctype html><title>Slopbot</title><script>window.landing=true</script>');
+  await writeFile(join(dir,'site/out/_next/static/chunks/app.js'),'console.log(1)');
+  await writeFile(join(dir,'site/out/favicon.svg'),'<svg xmlns="http://www.w3.org/2000/svg"/>');
+  await writeFile(join(dir,'site/out/404.html'),'<!doctype html>');
+  await writeFile(join(dir,'secret.txt'),'secret');
+  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:join(dir,'site/out')},{ sessions: new SQLiteStore(),async snapshot(){return {};},async invoke(){return {};}});
   server.listen(0,'127.0.0.1');await once(server,'listening');
   t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
   const address=server.address();assert.ok(address&&typeof address!=='string');
   const base=`http://127.0.0.1:${address.port}`;
-  const page=await fetch(base);assert.match(await page.text(),/Your team\. Your Slopbot/);
-  assert.match(page.headers.get('content-security-policy')!,/frame-ancestors 'none'/);
-  assert.equal((await fetch(base+'/assets/logo-light.svg')).status,200);
+  // Landing page: inline scripts are allowed only here.
+  const home=await fetch(base+'/');assert.match(await home.text(),/window\.landing/);
+  assert.match(home.headers.get('content-security-policy')!,/script-src 'self' 'unsafe-inline'/);
+  assert.equal((await fetch(base+'/_next/static/chunks/app.js')).headers.get('content-type'),'text/javascript');
+  assert.equal((await fetch(base+'/favicon.svg')).headers.get('content-type'),'image/svg+xml');
+  assert.equal((await fetch(base+'/404.html')).status,200);
+  assert.equal((await fetch(base+'/_next/static/chunks/missing.js')).status,404);
+  assert.equal((await fetch(base+'/_next/static/chunks/')).status,404);
+  assert.equal((await fetch(base+'/_next/../../secret.txt')).status,404);
+  assert.equal((await fetch(base+'/_next/static/..%2f..%2fsecret.txt')).status,404);
+  assert.equal((await fetch(base+'/secret.txt')).status,404);
   assert.equal((await fetch(base+'/.env')).status,404);
-  assert.equal((await fetch(base+'/assets/%2e%2e%2f.env')).status,404);
+  assert.equal((await fetch(base+'/app.js')).status,404);
+  // Console: its own paths and CSP, with no inline scripts.
+  const page=await fetch(base+'/console');assert.match(await page.text(),/Your team\. Your Slopbot/);
+  assert.match(page.headers.get('content-security-policy')!,/script-src 'self';/);
+  assert.equal((await fetch(base+'/console/')).status,200);
+  assert.equal((await fetch(base+'/console/app.js')).headers.get('content-type'),'text/javascript');
+  assert.equal((await fetch(base+'/console/style.css')).headers.get('content-type'),'text/css');
+  assert.equal((await fetch(base+'/console/assets/logo-light.svg')).status,200);
+  assert.equal((await fetch(base+'/console/assets/inter-latin-wght-normal.woff2')).headers.get('content-type'),'font/woff2');
+  assert.equal((await fetch(base+'/console/assets/%2e%2e%2f.env')).status,404);
+  assert.equal((await fetch(base+'/console/../package.json')).status,404);
+  assert.equal((await fetch(base+'/style.css')).status,404);
+  assert.equal((await fetch(base+'/assets/logo-light.svg')).status,404);
+});
+test('landing returns 404 when site/out is missing',async t=>{
+  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:join(tmpdir(),'slopbot-no-such-site')},{async snapshot(){return {};},async invoke(){return {};}});
+  server.listen(0,'127.0.0.1');await once(server,'listening');
+  t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
+  const address=server.address();assert.ok(address&&typeof address!=='string');
+  const base=`http://127.0.0.1:${address.port}`;
+  assert.equal((await fetch(base+'/')).status,404);
+  assert.equal((await fetch(base+'/console')).status,200);
 });
 test('team admin routes need team membership, and only editors can change settings', async t => {
   const store = new SQLiteStore(), OWNER = '100000000000000001', DEVELOPER = '100000000000000003', READER = '100000000000000004', OUTSIDER = '100000000000000005', USER = '100000000000000007';

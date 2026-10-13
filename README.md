@@ -4,7 +4,7 @@ Discord bot for the [context architecture](architecture/CONTEXT.md). Mentions an
 
 The optional [web configuration console](architecture/WEB_UI.md) provides Discord sign-in and live controls for server participation, monitored channels, history imports and your profile. Its setup and branding sources are documented there.
 
-The marketing copy is at `https://pmservers.org/slopbot`. The configuration console is at `https://slopbot.pmservers.org/` through its dedicated Cloudflare Tunnel.
+The marketing copy is at `https://pmservers.org/slopbot`. The configuration console is at `https://slopbot.pmservers.org/console` through its dedicated Cloudflare Tunnel. The landing page at `/` serves the static export in `site/out/`.
 
 Requires Node.js 22.13 or later. Test the core without credentials:
 
