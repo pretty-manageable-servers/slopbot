@@ -144,10 +144,6 @@ export class DiscordServer implements ChatGateway {
       }
     });
     this.mcp = new McpManager(guildId, store, this.tools, remoteMcpConnector({ allowPrivate: process.env.MCP_ALLOW_PRIVATE === 'true' }), new McpSecrets(process.env.MCP_SECRET_KEY), message => this.validateChannel(message, message.channel));
-    if (config.voice) {
-      this.voice = new DiscordVoice(client, guildId, config, llm, usage, user => Boolean(mutedUsers(store.setting(guildId, MUTED_USERS_KEY))[user]));
-      this.voice.register(this.tools);
-    }
     registerServerTools(this.tools, {
       config, server: guildId, store, participation, history: this.history,
       isTeamEditor: async user => team ? await team.canEdit(user).catch(() => false) : false,
@@ -253,6 +249,11 @@ export class DiscordServer implements ChatGateway {
       enabled: parent => webTranscriptsEnabled(store, guildId, parent),
       accepts: channel => this.bot.accepts(guildId, channel),
     });
+    // Voice posts transcripts through webReplies, so it is made after webReplies.
+    if (config.voice) {
+      this.voice = new DiscordVoice(client, guildId, config, this.webReplies, usage, user => Boolean(mutedUsers(store.setting(guildId, MUTED_USERS_KEY))[user]));
+      this.voice.register(this.tools);
+    }
     registerUsageTool(this.tools, this.limiter);
     this.tools.register(programTool(this.tools));
     this.app = new Application(store, llm, {
@@ -268,7 +269,10 @@ export class DiscordServer implements ChatGateway {
       await this.toolProgress.update(JSON.stringify([message.server,message.channel,message.id]), activity, async content => {
         const channel = await this.client.channels.fetch(message.channel);
         if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Status channel unavailable");
-        return channel.send({content,embeds:[{footer:{text:toolProgressFooter}}],...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? {reply:{messageReference:message.id,failIfNotExists:false}} : {}),allowedMentions:{parse:[],repliedUser:false}});
+        const sent = await channel.send({content,embeds:[{footer:{text:toolProgressFooter}}],...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? {reply:{messageReference:message.id,failIfNotExists:false}} : {}),allowedMentions:{parse:[],repliedUser:false}});
+        // The first progress post is the one that tells a voice user the bot is working.
+        if (message.source === "voice") void this.voice?.cue(message.channel).catch(error => logError("discord_voice_cue_failed", error, { server: message.server, channel: message.channel }));
+        return sent;
       });
     }, presentation: discordPresentation, profiles: store, harness: store, tools: {
       catalog: message => this.tools.catalog(message), schemas: message => this.tools.schemas(message), suggest: message => this.tools.suggest(message),
@@ -662,6 +666,7 @@ export class DiscordServer implements ChatGateway {
     const runIds = await this.store.requestRunIds(message.server, message.id);
     for (const output of outputs) await publishMessage(this.store, output, runIds, this.members).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
     delivered = true;
+    if (message.source === "voice") void this.voice?.speak(message.channel, text).catch(error => logError("discord_voice_speak_failed", error, { server: message.server, channel: message.channel }));
     return outputs;
     } finally {
     requestTimings.end(message, "delivery");
