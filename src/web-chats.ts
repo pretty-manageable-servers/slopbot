@@ -3,6 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { logError } from "./errors.js";
 import type { ChatGateway } from "./bot.js";
 import type { Message } from "./domain.js";
+import type { ToolActivity } from "./tool-activity.js";
+import type { UiDocument } from "./ui/schema.js";
 import type { ChannelAccess } from "./channel-access.js";
 import type { MemberDirectory } from "./member-directory.js";
 import type { UserLimiter } from "./user-limiter.js";
@@ -56,7 +58,7 @@ const MESSAGE_ID = /^[\w:.-]{1,64}$/;
 export class WebChatGateway implements ChatGateway {
   constructor(private readonly store: Pick<ChatStore, "setting" | "taskThreads" | "requestRunIds" | "replyRunIds">, private readonly server: string) {}
 
-  async reply(message: Message, text: string, deliveryId?: string): Promise<readonly Message[]> {
+  async reply(message: Message, text: string, deliveryId?: string, _activity?: readonly ToolActivity[], _ui?: UiDocument): Promise<readonly Message[]> {
     const output: Message = {
       id: `chat-reply-${deliveryId ? stableOperationId(deliveryId) : randomUUID()}`,
       server: this.server, channel: message.channel,

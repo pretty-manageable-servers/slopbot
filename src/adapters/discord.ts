@@ -494,7 +494,6 @@ export class DiscordServer implements ChatGateway {
     let delivered = false;
     const outputs: Message[] = [];
     try {
-    if (isPrivateChannel(message.channel)) return this.chatGateway.reply(message, text, deliveryId, activity, ui);
     if (!this.bot.accepts(message.server, message.channel)) throw new ToolError("Channel was disabled before sending");
     const channel = await requestTimings.wait("Discord channel fetch", () => this.client.channels.fetch(message.channel));
     if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Channel cannot receive replies");
