@@ -1,6 +1,6 @@
 import { describeError, errorSummary, logError } from "./errors.js";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { ToolError, type ToolArgs } from './tools.js';
@@ -10,6 +10,7 @@ import type { TeamRole } from './team-admins.js';
 import type { TranscriptRoutes } from './web-transcripts.js';
 import { WebReplyError } from './web-replies.js';
 import { ShareError, isShareWrite, type ShareService } from './shares.js';
+import type { WebSessionStore } from './web-session-store.js';
 
 /** Team admin backend. Roles come from the Developer Portal team; panel holds the limits, prices and usage. */
 export interface ConsoleAdmin {
@@ -37,6 +38,8 @@ export interface ConsoleBackend {
   conversations?: TranscriptRoutes;
   /** Posts a web reply as the signed-in user. Errors with a WebReplyError keep their status. */
   reply?(user: string, server: string | undefined, channel: string, text: string): Promise<unknown>;
+  /** Login sessions. The database is the source of truth, so logins survive restarts. */
+  sessions: WebSessionStore;
 }
 export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string }
 export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOptions | undefined {
@@ -50,6 +53,13 @@ export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOpt
   return { origin: origin.origin, port, host: env.WEB_HOST || '127.0.0.1', clientId: env.DISCORD_CLIENT_ID, clientSecret: env.DISCORD_CLIENT_SECRET };
 }
 const token = () => randomBytes(32).toString('hex');
+/** A login lasts 30 days after its last renewal. A request renews it once less than 29 days remain. */
+const SESSION_MS = 30 * 86_400_000;
+const SESSION_RENEW_MS = 29 * 86_400_000;
+const SESSION_AGE = SESSION_MS / 1000;
+const SESSION_SWEEP_MS = 3_600_000;
+/** The database stores only this hash of the cookie value. */
+const sessionHash = (id: string) => createHash('sha256').update(id).digest('hex');
 const allowed = new Set(['monitoring', 'context', 'cooldown', 'channels', 'index', 'profile', 'timing', 'tool_display']);
 /** Team admin routes. Every one needs team membership; POST also needs an editing role. */
 async function adminRoute(admin: ConsoleAdmin, user: string, method: string, path: string, query: URLSearchParams, body: unknown): Promise<unknown> {
@@ -83,7 +93,7 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
 }
 const staticAssets: Record<string, string> = { '/': 'index.html', '/app.js': 'app.js', '/conversations.js': 'conversations.js', '/style.css': 'style.css', '/assets/logo-light.svg': 'assets/logo-light.svg', '/assets/logo-dark.svg': 'assets/logo-dark.svg', '/shares.js': 'shares.js', '/shares.css': 'shares.css', '/chat.css': 'chat.css', '/console.css': 'console.css', '/markdown.js': 'markdown.js' };
 export function createConsole(options: ConsoleOptions, backend: ConsoleBackend): Server {
-  const sessions = new Map<string, { user: string; csrf: string; expires: number }>();
+  const sessions = backend.sessions;
   const states = new Map<string, number>();
   const cookie = (name: string, value: string, age: number) => `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${options.origin.startsWith('https:') ? '; Secure' : ''}`;
   const cookies = (req: IncomingMessage) => Object.fromEntries((req.headers.cookie || '').split(';').map(part => part.trim().split('=')));
@@ -93,7 +103,21 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
     const value = await adminRoute(backend.admin, user, method, path, query, body);
     return value === undefined ? send(res, 404, { error: 'Not found.' }) : send(res, 200, value);
   };
-  return createServer(async (req, res) => {
+  /** Finds the live login for a cookie value. Expired rows are deleted. A login close to its end is extended, and its cookie is sent again. */
+  const loadSession = async (res: ServerResponse, id: string, now: number): Promise<{ user: string; csrf: string; hash: string } | undefined> => {
+    if (!id) return undefined;
+    const hash = sessionHash(id);
+    const row = await sessions.getSession(hash);
+    if (!row) return undefined;
+    if (row.expires <= now) { await sessions.deleteSession(hash); return undefined; }
+    if (row.expires - now < SESSION_RENEW_MS) {
+      row.expires = now + SESSION_MS;
+      await sessions.saveSession(row);
+      res.setHeader('Set-Cookie', cookie('slopbot_session', id, SESSION_AGE));
+    }
+    return { user: row.user_id, csrf: row.csrf, hash };
+  };
+  const server = createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' https://cdn.discordapp.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
@@ -102,7 +126,6 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
       const routePath = url.pathname;
       const now = Date.now();
       for (const [key, value] of states) if (value < now) states.delete(key);
-      for (const [key, value] of sessions) if (value.expires < now) sessions.delete(key);
       if (req.method === 'GET' && routePath === '/auth/login') {
         if (states.size >= 1000) return send(res, 429, { error: 'Try again later.' });
         const state = token(); states.set(state, now + 600_000);
@@ -124,9 +147,9 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         const user = await identity.json() as { id: string };
         if (!/^\d{17,20}$/.test(user.id)) throw new Error('Invalid identity');
         await backend.snapshot(user.id);
-        if (sessions.size >= 1000) return send(res, 429, { error: 'Try again later.' });
-        const id = token(); sessions.set(id, { user: user.id, csrf: token(), expires: now + 3_600_000 });
-        res.writeHead(302, { Location: '/', 'Set-Cookie': [cookie('slopbot_session', id, 3600), cookie('slopbot_state', '', 0)] }); res.end(); return;
+        const id = token();
+        await sessions.saveSession({ id_hash: sessionHash(id), user_id: user.id, csrf: token(), expires: now + SESSION_MS, created: now });
+        res.writeHead(302, { Location: '/', 'Set-Cookie': [cookie('slopbot_session', id, SESSION_AGE), cookie('slopbot_state', '', 0)] }); res.end(); return;
       }
       // Public share pages and snapshots. They never need a login and are never indexed.
       if (req.method === 'GET' && backend.shares && (/^\/s\/[A-Za-z0-9_-]{22}$/.test(routePath) || /^\/api\/shares\/[A-Za-z0-9_-]{22}$/.test(routePath))) {
@@ -141,7 +164,7 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         return snapshot ? send(res, 200, snapshot) : send(res, 404, { error: 'Not found.' });
       }
       if (routePath.startsWith('/api/')) {
-        const id = cookies(req).slopbot_session || '', session = sessions.get(id);
+        const session = await loadSession(res, cookies(req).slopbot_session || '', now);
         // Transcript routes answer 403 without a session; their streams must not get a login redirect.
         if (req.method === 'GET' && backend.conversations?.handles(routePath)) return void await backend.conversations.handle(req, res, url, session?.user);
         if (!session) return send(res, 401, { error: 'Sign in with Discord to continue.' });
@@ -168,7 +191,7 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
           return send(res, 200, await backend.shares.list(session.user, url.searchParams.get('server') ?? ''));
         }
         if (req.method !== 'POST' || req.headers.origin !== new URL(options.origin).origin || req.headers['x-csrf-token'] !== session.csrf) return send(res, 403, { error: 'Invalid request.' });
-        if (routePath === '/api/logout') { sessions.delete(id); res.setHeader('Set-Cookie', cookie('slopbot_session', '', 0)); return send(res, 200, { ok: true }); }
+        if (routePath === '/api/logout') { await sessions.deleteSession(session.hash); res.setHeader('Set-Cookie', cookie('slopbot_session', '', 0)); return send(res, 200, { ok: true }); }
         const conversation = routePath.match(/^\/api\/conversations\/(\d{17,20})\/reply$/);
         if (conversation) {
           if (!backend.reply) return send(res, 404, { error: 'Not found.' });
@@ -224,4 +247,9 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
       send(res, error instanceof ToolError && error.status === 'rejected' ? 403 : 502, { error: errorSummary(error), code: info.code, recovery: info.recovery });
     }
   });
+  // Expired logins are also removed on read. The sweep timer does not keep the process alive.
+  const sweep = setInterval(() => { void sessions.deleteExpiredSessions(Date.now()).catch(error => logError('web_session_cleanup_failed', error, { stage: 'web console' })); }, SESSION_SWEEP_MS);
+  sweep.unref();
+  server.once('close', () => clearInterval(sweep));
+  return server;
 }

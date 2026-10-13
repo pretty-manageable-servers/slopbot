@@ -19,7 +19,7 @@ test('web console is opt-in and rejects insecure public origins', () => {
 });
 test('Discord login binds state to browser, protects writes, and destroys logout sessions', async t => {
   let user = '', name = '', deny = false;
-  const server = createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'}, {
+  const server = createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'}, { sessions: new SQLiteStore(),
     async snapshot(id) { if (deny) throw new ToolError('Membership revoked'); return {user:id}; },
     async invoke(id, _server, _channel, tool) { if (deny) throw new ToolError('Permission revoked'); user=id;name=tool;return {text:'Saved'}; },
     async mcp(id, _server, input) { if (deny) throw new ToolError('Manage Server permission is required.'); user=id;name='mcp';return {text:'Connected',input}; },
@@ -71,7 +71,7 @@ test('Discord login binds state to browser, protects writes, and destroys logout
   assert.equal((await call('/api/settings',{headers:{Cookie:cookie}})).status,401);
 });
 test('static console serves branding and blocks path traversal',async t=>{
-  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'},{async snapshot(){return {};},async invoke(){return {};}});
+  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'},{ sessions: new SQLiteStore(),async snapshot(){return {};},async invoke(){return {};}});
   server.listen(0,'127.0.0.1');await once(server,'listening');
   t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
   const address=server.address();assert.ok(address&&typeof address!=='string');
@@ -93,7 +93,7 @@ test('team admin routes need team membership, and only editors can change settin
   const panel = new AdminPanel({ model: 'nimbus', jevModel: 'cirrus', embeddingModel: 'embed', baseUrl: 'https://models.example.com/v1', modelPrices: {}, fallbackPrice: { input: 1, cached_input: 1, output: 1 }, userLimit5hCostMicros: 100, userLimitWeekCostMicros: 0, userLimitGracePercent: 10 }, store, limiter, directory);
   const rotated: string[] = [];
   const admin: ConsoleAdmin = { role: id => teams.role(id), canEdit: id => teams.canEdit(id), servers: async () => ({ servers: [{ id: SERVER, name: 'Test server', channels: [] }] }), setTranscript: async (server, channel, enabled) => ({ server, channel, enabled }), rotateWebhook: async (_server, channel) => { rotated.push(channel); return { webhookId: 'hook-2' }; }, panel };
-  const server = createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'}, {
+  const server = createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'}, { sessions: new SQLiteStore(),
     async snapshot() { return {}; }, async invoke() { return {}; }, admin,
   });
   server.listen(0,'127.0.0.1'); await once(server,'listening');

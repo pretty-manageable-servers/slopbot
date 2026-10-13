@@ -23,6 +23,8 @@ const CONVERSATION_PRUNE_BATCH = 10000;
 
 import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
 import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, revokeShare, revokeAllShares } from '../share-store.js';
+import { getWebSession, saveWebSession, deleteWebSession, deleteExpiredWebSessions } from '../web-session-store.js';
+import type { WebSessionRow } from '../web-session-store.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
 export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore {
   async record(
@@ -340,6 +342,8 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       CREATE INDEX IF NOT EXISTS web_replies_message ON web_replies(server,message_id);
       CREATE TABLE IF NOT EXISTS shares (id TEXT PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, created_by TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER, body TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS shares_server ON shares(server,created_at);
+      CREATE TABLE IF NOT EXISTS web_sessions (id_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, csrf TEXT NOT NULL, expires INTEGER NOT NULL, created INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS web_sessions_expires ON web_sessions(expires);
     `);
     if (!this.db.prepare("PRAGMA table_info(web_replies)").all().some(column => column.name === "via")) this.db.exec("ALTER TABLE web_replies ADD COLUMN via TEXT NOT NULL DEFAULT 'webhook'");
     const operationColumns = this.db.prepare("PRAGMA table_info(tool_operations)").all();
@@ -529,6 +533,10 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   async listShares(server: string, limit: number) { return listShares(this.db, server, limit); }
   async revokeShare(server: string, id: string, at: number): Promise<boolean> { return revokeShare(this.db, server, id, at); }
   async revokeAllShares(server: string, at: number): Promise<number> { return revokeAllShares(this.db, server, at); }
+  async getSession(idHash: string): Promise<WebSessionRow | undefined> { return getWebSession(this.db, idHash); }
+  async saveSession(row: WebSessionRow): Promise<void> { return saveWebSession(this.db, row); }
+  async deleteSession(idHash: string): Promise<void> { return deleteWebSession(this.db, idHash); }
+  async deleteExpiredSessions(now: number): Promise<number> { return deleteExpiredWebSessions(this.db, now); }
   async startRun(runId: string, message: Message, prompt: Prompt): Promise<void> {
     this.db.prepare("INSERT INTO runs(id,message,prompt,status,result,context_version) VALUES(?,?,?,?,NULL,?)")
       .run(runId, JSON.stringify(message), JSON.stringify(prompt), "running", await this.contextVersion(message.server, message.channel));
