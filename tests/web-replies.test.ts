@@ -557,3 +557,48 @@ test("the Discord adapter falls back to the bot when Discord refuses the webhook
   const jobs = f.store.jobs(f.guild, f.channel);
   assert.deepEqual(jobs.map(job => [job.message.id, job.message.author, job.message.source]), [["bot-fallback", USER, "web"]]);
 });
+
+test("voice reply skips web transcripts setting", async t => {
+  const h = harness({ on: false }); t.after(() => h.store.close());
+  const result = await h.service.reply({ user: USER, server: SERVER, channel: PARENT, text: "spoken words", kind: "voice" });
+  assert.equal(result.status, "posted");
+  assert.equal(h.calls.send.length, 1, "posts through the webhook");
+  assert.equal(h.calls.send[0]!.post.text, "spoken words");
+  await expectStatus(reply(h.service), 403);
+});
+
+test("voice reply without key posts as bot", async t => {
+  const h = harness({ secret: webReplyKey({}) }); t.after(() => h.store.close());
+  const result = await h.service.reply({ user: USER, server: SERVER, channel: PARENT, text: "spoken", kind: "voice" });
+  assert.deepEqual([result.status, result.via], ["posted", "bot"]);
+  assert.deepEqual(h.calls.createWebhook, []);
+  assert.deepEqual(h.calls.send, []);
+  assert.deepEqual(h.calls.sendAsBot, [{ channel: PARENT, content: "**Alice Display** (from voice): spoken" }]);
+});
+
+test("bot voice prefix is stripped", () => {
+  assert.equal(botWebContent("Alice", "hi", "voice"), "**Alice** (from voice): hi");
+  assert.equal(stripBotWebPrefix(botWebContent("Alice", "hi", "voice")), "hi");
+  assert.equal(stripBotWebPrefix("**Alice** (from voice): **x** (from web): hi"), "**x** (from web): hi", "only one prefix is removed");
+});
+
+test("origin returns voice kind", async t => {
+  let pending: Promise<unknown> | undefined;
+  const h = harness({ secret: webReplyKey({}), sendAsBot: async (channel) => { pending = h.service.origin(event("voice-1", undefined, channel)); return "voice-1"; } });
+  t.after(() => h.store.close());
+  await h.service.reply({ user: USER, server: SERVER, channel: PARENT, text: "spoken", kind: "voice" });
+  const origin = await pending as WebOrigin | undefined;
+  assert.deepEqual([origin?.user, origin?.via, origin?.kind], [USER, "bot", "voice"]);
+  const incoming: Incoming = { id: "voice-1", server: SERVER, channel: PARENT, author: "bot", text: "**Alice Display** (from voice): spoken", botAuthor: true, mentionsBot: false, repliesToBot: false, isBot: true };
+  const user = asWebUser(incoming, origin!);
+  assert.equal(user.source, "voice");
+  assert.equal(user.text, "spoken");
+});
+
+test("web reply without key still returns 503", async t => {
+  const h = harness({ secret: webReplyKey({}) }); t.after(() => h.store.close());
+  await expectStatus(h.service.reply({ user: USER, server: SERVER, channel: PARENT, text: "hi", kind: "web" }), 503);
+  await expectStatus(reply(h.service), 503);
+  assert.equal(h.calls.send.length, 0);
+  assert.equal(h.calls.sendAsBot.length, 0);
+});
