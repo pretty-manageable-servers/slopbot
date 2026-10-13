@@ -9,7 +9,7 @@ import { loadConfig } from "../src/config.js";
 import type { Message, Prompt } from "../src/domain.js";
 import { TaskWorker } from "../src/queue.js";
 import { ToolRegistry } from "../src/tools.js";
-import { UserLimiter, UserLimitError, limitReply, usageView } from "../src/user-limiter.js";
+import { USER_LIMIT_OVERRIDES_SETTING, UserLimiter, UserLimitError, limitOverride, limitReply, usageView } from "../src/user-limiter.js";
 import { activePrices, DEFAULT_FALLBACK_PRICE, parseFallbackPrice, parseModelPrices, usageCostMicros } from "../src/usage-cost.js";
 import { registerUsageTool } from "../src/usage-tools.js";
 import { ProviderEmbeddings, embeddingPriceModel } from "../src/adapters/embeddings.js";
@@ -165,6 +165,51 @@ test("users have separate counters, and resetUserUsage clears one user", async (
   await store.resetUserUsage("global", "u");
   assert.deepEqual(await limits.check("u", 2), { allowed: true });
   store.close();
+});
+
+test("an override replaces the global limit and 0 means no limit", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 100, 500);
+  store.setSetting("global", USER_LIMIT_OVERRIDES_SETTING, {
+    alice: { five_hour_cost_micros: 1000, week_cost_micros: null },
+    bob: { five_hour_cost_micros: 0, week_cost_micros: 0 },
+  });
+  await limits.record("alice", 200, 0);
+  assert.deepEqual(await limits.check("alice", 1), { allowed: true });
+  assert.deepEqual((await limits.usage("alice", 1)).map(window => window.limit), [1000, 500], "a null window keeps the global limit");
+  await limits.record("alice", 800, 0);
+  assert.equal((await limits.check("alice", 1)).allowed, false);
+  await limits.record("bob", 1000000, 0);
+  assert.deepEqual(await limits.check("bob", 1), { allowed: true });
+  assert.deepEqual((await limits.usage("bob", 1)).map(window => window.limit), [0, 0]);
+  await limits.record("carol", 100, 0);
+  assert.deepEqual(await limits.check("carol", 1), { allowed: false, resetAt: 5 * HOUR });
+  assert.deepEqual((await limits.usage("carol", 1)).map(window => window.limit), [100, 500]);
+  store.close();
+});
+
+test("clearing an override restores the global limit, and invalid override fields fall back to it", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 100, 0);
+  store.setSetting("global", USER_LIMIT_OVERRIDES_SETTING, { alice: { five_hour_cost_micros: 1000, week_cost_micros: null } });
+  await limits.record("alice", 500, 0);
+  assert.deepEqual(await limits.check("alice", 1), { allowed: true });
+  store.setSetting("global", USER_LIMIT_OVERRIDES_SETTING, {});
+  assert.deepEqual((await limits.usage("alice", 1)).map(window => window.limit), [100, 0]);
+  assert.deepEqual(await limits.check("alice", 1), { allowed: false, resetAt: 5 * HOUR });
+  store.setSetting("global", USER_LIMIT_OVERRIDES_SETTING, { alice: { five_hour_cost_micros: 1.5, week_cost_micros: -1 } });
+  assert.deepEqual((await limits.usage("alice", 1)).map(window => window.limit), [100, 0]);
+  store.close();
+});
+
+test("limitOverride keeps safe whole numbers from 0 to 1e12, and returns null when no field is set", () => {
+  const only = { five_hour_cost_micros: 5, week_cost_micros: null };
+  assert.deepEqual(limitOverride({ alice: only }, "alice"), only);
+  assert.deepEqual(limitOverride({ alice: { five_hour_cost_micros: -1, week_cost_micros: 1000000000000 } }, "alice"), { five_hour_cost_micros: null, week_cost_micros: 1000000000000 });
+  assert.equal(limitOverride({ alice: { five_hour_cost_micros: 1.5, week_cost_micros: 1000000000001 } }, "alice"), null);
+  assert.equal(limitOverride({ alice: { five_hour_cost_micros: null, week_cost_micros: null } }, "alice"), null);
+  assert.equal(limitOverride({ alice: 5 }, "alice"), null);
+  assert.equal(limitOverride({ alice: only }, "bob"), null);
+  assert.equal(limitOverride({}, "constructor"), null);
+  assert.equal(limitOverride(undefined, "alice"), null);
 });
 
 test("the limit reply shows the reset as a Discord relative time", () => {

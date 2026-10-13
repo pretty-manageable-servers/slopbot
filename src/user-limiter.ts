@@ -15,8 +15,23 @@ export const USER_LIMIT_WINDOWS = [
 export const USER_LIMIT_OVERRIDES_SETTING = "user_limit_overrides";
 /** null uses the global limit. */
 export interface UserLimitOverride { five_hour_cost_micros: number | null; week_cost_micros: number | null }
+const MAX_OVERRIDE_MICROS = 1000000000000;
+
+/** One override field: a safe whole number from 0 to 1e12, else null. */
+function overrideField(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_OVERRIDE_MICROS ? value : null;
+}
+
 /** The valid override of one user in the saved setting, or null. Invalid values become null. */
-export function limitOverride(_saved: unknown, _user: string): UserLimitOverride | null { throw new Error("Not built: WP2"); }
+export function limitOverride(saved: unknown, user: string): UserLimitOverride | null {
+  if (!saved || typeof saved !== "object" || Array.isArray(saved) || !Object.hasOwn(saved, user)) return null;
+  const entry = (saved as Record<string, unknown>)[user];
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+  const row = entry as Record<string, unknown>;
+  const five = overrideField(row.five_hour_cost_micros), week = overrideField(row.week_cost_micros);
+  if (five === null && week === null) return null;
+  return { five_hour_cost_micros: five, week_cost_micros: week };
+}
 
 export type UserLimit = { allowed: true } | { allowed: false; resetAt: number };
 export interface UserLimitDefaults { fiveHourCostMicros: number; weekCostMicros: number; gracePercent: number }
@@ -54,7 +69,7 @@ export class UserLimiter {
   async record(user: string, costMicros: number, now = Date.now()): Promise<void> {
     if (!Number.isSafeInteger(costMicros) || costMicros <= 0) return;
     await this.store.updateUserLimits(USER_LIMIT_SCOPE, user, rows => ({
-      windows: this.windows(rows, now).map(window => ({ kind: window.kind, windowStart: window.windowStart, spent: window.spent + costMicros })),
+      windows: this.windows(user, rows, now).map(window => ({ kind: window.kind, windowStart: window.windowStart, spent: window.spent + costMicros })),
       result: undefined,
     }));
   }
@@ -67,12 +82,12 @@ export class UserLimiter {
 
   /** Spend, limit, reset time and banked resets for each window. */
   async usage(user: string, now = Date.now()): Promise<UserUsageWindow[]> {
-    return this.summarize(await this.store.userUsage(USER_LIMIT_SCOPE, user), now);
+    return this.summarize(user, await this.store.userUsage(USER_LIMIT_SCOPE, user), now);
   }
 
   /** The same view as usage, for a state the caller already read. */
-  summarize(state: UserLimitState, now = Date.now()): UserUsageWindow[] {
-    return this.windows(state.windows, now).map(window => ({ kind: window.kind, spent: window.spent, limit: window.limit, resetAt: window.running ? window.windowStart + window.durationMs : null, banked: state.resets[window.kind] ?? 0 }));
+  summarize(user: string, state: UserLimitState, now = Date.now()): UserUsageWindow[] {
+    return this.windows(user, state.windows, now).map(window => ({ kind: window.kind, spent: window.spent, limit: window.limit, resetAt: window.running ? window.windowStart + window.durationMs : null, banked: state.resets[window.kind] ?? 0 }));
   }
 
   /** Uses one banked reset and clears that window. Returns false when none is banked. */
@@ -82,16 +97,19 @@ export class UserLimiter {
 
   private async states(user: string, now: number): Promise<WindowState[]> {
     const state = await this.store.userUsage(USER_LIMIT_SCOPE, user);
-    return this.windows(state.windows, now);
+    return this.windows(user, state.windows, now);
   }
 
-  /** Current state of each window. A window that has ended counts as empty until the next spend. */
-  private windows(rows: readonly UserLimitWindow[], now: number): WindowState[] {
+  /** Current state of each window. A window that has ended counts as empty until the next spend. The user's override replaces the global limit when it is set. */
+  private windows(user: string, rows: readonly UserLimitWindow[], now: number): WindowState[] {
+    const override = limitOverride(this.store.setting(USER_LIMIT_SCOPE, USER_LIMIT_OVERRIDES_SETTING), user);
     return USER_LIMIT_WINDOWS.map(window => {
       const stored = rows.find(row => row.kind === window.kind);
       const running = stored !== undefined && now < stored.windowStart + window.durationMs;
       const fallback = window.kind === "5h" ? this.defaults.fiveHourCostMicros : this.defaults.weekCostMicros;
-      return { kind: window.kind, durationMs: window.durationMs, limit: this.saved(window.setting, fallback), running, windowStart: running ? stored.windowStart : now, spent: running ? stored.spent : 0 };
+      const overridden = window.kind === "5h" ? override?.five_hour_cost_micros : override?.week_cost_micros;
+      const limit = overridden ?? this.saved(window.setting, fallback);
+      return { kind: window.kind, durationMs: window.durationMs, limit, running, windowStart: running ? stored.windowStart : now, spent: running ? stored.spent : 0 };
     });
   }
 
