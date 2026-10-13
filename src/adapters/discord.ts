@@ -961,6 +961,10 @@ export class DiscordAdapter {
     if (!chosen) throw new ToolError(guildId ? "You and Slopbot are not both in that server." : "You and Slopbot do not share a server yet.", "rejected");
     return this.servers.get(chosen.id)!;
   }
+  /** Inbox items of the signed-in user in one server. Built by inbox WP3. */
+  async consoleInbox(_user: string, _server: string, _includeDone = false): Promise<import("../inbox.js").InboxItem[]> { throw new Error("Inbox is not built yet"); }
+  /** Marks the user's inbox items done. Returns the count changed. Built by inbox WP3. */
+  async consoleInboxDone(_user: string, _server: string, _ids: string[] | "all"): Promise<number> { throw new Error("Inbox is not built yet"); }
   async consoleSnapshot(user: string, guildId?: string): Promise<unknown> {
     const servers = await this.consoleServers(user);
     if (!servers.length) return { user, servers, server: null };
