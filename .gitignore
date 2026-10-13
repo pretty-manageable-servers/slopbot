@@ -14,3 +14,7 @@ data/
 .deployment-build/
 
 .env.development
+
+site/node_modules/
+site/out/
+site/.next/

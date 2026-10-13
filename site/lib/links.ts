@@ -1,0 +1,9 @@
+// TODO: set addToDiscord to the Discord install URL when the bot is ready.
+// TODO: pmsCloudPricing does not exist yet. Add AI pricing to the main landing page.
+export const links = {
+  addToDiscord: '#start',
+  docs: 'https://docs.pmservers.org',
+  console: '/console',
+  pmservers: 'https://pmservers.org',
+  pmsCloudPricing: 'https://pmservers.org/pricing',
+}

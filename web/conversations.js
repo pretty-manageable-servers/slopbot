@@ -384,7 +384,7 @@ function heroNode(composer) {
   const logo = document.createElement('img');
   logo.className = 'chat-hero-logo';
   logo.alt = ''; logo.width = 56; logo.height = 56;
-  logo.src = document.documentElement.classList.contains('light') ? '/assets/logo-dark.svg' : '/assets/logo-light.svg';
+  logo.src = document.documentElement.classList.contains('light') ? '/console/assets/logo-dark.svg' : '/console/assets/logo-light.svg';
   const slot = textNode('div', '', 'chat-hero-composer');
   slot.append(composer);
   hero.append(logo, textNode('h2', "What's growing today?", 'chat-hero-title'), slot);
@@ -420,11 +420,48 @@ async function newChat(button) {
   } finally { button.disabled = false; }
 }
 
+// The landing page Ask box links to /console#ask=<text>. boot() keeps the text in sessionStorage, so it survives the Discord login.
+// Longest text the chat API takes. It matches PRIVATE_CHAT_MAX_CHARS in src/private-chat.ts.
+const ASK_MAX_CHARS = 8000;
+function takeAsk() {
+  let text = '';
+  const match = /^#ask=(.*)$/s.exec(location.hash);
+  if (match) {
+    try { text = decodeURIComponent(match[1]); } catch { text = ''; }
+    history.replaceState(null, '', location.pathname + location.search);
+    try { if (text.trim()) sessionStorage.setItem('slopbot-ask', text); } catch { }
+  }
+  try { text = sessionStorage.getItem('slopbot-ask') || ''; } catch { }
+  return [...text.trim()].slice(0, ASK_MAX_CHARS).join('');
+}
+function clearAsk() { try { sessionStorage.removeItem('slopbot-ask'); } catch { } }
+// Starts a private chat on the current server (the last one used, or the first), sends the text and opens the chat.
+async function resumeAsk() {
+  const text = takeAsk();
+  if (!text) return;
+  clearAsk();
+  if (!state.server) { notice('Slopbot is not in any of your servers yet, so it cannot answer your question.', true); return; }
+  tab = 'conversations'; viewAuto = false; render();
+  let id = '';
+  try {
+    id = (await sendJson('POST', '/api/chats', { server: state.server.id })).id;
+    conv.chats = [{ id, title: '', updated: Date.now() }, ...conv.chats];
+    await sendJson('POST', `/api/chats/${enc(id)}/messages`, { text });
+  } catch (error) {
+    if (error.status === 401) { try { sessionStorage.setItem('slopbot-ask', text); } catch { } showScreen('login'); return; }
+    if (error.status === 429) notice(error.resetAt ? `Limit reached. It resets ${new Date(error.resetAt).toLocaleString()}.` : 'Limit reached. Try again later.', true);
+    else notice(error.status === 404 ? 'Private chats are not available right now.' : error.message, true);
+    if (!id) return;
+  }
+  await openConversation(id, 'chat');
+  refreshChats();
+}
+
 // A JSON request with any method. Errors keep their status, as in request().
 async function sendJson(method, path, body) {
   const response = await fetch(path, { method, headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: body === undefined ? undefined : JSON.stringify(body) });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) { const error = new Error(data.error || 'Request failed.'); error.status = response.status; throw error; }
+  if (!response.ok) { const error = new Error(data.error || 'Request failed.'); error.status = response.status; error.resetAt = data.resetAt; throw error; }
   return data;
 }
 
