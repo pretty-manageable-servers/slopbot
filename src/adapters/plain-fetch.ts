@@ -10,7 +10,10 @@ import { FETCH_TEXT_LIMIT, ProviderFailed, type PageText, type WebFetch } from '
 const TIMEOUT_MS = 10_000;
 const MAX_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 3;
-const MIN_TEXT = 200;
+const MIN_TEXT = 20;
+const SHELL_TEXT = 300;
+const BOT_TEXT = 1500;
+const SCRIPT_SHARE = 0.8;
 const MAX_TITLE = 200;
 const MAX_FETCHES_PER_MINUTE = 30;
 const USER_AGENT = 'Slopbot/1.0 (+https://github.com/pretty-manageable-servers/slopbot)';
@@ -139,7 +142,9 @@ export class PlainFetch implements WebFetch {
     const raw = decode(Buffer.concat(chunks), /charset=["']?([^;"'\s]+)/i.exec(contentType)?.[1]);
     const page = type === 'text/plain' ? { title: url.hostname, content: raw } : await extract(raw, url);
     const body = page.content.trim();
-    if (body.length < MIN_TEXT) throw failure('Page has almost no text. It may need JavaScript or it may block bots.');
+    // Plain text has no markup to inspect, so only the length rule applies to it.
+    const reason = type === 'text/plain' ? (collapse(body).length < MIN_TEXT ? NO_TEXT : undefined) : uselessPage(raw, body);
+    if (reason) throw failure(reason);
     const truncated = body.length > FETCH_TEXT_LIMIT;
     return {
       url: url.href,
@@ -148,6 +153,54 @@ export class PlainFetch implements WebFetch {
       truncated,
     };
   }
+}
+
+const NO_TEXT = 'Page has no text.';
+const NEEDS_JS = 'Page needs JavaScript.';
+const BOT_CHECK = 'Page is a bot check.';
+/** An empty element with a common app mount id, such as <div id="root"></div>. */
+const MOUNT = /<([a-z][\w-]*)\b[^>]*\sid=["'](?:root|app|__next|__nuxt|svelte)["'][^>]*>\s*<\/\1\s*>/i;
+const NO_JS = /enable javascript|javascript is required/i;
+const BOT_WALL = /checking your browser|verify you are human|enable javascript and cookies|cf-chl|just a moment\.\.\.|access denied|captcha|are you a robot|unusual traffic/i;
+
+/**
+ * Why a fetched page is useless, so that a paid scrape may be used. Returns undefined when the page is useful.
+ * Short pages with real text are useful. Checks run in order, so the message is the most specific one that applies.
+ */
+export function uselessPage(html: string, text: string): string | undefined {
+  const plain = collapse(text);
+  if (plain.length < BOT_TEXT && BOT_WALL.test(`${plain}\n${html}`)) return BOT_CHECK;
+  if (plain.length < SHELL_TEXT && isShell(html)) return NEEDS_JS;
+  if (plain.length < MIN_TEXT) return NO_TEXT;
+  return undefined;
+}
+
+function isShell(html: string): boolean {
+  if (MOUNT.test(html)) return true;
+  if (blocks(html, 'noscript').some(block => NO_JS.test(block))) return true;
+  const scriptChars = blocks(html, 'script').reduce((sum, block) => sum + block.length, 0);
+  return html.length > 0 && scriptChars > html.length * SCRIPT_SHARE;
+}
+
+/** The text of each <tag>...</tag> block. An unclosed block runs to the end. Linear in the HTML length. */
+function blocks(html: string, tag: string): string[] {
+  const open = new RegExp(`<${tag}\\b`, 'gi');
+  const close = new RegExp(`</${tag}`, 'gi');
+  const found: string[] = [];
+  let start = open.exec(html);
+  while (start) {
+    close.lastIndex = start.index;
+    const end = close.exec(html);
+    found.push(html.slice(start.index, end ? end.index : html.length));
+    if (!end) break;
+    open.lastIndex = end.index;
+    start = open.exec(html);
+  }
+  return found;
+}
+
+function collapse(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
 }
 
 function httpRequest(url: URL, pinned: PinnedRequest): Promise<FetchedResponse> {

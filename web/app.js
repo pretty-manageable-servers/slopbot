@@ -616,6 +616,14 @@ function adminTranscripts(server, channels, off) {
 // Web search keys. Every team member adds and removes keys; the owner or an editor removes a key. Editors also set the monthly cap of each provider.
 // Slopbot spreads searches over all keys that have credits left this month. A saved key is never shown again: only its last four characters.
 const WEB_KEY_PROVIDERS = [['tavily', 'Tavily'], ['firecrawl', 'Firecrawl']];
+// Short time since a past moment in ms, for example "5 min ago".
+function agoText(ms) {
+  const minutes = Math.max(0, Math.round((Date.now() - ms) / 60000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `${hours} h ago` : `${Math.round(hours / 24)} days ago`;
+}
 function adminWebKeys(webKeys, edit) {
   const groups = WEB_KEY_PROVIDERS.map(([provider, name]) => {
     const keys = webKeys.keys.filter(key => key.provider === provider), cap = webKeys.caps[provider];
@@ -623,7 +631,10 @@ function adminWebKeys(webKeys, edit) {
       const owner = key.mine ? 'You' : `<code>${esc(key.owner)}</code>`;
       const badge = key.exhausted ? ' <span class="chip">Out of credits</span>' : '';
       const remove = key.mine || edit ? `<button type="button" data-web-key-remove="${esc(key.id)}">Remove</button>` : '';
-      return `<tr><td>${esc(key.label || name)}</td><td><code>••••${esc(key.last4)}</code></td><td>${owner}</td><td>${key.used} / ${cap} credits${badge}</td><td>${remove ? `<div class="chan-actions">${remove}</div>` : ''}</td></tr>`;
+      const reset = edit && (key.exhausted || key.lastError) ? `<button type="button" data-web-key-reset="${esc(key.id)}">Reset</button>` : '';
+      const error = key.lastError ? `<div class="web-key-error${key.lastError.exhausted ? ' bad' : ''}">${esc(`${key.lastError.status} · ${key.lastError.message} · ${agoText(key.lastError.at)}`)}</div>` : '';
+      const actions = reset + remove;
+      return `<tr><td>${esc(key.label || name)}${error}</td><td><code>••••${esc(key.last4)}</code></td><td>${owner}</td><td>${key.used} / ${cap} credits${badge}</td><td>${actions ? `<div class="chan-actions">${actions}</div>` : ''}</td></tr>`;
     }).join('');
     const table = keys.length ? `<div class="table-wrap"><table class="web-key-table"><thead><tr><th>Label</th><th>Key</th><th>Added by</th><th>Used this month</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="small">No keys yet.</p>';
     return `<div class="web-key-group"><h3>${name}</h3>${table}</div>`;
@@ -639,6 +650,8 @@ function adminWebKeys(webKeys, edit) {
 function wireWebKeys(edit) {
   const card = $('admin-web-keys');
   card.onclick = async event => {
+    const reset = event.target.closest('[data-web-key-reset]');
+    if (reset) { const id = reset.dataset.webKeyReset; adminRun(reset, async () => { await request('/api/admin/web-keys/reset', { id }); notice('Key reset.'); }); return; }
     const button = event.target.closest('[data-web-key-remove]');
     if (!button || !(await askConfirm({ title: 'Remove this key?', body: 'Slopbot stops using it at once.', confirmLabel: 'Remove', danger: true }))) return;
     const id = button.dataset.webKeyRemove;

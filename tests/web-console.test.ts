@@ -14,6 +14,7 @@ import { nativeToolInstructions } from '../src/tools.js';
 import type { PresentationPolicy } from '../src/presentation/policy.js';
 import { TeamAdmins, type TeamSnapshot } from '../src/team-admins.js';
 import { UserLimiter } from '../src/user-limiter.js';
+import { KEY_ERRORS_SETTING } from '../src/web-providers.js';
 import type { ConsoleAdmin } from '../src/web-console.js';
 import { MemberDirectory } from '../src/member-directory.js';
 import { fakeSource } from './member-fakes.js';
@@ -347,6 +348,17 @@ test('web search keys: any team member adds and removes keys, only editors set c
   assert.equal((await post('/api/admin/web-keys/caps', { tavily: 100001 }, developer)).status, 400);
   assert.equal((await get('/api/admin/web-keys', reader)).status, 200);
   assert.equal(((await (await get('/api/admin/web-keys', reader)).json()) as { caps: { tavily: number } }).caps.tavily, 500, 'every member sees the cap');
+
+  // Reset: editors only. It clears the last error of the key.
+  await store.setSetting(GLOBAL_SETTINGS_SCOPE, KEY_ERRORS_SETTING, { [readerKey.id]: { at: Date.now(), status: '500', message: 'Tavily could not answer', exhausted: false } });
+  const shown = (await (await get('/api/admin/web-keys', reader)).json()) as { keys: { id: string; lastError: { status: string } | null }[] };
+  assert.equal(shown.keys.find(key => key.id === readerKey.id)?.lastError?.status, '500', 'a member sees the last error');
+  assert.equal((await post('/api/admin/web-keys/reset', { id: readerKey.id }, reader)).status, 403, 'a member cannot reset a key');
+  assert.equal((await post('/api/admin/web-keys/reset', { id: readerKey.id }, outsider)).status, 403);
+  assert.equal((await post('/api/admin/web-keys/reset', { id: 'no-such-key' }, developer)).status, 400);
+  const reset = await post('/api/admin/web-keys/reset', { id: readerKey.id }, developer);
+  assert.equal(reset.status, 200);
+  assert.deepEqual((await reset.json() as { keys: { lastError: unknown }[] }).keys.map(key => key.lastError), [null, null], 'an editor clears the error');
 
   // A member cannot remove someone else's key. The owner can, and so can an editor.
   const readerKeyId = readerKey.id;

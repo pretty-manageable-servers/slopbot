@@ -160,6 +160,8 @@ textarea.prompt-field{font-family:'JetBrains Mono',monospace;resize:vertical}
 .web-key-group h3,.web-key-form h3{margin:16px 0 6px;font-size:15px;color:var(--strong)}
 .web-key-table th,.web-key-table td{white-space:nowrap}
 .web-key-table td .chip{margin-left:6px}
+.web-key-error{margin-top:2px;font-size:12px;color:var(--muted);white-space:normal;max-width:36ch}
+.web-key-error.bad{color:var(--usage-high)}
 .web-key-off{margin:0 0 12px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--pill);color:var(--strong);font-size:13px}
 .web-key-form{margin-top:8px;padding-top:4px;border-top:1px solid var(--line)}
 .web-key-form .primary{margin-top:10px}

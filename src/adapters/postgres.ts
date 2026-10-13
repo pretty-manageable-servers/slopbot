@@ -851,6 +851,9 @@ export class PostgresStore {
     async exhaustProviderKey(id: string, month: string): Promise<void> {
         (await this.db.prepare("INSERT INTO web_provider_usage (key_id,month,used,exhausted) VALUES(?,?,0,1) ON CONFLICT(key_id,month) DO UPDATE SET exhausted=1").run(id, month));
     }
+    async resetProviderKey(id: string, month: string): Promise<void> {
+        (await this.db.prepare("UPDATE web_provider_usage SET exhausted=0 WHERE key_id=? AND month=?").run(id, month));
+    }
     async providerKeyUsage(month: string): Promise<ProviderKeyUsage[]> {
         return (await this.db.prepare("SELECT key_id,month,used,exhausted FROM web_provider_usage WHERE month=? ORDER BY key_id").all(month))
             .map(row => ({ keyId: String(row.key_id), month: String(row.month), used: Number(row.used), exhausted: Number(row.exhausted) !== 0 }));
