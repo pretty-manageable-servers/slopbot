@@ -89,8 +89,8 @@ export class Bot {
   private async receiveScoped(message: Incoming, alreadyIngested: boolean): Promise<void> {
     const task = this.tasks.has(message.channel);
     const privateChat = isPrivateChannel(message.channel);
-    // A web reply arrives with addressed=true, so it always gets an answer and skips JEV.
-    let addressed = task || message.mentionsBot || message.repliesToBot || message.addressed === true;
+    // A web reply arrives with addressed=true, so it always gets an answer and skips JEV. A private chat always does, even without that flag.
+    let addressed = task || privateChat || message.mentionsBot || message.repliesToBot || message.addressed === true;
     let ingested = alreadyIngested;
     if (!addressed) {
       if (!await this.store.ingest({ ...message, addressed: false })) return;
