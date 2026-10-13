@@ -48,3 +48,47 @@ test("a private chat has its transcript switch on, a Discord channel does not", 
   assert.equal(transcriptSwitchOn(store, "s", privateChannel(privateId)), true);
   assert.equal(transcriptSwitchOn(store, "s", "100000000000000001"), false);
 });
+
+const chatRow = (id: string, owner = "alice") => ({ id, server: "s", owner, title: "", created: 1, updated: 1, deleted: false });
+
+test("a web chat row is saved, listed by owner and renamed", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  await store.insertWebChat(chatRow(privateId));
+  await store.insertWebChat(chatRow("f".repeat(32), "bob"));
+  assert.deepEqual((await store.webChats("s", "alice")).map(row => row.id), [privateId]);
+  await store.renameWebChat(privateId, "Dinner plans", 5);
+  assert.equal((await store.webChat(privateId))?.title, "Dinner plans");
+  assert.deepEqual(await store.liveWebChatChannels("s"), [privateChannel(privateId), privateChannel("f".repeat(32))]);
+});
+
+test("the Discord purge keeps private chat messages and queued jobs", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  await store.insertWebChat(chatRow(privateId));
+  const chat = privateChannel(privateId);
+  await store.ingest({ id: "web-1", server: "s", channel: chat, author: "alice", text: "private", addressed: true, source: "web" });
+  await store.ingest({ id: "old-1", server: "s", channel: "100000000000000009", author: "alice", text: "old channel" });
+  await store.purgeUnconfigured("s", ["100000000000000001"]);
+  assert.ok(await store.canonicalMessage("s", "web-1"), "private message must survive the purge");
+  assert.equal(await store.canonicalMessage("s", "old-1"), undefined, "unconfigured Discord message is still purged");
+});
+
+test("deleting a private chat removes its messages, runs and events and keeps other chats", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  await store.insertWebChat(chatRow(privateId));
+  const chat = privateChannel(privateId);
+  const other = privateChannel("e".repeat(32));
+  await store.insertWebChat(chatRow("e".repeat(32)));
+  const message = { id: "web-2", server: "s", channel: chat, author: "alice", text: "keep me out", addressed: true, source: "web" as const };
+  await store.ingest(message);
+  await store.ingest({ ...message, id: "web-other", channel: other, text: "other chat" });
+  await store.startRun("run-private", message, { prefixVersion: "test", prefix: [], history: [], inputs: [] });
+  await store.appendEvent("run-private", 0, { kind: "text", payload: { text: "secret answer" } });
+  await store.appendConversationEvent({ server: "s", channel: chat, kind: "message", ref: "web-2", data: {}, createdAt: 1 });
+  await store.deleteWebChat(privateId, "s", chat, 9);
+  assert.equal(await store.canonicalMessage("s", "web-2"), undefined);
+  assert.deepEqual(store.events("run-private"), []);
+  assert.equal(await store.latestStreamId("s", chat), 0);
+  assert.equal((await store.webChat(privateId))?.deleted, true);
+  assert.deepEqual((await store.webChats("s", "alice")).map(row => row.id), ["e".repeat(32)]);
+  assert.ok(await store.canonicalMessage("s", "web-other"), "other chats are untouched");
+});
