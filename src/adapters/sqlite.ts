@@ -19,6 +19,7 @@ import type { HistoryQuery, HistoryPage } from '../search/history-search.js';
 import { FUZZY_SCAN, FUZZY_TERMS, fuzzyWords, likePattern, rankFuzzy, type FuzzyHit, type FuzzyQuery } from '../search/fuzzy.js';
 import type { AppRecord } from '../records.js';
 import type { ConversationEvent } from '../run-events.js';
+import type { ChannelReply, ChannelRun, RunSource } from '../conversation-groups.js';
 /** Rows deleted by one retention statement, so a large prune never holds the database for long. */
 const CONVERSATION_PRUNE_BATCH = 10000;
 
@@ -361,6 +362,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       );
       CREATE INDEX IF NOT EXISTS conversation_events_channel ON conversation_events(server,channel,stream_id);
       CREATE INDEX IF NOT EXISTS conversation_events_created ON conversation_events(created_at);
+      CREATE INDEX IF NOT EXISTS runs_channel ON runs(json_extract(message,'$.server'),json_extract(message,'$.channel'));
       CREATE TABLE IF NOT EXISTS web_webhooks (server TEXT NOT NULL, channel TEXT NOT NULL, webhook_id TEXT NOT NULL, token_encrypted TEXT NOT NULL, PRIMARY KEY(server,channel));
       CREATE INDEX IF NOT EXISTS web_webhooks_hook ON web_webhooks(server,webhook_id);
       CREATE TABLE IF NOT EXISTS web_replies (id TEXT PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, user_id TEXT NOT NULL, status TEXT NOT NULL, message_id TEXT, created_at INTEGER NOT NULL, via TEXT NOT NULL DEFAULT 'webhook');
@@ -663,6 +665,30 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     return this.db.prepare(`SELECT DISTINCT s.message_id FROM run_sources s JOIN messages m ON m.server=s.server AND m.id=s.message_id
       WHERE s.server=? AND m.channel=? AND s.message_id IN (${marks}) AND s.run_id IN (SELECT run_id FROM reply_runs WHERE server=?)`)
       .all(server, channel, ...messageIds, server).map(row => String(row.message_id));
+  }
+  // Conversations (see conversation-groups.ts). Reply runs only; participation runs are not conversations.
+  async channelRuns(server: string, channel: string): Promise<ChannelRun[]> {
+    // Only prompts with purpose reply. Participation classifier runs have no purpose, so they are not conversations.
+    return this.db.prepare("SELECT id,message,status FROM runs WHERE json_extract(message,'$.server')=? AND json_extract(message,'$.channel')=? AND json_extract(prompt,'$.purpose')='reply' ORDER BY rowid")
+      .all(server, channel).map(row => ({ id: String(row.id), message: parseMessage(JSON.parse(String(row.message))), status: String(row.status) }));
+  }
+  async channelReplies(server: string, channel: string): Promise<ChannelReply[]> {
+    return this.db.prepare("SELECT rr.message_id,rr.run_id,json_extract(m.body,'$.timestamp') AS ts FROM reply_runs rr JOIN messages m ON m.server=rr.server AND m.id=rr.message_id WHERE rr.server=? AND m.channel=?")
+      .all(server, channel).map(row => ({ messageId: String(row.message_id), runId: String(row.run_id), timestamp: row.ts === null ? null : Number(row.ts) }));
+  }
+  async channelSources(server: string, channel: string): Promise<RunSource[]> {
+    return this.db.prepare("SELECT s.run_id,s.message_id FROM runs r JOIN run_sources s ON s.run_id=r.id JOIN messages m ON m.server=s.server AND m.id=s.message_id WHERE json_extract(r.message,'$.server')=? AND json_extract(r.message,'$.channel')=? AND m.channel=?")
+      .all(server, channel, channel).map(row => ({ runId: String(row.run_id), messageId: String(row.message_id) }));
+  }
+  async messagesById(server: string, channel: string, ids: readonly string[]): Promise<Message[]> {
+    const found: Message[] = [];
+    for (let start = 0; start < ids.length; start += 500) {
+      const part = ids.slice(start, start + 500);
+      const marks = part.map(() => "?").join(",");
+      for (const row of this.db.prepare(`SELECT body FROM messages WHERE server=? AND channel=? AND id IN (${marks})`).all(server, channel, ...part))
+        found.push(this.namedMessage(parseMessage(JSON.parse(String(row.body)))));
+    }
+    return found.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   }
   async replyRunIds(server: string, messageId: string): Promise<string[]> {
     return this.db.prepare("SELECT r.run_id FROM reply_runs r LEFT JOIN runs u ON u.id=r.run_id WHERE r.server=? AND r.message_id=? ORDER BY u.rowid").all(server, messageId).map(row => String(row.run_id));

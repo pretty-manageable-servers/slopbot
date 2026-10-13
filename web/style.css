@@ -5,7 +5,7 @@ html.light{color-scheme:light;--bg:#faf9f5;--surface:#f3f1ea;--pill:#e9e6dc;--li
 *{box-sizing:border-box}html{min-height:100%;background:var(--bg)}
 body{min-height:100vh;min-height:100dvh;margin:0;background:var(--bg);color:var(--text);font:14px/1.5 Inter,sans-serif}
 button,input,select,textarea{font:inherit}button,a,input,select,textarea,summary{outline-offset:3px}
-:focus-visible{outline:2px solid var(--accent)}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+:focus-visible{outline:2px solid var(--muted)}input:focus,input:focus-visible,select:focus,select:focus-visible,textarea:focus,textarea:focus-visible{outline:none;border-color:var(--muted)}dialog:focus,dialog:focus-visible{outline:none}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
 button{cursor:pointer;border:1px solid var(--line);border-radius:7px;background:transparent;color:var(--text);padding:7px 12px;min-height:36px}button:hover{background:var(--pill)}button:disabled{opacity:.5;cursor:default}
 .topbar{height:var(--header-height);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:24px;padding:0 24px;background:var(--bg)}
 .brand{display:flex;align-items:center;gap:8px;font:500 22px 'Source Serif 4',serif;color:var(--strong);flex:none}.brand:hover{text-decoration:none}.brand img{width:26px;height:26px}

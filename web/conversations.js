@@ -1,6 +1,6 @@
 // Conversations tab: a chat view of channel and thread transcripts (read-only), private chats with a composer, Slopbot runs and the live stream.
 // Uses globals from app.js: $, request, busy, fail, notice, state, csrf, showScreen.
-const conv = { server: '', list: [], chats: [], chatNote: '', kind: 'channel', channel: null, blank: false, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, folded: new Set(), renaming: null, filter: '', view: null };
+const conv = { server: '', list: [], chats: [], chatNote: '', kind: 'channel', channel: null, blank: false, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, folded: new Set(), renaming: null, filter: '', view: null, runs: new Map(), open: new Set(), run: null, timers: new Map() };
 const NEW_CHAT = 'New chat';
 const chatTitle = c => c.title || NEW_CHAT;
 // Times may be a number or a date string. A missing time counts as 0.
@@ -114,9 +114,21 @@ function paintViews() {
     tab.classList.toggle('selected', on);
     tab.setAttribute('aria-pressed', String(on));
   });
+  placeTabPill();
   const search = $('conv-search');
   if (search) search.placeholder = `Filter · ${SEARCH_HINT} to search messages`;
 }
+// Moves the sliding pill behind the active tab. The first placement does not animate.
+function placeTabPill() {
+  const pill = $('tab-pill'), tab = document.querySelector(`#top-tabs .top-tab[data-view="${conv.view}"]`);
+  if (!pill || !tab || $('top-tabs').hidden) return;
+  const first = !pill.dataset.placed;
+  if (first) pill.style.transition = 'none';
+  pill.style.width = `${tab.offsetWidth}px`;
+  pill.style.transform = `translateX(${tab.offsetLeft}px)`;
+  if (first) { pill.dataset.placed = '1'; void pill.offsetWidth; pill.style.transition = ''; }
+}
+window.addEventListener('resize', placeTabPill);
 function setView(view, redraw = true) {
   conv.view = view;
   remember('slopbot-view', view);
@@ -127,9 +139,24 @@ function setView(view, redraw = true) {
 // A tab switch keeps the open item only when it belongs to the new view. Otherwise Chats opens a new chat and Servers shows the pick hint.
 function switchView(view) {
   if (view === conv.view) return;
-  setView(view);
-  if (view === 'chats') { if (!conv.blank && (conv.kind !== 'chat' || !conv.channel)) openBlankChat(); }
-  else if (conv.kind === 'chat' || conv.blank) showPickPane();
+  animateViews(conv.view, view, () => {
+    setView(view);
+    if (view === 'chats') { if (!conv.blank && (conv.kind !== 'chat' || !conv.channel)) openBlankChat(); }
+    else if (conv.kind === 'chat' || conv.blank) showPickPane();
+  });
+}
+// Servers is to the right of Chats, so the slide goes left going forward and right going back.
+const VIEW_ORDER = ['chats', 'servers'];
+// The sidebar and the main pane cross-fade with a short slide (the view-transition CSS in chat.css). The update runs inside the transition, so the new list, including its skeleton, is in the animated layer.
+// Without the View Transitions API, or with reduced motion, the view changes at once.
+function animateViews(from, to, update) {
+  if (!document.startViewTransition || reduceMotion()) return update();
+  const root = document.documentElement;
+  root.dataset.viewDir = VIEW_ORDER.indexOf(to) < VIEW_ORDER.indexOf(from) ? 'back' : 'forward';
+  const transition = document.startViewTransition(update);
+  transition.updateCallbackDone.catch(fail);
+  transition.ready.catch(() => {});
+  transition.finished.finally(() => delete root.dataset.viewDir).catch(() => {});
 }
 // The Servers view with no channel open: the URL loses its item part and the pane shows the pick hint.
 function showPickPane() {
@@ -150,7 +177,7 @@ function clearItemHash() {
 document.querySelectorAll('#top-tabs [data-view]').forEach(tab => tab.addEventListener('click', () => switchView(tab.dataset.view)));
 
 function renderConversations() {
-  if (conv.server !== state.server.id) { closeConversation(); conv.server = state.server.id; conv.channel = null; conv.list = []; conv.chats = []; conv.chatNote = ''; conv.renaming = null; }
+  if (conv.server !== state.server.id) { closeConversation(); conv.server = state.server.id; conv.channel = null; conv.list = []; conv.chats = []; conv.chatNote = ''; conv.renaming = null; conv.runs = new Map(); conv.open = new Set(); for (const timer of conv.timers.values()) clearTimeout(timer); conv.timers = new Map(); }
   setChatMode(true);
   if (!conv.view) conv.view = recall('slopbot-view') === 'servers' ? 'servers' : 'chats';
   conv.blank = false;
@@ -237,9 +264,9 @@ async function loadConversations() {
   // The user chose something else while the channels loaded, so the view stays.
   if (conv.channel !== before.channel || conv.blank !== before.blank) return;
   const named = item && item.kind === 'channel' && conv.list.find(c => c.id === item.id);
-  if (named) return openConversation(named.id, 'channel', true);
+  if (named) return openConversation(named.id, 'channel', true, item.run || null);
   if (item) clearItemHash();
-  if (conv.channel && conv.kind !== 'chat' && conv.list.some(c => c.id === conv.channel)) return openConversation(conv.channel, 'channel', true);
+  if (conv.channel && conv.kind !== 'chat' && conv.list.some(c => c.id === conv.channel)) return openConversation(conv.channel, 'channel', true, conv.run);
   showPickPane();
 }
 
@@ -260,7 +287,7 @@ function drawList() {
   } else {
     for (const [title, kind] of [['Channels', 'channel'], ['Threads', 'thread']]) {
       const items = conv.list.filter(c => (c.kind === 'thread' ? 'thread' : 'channel') === kind && shown(c.name, c.id));
-      if (items.length) groups.push([title, items.map(convItem)]);
+      if (items.length) groups.push([title, items.map(convTree)]);
     }
     if (conv.listLoading && !conv.list.length) groups.push(['Channels', [1, 2, 3].map(() => textNode('div', '', 'chat-skel'))]);
   }
@@ -417,8 +444,8 @@ async function deleteChat(c) {
 }
 
 // Shows a chat or channel in the URL, so a reload or Back opens it again. Replace is used for automatic opens, so they add no history entry.
-function setItemHash(kind, id, replace) {
-  const hash = `#${kind === 'chat' ? 'chat' : 'channel'}/${enc(id)}`;
+function setItemHash(kind, id, replace, run = null) {
+  const hash = `#${kind === 'chat' ? 'chat' : 'channel'}/${enc(id)}${run ? `/run/${enc(run)}` : ''}`;
   if (location.hash === hash) return;
   history[replace ? 'replaceState' : 'pushState'](null, '', hash);
 }
@@ -428,13 +455,156 @@ function convItem(c) {
   button.type = 'button';
   button.className = 'chat-item';
   button.dataset.id = c.id;
-  button.setAttribute('aria-current', conv.kind !== 'chat' && c.id === conv.channel ? 'true' : 'false');
+  button.setAttribute('aria-current', conv.kind !== 'chat' && c.id === conv.channel && !conv.run ? 'true' : 'false');
   // A channel with web transcripts off is muted and shows an "off" note instead of the time.
   if (c.enabled === false) button.classList.add('off');
   button.append(textNode('span', c.kind === 'thread' ? c.name : '#' + c.name, 'chat-item-name'),
     c.enabled === false ? textNode('span', 'off', 'chat-item-time chat-item-off') : textNode('span', relTime(c.newest), 'chat-item-time'));
   button.onclick = () => openConversation(c.id);
   return button;
+}
+
+// A channel or thread row. The chevron opens its conversations, which load the first time the row opens. Off channels have no chevron.
+const CHEVRON_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 6l6 6-6 6"/></svg>';
+const RUN_PAGE = 20;
+const treeNode = id => document.querySelector(`.chat-tree[data-id="${CSS.escape(id)}"]`);
+const runUrl = (id, run) => `/api/conversations/${enc(id)}/runs/${enc(run)}?server=${enc(state.server.id)}`;
+
+function convTree(c) {
+  const wrap = document.createElement('div');
+  wrap.className = 'chat-tree';
+  wrap.dataset.id = c.id;
+  const row = document.createElement('div');
+  row.className = 'chat-row';
+  if (c.enabled !== false) {
+    const open = conv.open.has(c.id);
+    wrap.classList.toggle('open', open);
+    const chevron = document.createElement('button');
+    chevron.type = 'button';
+    chevron.className = 'chat-chevron';
+    chevron.innerHTML = CHEVRON_ICON;
+    chevron.setAttribute('aria-expanded', String(open));
+    chevron.setAttribute('aria-label', `Conversations in ${c.kind === 'thread' ? c.name : '#' + c.name}`);
+    chevron.onclick = () => setChannelOpen(c.id, !conv.open.has(c.id));
+    row.append(chevron);
+  }
+  row.append(convItem(c));
+  wrap.append(row);
+  if (c.enabled !== false) {
+    const sub = document.createElement('div');
+    sub.className = 'chat-sub';
+    const inner = document.createElement('div');
+    inner.className = 'chat-sub-inner';
+    inner.append(...runRows(c));
+    sub.append(inner);
+    wrap.append(sub);
+  }
+  return wrap;
+}
+
+// The rows under a channel: All messages (the full history, as before), then its conversations and Show more.
+function runRows(c) {
+  if (!conv.open.has(c.id) && !conv.runs.has(c.id)) return [];
+  const all = document.createElement('button');
+  all.type = 'button';
+  all.className = 'chat-item chat-run chat-run-all';
+  all.setAttribute('aria-current', conv.channel === c.id && !conv.run ? 'true' : 'false');
+  all.append(textNode('span', 'All messages', 'chat-item-name'));
+  all.onclick = () => openConversation(c.id);
+  const rows = [all];
+  const state = conv.runs.get(c.id);
+  if (!state || state.status === 'loading') return [...rows, textNode('p', 'Loading…', 'small chat-sub-note')];
+  for (const item of state.items) rows.push(runButton(c, item));
+  if (state.status === 'error') rows.push(textNode('p', 'Could not load conversations.', 'small chat-sub-note'));
+  else if (!state.items.length) rows.push(textNode('p', 'No conversations yet.', 'small chat-sub-note'));
+  if (state.hasMore) {
+    const more = textNode('button', 'Show more', 'chat-item chat-sub-more');
+    more.type = 'button';
+    more.onclick = () => { more.disabled = true; loadRuns(c.id, { more: true }); };
+    rows.push(more);
+  }
+  return rows;
+}
+
+// One conversation: its title and relative time. The title is the first message, so it does not change when runs join.
+function runButton(c, item) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'chat-item chat-run';
+  button.dataset.run = item.id;
+  button.setAttribute('aria-current', conv.channel === c.id && conv.run === item.id ? 'true' : 'false');
+  button.title = `${item.messageCount} messages · ${timeLabel(item.end)}`;
+  button.append(textNode('span', item.title, 'chat-item-name'), textNode('span', relTime(item.end), 'chat-item-time'));
+  button.onclick = () => openConversation(c.id, 'channel', false, item.id);
+  return button;
+}
+
+// Redraws the rows under one channel from the saved state. The row itself is kept, so the chevron animation still runs.
+function paintRuns(id) {
+  const inner = treeNode(id)?.querySelector('.chat-sub-inner');
+  const c = conv.list.find(item => item.id === id);
+  if (inner && c) inner.replaceChildren(...runRows(c));
+}
+
+function setChannelOpen(id, open) {
+  if (open) conv.open.add(id); else conv.open.delete(id);
+  const tree = treeNode(id);
+  if (tree) {
+    tree.classList.toggle('open', open);
+    tree.querySelector('.chat-chevron')?.setAttribute('aria-expanded', String(open));
+  }
+  // Opening a row always reloads its list, so runs that arrived while it was closed show up.
+  if (open) loadRuns(id);
+}
+
+// One page of a channel's conversations, newest first. More adds the next page. A refresh keeps the rows already shown.
+async function loadRuns(id, { more = false } = {}) {
+  const server = conv.server;
+  const prev = conv.runs.get(id);
+  const offset = more && prev ? prev.items.length : 0;
+  const limit = more ? RUN_PAGE : Math.max(RUN_PAGE, prev ? prev.items.length : 0);
+  if (!prev) conv.runs.set(id, { items: [], hasMore: false, status: 'loading' });
+  paintRuns(id);
+  try {
+    const page = await request(`/api/conversations/${enc(id)}/runs?server=${enc(server)}&limit=${limit}&offset=${offset}`);
+    if (conv.server !== server) return;
+    const items = more && prev ? [...prev.items, ...page.conversations] : page.conversations;
+    conv.runs.set(id, { items, hasMore: page.hasMore, status: 'ready' });
+  } catch {
+    if (conv.server !== server) return;
+    conv.runs.set(id, { items: prev ? prev.items : [], hasMore: prev ? prev.hasMore : false, status: 'error' });
+  }
+  paintRuns(id);
+}
+
+// A new run in the open channel refreshes its list a moment later, so a burst of runs costs one request.
+function scheduleRuns(id) {
+  if (!conv.runs.has(id)) return;
+  const key = `runs:${id}`;
+  clearTimeout(conv.timers.get(key));
+  conv.timers.set(key, setTimeout(() => { conv.timers.delete(key); loadRuns(id); }, 400));
+}
+
+// While a conversation is open, a new message or a finished run reloads only that conversation.
+function scheduleView(id) {
+  const key = `view:${id}`;
+  clearTimeout(conv.timers.get(key));
+  conv.timers.set(key, setTimeout(() => { conv.timers.delete(key); refreshView(id); }, 400));
+}
+
+async function refreshView(id) {
+  const run = conv.run;
+  if (!run || conv.channel !== id) return;
+  try {
+    const page = await request(runUrl(id, run));
+    if (conv.channel !== id || conv.run !== run) return;
+    const log = $('conv-log');
+    const stick = !log || nearBottom(log);
+    showView(transcriptView(id, page, null));
+    const fresh = $('conv-log');
+    if (fresh && stick) fresh.scrollTop = fresh.scrollHeight;
+    syncJump();
+  } catch (error) { fail(error); }
 }
 
 function showView(node) {
@@ -463,11 +633,12 @@ function setComposer(node) {
 }
 
 // Opens a channel or thread (read-only), or a private chat (with a composer). The kind is 'channel' or 'chat'. Replace keeps the history entry.
-async function openConversation(id, kind = 'channel', replace = false) {
+// A run ID opens one conversation of the channel: only its messages. Without it the channel shows its full history.
+async function openConversation(id, kind = 'channel', replace = false, run = null) {
   closeStream();
   setView(kind === 'chat' ? 'chats' : 'servers', false);
-  conv.channel = id; conv.kind = kind; conv.blank = false; dropLive();
-  setItemHash(kind, id, replace);
+  conv.channel = id; conv.kind = kind; conv.run = kind === 'chat' ? null : run; conv.blank = false; dropLive();
+  setItemHash(kind, id, replace, conv.run);
   const chat = kind === 'chat';
   drawList();
   setConversationDrawer(false, true);
@@ -475,6 +646,9 @@ async function openConversation(id, kind = 'channel', replace = false) {
   const listed = chat ? conv.chats.find(c => c.id === id) : conv.list.find(c => c.id === id);
   $('chat-private').hidden = !chat;
   if (!chat && listed && listed.enabled === false) return showOff(id, listed);
+  // Opening a channel shows its conversations under it.
+  if (!chat && listed) setChannelOpen(id, true);
+  const shown = conv.run;
   $('conv-status').hidden = false;
   setStatus('Connecting…');
   setHeading(chat ? chatTitle(listed || {}) : '');
@@ -483,8 +657,8 @@ async function openConversation(id, kind = 'channel', replace = false) {
   setComposer(null);
   showView(busy('md', 'Loading…'));
   try {
-    const page = await request(messagesUrl(id));
-    if (conv.channel !== id) return;
+    const page = await request(shown ? runUrl(id, shown) : messagesUrl(id));
+    if (conv.channel !== id || conv.run !== shown) return;
     if (chat) {
       // Only the owner opens a private chat, so the owner always gets the Share button here.
       if (window.SlopbotShares) { $('conv-share').hidden = false; window.SlopbotShares.renderChatShare($('conv-share'), id); }
@@ -497,8 +671,9 @@ async function openConversation(id, kind = 'channel', replace = false) {
     } else {
       const info = listed || { kind: 'channel', name: page.channel.name };
       const name = info.name || page.channel.name;
-      setHeading(label({ ...info, name }));
-      if (page.canShare && window.SlopbotShares) { $('conv-share').hidden = false; window.SlopbotShares.renderShareButton($('conv-share'), state.server.id, id); }
+      // A conversation's heading shows its title. Sharing stays on the whole channel, so it is not offered here.
+      setHeading(shown && page.conversation ? `${label({ ...info, name })} · ${page.conversation.title}` : label({ ...info, name }));
+      if (page.canShare && !shown && window.SlopbotShares) { $('conv-share').hidden = false; window.SlopbotShares.renderShareButton($('conv-share'), state.server.id, id); }
       showView(transcriptView(id, page, null));
       // Channels and threads have no composer. Replies are posted in Discord.
       setComposer(textNode('p', 'Read-only. Reply in Discord.', 'chat-readonly'));
@@ -517,9 +692,10 @@ async function openConversation(id, kind = 'channel', replace = false) {
 
 // Used by the command palette (web/palette.js): the private chats and the channels and threads of the open server.
 window.SlopbotChat = {
+  // ts is the last activity in milliseconds (0 when unknown). The palette sorts Recents by it.
   items: () => [
-    ...conv.chats.map(c => ({ kind: 'chat', id: c.id, name: chatTitle(c) })),
-    ...conv.list.map(c => ({ kind: 'channel', id: c.id, name: label(c), thread: c.kind === 'thread' })),
+    ...conv.chats.map(c => ({ kind: 'chat', id: c.id, name: chatTitle(c), ts: timeValue(c.updated) })),
+    ...conv.list.map(c => ({ kind: 'channel', id: c.id, name: c.name, thread: c.kind === 'thread', ts: timeValue(c.newest) })),
   ],
   open: (kind, id) => openConversation(id, kind === 'chat' ? 'chat' : 'channel').catch(fail),
   view: switchView,
@@ -1154,16 +1330,21 @@ function openStream(id) {
     if (id) { if (id <= conv.seen) return; conv.seen = id; }
     try { handler(JSON.parse(event.data)); } catch { }
   });
-  on('message', data => data.action === 'delete' ? removeMessage(data.id) : upsertMessage(data.message));
-  on('run.start', data => startLive(data.ref, data.requestId));
-  on('run.delta', data => delta(data.ref, data.part, data.text));
-  on('run.tool', data => tool(data));
-  on('run.end', data => { endLive(data.ref); refreshUsage(); if (kind === 'chat') refreshChats(); else refreshUsed(id); });
+  // One conversation view shows only its own messages, so live events are not drawn into it. It reloads after each change instead.
+  on('message', data => { if (conv.run) scheduleView(id); else if (data.action === 'delete') removeMessage(data.id); else upsertMessage(data.message); });
+  on('run.start', data => { scheduleRuns(id); if (!conv.run) startLive(data.ref, data.requestId); });
+  on('run.delta', data => { if (!conv.run) delta(data.ref, data.part, data.text); });
+  on('run.tool', data => { if (!conv.run) tool(data); });
+  on('run.end', data => {
+    if (conv.run) scheduleView(id); else endLive(data.ref);
+    refreshUsage();
+    if (kind === 'chat') refreshChats(); else { refreshUsed(id); scheduleRuns(id); }
+  });
   // The server pruned events after this stream's position. Reload the messages from the newest page.
   es.addEventListener('reset', () => {
     if (conv.source !== es) return;
     closeStream();
-    openConversation(id, kind, true).catch(fail);
+    openConversation(id, kind, true, conv.run).catch(fail);
   });
   es.addEventListener('closed', event => {
     closeStream();
@@ -1184,6 +1365,7 @@ function closeConversation() {
   closeStream();
   dropLive();
   conv.channel = null;
+  conv.run = null;
   conv.blank = false;
 }
 

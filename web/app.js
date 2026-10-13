@@ -24,9 +24,10 @@ function settingsFromUrl() {
 }
 // The chat or channel named in the URL: #chat/<id> or #channel/<id>. Any other hash gives null.
 function takeHashItem() {
-  const match = /^#(chat|channel)\/(.+)$/.exec(location.hash);
+  // #channel/<id>/run/<runId> opens one conversation of the channel. The run part is optional.
+  const match = /^#(chat|channel)\/(.+?)(?:\/run\/([^/]+))?$/.exec(location.hash);
   if (!match) return null;
-  try { return { kind: match[1], id: decodeURIComponent(match[2]) }; } catch { return null; }
+  try { return { kind: match[1], id: decodeURIComponent(match[2]), run: match[3] ? decodeURIComponent(match[3]) : null }; } catch { return null; }
 }
 // The chat is always the base view. A settings link in the URL opens the modal on that section.
 function chooseView() {
@@ -38,7 +39,7 @@ function chooseView() {
 window.addEventListener('popstate', () => {
   if (!viewReady || !state) return;
   const item = takeHashItem(), want = settingsFromUrl();
-  if (item || !want) { if (!item) conv.channel = null; renderChat(true); }
+  if (item || !want) { if (!item) { conv.channel = null; conv.run = null; } renderChat(true); }
   if (want) openSettings(want.section); else closeSettings();
 });
 // A server picker: a button and a menu. The hidden #server select keeps the value and the change handler.

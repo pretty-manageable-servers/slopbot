@@ -137,10 +137,26 @@ html.light{--chat-code:#B4432B;--chat-online:#2E8B57}
 .chat .chat-server .pick{padding:7px 10px;border-radius:10px;font-size:14px}
 
 /* Top bar: Chat and Settings tabs, Docs, theme icon and the account menu */
-.topbar .top-tabs{display:flex;gap:4px}
-.topbar .top-tab{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:0;border-radius:7px;background:none;color:var(--muted);font-size:14px}
+.topbar .top-tabs{display:flex;gap:4px;position:relative}
+.topbar .top-tab{position:relative;z-index:1;display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:0;border-radius:7px;background:none;color:var(--muted);font-size:14px}
 .topbar .top-tab:hover{color:var(--strong)}
-.topbar .top-tab.selected{background:var(--pill);color:var(--strong)}
+.topbar .top-tab.selected{color:var(--strong)}
+/* The pill behind the active tab. conversations.js sets its width and position (placeTabPill). */
+.topbar .top-tab-pill{position:absolute;left:0;top:0;height:100%;border-radius:7px;background:var(--pill);pointer-events:none;transition:transform .2s ease-out,width .2s ease-out}
+@media (prefers-reduced-motion:reduce){.topbar .top-tab-pill{transition:none}}
+/* View switch (Chats and Servers): the sidebar and the main pane slide and cross-fade. animateViews in conversations.js sets data-view-dir on html. */
+.chat .chat-side{view-transition-name:chat-side}
+.chat .chat-pane{view-transition-name:chat-main}
+::view-transition-old(root),::view-transition-new(root){animation:none}
+::view-transition-old(chat-side),::view-transition-old(chat-main){animation:200ms ease-out both view-out-left}
+::view-transition-new(chat-side),::view-transition-new(chat-main){animation:200ms ease-out both view-in-left}
+html[data-view-dir=back]::view-transition-old(chat-side),html[data-view-dir=back]::view-transition-old(chat-main){animation-name:view-out-right}
+html[data-view-dir=back]::view-transition-new(chat-side),html[data-view-dir=back]::view-transition-new(chat-main){animation-name:view-in-right}
+@keyframes view-out-left{to{opacity:0;transform:translateX(-24px)}}
+@keyframes view-in-left{from{opacity:0;transform:translateX(24px)}}
+@keyframes view-out-right{to{opacity:0;transform:translateX(24px)}}
+@keyframes view-in-right{from{opacity:0;transform:translateX(-24px)}}
+@media (prefers-reduced-motion:reduce){::view-transition-old(chat-side),::view-transition-old(chat-main),::view-transition-new(chat-side),::view-transition-new(chat-main){animation:none}}
 .topbar .top-link{display:inline-flex;align-items:center;gap:8px;color:var(--text);font-size:14px}
 .topbar .top-link:hover{color:var(--strong)}
 .topbar .icon-button{display:inline-grid;place-items:center;width:34px;height:34px;padding:0;border:1px solid var(--line);border-radius:8px;background:none;color:var(--text)}
@@ -243,3 +259,16 @@ html.light{--chat-code:#B4432B;--chat-online:#2E8B57}
  .chat .chat-hero-logo,.chat .chat-hero-composer{margin-top:auto}
 }
 @media(prefers-reduced-motion:reduce){.chat .chat-chev,.chat .chat-status-line,.chat .chat-side,.chat.drawer-open .chat-side,.chat .chat-backdrop,.chat.drawer-open .chat-backdrop{transition:none}}
+/* Conversations under a channel row. The list opens with a grid row, so its height is never measured. */
+.chat .chat-chevron{flex:none;display:flex;align-items:center;justify-content:center;width:28px;min-height:32px;padding:0;border:0;border-radius:8px;background:none;color:var(--muted)}
+.chat .chat-chevron:hover{background:var(--surface)}
+.chat .chat-chevron svg{transition:transform .2s ease}
+.chat .chat-tree.open>.chat-row .chat-chevron svg{transform:rotate(90deg)}
+.chat .chat-sub{display:grid;grid-template-rows:0fr;transition:grid-template-rows .2s ease}
+.chat .chat-tree.open>.chat-sub{grid-template-rows:1fr}
+.chat .chat-sub-inner{min-height:0;overflow:hidden;padding-left:18px}
+.chat .chat-run{font-size:14px}
+.chat .chat-run-all .chat-item-name{color:var(--muted)}
+.chat .chat-sub-note{margin:4px 10px 6px;font-size:13px;color:var(--muted)}
+.chat .chat-sub-more{justify-content:center;font-size:13px;color:var(--muted)}
+@media(prefers-reduced-motion:reduce){.chat .chat-chevron svg,.chat .chat-sub{transition:none}}
