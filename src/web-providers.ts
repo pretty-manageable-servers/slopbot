@@ -28,14 +28,19 @@ export const FETCH_TEXT_LIMIT = 8_000;
  * A provider could not answer. The chain moves to the next step.
  * keyExhausted: the key is out of credits (Tavily 432, Firecrawl 402); the pool marks it for this month.
  * Any other thrown error from a provider also counts as a failure.
+ * status: the HTTP status as text (for example "401"), or "network", "timeout", "bad_response", "too_large", "empty". Never holds a secret.
  */
 export class ProviderFailed extends Error {
   override name = 'ProviderFailed';
-  constructor(readonly provider: WebProvider, message: string, readonly keyExhausted = false, options?: ErrorOptions) { super(message, options); }
+  readonly status?: string | undefined;
+  constructor(readonly provider: WebProvider, message: string, readonly keyExhausted = false, options?: ErrorOptions & { status?: string }) {
+    super(message, options);
+    this.status = options?.status;
+  }
 }
 
-/** A decrypted key. Lives only in memory, for one call. Never log or return secret. */
-export interface ProviderKey { id: string; provider: KeyedProvider; secret: string }
+/** A decrypted key. Lives only in memory, for one call. Never log or return secret. last4 is for logs and display. */
+export interface ProviderKey { id: string; provider: KeyedProvider; secret: string; last4?: string }
 
 /** Picks and counts team keys. Implemented over the store, which makes reserve atomic. */
 export interface ProviderKeyPool {
@@ -43,6 +48,10 @@ export interface ProviderKeyPool {
   reserve(provider: KeyedProvider, credits: number, now?: number): Promise<ProviderKey | undefined>;
   /** Marks a key out of credits until the month ends. */
   exhaust(id: string, now?: number): Promise<void>;
+  /** Saves the last error of a key, for diagnostics. Optional: a pool without it keeps no error history. */
+  recordError?(id: string, error: KeyError): Promise<void>;
+  /** Removes the saved last error of a key after a success. Does nothing when the key has none. */
+  clearError?(id: string): Promise<void>;
 }
 
 /** Search with a team key. Throws ProviderFailed on failure. An empty array means no match. */
@@ -81,5 +90,12 @@ export interface ProviderKeyStore {
    */
   reserveProviderCredits(provider: KeyedProvider, month: string, credits: number, cap: number): Promise<ProviderKeyRow | undefined>;
   exhaustProviderKey(id: string, month: string): Promise<void>;
+  /** Clears the exhausted flag of a key for the month. Used credits stay. */
+  resetProviderKey(id: string, month: string): Promise<void>;
   providerKeyUsage(month: string): Promise<ProviderKeyUsage[]>;
 }
+
+/** Global setting key. Value: Record<keyId, KeyError>, the last error of each team key. Diagnostics only. */
+export const KEY_ERRORS_SETTING = 'web_key_errors';
+/** Last error of one key. status is the HTTP status as text, or "network", "timeout", "bad_response". message never holds a secret. */
+export interface KeyError { at: number; status: string; message: string; exhausted: boolean }

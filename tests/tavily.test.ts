@@ -98,3 +98,20 @@ test('Tavily never puts the key secret in error messages',async()=>{
   assert.equal(error.message.includes(secret),false,error.message);
  }
 });
+test('Tavily sets the status of each failure',async()=>{
+ const cases:Array<[string,()=>Promise<unknown>]>=[
+  ['401',()=>new TavilySearch(async()=>new Response('{}',{status:401})).search(key,'q',1)],
+  ['432',()=>new TavilySearch(async()=>new Response('{}',{status:432})).search(key,'q',1)],
+  ['500',()=>new TavilySearch(async()=>new Response('boom',{status:500})).search(key,'q',1)],
+  ['network',()=>new TavilySearch(async()=>{throw new TypeError('fetch failed');}).search(key,'q',1)],
+  ['timeout',()=>new TavilySearch(async()=>{throw Object.assign(new Error('timed out'),{name:'TimeoutError'});}).search(key,'q',1)],
+  ['empty',()=>new TavilySearch(async()=>new Response(null)).search(key,'q',1)],
+  ['too_large',()=>new TavilySearch(async()=>new Response('x'.repeat(1024*1024+1))).search(key,'q',1)],
+  ['bad_response',()=>new TavilySearch(async()=>new Response('<html>')).search(key,'q',1)],
+  ['bad_response',()=>new TavilySearch(async()=>Response.json({error:'bad'})).search(key,'q',1)],
+ ];
+ for(const [status,run] of cases){
+  const error=await failure(run());
+  assert.equal(error.status,status);
+ }
+});
