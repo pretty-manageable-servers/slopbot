@@ -1,6 +1,6 @@
 // Conversations tab: a chat view of channel and thread transcripts (read-only), private chats with a composer, Slopbot runs and the live stream.
 // Uses globals from app.js: $, request, busy, fail, notice, state, csrf, showScreen.
-const conv = { server: '', list: [], chats: [], chatNote: '', kind: 'channel', channel: null, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, folded: new Set(), renaming: null };
+const conv = { server: '', list: [], chats: [], chatNote: '', kind: 'channel', channel: null, blank: false, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, folded: new Set(), renaming: null };
 const NEW_CHAT = 'New chat';
 const chatTitle = c => c.title || NEW_CHAT;
 // Times may be a number or a date string. A missing time counts as 0.
@@ -47,7 +47,7 @@ function setChatMode(on) {
 
 // The top bar tab for the current view is highlighted. Chat is the Conversations tab.
 function markTopTabs() {
-  const view = tab === 'conversations' ? 'chat' : 'settings';
+  const view = tab === 'conversations' && state.server ? 'chat' : 'settings';
   for (const button of document.querySelectorAll('[data-view]')) {
     const on = button.dataset.view === view;
     button.classList.toggle('selected', on);
@@ -67,6 +67,8 @@ function renderChatServers() {
 function renderConversations() {
   if (conv.server !== state.server.id) { closeConversation(); conv.server = state.server.id; conv.channel = null; conv.list = []; conv.chats = []; conv.chatNote = ''; conv.renaming = null; }
   setChatMode(true);
+  conv.blank = false;
+  setPageTitle('Chat');
   $('content').innerHTML = '<div id="chat-root" class="chat"><aside id="chat-side" class="chat-side"><div id="chat-server" class="chat-server" hidden></div><input id="conv-search" class="chat-search" type="search" placeholder="Search messages" aria-label="Search messages"><div id="conv-list" class="chat-list"></div></aside><section id="conv-main" class="chat-pane"><header class="chat-head"><button id="chat-drawer" class="chat-drawer" type="button" aria-expanded="false" aria-controls="chat-side">Conversations</button><h2 id="chat-title" class="chat-title"></h2><div class="chat-tools"><span id="chat-private" class="chat-private" hidden>' + LOCK_ICON + '<span>Private</span></span><span id="conv-status" class="chat-status"></span><div id="conv-share" class="chat-share" hidden></div></div></header><div id="conv-view" class="chat-view"></div><div id="conv-reply" class="chat-composer" hidden></div></section></div>';
   $('conv-search').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); searchConversations($('conv-search').value); } };
   $('chat-drawer').onclick = toggleDrawer;
@@ -137,7 +139,7 @@ function newChatButton() {
   button.type = 'button';
   button.className = 'chat-new';
   button.innerHTML = PENCIL_ICON + '<span>New chat</span>';
-  button.onclick = () => newChat(button);
+  button.onclick = () => newChat();
   return button;
 }
 
@@ -310,7 +312,8 @@ function emptyNote(title, hint) {
   return box;
 }
 
-function setHeading(text) { $('chat-title').textContent = text; }
+// The heading and the browser tab title show the open chat or channel. An empty heading means the plain Chat view.
+function setHeading(text) { $('chat-title').textContent = text; setPageTitle(text || 'Chat'); }
 
 function setComposer(node) {
   if (!node) conv.meter = null;
@@ -323,7 +326,7 @@ function setComposer(node) {
 // Opens a channel or thread (read-only), or a private chat (with a composer). The kind is 'channel' or 'chat'. Replace keeps the history entry.
 async function openConversation(id, kind = 'channel', replace = false) {
   closeStream();
-  conv.channel = id; conv.kind = kind; dropLive();
+  conv.channel = id; conv.kind = kind; conv.blank = false; dropLive();
   setItemHash(kind, id, replace);
   const chat = kind === 'chat';
   drawList();
@@ -414,18 +417,11 @@ function hideSlot() {
   slot.hidden = true;
 }
 
-// Creates a private chat on the server, then opens it with the greeting.
-async function newChat(button) {
-  button.disabled = true;
-  conv.chatNote = '';
-  try {
-    const result = await sendJson('POST', '/api/chats', { server: state.server.id });
-    conv.chats = [{ id: result.id, title: '', updated: Date.now() }, ...conv.chats];
-    await openConversation(result.id, 'chat');
-  } catch (error) {
-    if (error.status === 404) { conv.chatNote = 'Private chats are not available right now.'; drawList(); }
-    else fail(error);
-  } finally { button.disabled = false; }
+// New chat shows a blank chat with the composer. Nothing is saved on the server until the first message is sent.
+// On a blank chat already, the button only focuses the composer.
+function newChat() {
+  if (conv.blank) return focusComposer();
+  openBlankChat();
 }
 
 // The landing page Ask box links to /console#ask=<text>. boot() keeps the text in sessionStorage, so it survives the Discord login.
@@ -452,19 +448,36 @@ async function resumeAsk() {
   clearAsk();
   if (!state.server) { notice('Slopbot is not in any of your servers yet, so it cannot answer your question.', true); return; }
   tab = 'conversations'; viewAuto = false; render();
-  try {
-    const id = (await sendJson('POST', '/api/chats', { server: state.server.id })).id;
-    conv.chats = [{ id, title: '', updated: Date.now() }, ...conv.chats];
-    conv.prefill = text;
-    await openConversation(id, 'chat');
-    conv.prefill = '';
-    refreshChats();
-  } catch (error) {
-    conv.prefill = '';
-    if (error.status === 401) { try { sessionStorage.setItem('slopbot-ask', text); } catch { } showScreen('login'); return; }
-    notice(error.status === 404 ? 'Private chats are not available right now.' : error.message, true);
-  }
+  // A blank chat, as New chat makes. The chat is saved only when the user sends the text.
+  conv.prefill = text;
+  try { openBlankChat(); } finally { conv.prefill = ''; }
 }
+
+function focusComposer() { document.querySelector('.chat-form textarea')?.focus(); }
+
+// Opens the blank chat. Its id comes with the first send (see chatComposer).
+function openBlankChat() {
+  closeConversation();
+  conv.blank = true; conv.kind = 'chat'; conv.channel = null;
+  conv.chatNote = '';
+  if (location.hash !== '#chat') history.pushState(null, '', '#chat');
+  drawList();
+  $('chat-root')?.classList.remove('drawer-open');
+  $('chat-drawer')?.setAttribute('aria-expanded', 'false');
+  $('chat-private').hidden = false;
+  $('conv-status').hidden = true;
+  $('conv-share').hidden = true;
+  $('conv-share').replaceChildren();
+  setHeading(NEW_CHAT);
+  const composer = chatComposer(null);
+  showView(transcriptView(null, { messages: [], hasMore: false }, heroNode(composer)));
+  hideSlot();
+  refreshUsage();
+  focusComposer();
+}
+
+// Removes a chat that was made for a send that failed before anything was saved. The error is not shown.
+function discardChat(id) { sendJson('DELETE', `/api/chats/${enc(id)}`).catch(() => {}); }
 
 // A JSON request with any method. Errors keep their status, as in request().
 async function sendJson(method, path, body) {
@@ -972,6 +985,7 @@ function closeConversation() {
   closeStream();
   dropLive();
   conv.channel = null;
+  conv.blank = false;
 }
 
 // The header shows a green dot and "Live" while the stream is open. Otherwise it shows a grey "Offline".
@@ -1266,6 +1280,7 @@ function spoilerClick(event) {
 }
 
 // The message box for a private chat. It posts to the chat's messages route. Slopbot's reply arrives on the chat stream.
+// The composer of a chat. With id null it is the blank chat: the chat is made on the first send, then opened.
 function chatComposer(id) {
   const form = document.createElement('form');
   form.className = 'chat-form';
@@ -1299,6 +1314,8 @@ function chatComposer(id) {
   form.append(status, box, textNode('p', 'Slopbot is AI and can make mistakes.', 'chat-foot'));
   const sync = () => { box.classList.toggle('has-text', field.value.trim() !== ''); fitField(field); };
   let sending = false;
+  // The id of a chat made for this blank composer. It is kept when a send fails without a clear reason, so a retry reuses it.
+  let made = null;
   field.addEventListener('input', () => { sync(); status.textContent = ''; });
   field.addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); }
@@ -1308,17 +1325,33 @@ function chatComposer(id) {
     const text = field.value.trim();
     if (!text || sending) return;
     sending = true; send.disabled = true; status.textContent = 'Sending…';
+    let chatId = id || made;
     try {
-      const response = await fetch(`/api/chats/${enc(id)}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ text }) });
+      if (!chatId) { chatId = (await sendJson('POST', '/api/chats', { server: state.server.id })).id; made = chatId; }
+      const response = await fetch(`/api/chats/${enc(chatId)}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ text }) });
       const data = await response.json().catch(() => ({}));
       if (response.status === 401) { status.textContent = ''; showScreen('login'); return; }
-      if (response.status === 429) { status.textContent = `Limit reached, resets ${new Date(data.resetAt).toLocaleString()}.`; return; }
-      if (!response.ok) throw new Error(data.error || 'Message failed.');
+      if (!response.ok) {
+        // A 4xx answer means nothing was saved, so a chat made just for this send is removed. A 5xx may have saved the message, so that chat is kept for a retry.
+        if (!id && response.status < 500) { made = null; discardChat(chatId); }
+        status.textContent = response.status === 429 ? `Limit reached, resets ${new Date(data.resetAt).toLocaleString()}.` : (data.error || 'Message failed.');
+        return;
+      }
+      made = null;
       field.value = ''; sync(); status.textContent = '';
-      // The first message moves the composer to the bottom. The list is reloaded for the new order and title.
-      leaveEmpty(form.closest('.chat-hero'));
+      if (!id) {
+        // The first send of a blank chat opens the new chat in its place. The list is reloaded for the new order and title.
+        conv.chats = [{ id: chatId, title: '', updated: Date.now() }, ...conv.chats];
+        await openConversation(chatId, 'chat', true);
+      } else {
+        // The first message moves the composer to the bottom.
+        leaveEmpty(form.closest('.chat-hero'));
+      }
       refreshChats();
-    } catch (error) { status.textContent = error.message; }
+    } catch (error) {
+      if (error.status === 401) return showScreen('login');
+      status.textContent = error.message;
+    }
     finally { sending = false; send.disabled = false; }
   });
   return form;
@@ -1334,7 +1367,7 @@ async function searchConversations(text) {
   const q = text.trim();
   if (q.length < 2) { notice('Search needs at least 2 characters.'); return; }
   closeStream();
-  conv.channel = null; drawList();
+  conv.channel = null; conv.blank = false; drawList();
   $('chat-root')?.classList.remove('drawer-open');
   $('conv-status').hidden = true;
   $('chat-private').hidden = true;
