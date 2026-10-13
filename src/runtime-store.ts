@@ -14,11 +14,12 @@ import type { TranscriptStore } from './web-transcripts.js';
 import type { WebReplyStore } from './web-replies.js';
 import type { ShareStore } from './shares.js';
 import type { WebSessionStore } from './web-session-store.js';
+import type { InboxStore } from './inbox.js';
 type Awaitable<T> = T | Promise<T>;
 
 // Settings and task listings are loaded at startup. Their writes are durable
 // before acknowledgement; all database-dependent operations are awaited.
-export interface RuntimeStore extends Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore, HarnessJournal, TaskRegistry, ServerToolStore, HistoryStore, HistorySearch, RecordStore, TranscriptStore, WebReplyStore, ShareStore, WebSessionStore {
+export interface RuntimeStore extends Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore, HarnessJournal, TaskRegistry, ServerToolStore, HistoryStore, HistorySearch, RecordStore, TranscriptStore, WebReplyStore, ShareStore, WebSessionStore, InboxStore {
   canonicalMessage(server: string, id: string): Awaitable<Message | undefined>;
   knownAuthors(server: string): Awaitable<{ author: string; named: boolean }[]>;
   identifyAuthor(server: string, author: string, names: readonly string[], bot?: boolean, identity?: Record<string,string>): Awaitable<void>;
