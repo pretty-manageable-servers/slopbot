@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS tool_operations (
       , resource TEXT);
 CREATE TABLE IF NOT EXISTS user_limit_counters (server TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, window_start BIGINT NOT NULL, spent BIGINT NOT NULL, PRIMARY KEY(server,user_id,kind));
 CREATE TABLE IF NOT EXISTS user_limit_resets (server TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, count BIGINT NOT NULL, PRIMARY KEY(server,user_id,kind));
+CREATE TABLE IF NOT EXISTS user_token_totals (server TEXT NOT NULL, user_id TEXT NOT NULL, model TEXT NOT NULL, requests BIGINT NOT NULL, input_tokens BIGINT NOT NULL, output_tokens BIGINT NOT NULL, cached_tokens BIGINT NOT NULL, cost_micros BIGINT NOT NULL, first_at BIGINT NOT NULL, last_at BIGINT NOT NULL, PRIMARY KEY(server,user_id,model));
 CREATE TABLE IF NOT EXISTS reply_runs (server TEXT NOT NULL, message_id TEXT NOT NULL, run_id TEXT NOT NULL, PRIMARY KEY(server,message_id,run_id));
 CREATE TABLE IF NOT EXISTS conversation_events (
         stream_id BIGSERIAL PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL,

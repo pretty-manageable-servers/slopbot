@@ -41,12 +41,18 @@ export interface Store {
   grantResets(server: string, user: string, kind: string, count: number): Promise<void>;
   // Uses one banked reset and clears that window in the same transaction.
   useReset(server: string, user: string, kind: string): Promise<boolean>;
+  // Lifetime totals per user and model. Chat delete, channel purge, retention and purgeUnconfigured never remove them.
+  addTokenTotals(server: string, user: string, model: string, totals: TokenTotals, at: number): Promise<void>;
+  userTokenTotals(server: string, user: string): Promise<UserTokenTotalRow[]>;
 }
 
 /** Spend in micro-dollars for one window kind, starting at windowStart. */
 export interface UserLimitWindow { kind: string; windowStart: number; spent: number }
 export interface UserLimitState { windows: readonly UserLimitWindow[]; resets: Readonly<Record<string, number>> }
 export interface UserLimitRow extends UserLimitState { user: string }
+/** Token counts and cost of model calls. input is the uncached prompt tokens; cached is the cached part of the prompt. */
+export interface TokenTotals { input: number; output: number; cached: number; costMicros: number }
+export interface UserTokenTotalRow extends TokenTotals { model: string; requests: number; firstAt: number; lastAt: number }
 
 export interface Transport {
   send(message: Message, reply: Reply): Promise<void>;
