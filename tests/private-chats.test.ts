@@ -69,7 +69,7 @@ test("a web chat row is saved, listed by owner and renamed", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   await store.insertWebChat(chatRow(privateId));
   await store.insertWebChat(chatRow("f".repeat(32), "bob"));
-  assert.deepEqual((await store.webChats("s", "alice")).map(row => row.id), [privateId]);
+  assert.deepEqual((await store.webChats("alice")).map(row => row.id), [privateId]);
   await store.renameWebChat(privateId, "Dinner plans", 5);
   assert.equal((await store.webChat(privateId))?.title, "Dinner plans");
   assert.deepEqual(await store.liveWebChatChannels("s"), [privateChannel(privateId), privateChannel("f".repeat(32))]);
@@ -103,7 +103,7 @@ test("deleting a private chat removes its messages, runs and events and keeps ot
   assert.deepEqual(store.events("run-private"), []);
   assert.equal(await store.latestStreamId("s", chat), 0);
   assert.equal((await store.webChat(privateId))?.deleted, true);
-  assert.deepEqual((await store.webChats("s", "alice")).map(row => row.id), ["e".repeat(32)]);
+  assert.deepEqual((await store.webChats("alice")).map(row => row.id), ["e".repeat(32)]);
   assert.ok(await store.canonicalMessage("s", "web-other"), "other chats are untouched");
 });
 
@@ -184,4 +184,12 @@ test("a private chat reply has no tool footer, because the web run summary shows
   const activity: ToolActivity[] = [{ id: "t1", name: "status", status: "completed" }];
   const [reply] = await gateway.reply(privateMessage, "Answer", "delivery-1", activity);
   assert.equal(reply!.text, "Answer");
+});
+
+test("the chat list of an owner has the chats of all servers", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  await store.insertWebChat({ id: "a".repeat(32), server: "s1", owner: "alice", title: "one", created: 1, updated: 1, deleted: false });
+  await store.insertWebChat({ id: "b".repeat(32), server: "s2", owner: "alice", title: "two", created: 2, updated: 2, deleted: false });
+  await store.insertWebChat({ id: "c".repeat(32), server: "s1", owner: "bob", title: "not hers", created: 3, updated: 3, deleted: false });
+  assert.deepEqual((await store.webChats("alice")).map(row => row.id), ["b".repeat(32), "a".repeat(32)]);
 });

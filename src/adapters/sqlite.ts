@@ -599,7 +599,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   async getSession(idHash: string): Promise<WebSessionRow | undefined> { return getWebSession(this.db, idHash); }
   async insertWebChat(row: WebChatRow): Promise<void> { return insertWebChat(this.db, row); }
   async webChat(id: string): Promise<WebChatRow | undefined> { return getWebChat(this.db, id); }
-  async webChats(server: string, owner: string): Promise<WebChatRow[]> { return listWebChats(this.db, server, owner); }
+  async webChats(owner: string): Promise<WebChatRow[]> { return listWebChats(this.db, owner); }
   async liveWebChatChannels(server: string): Promise<string[]> { return liveWebChatChannels(this.db, server); }
   async renameWebChat(id: string, title: string, updated: number): Promise<void> { return renameWebChat(this.db, id, title, updated); }
   async setWebChatEffort(id: string, effort: Effort | null): Promise<void> { return setWebChatEffort(this.db, id, effort); }

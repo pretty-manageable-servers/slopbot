@@ -108,7 +108,7 @@ test("the list, create, rename and delete routes keep the shapes the UI reads", 
   assert.match(created.json.id, /^[0-9a-f]{32}$/);
   const id = created.json.id as string;
 
-  let list = await f.call(ALICE, "GET", `/api/chats?server=${SERVER}`);
+  let list = await f.call(ALICE, "GET", `/api/chats`);
   assert.equal(list.status, 200);
   assert.ok(Array.isArray(list.json), "the list is a bare array");
   assert.equal(list.json.length, 1);
@@ -120,17 +120,17 @@ test("the list, create, rename and delete routes keep the shapes the UI reads", 
   const sent = await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "  Plan   a trip to Lisbon  " });
   assert.equal(sent.status, 201);
   assert.deepEqual(Object.keys(sent.json), ["id"]);
-  list = await f.call(ALICE, "GET", `/api/chats?server=${SERVER}`);
+  list = await f.call(ALICE, "GET", `/api/chats`);
   assert.equal(list.json[0].title, "Plan a trip to Lisbon", "the first message gives the title");
 
   const renamed = await f.call(ALICE, "PATCH", `/api/chats/${id}`, { title: "Trips" });
   assert.equal(renamed.status, 200);
-  list = await f.call(ALICE, "GET", `/api/chats?server=${SERVER}`);
+  list = await f.call(ALICE, "GET", `/api/chats`);
   assert.equal(list.json[0].title, "Trips");
 
   const removed = await f.call(ALICE, "DELETE", `/api/chats/${id}`);
   assert.equal(removed.status, 200);
-  assert.deepEqual((await f.call(ALICE, "GET", `/api/chats?server=${SERVER}`)).json, []);
+  assert.deepEqual((await f.call(ALICE, "GET", `/api/chats`)).json, []);
   const gone = await f.call(ALICE, "GET", `/api/chats/${id}/messages`);
   assert.equal(gone.status, 404);
   assert.deepEqual(Object.keys(gone.json), ["error"]);
@@ -194,7 +194,7 @@ test("only the owner can read, send, rename, delete or stream a chat; others get
   const id = await newChat(f);
   assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "private note" })).status, 201);
 
-  assert.deepEqual((await f.call(BOB, "GET", `/api/chats?server=${SERVER}`)).json, [], "a member does not see another user's chats");
+  assert.deepEqual((await f.call(BOB, "GET", `/api/chats`)).json, [], "a member does not see another user's chats");
   assert.equal((await f.call(BOB, "GET", `/api/chats/${id}/messages`)).status, 404);
   assert.equal((await f.call(BOB, "POST", `/api/chats/${id}/messages`, { text: "intrude" })).status, 404);
   assert.equal((await f.call(BOB, "PATCH", `/api/chats/${id}`, { title: "Stolen" })).status, 404);
@@ -205,19 +205,20 @@ test("only the owner can read, send, rename, delete or stream a chat; others get
 
   assert.equal((await f.call(ALICE, "GET", `/api/chats/${MISSING}/messages`)).status, 404, "unknown chat");
   assert.equal((await f.call(ALICE, "GET", "/api/chats/not-a-chat/messages")).status, 404, "malformed chat ID");
-  const kept = await f.call(ALICE, "GET", `/api/chats?server=${SERVER}`);
+  const kept = await f.call(ALICE, "GET", `/api/chats`);
   assert.equal(kept.json[0].title, "private note", "the owner's chat is unchanged");
 });
 
 test("a user who is not in the server is refused, and loses a chat when they leave", async t => {
   const f = await setup(t);
   const id = await newChat(f);
-  assert.equal((await f.call(CAROL, "GET", `/api/chats?server=${SERVER}`)).status, 404);
+  assert.deepEqual((await f.call(CAROL, "GET", `/api/chats`)).json, [], "a user with no chats gets an empty list");
   assert.equal((await f.call(CAROL, "POST", "/api/chats", { server: SERVER })).status, 404);
   assert.equal((await f.call(CAROL, "POST", `/api/chats/${id}/messages`, { text: "hi" })).status, 404);
-  assert.equal((await f.call(ALICE, "GET", `/api/chats?server=123`)).status, 404, "a server ID that is not a snowflake");
+  assert.equal((await f.call(ALICE, "GET", `/api/chats?server=123`)).json.length, 1, "the server parameter is ignored: chats are not per server");
 
   f.members.delete(ALICE);
+  assert.deepEqual((await f.call(ALICE, "GET", `/api/chats`)).json, [], "a chat in a server the user left is not listed");
   assert.equal((await f.call(ALICE, "GET", `/api/chats/${id}/messages`)).status, 404, "a user who left the server gets 404");
   assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "still here?" })).status, 404);
 });
@@ -357,7 +358,7 @@ test("bad input gets a status and an {error} body; writes need the session, CSRF
   assert.equal((await f.call(ALICE, "PATCH", `/api/chats/${id}`, { title: "x".repeat(61) })).status, 400);
   assert.equal((await f.call(ALICE, "POST", "/api/chats", {})).status, 404, "a create without a server");
 
-  assert.equal((await f.call(null, "GET", `/api/chats?server=${SERVER}`)).status, 401, "no session");
+  assert.equal((await f.call(null, "GET", `/api/chats`)).status, 401, "no session");
   assert.equal((await f.call(ALICE, "POST", messages, { text: "no csrf" }, { "X-CSRF-Token": "wrong" })).status, 403, "wrong CSRF token");
   assert.equal((await f.call(ALICE, "POST", messages, { text: "other origin" }, { Origin: "https://evil.example" })).status, 403, "wrong origin");
   assert.equal((await f.call(ALICE, "DELETE", `/api/chats/${id}`, undefined, { "X-CSRF-Token": "wrong" })).status, 403);
@@ -398,12 +399,12 @@ test("PATCH effort accepts low, medium, xhigh or null and refuses anything else"
   const id = await newChat(f);
   for (const value of ["low", "medium", "xhigh"]) {
     assert.equal((await f.call(ALICE, "PATCH", `/api/chats/${id}`, { effort: value })).status, 200);
-    assert.equal((await f.call(ALICE, "GET", `/api/chats?server=${SERVER}`)).json[0].effort, value);
+    assert.equal((await f.call(ALICE, "GET", `/api/chats`)).json[0].effort, value);
   }
   for (const bad of ["high", "", 3, true, "LOW"]) assert.equal((await f.call(ALICE, "PATCH", `/api/chats/${id}`, { effort: bad })).status, 400);
-  assert.equal((await f.call(ALICE, "GET", `/api/chats?server=${SERVER}`)).json[0].effort, "xhigh", "a refused value changes nothing");
+  assert.equal((await f.call(ALICE, "GET", `/api/chats`)).json[0].effort, "xhigh", "a refused value changes nothing");
   assert.equal((await f.call(ALICE, "PATCH", `/api/chats/${id}`, { effort: null })).status, 200);
-  assert.equal((await f.call(ALICE, "GET", `/api/chats?server=${SERVER}`)).json[0].effort, "medium", "no choice shows medium");
+  assert.equal((await f.call(ALICE, "GET", `/api/chats`)).json[0].effort, "medium", "no choice shows medium");
   assert.equal((await f.call(ALICE, "PATCH", `/api/chats/${id}`, { title: "Trips" })).status, 200, "a title change still works");
 });
 
@@ -413,7 +414,7 @@ test("only the owner can set the effort of a chat", async t => {
   assert.equal((await f.call(BOB, "PATCH", `/api/chats/${id}`, { effort: "low" })).status, 404);
   assert.equal((await f.call(CAROL, "PATCH", `/api/chats/${id}`, { effort: "low" })).status, 404);
   assert.equal((await f.call(null, "PATCH", `/api/chats/${id}`, { effort: "low" })).status, 401);
-  assert.equal((await f.call(ALICE, "GET", `/api/chats?server=${SERVER}`)).json[0].effort, "medium");
+  assert.equal((await f.call(ALICE, "GET", `/api/chats`)).json[0].effort, "medium");
 });
 
 test("a sent message carries the chat effort, else the server default, else medium", async t => {
@@ -448,12 +449,12 @@ async function sharedChat(f: Fixture): Promise<{ shareId: string }> {
 test("a valid share is copied into a new private chat of the viewer, and the model reads the copy", async t => {
   const f = await setup(t);
   const { shareId } = await sharedChat(f);
-  const before = (await f.call(BOB, "GET", `/api/chats?server=${SERVER}`)).json.length;
+  const before = (await f.call(BOB, "GET", `/api/chats`)).json.length;
   const made = await f.call(BOB, "POST", `/api/shares/${shareId}/continue`, {});
   assert.equal(made.status, 201);
   assert.match(made.json.id, /^[0-9a-f]{32}$/);
   assert.equal(made.json.title, "first private line");
-  assert.equal((await f.call(BOB, "GET", `/api/chats?server=${SERVER}`)).json.length, before + 1, "one new chat for the viewer");
+  assert.equal((await f.call(BOB, "GET", `/api/chats`)).json.length, before + 1, "one new chat for the viewer");
 
   const copied = await f.call(BOB, "GET", `/api/chats/${made.json.id}/messages`);
   assert.equal(copied.status, 200);
@@ -474,11 +475,11 @@ test("a revoked or unknown share cannot be continued", async t => {
   const f = await setup(t);
   const { shareId } = await sharedChat(f);
   assert.equal((await f.call(BOB, "POST", `/api/shares/${SHARE_ID}/continue`, {})).status, 404, "unknown");
-  const chat = (await f.call(ALICE, "GET", `/api/chats?server=${SERVER}`)).json[0].id as string;
+  const chat = (await f.call(ALICE, "GET", `/api/chats`)).json[0].id as string;
   assert.equal((await f.call(ALICE, "POST", `/api/chats/${chat}/shares/${shareId}/revoke`, {})).status, 200);
-  const before = (await f.call(BOB, "GET", `/api/chats?server=${SERVER}`)).json.length;
+  const before = (await f.call(BOB, "GET", `/api/chats`)).json.length;
   assert.equal((await f.call(BOB, "POST", `/api/shares/${shareId}/continue`, {})).status, 404, "revoked");
-  assert.equal((await f.call(BOB, "GET", `/api/chats?server=${SERVER}`)).json.length, before, "no chat is made");
+  assert.equal((await f.call(BOB, "GET", `/api/chats`)).json.length, before, "no chat is made");
 });
 
 test("a share of a chat whose owner left the server cannot be continued", async t => {
@@ -495,6 +496,6 @@ test("continuing needs a sign-in, the same origin and the CSRF token", async t =
   assert.equal((await f.call(null, "POST", `/api/shares/${shareId}/continue`, {})).status, 401, "not signed in");
   assert.equal((await f.call(BOB, "POST", `/api/shares/${shareId}/continue`, {}, { "X-CSRF-Token": "wrong" })).status, 403, "wrong CSRF token");
   assert.equal((await f.call(BOB, "POST", `/api/shares/${shareId}/continue`, {}, { Origin: "https://evil.example" })).status, 403, "wrong origin");
-  assert.equal((await f.call(BOB, "GET", `/api/chats?server=${SERVER}`)).json.length, 0, "no chat is made by a refused request");
+  assert.equal((await f.call(BOB, "GET", `/api/chats`)).json.length, 0, "no chat is made by a refused request");
   assert.equal((await fetch(`${f.base}/api/shares/${shareId}/continue`, { method: "POST", headers: { Cookie: f.cookie(BOB), Origin: ORIGIN, "X-CSRF-Token": "csrf-" + BOB } })).status, 201, "the same request with the token works");
 });

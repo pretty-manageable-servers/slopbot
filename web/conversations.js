@@ -103,7 +103,7 @@ function renderChatServers() {
   if (!slot.hidden) serverPicker(slot);
 }
 
-// Two views. Chats lists the private chats of the current server. Servers lists the channels and threads of the chosen server.
+// Two views. Chats lists all private chats of the user. Servers lists the channels and threads of the chosen server.
 // The view is kept in localStorage. A deep link to a chat or channel picks its view (see loadConversations).
 const SEARCH_HINT = /Mac|iPhone|iPad/.test(navigator.platform || '') ? '⌘K' : 'Ctrl+K';
 function paintViews() {
@@ -231,9 +231,9 @@ window.addEventListener('resize', () => {
   if ($('chat-root') && !window.matchMedia('(max-width:760px)').matches) setConversationDrawer(false);
 });
 
-// The private chats of one server, newest first. The route returns a list.
-async function fetchChats(id) {
-  const result = await request(`/api/chats?server=${enc(id)}`);
+// All private chats of the user, from every server, newest first. The list is the same on every device. The route returns a list.
+async function fetchChats() {
+  const result = await request('/api/chats');
   return Array.isArray(result) ? result.slice().sort((a, b) => timeValue(b.updated) - timeValue(a.updated)) : [];
 }
 
@@ -246,7 +246,7 @@ async function loadConversations() {
   const channels = request(`/api/conversations?server=${enc(id)}`);
   channels.catch(() => {});
   // A failed chat list (for example a 404 before the server routes exist) leaves the Private chats group empty. The channels still load.
-  const privateChats = await fetchChats(id).catch(error => { if (error.status === 401) throw error; return []; });
+  const privateChats = await fetchChats().catch(error => { if (error.status === 401) throw error; return []; });
   if (stale()) return;
   conv.chats = conv.ask && conv.ask.server === id && !privateChats.some(c => c.id === conv.ask.chat) ? [{ id: conv.ask.chat, title: '', updated: Date.now() }, ...privateChats] : privateChats;
   drawList();
@@ -908,12 +908,15 @@ async function sendJson(method, path, body) {
   return data;
 }
 
+// A chat made or renamed on another device shows when the user comes back to this tab.
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && $('conv-list')) refreshChats(); });
+
 // Reloads the private chat list, so the order and new titles show.
 async function refreshChats() {
   const id = state.server?.id;
   if (!id) return;
   try {
-    const chats = await fetchChats(id);
+    const chats = await fetchChats();
     if (conv.server !== id) return;
     conv.chats = chats;
     drawList();
