@@ -52,8 +52,18 @@ export async function getShare(db: ShareDb, id: string): Promise<ShareRow | unde
     created_at: Number(row.created_at), revoked_at: row.revoked_at === null || row.revoked_at === undefined ? null : Number(row.revoked_at), body: String(row.body) };
 }
 
+// Private chat links (channel web:...) are kept out of the server list and of revoke-all. Only the owner's list shows them.
 export async function listShares(db: ShareDb, server: string, limit: number): Promise<ShareListRow[]> {
-  const rows = await db.prepare("SELECT id,channel,created_at,revoked_at FROM shares WHERE server=? ORDER BY created_at DESC, id DESC LIMIT ?").all(server, limit) as Record<string, unknown>[];
+  const rows = await db.prepare("SELECT id,channel,created_at,revoked_at FROM shares WHERE server=? AND channel NOT LIKE 'web:%' ORDER BY created_at DESC, id DESC LIMIT ?").all(server, limit) as Record<string, unknown>[];
+  return shareRows(rows);
+}
+
+export async function listChatShares(db: ShareDb, server: string, channel: string, limit: number): Promise<ShareListRow[]> {
+  const rows = await db.prepare("SELECT id,channel,created_at,revoked_at FROM shares WHERE server=? AND channel=? ORDER BY created_at DESC, id DESC LIMIT ?").all(server, channel, limit) as Record<string, unknown>[];
+  return shareRows(rows);
+}
+
+function shareRows(rows: Record<string, unknown>[]): ShareListRow[] {
   return rows.map(row => ({ id: String(row.id), channel: String(row.channel), created_at: Number(row.created_at),
     revoked_at: row.revoked_at === null || row.revoked_at === undefined ? null : Number(row.revoked_at) }));
 }
@@ -64,6 +74,11 @@ export async function revokeShare(db: ShareDb, server: string, id: string, at: n
 }
 
 export async function revokeAllShares(db: ShareDb, server: string, at: number): Promise<number> {
-  const result = await db.prepare("UPDATE shares SET revoked_at=? WHERE server=? AND revoked_at IS NULL").run(at, server);
+  const result = await db.prepare("UPDATE shares SET revoked_at=? WHERE server=? AND revoked_at IS NULL AND channel NOT LIKE 'web:%'").run(at, server);
+  return result.changes;
+}
+
+export async function deleteChatShares(db: ShareDb, channel: string): Promise<number> {
+  const result = await db.prepare("DELETE FROM shares WHERE channel=?").run(channel);
   return result.changes;
 }
