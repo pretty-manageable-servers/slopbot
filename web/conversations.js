@@ -1023,7 +1023,10 @@ function upsertMessage(m) {
   if (!log || (conv.kind !== 'chat' && m.channel !== conv.channel)) return;
   leaveEmpty();
   const stick = nearBottom(log);
-  const node = messageNode(m), old = log.querySelector(`[data-id="${m.id}"]`);
+  const node = messageNode(m);
+  let old = log.querySelector(`[data-id="${m.id}"]`);
+  // The saved copy of a message that was shown before it was saved takes its place.
+  if (!old && node.dataset.kind === 'mine') old = [...log.querySelectorAll('[data-pending]')].find(item => item.dataset.pending === m.text);
   if (old) old.replaceWith(node); else insertInOrder(log, node);
   for (const runId of m.runIds) finishLiveRun(runId);
   regroup(log);
@@ -1120,6 +1123,9 @@ function formatTokens(n) { return n < 1000 ? String(n) : `${(n / 1000).toFixed(1
 function findRunCard(runId) { return [...conv.live.values()].find(item => item.runs.has(runId)); }
 
 function startLive(runId, requestId) {
+  // A card shown before the run started takes this request id.
+  const early = conv.live.get(PENDING_CARD);
+  if (early && !conv.live.has(requestId)) { conv.live.delete(PENDING_CARD); early.requestId = requestId; conv.live.set(requestId, early); }
   const card = liveFor(requestId);
   if (!card) return;
   card.runs.add(runId);
@@ -1292,6 +1298,53 @@ function spoilerClick(event) {
 
 // The message box for a private chat. It posts to the chat's messages route. Slopbot's reply arrives on the chat stream.
 // The composer of a chat. With id null it is the blank chat: the chat is made on the first send, then opened.
+// A message that is not saved yet. The saved message from the stream replaces it (see upsertMessage).
+let pendingSeq = 0;
+function pendingBubble(text) {
+  const log = $('conv-log');
+  const node = messageNode({ id: `pending-${++pendingSeq}`, author: state.user, text, timestamp: Date.now() });
+  node.dataset.pending = text;
+  log.append(node);
+  regroup(log);
+  log.scrollTop = log.scrollHeight;
+  syncJump();
+  return node;
+}
+
+// The thinking card shows before the run starts. startLive gives it the real request id.
+const PENDING_CARD = 'pending';
+function addPendingCard() {
+  if (!conv.live.has(PENDING_CARD)) liveFor(PENDING_CARD);
+}
+function dropPendingCard() {
+  const card = conv.live.get(PENDING_CARD);
+  if (!card) return;
+  clearInterval(card.timer); clearTimeout(card.verbTimer); card.node.remove(); conv.live.delete(PENDING_CARD);
+}
+
+// The blank chat has its id now. The address changes without a new render and the stream starts from the first event.
+function attachNewChat(chatId) {
+  conv.channel = chatId; conv.kind = 'chat'; conv.blank = false;
+  conv.lastStream = 0; conv.seen = 0;
+  history.replaceState(null, '', '#chat/' + enc(chatId));
+  conv.chats = [{ id: chatId, title: '', updated: Date.now() }, ...conv.chats];
+  drawList();
+  if (window.SlopbotShares) { $('conv-share').hidden = false; window.SlopbotShares.renderChatShare($('conv-share'), chatId); }
+  $('conv-status').hidden = false;
+  openStream(chatId);
+}
+
+// The chat made for a send that failed is gone, so the view is a blank chat again.
+function detachNewChat(chatId) {
+  closeStream();
+  conv.chats = conv.chats.filter(c => c.id !== chatId);
+  conv.channel = null; conv.blank = true;
+  history.replaceState(null, '', '#chat');
+  $('conv-status').hidden = true;
+  $('conv-share').hidden = true; $('conv-share').replaceChildren();
+  drawList();
+}
+
 function chatComposer(id) {
   const form = document.createElement('form');
   form.className = 'chat-form';
@@ -1332,40 +1385,60 @@ function chatComposer(id) {
   field.addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); }
   });
-  form.addEventListener('submit', async event => {
+  form.addEventListener('submit', event => {
     event.preventDefault();
     const text = field.value.trim();
     if (!text || sending) return;
-    sending = true; send.disabled = true; status.textContent = 'Sending…';
-    let chatId = id || made;
+    field.value = ''; sync(); status.textContent = '';
+    deliver(text);
+  });
+  // Shows the message and the thinking card at once, then saves and sends in the background.
+  async function deliver(text, again) {
+    sending = true;
+    // The first message moves the composer to the bottom.
+    leaveEmpty(form.closest('.chat-hero'));
+    const pending = again || pendingBubble(text);
+    pending.classList.remove('failed'); pending.classList.add('pending');
+    pending.querySelector('.chat-retry')?.remove();
+    addPendingCard();
+    let chatId = id || made, fresh = false;
     try {
-      if (!chatId) { chatId = (await sendJson('POST', '/api/chats', { server: state.server.id })).id; made = chatId; }
+      if (!chatId) {
+        chatId = (await sendJson('POST', '/api/chats', { server: state.server.id })).id; made = chatId; fresh = true;
+        if (conv.blank) attachNewChat(chatId);
+      }
       const response = await fetch(`/api/chats/${enc(chatId)}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ text }) });
       const data = await response.json().catch(() => ({}));
-      if (response.status === 401) { status.textContent = ''; showScreen('login'); return; }
+      if (response.status === 401) { dropPendingCard(); showScreen('login'); return; }
       if (!response.ok) {
         // A 4xx answer means nothing was saved, so a chat made just for this send is removed. A 5xx may have saved the message, so that chat is kept for a retry.
-        if (!id && response.status < 500) { made = null; discardChat(chatId); }
-        status.textContent = response.status === 429 ? `Limit reached, resets ${new Date(data.resetAt).toLocaleString()}.` : (data.error || 'Message failed.');
+        if (!id && response.status < 500) { made = null; discardChat(chatId); if (conv.channel === chatId) detachNewChat(chatId); }
+        failPending(pending, text, response.status === 429 ? `Limit reached, resets ${new Date(data.resetAt).toLocaleString()}.` : (data.error || 'Message failed.'));
         return;
       }
       made = null;
-      field.value = ''; sync(); status.textContent = '';
-      if (!id) {
-        // The first send of a blank chat opens the new chat in its place. The list is reloaded for the new order and title.
-        conv.chats = [{ id: chatId, title: '', updated: Date.now() }, ...conv.chats];
-        await openConversation(chatId, 'chat', true);
-      } else {
-        // The first message moves the composer to the bottom.
-        leaveEmpty(form.closest('.chat-hero'));
-      }
+      // The stream may have shown the saved message already. Otherwise the pending bubble takes the saved id.
+      if (pending.isConnected) { pending.classList.remove('pending'); pending.dataset.id = data.id; delete pending.dataset.pending; }
+      if (conv.ask && conv.ask.chat === chatId) conv.ask = null;
       refreshChats();
     } catch (error) {
-      if (error.status === 401) return showScreen('login');
-      status.textContent = error.message;
+      if (error.status === 401) { dropPendingCard(); return showScreen('login'); }
+      if (!id && !made && conv.channel === chatId) detachNewChat(chatId);
+      failPending(pending, text, error.message);
     }
-    finally { sending = false; send.disabled = false; }
-  });
+    finally { sending = false; }
+  }
+  // The failed bubble keeps a Retry button. The text is back in the field when it is empty.
+  function failPending(pending, text, message) {
+    dropPendingCard();
+    pending.classList.remove('pending'); pending.classList.add('failed');
+    const retry = textNode('button', 'Retry', 'chat-retry');
+    retry.type = 'button';
+    retry.onclick = () => { if (!sending) { if (field.value.trim() === text) { field.value = ''; sync(); } deliver(text, pending); } };
+    pending.append(retry);
+    status.textContent = message;
+    if (!field.value) { field.value = text; sync(); field.focus(); }
+  }
   return form;
 }
 
