@@ -43,6 +43,17 @@ export function configuredChannels(config: Config, store: Pick<ServerToolStore, 
   return Array.isArray(saved) && saved.every(id => typeof id === "string" && /^\d{17,20}$/.test(id)) ? [...new Set(saved as string[])] : server === config.channelServer ? [...config.channelIds] : [];
 }
 
+export const webTranscriptKey = (channel: string): string => `web_transcripts:${channel}`;
+/** Off unless an admin turns it on. A thread uses its parent channel's switch, so the caller passes the parent ID. */
+export function webTranscriptsEnabled(store: Pick<ServerToolStore, "setting">, server: string, channelOrParent: string): boolean {
+  return store.setting(server, webTranscriptKey(channelOrParent)) === true;
+}
+/** The switch that applies to a channel or thread: a thread uses its parent's switch. */
+export function transcriptSwitchOn(store: Pick<ServerToolStore, "setting"> & { taskThreads(server: string): { thread: string; parent: string }[] }, server: string, channel: string): boolean {
+  const parent = store.taskThreads(server).find(task => task.thread === channel)?.parent ?? channel;
+  return webTranscriptsEnabled(store, server, parent);
+}
+
 export function registerServerTools(registry: ToolRegistry, services: ServerToolServices): void {
   const { config, store, participation, history, server } = services;
   const add = (tool: ToolDefinition) => registry.register(tool);

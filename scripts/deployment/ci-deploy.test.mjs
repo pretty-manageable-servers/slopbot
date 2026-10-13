@@ -31,6 +31,8 @@ else: raise SystemExit('Unexpected CLI invocation')
     execFileSync('tar', ['-czf', archive, '-C', archiveRoot, 'package']);
     const sums = join(directory, 'SHA256SUMS'); writeFileSync(sums, `${createHash('sha256').update(readFileSync(archive)).digest('hex')}  ${archiveName}\n`);
     writeFileSync(join(bin, 'gh'), '#!/bin/sh\ncp "$PMS_TEST_ARCHIVE" .\ncp "$PMS_TEST_SUMS" .\n', { mode: 0o700 });
+    // macOS has shasum but no sha256sum. The CI script uses sha256sum --check, so the test adds a shim there.
+    if (spawnSync('sh', ['-c', 'command -v sha256sum']).status !== 0) writeFileSync(join(bin, 'sha256sum'), '#!/bin/sh\nexec shasum -a 256 "$@"\n', { mode: 0o700 });
     const calls = join(directory, 'calls');
     const result = spawnSync('bash', [resolve('scripts/deployment/ci-deploy.sh')], {
       encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, RUNNER_TEMP: directory,

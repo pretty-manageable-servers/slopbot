@@ -85,6 +85,15 @@ CREATE TABLE IF NOT EXISTS tool_operations (
         id TEXT PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, author TEXT NOT NULL,
         message_id TEXT NOT NULL, name TEXT NOT NULL, args TEXT NOT NULL, status TEXT NOT NULL, result TEXT, created_at BIGINT NOT NULL
       , resource TEXT);
+CREATE TABLE IF NOT EXISTS user_limit_counters (server TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, window_start BIGINT NOT NULL, spent BIGINT NOT NULL, PRIMARY KEY(server,user_id,kind));
+CREATE TABLE IF NOT EXISTS user_limit_resets (server TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, count BIGINT NOT NULL, PRIMARY KEY(server,user_id,kind));
+CREATE TABLE IF NOT EXISTS reply_runs (server TEXT NOT NULL, message_id TEXT NOT NULL, run_id TEXT NOT NULL, PRIMARY KEY(server,message_id,run_id));
+CREATE TABLE IF NOT EXISTS conversation_events (
+        stream_id BIGSERIAL PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL,
+        kind TEXT NOT NULL, ref TEXT NOT NULL, data TEXT NOT NULL, created_at BIGINT NOT NULL
+      );
+CREATE INDEX IF NOT EXISTS conversation_events_channel ON conversation_events(server,channel,stream_id);
+CREATE INDEX IF NOT EXISTS conversation_events_created ON conversation_events(created_at);
 CREATE TABLE IF NOT EXISTS worker_leases (server TEXT PRIMARY KEY, owner TEXT NOT NULL, expires BIGINT NOT NULL);
 CREATE OR REPLACE VIEW message_search AS SELECT sequence AS rowid,body::jsonb->>'text' AS text FROM messages;
 CREATE INDEX IF NOT EXISTS jobs_ready ON jobs(server,status,sequence);
@@ -92,4 +101,13 @@ CREATE INDEX IF NOT EXISTS messages_channel ON messages(server,channel,sequence)
 
 CREATE TABLE IF NOT EXISTS app_records (server TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, revision BIGINT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(server,kind,id));
 
+CREATE TABLE IF NOT EXISTS web_webhooks (server TEXT NOT NULL, channel TEXT NOT NULL, webhook_id TEXT NOT NULL, token_encrypted TEXT NOT NULL, PRIMARY KEY(server,channel));
+CREATE INDEX IF NOT EXISTS web_webhooks_hook ON web_webhooks(server,webhook_id);
+CREATE TABLE IF NOT EXISTS web_replies (id TEXT PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, user_id TEXT NOT NULL, status TEXT NOT NULL, message_id TEXT, created_at BIGINT NOT NULL, via TEXT NOT NULL DEFAULT 'webhook');
+ALTER TABLE web_replies ADD COLUMN IF NOT EXISTS via TEXT NOT NULL DEFAULT 'webhook';
+CREATE INDEX IF NOT EXISTS web_replies_message ON web_replies(server,message_id);
+
 CREATE INDEX IF NOT EXISTS messages_fulltext ON messages USING gin(to_tsvector('simple',body::jsonb->>'text'));
+
+CREATE TABLE IF NOT EXISTS shares (id TEXT PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, created_by TEXT NOT NULL, created_at BIGINT NOT NULL, revoked_at BIGINT, body TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS shares_server ON shares(server,created_at);

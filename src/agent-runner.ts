@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 import { type Message, type Prompt, type PromptItem, type Reply } from "./domain.js";
 import type { AgentTurn, LLM, Store } from "./ports.js";
 import type { Recall } from "./memory.js";
+import { attribution, streamMetered, type UsageMeter } from "./usage-meter.js";
 import { ByteTokenCounter, DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, type TokenCounter } from "./context.js";
 import { type ProfileStore } from "./profiles.js";
 import { displayToolResult, toolResult, toolFailed, parseToolCalls, toolInstructions, nativeToolInstructions, ToolError, stableOperationId, type ToolExecutor, type ToolCall } from "./tools.js";
@@ -43,7 +44,7 @@ export class AgentRunner {
   private readonly renderer: ReplyRenderer;
 
   constructor(private readonly store: Store, private readonly llm: LLM, private readonly policy: Policy,
-    recall?: Recall, private readonly services: { profiles?: ProfileStore; tools?: ToolExecutor; counter?: TokenCounter; harness?: HarnessJournal; presentation?: PresentationPolicy; onToolActivity?: ToolActivityObserver } = {}) {
+    recall?: Recall, private readonly services: { profiles?: ProfileStore; tools?: ToolExecutor; counter?: TokenCounter; harness?: HarnessJournal; presentation?: PresentationPolicy; onToolActivity?: ToolActivityObserver; usage?: UsageMeter } = {}) {
     if (policy.maxToolRounds !== undefined && (!Number.isSafeInteger(policy.maxToolRounds) || policy.maxToolRounds < 1 || policy.maxToolRounds > 1000)) throw new Error("maxToolRounds must be an integer from 1 to 1000");
     this.recentMessages = policy.recentMessages ?? 12;
     this.allowedChannels = new Set(policy.allowedChannels.map(scope => JSON.stringify([scope.server, scope.channel])));
@@ -127,7 +128,9 @@ export class AgentRunner {
     const journal = new EventJournal(this.store, runId, message, timingName);
     try {
       const signal = this.active.get(JSON.stringify([message.server, message.id]))?.controller.signal;
-      for await (const event of this.llm.stream(prompt, signal)) {
+      // A provider that sends no usage is charged the estimated input and the full output budget.
+      const estimate = { prompt_tokens: required, completion_tokens: prompt.maxOutputTokens ?? this.outputLimit };
+      for await (const event of streamMetered(this.llm, prompt, { usage: this.services.usage, who: attribution(message), signal, estimate })) {
         if (!firstOutput && (event.kind === "text" || event.kind === "reasoning" || event.kind === "tool_call")) {
           firstOutput = true; requestTimings.firstOutput(message, performance.now() - modelStarted);
         }
@@ -286,8 +289,10 @@ export class AgentRunner {
       if (machine.state.kind !== "ToolResultsHeld" && this.counter.count([...prefix, ...history, ...inputs, ...trace]) > inputLimit) throw new RequestError("CONTEXT_BUDGET", "Context budget reached; original prompts and tool results are retained.", "Start a fresh request, or increase CONTEXT_TOKENS with enough room for OUTPUT_TOKENS.", { inputLimit: this.inputLimit });
       const runId = randomUUID();
       const retriesExhausted = failedToolRounds >= 3;
-      const retryLimitInput: PromptItem[] = retriesExhausted ? [{ role: "user", contextOnly: true, content: "Tool recovery stopped after three consecutive failed tool rounds. No further tools can run in this request. Explain the remaining failure and what the requester can do, using the recorded results. Do not claim success or request more tools." }] : [];
-      const prompt: Prompt = { cacheScope: taskKey??JSON.stringify([message.server,message.channel,message.id]), prefixVersion: (this.policy.prefixVersion ?? "v3") + ":" + stableOperationId(JSON.stringify({ prefix, tools: modelTools ?? [] })), prefix, history, inputs: [...inputs, ...trace, ...retryLimitInput], ...(modelTools ? { tools: retriesExhausted ? [] : modelTools } : {}), maxOutputTokens: this.outputLimit, purpose: "reply" };
+      // Read at each round, so a run cannot start new tools after the user passes the grace limit.
+      const toolsStopped = retriesExhausted || (await this.services.usage?.overGrace(attribution(message))) === true;
+      const retryLimitInput: PromptItem[] = toolsStopped ? [{ role: "user", contextOnly: true, content: retriesExhausted ? "Tool recovery stopped after three consecutive failed tool rounds. No further tools can run in this request. Explain the remaining failure and what the requester can do, using the recorded results. Do not claim success or request more tools." : "The usage limit for this requester was reached during this request. No further tools can run. Give the final answer from the recorded results. Do not claim success or request more tools." }] : [];
+      const prompt: Prompt = { cacheScope: taskKey??JSON.stringify([message.server,message.channel,message.id]), prefixVersion: (this.policy.prefixVersion ?? "v3") + ":" + stableOperationId(JSON.stringify({ prefix, tools: modelTools ?? [] })), prefix, history, inputs: [...inputs, ...trace, ...retryLimitInput], ...(modelTools ? { tools: toolsStopped ? [] : modelTools } : {}), maxOutputTokens: this.outputLimit, purpose: "reply" };
       let text: string;
       let generatedCalls: ToolCall[] | undefined;
       const fixedAnswer = quoteAnswer ?? clarificationAnswer ?? directAnswer;
@@ -309,9 +314,10 @@ export class AgentRunner {
           continue;
         }
         if (calls && !this.services.tools) throw new ToolError("Tool request cannot execute: tools are unavailable");
-        if (calls && retriesExhausted) {
+        // Spend from this model call may have passed the grace limit, so no new tool round starts.
+        if (calls && (toolsStopped || (await this.services.usage?.overGrace(attribution(message))) === true)) {
           calls = undefined;
-          text = "Slopbot could not complete these tool calls:\n" + toolFailureSummary(activity) + "\nStopped after three consecutive failed tool rounds. No further tool calls were run.";
+          text = retriesExhausted ? "Slopbot could not complete these tool calls:\n" + toolFailureSummary(activity) + "\nStopped after three consecutive failed tool rounds. No further tool calls were run." : "Usage limit reached during this request. No further tool calls were run.";
         }
         if (calls) {
           if (round === maxRounds) throw new RequestError("TOOL_ROUND_LIMIT", `Reached the limit of ${maxRounds} tool rounds for this attempt. Completed progress is retained.`, "Continue the task in a new message, or retry this job to resume with a fresh round allowance. Set MAX_TOOL_ROUNDS to change the limit.", { limit: maxRounds, savedRounds: turns.length, completedRounds: round, nextTools: calls.map(call => call.name).join(", ") });

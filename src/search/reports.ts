@@ -9,6 +9,7 @@ import type { RecordStore } from "../records.js";
 import type { HistorySearch } from "./history-search.js";
 import { historyResult } from "./history-search.js";
 import { ToolError, type ToolRegistry } from "../tools.js";
+import { attribution, streamMetered, type UsageMeter } from "../usage-meter.js";
 interface ReportStore extends Store, RecordStore, HistorySearch {
   canonicalMessage(
     server: string,
@@ -27,6 +28,7 @@ export function registerReportTools(
   services: {
     store: ReportStore;
     llm: LLM;
+    usage?: UsageMeter;
     authorize(message: Message, channel: string): Promise<void>;
   },
 ): void {
@@ -127,6 +129,7 @@ export function registerReportTools(
         const page = await services.store.searchHistory({
           server: context.message.server,
           channel,
+          requester: context.message.author,
           query: String(args.query ?? ""),
           mode: args.query ? "hybrid" : "keyword",
           limit: 40,
@@ -168,7 +171,7 @@ export function registerReportTools(
         let text = "";
         const journal = new EventJournal(services.store, runId, context.message, `tool:${decision ? "decision_lookup" : "conversation_summary"}`);
         try {
-          for await (const event of services.llm.stream(prompt)) {
+          for await (const event of streamMetered(services.llm, prompt, { usage: services.usage, who: attribution(context.message) })) {
             await journal.append(event);
             if (event.kind === "text") text += event.payload.text;
           }

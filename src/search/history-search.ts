@@ -8,6 +8,8 @@ export interface HistoryQuery {
   query: string;
   mode: "hybrid" | "keyword" | "exact" | "semantic";
   excludeId?: string;
+  // The member who asked. Their query embedding is charged to them; undefined means no payer.
+  requester?: string | undefined;
   author?: string;
   after?: number | undefined;
   before?: number | undefined;
@@ -183,7 +185,7 @@ export function registerHistoryTools(
           throw new ToolError("Start date must precede end date.");
       }
       await services.authorize(context.message, query.channel);
-      const page = await services.store.searchHistory(query);
+      const page = await services.store.searchHistory({ ...query, requester: context.message.author });
       const result = historyResult(page.messages);
       let cursor: string | undefined;
       if (page.nextOffset !== undefined) {

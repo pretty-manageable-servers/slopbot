@@ -9,6 +9,7 @@ import type { Knowledge } from "./memory.js";
 import type { TaskWorker, QueueStore } from "./queue.js";
 import { ToolError, type ToolCall, type ToolRegistry, type ToolResult } from "./tools.js";
 import type { ParticipationGate } from "./participation.js";
+import { UserLimitError, limitReply } from "./user-limiter.js";
 
 export interface Incoming extends Message {
   readonly botAuthor: boolean;
@@ -58,11 +59,17 @@ export class Bot {
     if (!this.accepts(message.server, message.channel)) return;
     if (message.botAuthor) message = { ...message, isBot: true };
     requestTimings.begin(message);
-    await requestTimings.withScope(message, () => this.receiveScoped(message));
+    try { await requestTimings.withScope(message, () => this.receiveScoped(message)); }
+    catch (error) {
+      if (!(error instanceof UserLimitError)) throw error;
+      // Only a direct request gets the notice. Unsolicited replies stay silent.
+      if (message.mentionsBot || message.repliesToBot || message.addressed === true || this.tasks.has(message.channel)) await this.send(message, limitReply(error.resetAt));
+    }
   }
   private async receiveScoped(message: Incoming): Promise<void> {
     const task = this.tasks.has(message.channel);
-    let addressed = task || message.mentionsBot || message.repliesToBot;
+    // A web reply arrives with addressed=true, so it always gets an answer and skips JEV.
+    let addressed = task || message.mentionsBot || message.repliesToBot || message.addressed === true;
     let ingested = false;
     if (!addressed) {
       if (!await this.store.ingest({ ...message, addressed: false })) return;

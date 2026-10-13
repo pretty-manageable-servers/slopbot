@@ -1,4 +1,5 @@
 import type { Message } from "./domain.js";
+import type { Attribution } from "./usage-meter.js";
 
 export interface MemoryRecord {
   id: string;
@@ -23,7 +24,8 @@ export interface Evidence {
 export interface Embeddings {
   readonly model: string;
   embed(text: string): Promise<readonly number[]>;
-  embedWithUsage?(text: string): Promise<{ vector: readonly number[]; tokens: number | null }>;
+  // who pays for the call; undefined when no user can be charged
+  embedWithUsage?(text: string, who?: Attribution): Promise<{ vector: readonly number[]; tokens: number | null }>;
 }
 
 export interface Recall {

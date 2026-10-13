@@ -5,6 +5,7 @@ import { EventJournal } from "./event-journal.js";
 import { requestTimings } from "./request-timing.js";
 import type { Message, Prompt } from "./domain.js";
 import type { LLM, Store } from "./ports.js";
+import { attribution, streamMetered, type UsageMeter } from "./usage-meter.js";
 
 export interface ParticipationDecision {
   emoji?: string | undefined;
@@ -18,7 +19,7 @@ export interface Classifier {
 }
 
 export class LLMClassifier implements Classifier {
-  constructor(private readonly llm: LLM, private readonly store: Store) {}
+  constructor(private readonly llm: LLM, private readonly store: Store, private readonly usage?: UsageMeter) {}
 
   async classify(message: Message, context: readonly Message[]): Promise<ParticipationDecision> {
     const prompt: Prompt = {
@@ -32,7 +33,8 @@ export class LLMClassifier implements Classifier {
     const text: string[] = [];
     const journal = new EventJournal(this.store, runId, message, "participation");
     try {
-      for await (const event of this.llm.stream(prompt)) {
+      // Every human message is classified, so each one is charged to its author.
+      for await (const event of streamMetered(this.llm, prompt, { usage: this.usage, who: attribution(message) })) {
         await journal.append(event);
         if (event.kind === "text") text.push(event.payload.text);
       }

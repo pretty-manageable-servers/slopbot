@@ -2,24 +2,34 @@ import { ModelAliases } from "./model-aliases.js";
 import type { Embeddings } from "../memory.js";
 import { requestTimings } from "../request-timing.js";
 import { providerError } from "../errors.js";
+import { ByteTokenCounter } from "../context.js";
+import type { Attribution, UsageMeter } from "../usage-meter.js";
+
+/** The model id that prices an embedding call. PMServers bills the Gemma model under its public name. */
+export function embeddingPriceModel(baseUrl: string, model: string): string {
+  return new URL(baseUrl).hostname === "api.pmservers.org" && model === "llama.cpp/embeddinggemma-2" ? "stratus" : model;
+}
 
 export class ProviderEmbeddings implements Embeddings {
   private readonly aliases: ModelAliases;
   private nextRequestAt = 0;
+  private usage?: UsageMeter;
   constructor(
     private readonly baseUrl: string, private readonly key: string,
     readonly model = "llama.cpp/embeddinggemma-2", private readonly fetcher: typeof fetch = fetch,
   ) { this.aliases = new ModelAliases(baseUrl); }
 
+  /** Charges embedding calls made through this adapter. Set once the store and meter exist. */
+  attachUsage(usage: UsageMeter): void { this.usage = usage; }
+
   async embed(text: string): Promise<readonly number[]> {
     return (await this.embedWithUsage(text)).vector;
   }
 
-  async embedWithUsage(text: string): Promise<{ vector: readonly number[]; tokens: number | null }> {
+  async embedWithUsage(text: string, who?: Attribution): Promise<{ vector: readonly number[]; tokens: number | null }> {
     // PMServers uses a different alias for the same Gemma model. Keep the index
     // identity stable so switching gateways does not re-embed channel history.
-    const model = new URL(this.baseUrl).hostname === "api.pmservers.org" && this.model === "llama.cpp/embeddinggemma-2"
-      ? "stratus" : this.model;
+    const model = embeddingPriceModel(this.baseUrl, this.model);
     let response!: Response;
     for (let attempt = 0; attempt < 3; attempt++) {
       const wait = Math.max(0, this.nextRequestAt - Date.now());
@@ -42,7 +52,10 @@ export class ProviderEmbeddings implements Embeddings {
     if (!Array.isArray(vector) || !vector.length || !vector.every(value => typeof value === "number" && Number.isFinite(value))) {
       throw new Error("Invalid embedding response");
     }
-    const tokens = body.usage?.prompt_tokens ?? body.usage?.total_tokens;
-    return { vector: vector as number[], tokens: typeof tokens === "number" && Number.isSafeInteger(tokens) && tokens >= 0 ? tokens : null };
+    const reported = body.usage?.prompt_tokens ?? body.usage?.total_tokens;
+    const tokens = typeof reported === "number" && Number.isSafeInteger(reported) && reported >= 0 ? reported : null;
+    // An embedding has no completion, so it is priced as input. Without usage, the sent text is estimated.
+    await this.usage?.record(who, model, { prompt_tokens: tokens ?? new ByteTokenCounter().count([{ role: "user", content: text.slice(0, 8000) }]) });
+    return { vector: vector as number[], tokens };
   }
 }

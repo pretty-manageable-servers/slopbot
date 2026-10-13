@@ -42,10 +42,22 @@ import { LLMClassifier, ParticipationGate } from "../participation.js";
 import { HistoryImporter } from "../history.js";
 import { DecisionClassifier } from "./decisions.js";
 import { TaskWorker } from "../queue.js";
-import { configuredChannels, registerServerTools } from "../server-tools.js";
+import { UserLimiter, UserLimitError, limitReply } from "../user-limiter.js";
+import { createUsageMeter, type UsageMeter } from "../usage-meter.js";
+import { registerUsageTool } from "../usage-tools.js";
+import { configuredChannels, registerServerTools, webTranscriptKey, webTranscriptsEnabled } from "../server-tools.js";
+import { ChannelAccess } from "../channel-access.js";
+import { TeamAdmins, discordTeamSource } from "../team-admins.js";
+import { publishMessage, publishMessageDelete, publishTool, runEvents } from "../run-events.js";
+import { ShareService, type ShareRule } from "../shares.js";
+import { discordChannelAccessSource, wireChannelAccessEvents } from "./discord-channel-access.js";
 import { displayToolResult, ToolError, ToolRegistry, UncertainActionError, stableOperationId } from "../tools.js";
+import { WebReplies, asWebUser, webReplyKey } from "../web-replies.js";
+import { discordWebReplies } from "./discord-web-replies.js";
 
 /** Slopbot state and services for one Discord server. All servers share one client. */
+interface TranscriptChannel { id: string; name: string; enabled: boolean }
+
 export class DiscordServer implements ChatGateway {
   private readonly client: Client;
   private readonly bot: Bot;
@@ -57,11 +69,13 @@ export class DiscordServer implements ChatGateway {
   private readonly tools: ToolRegistry;
   private readonly mcp: McpManager;
   private readonly worker: TaskWorker;
+  private readonly limiter: UserLimiter;
   private readonly history: HistoryImporter;
+  private readonly webReplies: WebReplies;
   private channels: string[];
   private historyTimer: ReturnType<typeof setInterval> | undefined;
 
-  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined) {
+  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client))) {
     this.client = client;
     this.renderer = new ReplyRenderer(store, discordPresentation);
     this.channels = configuredChannels(config, store, guildId);
@@ -80,7 +94,7 @@ export class DiscordServer implements ChatGateway {
       return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= max ? value : fallback;
     };
     const savedMonitoring = store.setting(guildId, "monitoring");
-    const participation = new ParticipationGate(new DecisionClassifier({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.jevModel }, store, undefined, new LLMClassifier(llm, store)), {
+    const participation = new ParticipationGate(new DecisionClassifier({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.jevModel, usage }, store, undefined, new LLMClassifier(llm, store, usage)), {
       enabled: (typeof savedMonitoring === "boolean" ? savedMonitoring : config.jevEnabled) && !config.mock,
       reactionFrequency: savedLimit("reaction_frequency", store.setting(guildId, "reactions_enabled") === false ? 0 : 60, 100),
       contextMessages: savedLimit("classifier_context", config.jevContextMessages, 100),
@@ -145,7 +159,7 @@ export class DiscordServer implements ChatGateway {
     this.uiRuntime = new UiRuntime(store,this.tools,authorizeFeature);
     registerTimingTools(this.tools, { store, authorize: authorizeFeature });
     registerHistoryTools(this.tools,{store,authorize:authorizeFeature});
-    registerReportTools(this.tools,{store,llm,authorize:authorizeFeature});
+    registerReportTools(this.tools,{store,llm,authorize:authorizeFeature,usage});
     registerPollTool(this.tools);
     registerTaskTools(this.tools,{store,authorize:authorizeFeature});
     registerReminderTools(this.tools,{store,authorize:authorizeFeature});
@@ -166,7 +180,7 @@ export class DiscordServer implements ChatGateway {
       if (sourceFingerprint(fresh) !== sourceFingerprint(known)) { await this.store.revise(fresh); throw contextChangedError(request, { reason: "file_source_changed", sourceId: id }); }
       return fresh;
     };
-    registerFileTool(this.tools, { store, llm, resolve: resolveAttachment });
+    registerFileTool(this.tools, { store, llm, resolve: resolveAttachment, usage });
     const sandboxProvider = config.sandboxApiKey ? new E2BSandboxProvider({ apiKey: config.sandboxApiKey, apiUrl: config.sandboxApiUrl!, sandboxUrl: config.sandboxUrl!, ...(config.sandboxTemplate ? { template: config.sandboxTemplate } : {}) }) : undefined;
     const storage = new UserFileStorage(store, objectStorageProvider);
     this.tools.register(sandboxTool(store, sandboxProvider, { resolve: (request, id) => resolveAttachment(request, id, true) }, storage));
@@ -174,7 +188,7 @@ export class DiscordServer implements ChatGateway {
       storage,
       authorize: message => authorizeFeature(message, message.channel),
       resolveAttachment: (request, id) => resolveAttachment(request, id, true),
-      inspect: (context, file, bytes, question) => inspectFile({ store, llm, assertCurrent: async () => { const current = await storage.entry(context.message.server, context.message.author, file.owner, file.path, false, fileStorageScope(file), context.isAdmin); if (current.file.key !== file.key) throw new ToolError('Stored file changed during inspection. Read its current version.'); } }, context, file.path, file.contentType, bytes, question),
+      inspect: (context, file, bytes, question) => inspectFile({ store, llm, usage, assertCurrent: async () => { const current = await storage.entry(context.message.server, context.message.author, file.owner, file.path, false, fileStorageScope(file), context.isAdmin); if (current.file.key !== file.key) throw new ToolError('Stored file changed during inspection. Read its current version.'); } }, context, file.path, file.contentType, bytes, question),
       send: async (context, file, bytes) => {
         const current = await storage.entry(context.message.server, context.message.author, file.owner, file.path, false, fileStorageScope(file), context.isAdmin);
         if (current.file.key !== file.key) throw new ToolError('Stored file changed before sending. Request its current version.');
@@ -188,13 +202,21 @@ export class DiscordServer implements ChatGateway {
         },
       } } : {}),
     }));
+    this.limiter = usage.limiter;
+    this.webReplies = new WebReplies({
+      store, discord: discordWebReplies(client), access, limiter: this.limiter, secret: webReplyKey(),
+      enabled: parent => webTranscriptsEnabled(store, guildId, parent),
+      accepts: channel => this.bot.accepts(guildId, channel),
+    });
+    registerUsageTool(this.tools, this.limiter);
     this.app = new Application(store, llm, {
       allowedChannels: this.channels.map(channel => ({ server: guildId, channel })),
       recentMessages: savedLimit("reply_context", config.replyContextMessages, 100),
       maxContextTokens: config.contextTokens, maxInputChars: config.contextTokens,
       maxOutputTokens: config.outputTokens, checkpointTokens: config.checkpointTokens, maxToolRounds: config.maxToolRounds,
-    }, store, { onToolActivity: async (message, activity) => {
+    }, store, { usage, onToolActivity: async (message, activity) => {
       if (!this.bot.accepts(message.server, message.channel)) return;
+      publishTool(message, activity);
       await this.toolProgress.update(JSON.stringify([message.server,message.channel,message.id]), activity, async content => {
         const channel = await this.client.channels.fetch(message.channel);
         if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Status channel unavailable");
@@ -211,7 +233,7 @@ export class DiscordServer implements ChatGateway {
         } };
       },
     } });
-    this.worker = new TaskWorker(guildId, store, async message => {
+    this.worker = new TaskWorker(guildId, store, this.limiter, async message => {
       const source = (await store.canonicalMessage(message.server, message.id));
       if (!source || source.text !== message.text || source.author !== message.author) throw new Error("Source changed while queued; submit a new request");
       if (!message.taskId && /^!task(?:\s|$)/i.test(message.text)) {
@@ -252,11 +274,13 @@ export class DiscordServer implements ChatGateway {
     void (async () => {
       if (!updated.guildId || !this.bot.accepts(updated.guildId, updated.channelId)) return;
       const message = updated.partial ? await updated.fetch() : updated;
-      await this.store.revise(this.normalize(message));
+      const normalized = this.normalize(message);
+      await this.store.revise(normalized);
+      if (!normalized.transient) await publishMessage(this.store, normalized).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
     })().catch(error => logError("Could not update edited message context.", error));
   }
   messageDelete(message: { guildId: string | null; channelId: string; id: string }): void {
-    if (message.guildId && this.bot.accepts(message.guildId, message.channelId)) void this.store.remove(message.guildId, message.channelId, message.id).catch(error => logError("discord_message_delete_failed", error, { messageId: message.id }));
+    if (message.guildId && this.bot.accepts(message.guildId, message.channelId)) void this.store.remove(message.guildId, message.channelId, message.id).then(() => publishMessageDelete(message.guildId!, message.channelId, message.id)).catch(error => logError("discord_message_delete_failed", error, { messageId: message.id }));
   }
   private async purgeAndIndex(): Promise<void> {
     const children = this.store.taskThreads(this.guildId).filter(task => this.channels.includes(task.parent)).map(task => task.thread);
@@ -300,6 +324,8 @@ export class DiscordServer implements ChatGateway {
       const name = subcommand === "run" ? interaction.options.getString("tool", true) : subcommand;
       const definition = this.tools.definitions().find(tool => tool.name === name);
       if (!definition) throw new ToolError("Unknown Slopbot tool");
+      // The usage tool stays available over the limit, so a user can see their spend and use a reset.
+      if (name !== "usage") { const limit = await this.limiter.check(this.guildId, interaction.user.id); if (!limit.allowed) throw new UserLimitError(limit.resetAt); }
       let args: Record<string, unknown> = {};
       if (subcommand === "run") {
         let parsed: unknown;
@@ -326,6 +352,7 @@ export class DiscordServer implements ChatGateway {
       for (const content of parts.slice(1)) await interaction.followUp({ content, flags: previewFlags | (ephemeral ? MessageFlags.Ephemeral : 0), allowedMentions: { parse: [] } });
       if(output.ui){const state=await this.uiRuntime.prepare(message,output.ui,interaction.id);const payload=discordUi(output.ui,state.id,state.revision);await interaction.followUp({...payload,flags:[...('flags' in payload?payload.flags:[]),...(ephemeral?['Ephemeral' as const]:[])],allowedMentions:{parse:[]}});}
     } catch (error) {
+      if (error instanceof UserLimitError) { await interaction.editReply({ content: limitReply(error.resetAt), allowedMentions: { parse: [] } }); return; }
       logError("command_failed", error, { stage: "slash command", server: this.guildId, messageId: interaction.id });
       await interaction.editReply({content: errorReply(error), allowedMentions: {parse: []}});
     }
@@ -363,10 +390,24 @@ export class DiscordServer implements ChatGateway {
     return ownProgress ? { ...normalized, transient: true } : normalized;
   }
   private async receive(message: DiscordMessage): Promise<void> {
-    if (!message.guildId || message.author.id === this.client.user?.id || !this.bot.accepts(message.guildId, message.channelId)) return;
+    if (!message.guildId || !this.bot.accepts(message.guildId, message.channelId)) return;
+    if (message.author.id === this.client.user?.id) return this.receiveOwn(message);
+    const live = this.normalize(message);
+    if (!live.transient) await publishMessage(this.store, live).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
     const timingScope = { server: message.guildId, channel: message.channelId, id: message.id };
     requestTimings.begin(timingScope); requestTimings.start(timingScope, "references");
     await requestTimings.withScope(timingScope, () => this.receiveScoped(message, timingScope));
+  }
+  /** Slopbot's own messages are ignored, except a bot web reply whose exact returned ID matched. */
+  private async receiveOwn(message: DiscordMessage): Promise<void> {
+    const server = message.guildId!, channel = message.channelId;
+    const web = await this.webReplies.origin({ server, channel, id: message.id }).catch(error => {
+      logError("web_reply_origin_failed", error, { stage: "web reply origin", server, channel, messageId: message.id }, true);
+      return undefined;
+    });
+    if (!web) return;
+    const base: Incoming = { ...this.normalize(message), botAuthor: false, mentionsBot: this.client.user ? message.mentions.users.has(this.client.user.id) : false, repliesToBot: false };
+    await this.bot.receive(asWebUser(base, web));
   }
   private async receiveScoped(message: DiscordMessage, timingScope: { server: string; channel: string; id: string }): Promise<void> {
     let repliesToBot = false;
@@ -385,7 +426,13 @@ export class DiscordServer implements ChatGateway {
         referenced = reference;
       } catch { break; } // Missing references grant no access.
     }
-    const incoming: Incoming = { ...this.normalize(message), botAuthor: message.author.bot || Boolean(message.webhookId), mentionsBot: this.client.user ? message.mentions.users.has(this.client.user.id) : false, repliesToBot };
+    const base: Incoming = { ...this.normalize(message), botAuthor: message.author.bot || Boolean(message.webhookId), mentionsBot: this.client.user ? message.mentions.users.has(this.client.user.id) : false, repliesToBot };
+    // Only the exact ID that Slopbot's web post returned counts as the user. The event waits up to 10 s for that post.
+    const web = message.webhookId && message.guildId ? await requestTimings.wait("web reply origin", () => this.webReplies.origin({ server: message.guildId!, channel: message.channelId, id: message.id, webhookId: message.webhookId! }).catch(error => {
+      logError("web_reply_origin_failed", error, { stage: "web reply origin", server: message.guildId!, channel: message.channelId, messageId: message.id }, true);
+      return undefined;
+    })) : undefined;
+    const incoming: Incoming = web ? asWebUser(base, web) : base;
     requestTimings.end(timingScope, "references");
     await this.bot.receive(incoming);
   }
@@ -441,6 +488,9 @@ export class DiscordServer implements ChatGateway {
       outputs.push(result);
     }
     await requestTimings.wait("Discord status cleanup", () => this.toolProgress.finish(JSON.stringify([message.server,message.channel,message.id])));
+    // Web transcripts: the reply's runs are already saved, so their IDs are known now.
+    const runIds = await this.store.requestRunIds(message.server, message.id);
+    for (const output of outputs) await publishMessage(this.store, output, runIds).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
     delivered = true;
     return outputs;
     } finally {
@@ -512,6 +562,45 @@ export class DiscordServer implements ChatGateway {
     await this.mcp.configure(user, input);
     return { text: 'MCP configuration applied. Available tools update without a restart.', mcp: this.mcp.snapshot() };
   }
+  private async assertManager(user: string): Promise<void> {
+    const guild = await this.client.guilds.fetch(this.guildId);
+    const member = await guild.members.fetch({ user, force: true });
+    if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) throw new ToolError('Manage Server permission is required.');
+  }
+  /** Posts a web reply as the user. Only the user's own permissions and limits apply. */
+  async consoleReply(user: string, channel: string, text: string): Promise<unknown> {
+    return this.webReplies.reply({ user, server: this.guildId, channel, text });
+  }
+  async consoleTranscripts(user: string): Promise<unknown> {
+    await this.assertManager(user);
+    return this.transcripts();
+  }
+  async consoleSetTranscript(user: string, channel: string, enabled: boolean): Promise<unknown> {
+    await this.assertManager(user);
+    return this.setTranscript(channel, enabled);
+  }
+  // Team admins skip the Manage Server check. The console checks their team role before it calls these.
+  adminTranscripts(): Promise<{ channels: TranscriptChannel[] }> {
+    return this.transcripts();
+  }
+  adminSetTranscript(channel: string, enabled: boolean): Promise<unknown> {
+    return this.setTranscript(channel, enabled);
+  }
+  /** Makes a new web webhook for a monitored channel. Old webhook tokens stop working. */
+  adminRotateWebhook(channel: string): Promise<{ webhookId: string }> {
+    if (!this.channels.includes(channel)) throw new ToolError('Slopbot is not monitoring that channel.');
+    return this.webReplies.rotateWebhook(this.guildId, channel);
+  }
+  private async transcripts(): Promise<{ channels: TranscriptChannel[] }> {
+    const names = await (await this.client.guilds.fetch(this.guildId)).channels.fetch();
+    return { channels: this.channels.map(id => ({ id, name: names.get(id)?.name ?? id, enabled: webTranscriptsEnabled(this.store, this.guildId, id) })) };
+  }
+  private async setTranscript(channel: string, enabled: boolean): Promise<unknown> {
+    if (!this.channels.includes(channel)) throw new ToolError('Choose a channel that Slopbot serves in this server.');
+    await this.store.setSetting(this.guildId, webTranscriptKey(channel), enabled);
+    runEvents.changed(this.guildId);
+    return { channel, enabled };
+  }
   async start(): Promise<void> { await this.mcp.restore(); }
   async stop(): Promise<void> {
     if (this.historyTimer) clearInterval(this.historyTimer);
@@ -525,10 +614,27 @@ export class DiscordAdapter {
   private readonly client: Client;
   private readonly servers = new Map<string, Promise<DiscordServer>>();
   private readonly objectStorageProvider: S3StorageProvider | undefined;
+  // One meter for the process. Its limiter is shared by every server, and discord-main attaches it to the embeddings.
+  readonly usage: UsageMeter;
   private botUser: string | undefined;
+  /** Live per-user view and send checks for the web console. */
+  readonly access: ChannelAccess;
+  /** Team roles of the Developer Portal team that owns the bot. Used by the console admin panel. */
+  readonly team: TeamAdmins;
+  /** Who may make, list and revoke share links: Manage Server in the server, or a team editor. */
+  readonly shareRule: ShareRule;
+  /** Share links for the web console. */
+  readonly shares: ShareService;
 
   constructor(private readonly config: Config, private readonly store: RuntimeStore, private readonly llm: LLM, client?: Client) {
+    this.usage = createUsageMeter(config, store);
     this.client = client ?? new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent], partials: [Partials.Message, Partials.Channel] });
+    this.team = new TeamAdmins(discordTeamSource(this.client));
+    this.access = new ChannelAccess(discordChannelAccessSource(this.client));
+    wireChannelAccessEvents(this.client, this.access);
+    runEvents.attach(store);
+    this.shareRule = { manager: (user, server) => this.hasManageServer(user, server), teamAdmin: user => this.team.canEdit(user) };
+    this.shares = new ShareService({ store, access: this.access, rule: this.shareRule });
     this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;
     this.client.once(Events.ClientReady, async client => {
       this.botUser = client.user.id;
@@ -551,7 +657,7 @@ export class DiscordAdapter {
     if (existing) return existing;
     if (!this.allowed(guildId)) return Promise.reject(new ToolError("Slopbot is not enabled for this server."));
     const opening = (async () => {
-      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider);
+      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage, this.access);
       await server.start();
       await server.ready(this.botUser!);
       return server;
@@ -599,6 +705,42 @@ export class DiscordAdapter {
   }
   async consoleMcp(user: string, guildId: string | undefined, input: unknown): Promise<unknown> {
     return (await this.server(user, guildId)).consoleMcp(user, input);
+  }
+  async consoleTranscripts(user: string, guildId: string): Promise<unknown> {
+    return (await this.server(user, guildId)).consoleTranscripts(user);
+  }
+  /** The channel's name for the web transcript list. Undefined when the channel is not in the server. */
+  async channelName(server: string, channel: string): Promise<string | undefined> {
+    const found = await this.client.channels.fetch(channel).catch(() => undefined);
+    if (!found || !("guildId" in found) || found.guildId !== server || !("name" in found) || typeof found.name !== "string") return undefined;
+    return found.name;
+  }
+  async consoleReply(user: string, guildId: string | undefined, channel: string, text: string): Promise<unknown> {
+    return (await this.server(user, guildId)).consoleReply(user, channel, text);
+  }
+  async consoleSetTranscript(user: string, guildId: string, channel: string, enabled: boolean): Promise<unknown> {
+    return (await this.server(user, guildId)).consoleSetTranscript(user, channel, enabled);
+  }
+  /** Every server Slopbot runs in, with its web transcript switches. The console checks the team role first. */
+  async adminServers(): Promise<unknown> {
+    const servers = await Promise.all([...this.servers].map(async ([id, opening]) => ({ id, name: this.client.guilds.cache.get(id)?.name ?? id, ...await (await opening).adminTranscripts() })));
+    return { servers: servers.sort((a, b) => a.name.localeCompare(b.name)) };
+  }
+  async adminSetTranscript(guildId: string, channel: string, enabled: boolean): Promise<unknown> {
+    const opening = this.servers.get(guildId);
+    if (!opening) throw new ToolError('Slopbot is not running in that server.');
+    return (await opening).adminSetTranscript(channel, enabled);
+  }
+  async adminRotateWebhook(guildId: string, channel: string): Promise<unknown> {
+    const opening = this.servers.get(guildId);
+    if (!opening) throw new ToolError('Slopbot is not running in that server.');
+    return (await opening).adminRotateWebhook(channel);
+  }
+  /** Manage Server in one guild. A user who is not a member, or has no permission, gets false. */
+  async hasManageServer(user: string, server: string): Promise<boolean> {
+    const guild = await this.client.guilds.fetch(server);
+    const member = await guild.members.fetch({ user, force: true }).catch(() => undefined);
+    return member?.permissions.has(PermissionFlagsBits.ManageGuild) ?? false;
   }
   async start(): Promise<void> { await this.client.login(this.config.discordToken); }
   async stop(): Promise<void> {

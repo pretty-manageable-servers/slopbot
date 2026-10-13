@@ -5,8 +5,9 @@ import type { ToolOutput } from "../tools.js";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { parseMessage, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
-import type { Store, AgentTurn } from "../ports.js";
+import type { Store, AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow } from "../ports.js";
 import { cosine, searchTerms, type Embeddings, type Evidence, type Knowledge, type MemoryRecord, type Recall } from "../memory.js";
+import { attribution, type Attribution } from "../usage-meter.js";
 
 import { ToolError } from "../tools.js";
 import type { ProfileField, ProfileStore, UserProfile } from "../profiles.js";
@@ -16,6 +17,13 @@ import type { ToolArgs, ToolCall, ToolContext, ToolJournal, ToolOperation } from
 
 import type { HistoryQuery, HistoryPage } from '../search/history-search.js';
 import type { AppRecord } from '../records.js';
+import type { ConversationEvent } from '../run-events.js';
+/** Rows deleted by one retention statement, so a large prune never holds the database for long. */
+const CONVERSATION_PRUNE_BATCH = 10000;
+
+import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
+import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, revokeShare, revokeAllShares } from '../share-store.js';
+import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
 export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore {
   async record(
     server: string,
@@ -132,6 +140,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
               text: request.query,
             },
             "query",
+            request.requester ? { server: request.server, user: request.requester } : undefined,
           );
           const ranked = this.db
             .prepare(
@@ -353,7 +362,23 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY, message TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL, result TEXT);
       CREATE INDEX IF NOT EXISTS jobs_ready ON jobs(server,status,sequence);
       CREATE TABLE IF NOT EXISTS settings (server TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(server,key));
+      CREATE TABLE IF NOT EXISTS user_limit_counters (server TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, window_start INTEGER NOT NULL, spent INTEGER NOT NULL, PRIMARY KEY(server,user_id,kind));
+      CREATE TABLE IF NOT EXISTS user_limit_resets (server TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(server,user_id,kind));
+      CREATE TABLE IF NOT EXISTS reply_runs (server TEXT NOT NULL, message_id TEXT NOT NULL, run_id TEXT NOT NULL, PRIMARY KEY(server,message_id,run_id));
+      CREATE TABLE IF NOT EXISTS conversation_events (
+        stream_id INTEGER PRIMARY KEY AUTOINCREMENT, server TEXT NOT NULL, channel TEXT NOT NULL,
+        kind TEXT NOT NULL, ref TEXT NOT NULL, data TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS conversation_events_channel ON conversation_events(server,channel,stream_id);
+      CREATE INDEX IF NOT EXISTS conversation_events_created ON conversation_events(created_at);
+      CREATE TABLE IF NOT EXISTS web_webhooks (server TEXT NOT NULL, channel TEXT NOT NULL, webhook_id TEXT NOT NULL, token_encrypted TEXT NOT NULL, PRIMARY KEY(server,channel));
+      CREATE INDEX IF NOT EXISTS web_webhooks_hook ON web_webhooks(server,webhook_id);
+      CREATE TABLE IF NOT EXISTS web_replies (id TEXT PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, user_id TEXT NOT NULL, status TEXT NOT NULL, message_id TEXT, created_at INTEGER NOT NULL, via TEXT NOT NULL DEFAULT 'webhook');
+      CREATE INDEX IF NOT EXISTS web_replies_message ON web_replies(server,message_id);
+      CREATE TABLE IF NOT EXISTS shares (id TEXT PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, created_by TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER, body TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS shares_server ON shares(server,created_at);
     `);
+    if (!this.db.prepare("PRAGMA table_info(web_replies)").all().some(column => column.name === "via")) this.db.exec("ALTER TABLE web_replies ADD COLUMN via TEXT NOT NULL DEFAULT 'webhook'");
     const operationColumns = this.db.prepare("PRAGMA table_info(tool_operations)").all();
     if (!operationColumns.some(column => column.name === "resource")) this.db.exec("ALTER TABLE tool_operations ADD COLUMN resource TEXT");
     const jobColumns = this.db.prepare("PRAGMA table_info(jobs)").all();
@@ -535,6 +560,13 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     const row = this.db.prepare("SELECT state FROM harness_events WHERE server=? AND message_id=? ORDER BY sequence DESC LIMIT 1").get(server, id);
     return row ? JSON.parse(String(row.state)) as HarnessState : undefined;
   }
+  async shareMessages(server: string, channel: string, range: ShareMessageRange): Promise<ShareMessageResult> { return shareMessages(this.db, server, channel, range); }
+  async shareRequestEvents(server: string, requests: readonly string[]) { return shareRequestEvents(this.db, server, requests); }
+  async insertShare(row: ShareRow): Promise<void> { return insertShare(this.db, row); }
+  async getShare(id: string): Promise<ShareRow | undefined> { return getShare(this.db, id); }
+  async listShares(server: string, limit: number) { return listShares(this.db, server, limit); }
+  async revokeShare(server: string, id: string, at: number): Promise<boolean> { return revokeShare(this.db, server, id, at); }
+  async revokeAllShares(server: string, at: number): Promise<number> { return revokeAllShares(this.db, server, at); }
   async startRun(runId: string, message: Message, prompt: Prompt): Promise<void> {
     this.db.prepare("INSERT INTO runs(id,message,prompt,status,result,context_version) VALUES(?,?,?,?,NULL,?)")
       .run(runId, JSON.stringify(message), JSON.stringify(prompt), "running", await this.contextVersion(message.server, message.channel));
@@ -593,6 +625,69 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   events(runId: string): ModelEvent[] {
     return this.db.prepare("SELECT kind,payload FROM events WHERE run_id=? ORDER BY sequence")
       .all(runId).map(row => ({ kind: row.kind, payload: JSON.parse(String(row.payload)) }) as ModelEvent);
+  }
+
+  // Web transcripts (read-only views and the live event store).
+  async conversationActivity(server: string): Promise<{ channel: string; newest: number }[]> {
+    return this.db.prepare("SELECT channel, MAX(COALESCE(json_extract(body,'$.timestamp'),0)) AS newest FROM messages WHERE server=? GROUP BY channel")
+      .all(server).map(row => ({ channel: String(row.channel), newest: Number(row.newest) }));
+  }
+  async conversationMessages(server: string, channel: string, before: { time: number; id: string } | undefined, limit: number): Promise<Message[]> {
+    const rows = before
+      ? this.db.prepare("SELECT body FROM messages WHERE server=? AND channel=? AND (COALESCE(json_extract(body,'$.timestamp'),0)<? OR (COALESCE(json_extract(body,'$.timestamp'),0)=? AND id<?)) ORDER BY COALESCE(json_extract(body,'$.timestamp'),0) DESC,id DESC LIMIT ?")
+        .all(server, channel, before.time, before.time, before.id, limit)
+      : this.db.prepare("SELECT body FROM messages WHERE server=? AND channel=? ORDER BY COALESCE(json_extract(body,'$.timestamp'),0) DESC,id DESC LIMIT ?")
+        .all(server, channel, limit);
+    return rows.map(row => this.namedMessage(parseMessage(JSON.parse(String(row.body)))));
+  }
+  async replyRunIds(server: string, messageId: string): Promise<string[]> {
+    return this.db.prepare("SELECT r.run_id FROM reply_runs r LEFT JOIN runs u ON u.id=r.run_id WHERE r.server=? AND r.message_id=? ORDER BY u.rowid").all(server, messageId).map(row => String(row.run_id));
+  }
+  async requestRunIds(server: string, requestId: string): Promise<string[]> {
+    return this.db.prepare("SELECT id FROM runs WHERE json_extract(message,'$.server')=? AND json_extract(message,'$.id')=? AND COALESCE(json_extract(prompt,'$.purpose'),'reply')='reply' ORDER BY rowid")
+      .all(server, requestId).map(row => String(row.id));
+  }
+  async runRecord(runId: string): Promise<{ id: string; message: Message; purpose: string; status: string; result: string | null } | undefined> {
+    const row = this.db.prepare("SELECT id,message,prompt,status,result FROM runs WHERE id=?").get(runId);
+    if (!row) return undefined;
+    return { id: String(row.id), message: parseMessage(JSON.parse(String(row.message))), purpose: String(JSON.parse(String(row.prompt)).purpose ?? "reply"), status: String(row.status), result: row.result === null ? null : String(row.result) };
+  }
+  async toolTurns(server: string, messageId: string): Promise<{ calls: ToolCall[]; results: Record<string, ToolOutput> }[]> {
+    return this.db.prepare("SELECT calls,results FROM agent_turns WHERE server=? AND message_id=? AND valid=1 ORDER BY sequence")
+      .all(server, messageId).map(row => ({ calls: JSON.parse(String(row.calls)), results: JSON.parse(String(row.results)) }));
+  }
+  async appendConversationEvent(row: { server: string; channel: string; kind: string; ref: string; data: Json; createdAt: number }): Promise<number> {
+    const saved = this.db.prepare("INSERT INTO conversation_events(server,channel,kind,ref,data,created_at) VALUES(?,?,?,?,?,?) RETURNING stream_id")
+      .get(row.server, row.channel, row.kind, row.ref, JSON.stringify(row.data), row.createdAt)!;
+    return Number(saved.stream_id);
+  }
+  async latestStreamId(server: string, channel: string): Promise<number> {
+    return Number(this.db.prepare("SELECT COALESCE(MAX(stream_id),0) AS id FROM conversation_events WHERE server=? AND channel=?").get(server, channel)!.id);
+  }
+  async conversationEventsAfter(server: string, channel: string, after: number, limit: number): Promise<ConversationEvent[]> {
+    return this.db.prepare("SELECT stream_id,server,channel,kind,ref,data,created_at FROM conversation_events WHERE server=? AND channel=? AND stream_id>? ORDER BY stream_id LIMIT ?")
+      .all(server, channel, after, limit).map(row => ({ streamId: Number(row.stream_id), server: String(row.server), channel: String(row.channel), kind: String(row.kind) as ConversationEvent["kind"], ref: String(row.ref), data: JSON.parse(String(row.data)) as Json, createdAt: Number(row.created_at) }));
+  }
+  async oldestStreamId(server: string, channel: string): Promise<number | undefined> {
+    const row = this.db.prepare("SELECT MIN(stream_id) AS id FROM conversation_events WHERE server=? AND channel=?").get(server, channel)!;
+    return row.id === null ? undefined : Number(row.id);
+  }
+  /** Deletes rows older than olderThan, then the oldest rows beyond maxRows. Each statement deletes at most CONVERSATION_PRUNE_BATCH rows. */
+  async pruneConversationEvents(olderThan: number, maxRows: number): Promise<number> {
+    let deleted = 0;
+    for (;;) {
+      const changes = Number(this.db.prepare("DELETE FROM conversation_events WHERE stream_id IN (SELECT stream_id FROM conversation_events WHERE created_at<? LIMIT ?)").run(olderThan, CONVERSATION_PRUNE_BATCH).changes);
+      deleted += changes;
+      if (changes < CONVERSATION_PRUNE_BATCH) break;
+    }
+    let excess = Number(this.db.prepare("SELECT COUNT(*) AS n FROM conversation_events").get()!.n) - maxRows;
+    while (excess > 0) {
+      const changes = Number(this.db.prepare("DELETE FROM conversation_events WHERE stream_id IN (SELECT stream_id FROM conversation_events ORDER BY stream_id LIMIT ?)").run(Math.min(excess, CONVERSATION_PRUNE_BATCH)).changes);
+      if (!changes) break;
+      deleted += changes;
+      excess -= changes;
+    }
+    return deleted;
   }
 
   close(): void { this.db.close(); }
@@ -685,13 +780,82 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     this.db.prepare("INSERT OR REPLACE INTO settings VALUES(?,?,?)").run(server, key, JSON.stringify(value));
   }
 
+  // Web replies (src/web-replies.ts).
+  webWebhook(server: string, channel: string): WebWebhookRow | undefined {
+    const row = this.db.prepare("SELECT server,channel,webhook_id,token_encrypted FROM web_webhooks WHERE server=? AND channel=?").get(server, channel);
+    return row ? { server: String(row.server), channel: String(row.channel), webhook_id: String(row.webhook_id), token_encrypted: String(row.token_encrypted) } : undefined;
+  }
+  webWebhookByHook(server: string, webhookId: string): WebWebhookRow | undefined {
+    const row = this.db.prepare("SELECT server,channel,webhook_id,token_encrypted FROM web_webhooks WHERE server=? AND webhook_id=?").get(server, webhookId);
+    return row ? { server: String(row.server), channel: String(row.channel), webhook_id: String(row.webhook_id), token_encrypted: String(row.token_encrypted) } : undefined;
+  }
+  saveWebWebhook(row: WebWebhookRow): void {
+    this.db.prepare("INSERT INTO web_webhooks VALUES(?,?,?,?) ON CONFLICT(server,channel) DO UPDATE SET webhook_id=excluded.webhook_id,token_encrypted=excluded.token_encrypted").run(row.server, row.channel, row.webhook_id, row.token_encrypted);
+  }
+  deleteWebWebhook(server: string, channel: string): void {
+    this.db.prepare("DELETE FROM web_webhooks WHERE server=? AND channel=?").run(server, channel);
+  }
+  insertWebReply(row: WebReplyRow): void {
+    this.db.prepare("INSERT INTO web_replies (id,server,channel,user_id,status,message_id,created_at,via) VALUES(?,?,?,?,?,?,?,?)").run(row.id, row.server, row.channel, row.user_id, row.status, row.message_id, row.created_at, row.via);
+  }
+  finishWebReply(id: string, status: "posted" | "failed", messageId?: string, via?: WebVia): boolean {
+    return this.db.prepare("UPDATE web_replies SET status=?,message_id=?,via=COALESCE(?,via) WHERE id=? AND status='pending'").run(status, messageId ?? null, via ?? null, id).changes > 0;
+  }
+  webReplyByMessage(server: string, messageId: string): WebReplyRow | undefined {
+    const row = this.db.prepare("SELECT id,server,channel,user_id,status,message_id,created_at,via FROM web_replies WHERE server=? AND message_id=?").get(server, messageId);
+    return row ? { id: String(row.id), server: String(row.server), channel: String(row.channel), user_id: String(row.user_id), status: String(row.status) as WebReplyRow["status"], message_id: row.message_id === null ? null : String(row.message_id), created_at: Number(row.created_at), via: String(row.via) as WebReplyRow["via"] } : undefined;
+  }
+
+  private userWindows(server: string, user: string): UserLimitWindow[] {
+    return this.db.prepare("SELECT kind, window_start, spent FROM user_limit_counters WHERE server=? AND user_id=?").all(server, user)
+      .map(row => ({ kind: String(row.kind), windowStart: Number(row.window_start), spent: Number(row.spent) }));
+  }
+  async userUsage(server: string, user: string): Promise<UserLimitState> {
+    const resets = Object.fromEntries(this.db.prepare("SELECT kind, count FROM user_limit_resets WHERE server=? AND user_id=?").all(server, user).map(row => [String(row.kind), Number(row.count)]));
+    return { windows: this.userWindows(server, user), resets };
+  }
+  async updateUserLimits<T>(server: string, user: string, change: (windows: readonly UserLimitWindow[]) => { windows?: readonly UserLimitWindow[]; result: T }): Promise<T> {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const next = change(this.userWindows(server, user));
+      for (const window of next.windows ?? []) this.db.prepare("INSERT INTO user_limit_counters VALUES(?,?,?,?,?) ON CONFLICT(server,user_id,kind) DO UPDATE SET window_start=excluded.window_start,spent=excluded.spent").run(server, user, window.kind, window.windowStart, window.spent);
+      this.db.exec("COMMIT");
+      return next.result;
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+  async resetUserUsage(server: string, user: string, kind?: string): Promise<void> {
+    if (kind === undefined) this.db.prepare("DELETE FROM user_limit_counters WHERE server=? AND user_id=?").run(server, user);
+    else this.db.prepare("DELETE FROM user_limit_counters WHERE server=? AND user_id=? AND kind=?").run(server, user, kind);
+  }
+  async listUserUsage(server: string, limit: number): Promise<UserLimitRow[]> {
+    const users = this.db.prepare("SELECT u.user_id AS uid FROM (SELECT user_id FROM user_limit_counters WHERE server=? UNION SELECT user_id FROM user_limit_resets WHERE server=?) u LEFT JOIN user_limit_counters c ON c.server=? AND c.user_id=u.user_id AND c.kind='5h' ORDER BY COALESCE(c.spent,0) DESC, u.user_id LIMIT ?").all(server, server, server, limit);
+    const rows: UserLimitRow[] = [];
+    for (const row of users) rows.push({ user: String(row.uid), ...await this.userUsage(server, String(row.uid)) });
+    return rows;
+  }
+  async grantResets(server: string, user: string, kind: string, count: number): Promise<void> {
+    if (!Number.isSafeInteger(count) || count < 1) throw new Error("Reset count must be a positive integer");
+    this.db.prepare("INSERT INTO user_limit_resets VALUES(?,?,?,?) ON CONFLICT(server,user_id,kind) DO UPDATE SET count=user_limit_resets.count+excluded.count").run(server, user, kind, count);
+  }
+  async useReset(server: string, user: string, kind: string): Promise<boolean> {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare("SELECT count FROM user_limit_resets WHERE server=? AND user_id=? AND kind=?").get(server, user, kind);
+      if (!row || Number(row.count) < 1) { this.db.exec("COMMIT"); return false; }
+      this.db.prepare("UPDATE user_limit_resets SET count=count-1 WHERE server=? AND user_id=? AND kind=?").run(server, user, kind);
+      this.db.prepare("DELETE FROM user_limit_counters WHERE server=? AND user_id=? AND kind=?").run(server, user, kind);
+      this.db.exec("COMMIT");
+      return true;
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
   reindex(server: string, channels: readonly string[]): number {
     if (!this.embeddings || !channels.length) return 0;
     const rows = this.db.prepare(`SELECT m.body FROM messages m WHERE m.server=?
       AND m.channel IN (${channels.map(() => "?").join(",")}) AND NOT EXISTS
       (SELECT 1 FROM embeddings e WHERE e.server=m.server AND e.message_id=m.id AND e.model=?)`)
       .all(server, ...channels, this.embeddings.model);
-    for (const row of rows) this.queueIndex(parseMessage(JSON.parse(String(row.body))));
+    for (const row of rows) this.queueIndex(parseMessage(JSON.parse(String(row.body))), false);
     return rows.length;
   }
 
@@ -709,12 +873,14 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     for (const row of jobs) if (!allowed.includes(String(row.channel))) this.db.prepare("UPDATE jobs SET status='cancelled',error='Channel disabled' WHERE id=?").run(String(row.id));
   }
 
-  private queueIndex(message: Message): void {
+  // charge is false for an admin reindex: old messages are not charged to their authors again.
+  private queueIndex(message: Message, charge = true): void {
     if (!this.embeddings || !message.text.trim()) return;
     this.indexTail = this.indexTail.then(async () => {
       const existing = this.db.prepare("SELECT 1 FROM embeddings WHERE server=? AND message_id=? AND model=?").get(message.server, message.id, this.embeddings!.model);
       if (existing) return;
-      const vector = await this.embed(message, "index");
+      // Index work is charged to the message author. A bot message has no payer, so attribution() skips its charge.
+      const vector = await this.embed(message, "index", charge ? attribution(message) : undefined);
       const current = this.db.prepare("SELECT body FROM messages WHERE server=? AND id=?").get(message.server, message.id);
       if (!current || parseMessage(JSON.parse(String(current.body))).text !== message.text) return;
       this.db.prepare("INSERT OR REPLACE INTO embeddings VALUES(?,?,?,?)")
@@ -729,9 +895,9 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     return { messages: Number(row.count), vectors: Number(vectors.count), oldest: row.oldest === null ? null : Number(row.oldest), newest: row.newest === null ? null : Number(row.newest), usage };
   }
 
-  private async embed(message: Message, purpose: "index" | "query"): Promise<readonly number[]> {
+  private async embed(message: Message, purpose: "index" | "query", who?: Attribution): Promise<readonly number[]> {
     const result = this.embeddings!.embedWithUsage
-      ? await this.embeddings!.embedWithUsage(message.text)
+      ? await this.embeddings!.embedWithUsage(message.text, who)
       : { vector: await this.embeddings!.embed(message.text), tokens: null };
     this.db.prepare(`INSERT INTO embedding_usage VALUES(?,?,?,?,1,?,?)
       ON CONFLICT(server,channel,model,purpose) DO UPDATE SET requests=requests+1,tokens=tokens+excluded.tokens,unknown_tokens=unknown_tokens+excluded.unknown_tokens`)
@@ -826,7 +992,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       return score(b) - score(a);
     }).slice(0, Math.min(limit, 4));
     for (const memory of relevant) evidence.push({ kind: "memory", content: memory.content, author: memory.author, sourceIds: memory.sourceIds });
-    const recalled=await this.searchHistory({server:message.server,channel:message.channel,query:message.text,mode:'hybrid',limit,excludeId:message.id});
+    const recalled=await this.searchHistory({server:message.server,channel:message.channel,query:message.text,mode:'hybrid',limit,excludeId:message.id,requester:message.isBot?undefined:message.author});
     const selected=new Map(recalled.messages.map(item=>[item.id,item]));
     for (const item of selected.values()) {
       if (evidence.length >= limit) break;
@@ -855,6 +1021,10 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       .all(runId, message.server).map(row => String(row.message_id)) : [sourceId];
     const insert = this.db.prepare("INSERT OR IGNORE INTO source_dependents VALUES(?,?,?)");
     for (const source of sources.length ? sources : [sourceId]) insert.run(message.server, source, message.id);
+    // Web transcripts: a Slopbot reply links to every reply run of its request.
+    const runs = new Set([...(runId ? [runId] : []), ...await this.requestRunIds(message.server, sourceId)]);
+    const link = this.db.prepare("INSERT OR IGNORE INTO reply_runs VALUES(?,?,?)");
+    for (const run of runs) link.run(message.server, message.id, run);
   }
 
   private bumpVersion(server: string, channel: string): void {
