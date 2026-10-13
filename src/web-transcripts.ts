@@ -8,6 +8,7 @@ import { reasoningText, runEvents, shortArgs, showsProfile, slopbotId, transcrip
 import type { MemberDirectory } from "./member-directory.js";
 import { transcriptSwitchOn } from "./server-tools.js";
 import { canCreateShare, type ShareRule } from "./shares.js";
+import { isPrivateChannel } from "./private-chat.js";
 
 export interface TranscriptRun { id: string; message: Message; purpose: string; status: string; result: string | null }
 export interface ToolTurn { calls: ToolCall[]; results: Record<string, ToolOutput> }
@@ -74,7 +75,8 @@ export async function visibleConversations(host: TranscriptHost, server: string,
   const seen = new Set<string>();
   const found: Conversation[] = [];
   for (const candidate of candidates) {
-    if (seen.has(candidate.id)) continue;
+    // Private chats are never listed here. They have their own list (web-chats.ts).
+    if (isPrivateChannel(candidate.id) || seen.has(candidate.id)) continue;
     seen.add(candidate.id);
     const enabled = transcriptSwitchOn(store, server, candidate.id);
     if (!enabled && candidate.kind === "thread") continue;
@@ -237,6 +239,20 @@ export function openStream(options: StreamOptions): () => void {
   return () => stop();
 }
 
+export async function messageViews(store: TranscriptStore, members: Pick<MemberDirectory, "profiles"> | undefined, server: string, messages: readonly Message[]): Promise<TranscriptMessage[]> {
+  const slopbot = slopbotId(store, server);
+  // One directory call per page. The directory caches each user for 10 minutes.
+  const authors = [...new Set(messages.filter(message => showsProfile(message, slopbot)).map(message => message.author))];
+  const profiles = members && authors.length ? await members.profiles(server, authors) : new Map();
+  // One query for each channel on the page. Only messages that a reply run used are marked.
+  const used = new Set<string>();
+  const people = messages.filter(message => message.author !== slopbot);
+  for (const channel of new Set(people.map(message => message.channel))) {
+    for (const id of await store.usedSourceIds(server, channel, people.filter(message => message.channel === channel).map(message => message.id))) used.add(id);
+  }
+  return Promise.all(messages.map(async message => transcriptMessage(message, slopbot, message.author === slopbot ? await store.replyRunIds(server, message.id) : [], profiles.get(message.author), used.has(message.id))));
+}
+
 export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
   const { store } = host;
   const json = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
@@ -245,19 +261,7 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
     const value = Number(raw);
     return Number.isSafeInteger(value) && value >= 1 && value <= max ? value : undefined;
   };
-  const views = async (server: string, messages: readonly Message[]): Promise<TranscriptMessage[]> => {
-    const slopbot = slopbotId(store, server);
-    // One directory call per page. The directory caches each user for 10 minutes.
-    const authors = [...new Set(messages.filter(message => showsProfile(message, slopbot)).map(message => message.author))];
-    const profiles = host.members && authors.length ? await host.members.profiles(server, authors) : new Map();
-    // One query for each channel on the page. Only messages that a reply run used are marked.
-    const used = new Set<string>();
-    const people = messages.filter(message => message.author !== slopbot);
-    for (const channel of new Set(people.map(message => message.channel))) {
-      for (const id of await store.usedSourceIds(server, channel, people.filter(message => message.channel === channel).map(message => message.id))) used.add(id);
-    }
-    return Promise.all(messages.map(async message => transcriptMessage(message, slopbot, message.author === slopbot ? await store.replyRunIds(server, message.id) : [], profiles.get(message.author), used.has(message.id))));
-  };
+  const views = (server: string, messages: readonly Message[]) => messageViews(store, host.members, server, messages);
   const parentOf = async (server: string, channel: string): Promise<string | null> =>
     store.taskThreads(server).find(task => task.thread === channel)?.parent ?? null;
 

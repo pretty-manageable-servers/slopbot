@@ -22,6 +22,8 @@ const CONVERSATION_PRUNE_BATCH = 10000;
 
 import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
 import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, revokeShare, revokeAllShares } from '../share-store.js';
+import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../web-chat-store.js';
+import { isPrivateChannel } from '../private-chat.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
 import { getWebSession, saveWebSession, deleteWebSession, deleteExpiredWebSessions } from '../web-session-store.js';
 import type { WebSessionRow } from '../web-session-store.js';
@@ -412,6 +414,22 @@ export class PostgresStore {
     async revokeShare(server: string, id: string, at: number): Promise<boolean> { return revokeShare(this.db, server, id, at); }
     async revokeAllShares(server: string, at: number): Promise<number> { return revokeAllShares(this.db, server, at); }
     async getSession(idHash: string): Promise<WebSessionRow | undefined> { return getWebSession(this.db, idHash); }
+    async insertWebChat(row: WebChatRow): Promise<void> { return insertWebChat(this.db, row); }
+    async webChat(id: string): Promise<WebChatRow | undefined> { return getWebChat(this.db, id); }
+    async webChats(server: string, owner: string): Promise<WebChatRow[]> { return listWebChats(this.db, server, owner); }
+    async liveWebChatChannels(server: string): Promise<string[]> { return liveWebChatChannels(this.db, server); }
+    async renameWebChat(id: string, title: string, updated: number): Promise<void> { return renameWebChat(this.db, id, title, updated); }
+    async touchWebChat(id: string, updated: number): Promise<void> { return touchWebChat(this.db, id, updated); }
+    /** Deletes a private chat: its runs, events and queue rows, then its messages. The row stays, marked deleted. */
+    async deleteWebChat(id: string, server: string, channel: string, at: number): Promise<void> {
+        await markWebChatDeleted(this.db, id, at);
+        await deleteChatRows(this.db, server, channel);
+        for (const row of await this.db.prepare("SELECT id FROM messages WHERE server=? AND channel=?").all(server, channel))
+            await this.invalidateSource(server, String(row.id));
+        await this.db.prepare("DELETE FROM messages WHERE server=? AND channel=?").run(server, channel);
+        await this.invalidate(server, channel, { reason: "channel_disabled" });
+        await this.db.prepare("DELETE FROM settings WHERE server=? AND key=?").run(server, `context_change:${channel}`);
+    }
     async saveSession(row: WebSessionRow): Promise<void> { return saveWebSession(this.db, row); }
     async deleteSession(idHash: string): Promise<void> { return deleteWebSession(this.db, idHash); }
     async deleteExpiredSessions(now: number): Promise<number> { return deleteExpiredWebSessions(this.db, now); }
@@ -734,7 +752,8 @@ export class PostgresStore {
     async purgeUnconfigured(server: string, allowed: readonly string[]): Promise<void> {
         const rows = (await this.db.prepare("SELECT id,channel FROM messages WHERE server=?").all(server));
         for (const row of rows) {
-            if (allowed.includes(String(row.channel)))
+            // Private chats are removed only by their owner, never by this cleanup.
+            if (allowed.includes(String(row.channel)) || isPrivateChannel(String(row.channel)))
                 continue;
             (await this.invalidateSource(server, String(row.id)));
             (await this.db.prepare("DELETE FROM messages WHERE server=? AND id=?").run(server, String(row.id)));
@@ -749,7 +768,7 @@ export class PostgresStore {
         }
         const jobs = (await this.db.prepare("SELECT id,channel FROM jobs WHERE server=? AND status NOT IN ('done','cancelled')").all(server));
         for (const row of jobs)
-            if (!allowed.includes(String(row.channel)))
+            if (!allowed.includes(String(row.channel)) && !isPrivateChannel(String(row.channel)))
                 (await this.db.prepare("UPDATE jobs SET status='cancelled',error='Channel disabled' WHERE id=?").run(String(row.id)));
     }
     // charge is false for an admin reindex: old messages are not charged to their authors again.

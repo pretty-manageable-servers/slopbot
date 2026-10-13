@@ -178,3 +178,30 @@ main.chat-mode{padding:0;max-width:none;min-width:0}
   .topbar .top-tab{padding:8px}
   .topbar .top-tab span{display:none}
 }
+
+/* Private chats: the New chat button, the rows with a lock and the options menu, the rename box */
+.chat .chat-new{display:flex;align-items:center;gap:8px;width:100%;margin:0 0 8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:none;color:var(--strong);font-size:14px}
+.chat .chat-new:hover{background:var(--pill)}
+.chat .chat-new:disabled{opacity:.6}
+.chat .chat-row{position:relative;display:flex;align-items:center;gap:2px}
+.chat .chat-row>.chat-item{flex:1 1 auto;width:auto;min-width:0}
+.chat .chat-lock{display:inline-flex;flex:none;margin-right:6px;color:var(--muted);vertical-align:-3px}
+.chat .chat-lock svg{display:block}
+.chat .chat-more{flex:none;display:grid;place-items:center;width:26px;height:26px;padding:0;border:0;border-radius:6px;background:none;color:var(--muted)}
+.chat .chat-more:hover,.chat .chat-more[aria-expanded=true]{background:var(--pill);color:var(--strong)}
+.chat .chat-menu{position:absolute;right:0;top:100%;z-index:20;min-width:150px;margin-top:4px;padding:4px;border:1px solid var(--line);border-radius:10px;background:var(--surface);box-shadow:0 8px 24px rgb(0 0 0 / .25)}
+.chat .chat-menu-item{display:block;width:100%;padding:7px 10px;border:0;border-radius:6px;background:none;color:var(--text);font-size:13px;text-align:left}
+.chat .chat-menu-item:hover,.chat .chat-menu-item:focus-visible{background:var(--pill);color:var(--strong)}
+.chat .chat-menu-item.danger{color:var(--chat-code)}
+.chat .chat-rename{flex:1 1 auto;min-width:0;margin:0;padding:6px 8px;border:1px solid var(--muted);border-radius:8px;background:var(--surface);color:var(--strong);font:inherit;font-size:14px}
+.chat .chat-private{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.chat .chat-private svg{display:block}
+
+/* A new chat: the greeting, with the composer under it, until the first message */
+.chat .chat-hero{width:min(760px,100%);margin:auto;padding:32px 0 24px;display:flex;flex-direction:column;align-items:center;gap:18px;text-align:center}
+.chat .chat-hero-logo{display:block;width:56px;height:56px}
+.chat .chat-hero-title{margin:0;font:500 30px/1.2 'Source Serif 4',serif;color:var(--strong)}
+.chat .chat-hero-composer{width:100%;text-align:left}
+
+/* Channels and threads are read-only. The note sits at the bottom of the column. */
+.chat .chat-readonly{margin:0;padding:12px 24px 16px;text-align:center;font-size:12px;color:var(--muted)}

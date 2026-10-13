@@ -1,6 +1,12 @@
-// Conversations tab: a chat view of channel and thread transcripts, Slopbot runs, the live stream and the reply box.
+// Conversations tab: a chat view of channel and thread transcripts (read-only), private chats with a composer, Slopbot runs and the live stream.
 // Uses globals from app.js: $, request, busy, fail, notice, state, csrf, showScreen.
-const conv = { server: '', list: [], channel: null, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, composer: null, noted: new Set(), folded: new Set() };
+const conv = { server: '', list: [], chats: [], chatNote: '', kind: 'channel', channel: null, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, folded: new Set() };
+const NEW_CHAT = 'New chat';
+const chatTitle = c => c.title || NEW_CHAT;
+// Times may be a number or a date string. A missing time counts as 0.
+const timeValue = v => (typeof v === 'number' ? v : Date.parse(v)) || 0;
+const LOCK_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
+const PENCIL_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>';
 const enc = encodeURIComponent;
 const GROUP_MS = 5 * 60 * 1000;
 const DONE_STATUS = /^(completed|delegated|done|ok)$/;
@@ -60,14 +66,14 @@ function renderChatServers() {
 }
 
 function renderConversations() {
-  if (conv.server !== state.server.id) { closeConversation(); conv.server = state.server.id; conv.channel = null; conv.list = []; }
+  if (conv.server !== state.server.id) { closeConversation(); conv.server = state.server.id; conv.channel = null; conv.list = []; conv.chats = []; conv.chatNote = ''; }
   setChatMode(true);
-  $('content').innerHTML = '<div id="chat-root" class="chat"><aside id="chat-side" class="chat-side"><div id="chat-server" class="chat-server" hidden></div><input id="conv-search" class="chat-search" type="search" placeholder="Search messages" aria-label="Search messages"><div id="conv-list" class="chat-list"></div></aside><section id="conv-main" class="chat-pane"><header class="chat-head"><button id="chat-drawer" class="chat-drawer" type="button" aria-expanded="false" aria-controls="chat-side">Conversations</button><h2 id="chat-title" class="chat-title"></h2><div class="chat-tools"><span id="conv-status" class="chat-status"></span><div id="conv-share" class="chat-share" hidden></div></div></header><div id="conv-view" class="chat-view"></div><div id="conv-reply" class="chat-composer" hidden></div></section></div>';
+  $('content').innerHTML = '<div id="chat-root" class="chat"><aside id="chat-side" class="chat-side"><div id="chat-server" class="chat-server" hidden></div><input id="conv-search" class="chat-search" type="search" placeholder="Search messages" aria-label="Search messages"><div id="conv-list" class="chat-list"></div></aside><section id="conv-main" class="chat-pane"><header class="chat-head"><button id="chat-drawer" class="chat-drawer" type="button" aria-expanded="false" aria-controls="chat-side">Conversations</button><h2 id="chat-title" class="chat-title"></h2><div class="chat-tools"><span id="chat-private" class="chat-private" hidden>' + LOCK_ICON + '<span>Private</span></span><span id="conv-status" class="chat-status"></span><div id="conv-share" class="chat-share" hidden></div></div></header><div id="conv-view" class="chat-view"></div><div id="conv-reply" class="chat-composer" hidden></div></section></div>';
   $('conv-search').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); searchConversations($('conv-search').value); } };
   $('chat-drawer').onclick = toggleDrawer;
   renderChatServers();
   drawList();
-  if (conv.channel === null && conv.list.length) showPick(); else showView(busy('md', 'Loading…'));
+  if (conv.channel === null && (conv.list.length || conv.chats.length)) showPick(); else showView(busy('md', 'Loading…'));
   loadConversations().catch(fail);
 }
 
@@ -76,13 +82,23 @@ function toggleDrawer() {
   $('chat-drawer').setAttribute('aria-expanded', String(open));
 }
 
+// The private chats of one server, newest first. The route returns a list.
+async function fetchChats(id) {
+  const result = await request(`/api/chats?server=${enc(id)}`);
+  return Array.isArray(result) ? result.slice().sort((a, b) => timeValue(b.updated) - timeValue(a.updated)) : [];
+}
+
 async function loadConversations() {
   const id = state.server.id;
-  const result = await request(`/api/conversations?server=${enc(id)}`);
+  // A failed chat list (for example a 404 before the server routes exist) leaves the Private chats group empty. The channels still load.
+  const chats = fetchChats(id).catch(error => { if (error.status === 401) throw error; return []; });
+  const [result, privateChats] = await Promise.all([request(`/api/conversations?server=${enc(id)}`), chats]);
   if (conv.server !== id || !$('conv-list')) return;
   conv.list = result.conversations;
+  conv.chats = privateChats;
   drawList();
-  if (conv.channel && conv.list.some(c => c.id === conv.channel)) return openConversation(conv.channel);
+  if (conv.channel && conv.kind === 'chat' && conv.chats.some(c => c.id === conv.channel)) return openConversation(conv.channel, 'chat');
+  if (conv.channel && conv.kind !== 'chat' && conv.list.some(c => c.id === conv.channel)) return openConversation(conv.channel);
   // Opens the newest channel that is on. A channel that is off is opened only when nothing else is listed.
   const first = conv.list.find(c => c.enabled !== false) || conv.list[0];
   if (first) return openConversation(first.id);
@@ -91,21 +107,48 @@ async function loadConversations() {
   showView(emptyNote('No conversations yet.', 'Turn on web transcripts for a channel in Server settings → Web transcripts.'));
 }
 
-// The list has two groups. Channels come first, then threads.
+// The list starts with New chat. Then come Private chats, Channels and Threads.
 function drawList() {
   const list = $('conv-list');
   if (!list) return;
-  list.replaceChildren();
-  if (!conv.list.length) { list.append(textNode('p', 'Nothing to show yet.', 'small chat-none')); return; }
+  list.replaceChildren(newChatButton());
+  if (conv.chatNote) list.append(textNode('p', conv.chatNote, 'small chat-none'));
+  const groups = [];
+  if (conv.chats.length) groups.push(['Private chats', conv.chats.map(chatItem)]);
   for (const [title, kind] of [['Channels', 'channel'], ['Threads', 'thread']]) {
     const items = conv.list.filter(c => (c.kind === 'thread' ? 'thread' : 'channel') === kind);
-    if (!items.length) continue;
+    if (items.length) groups.push([title, items.map(convItem)]);
+  }
+  if (!groups.length) { list.append(textNode('p', 'Nothing to show yet.', 'small chat-none')); return; }
+  for (const [title, nodes] of groups) {
     const group = document.createElement('section');
     group.className = 'chat-group';
-    group.append(textNode('h3', title, 'chat-group-title'));
-    for (const c of items) group.append(convItem(c));
+    group.append(textNode('h3', title, 'chat-group-title'), ...nodes);
     list.append(group);
   }
+}
+
+function newChatButton() {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'chat-new';
+  button.innerHTML = PENCIL_ICON + '<span>New chat</span>';
+  button.onclick = () => newChat(button);
+  return button;
+}
+
+// One private chat: a lock, the title and the relative time.
+function chatItem(c) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'chat-item';
+  button.setAttribute('aria-current', conv.kind === 'chat' && c.id === conv.channel ? 'true' : 'false');
+  const lock = document.createElement('span');
+  lock.className = 'chat-lock';
+  lock.innerHTML = LOCK_ICON;
+  button.append(lock, textNode('span', chatTitle(c), 'chat-item-name'), textNode('span', relTime(timeValue(c.updated)), 'chat-item-time'));
+  button.onclick = () => openConversation(c.id, 'chat');
+  return button;
 }
 
 function convItem(c) {
@@ -113,7 +156,7 @@ function convItem(c) {
   button.type = 'button';
   button.className = 'chat-item';
   button.dataset.id = c.id;
-  button.setAttribute('aria-current', c.id === conv.channel ? 'true' : 'false');
+  button.setAttribute('aria-current', conv.kind !== 'chat' && c.id === conv.channel ? 'true' : 'false');
   // A channel with web transcripts off is muted and shows an "off" note instead of the time.
   if (c.enabled === false) button.classList.add('off');
   button.append(textNode('span', c.kind === 'thread' ? c.name : '#' + c.name, 'chat-item-name'),
@@ -142,37 +185,48 @@ function setComposer(node) {
   if (!node) conv.meter = null;
   const slot = $('conv-reply');
   if (!slot) return;
-  if (!node) conv.composer = null;
   slot.hidden = !node;
   slot.replaceChildren(...(node ? [node] : []));
 }
 
-async function openConversation(id) {
+// Opens a channel or thread (read-only), or a private chat (with a composer). The kind is 'channel' or 'chat'.
+async function openConversation(id, kind = 'channel') {
   closeStream();
-  conv.channel = id; dropLive();
+  conv.channel = id; conv.kind = kind; dropLive();
+  const chat = kind === 'chat';
   drawList();
   $('chat-root')?.classList.remove('drawer-open');
   $('chat-drawer')?.setAttribute('aria-expanded', 'false');
   // A channel with web transcripts off has no messages to load. The server does not send them either.
-  const listed = conv.list.find(c => c.id === id);
-  if (listed && listed.enabled === false) return showOff(id, listed);
+  const listed = chat ? conv.chats.find(c => c.id === id) : conv.list.find(c => c.id === id);
+  $('chat-private').hidden = !chat;
+  if (!chat && listed && listed.enabled === false) return showOff(id, listed);
   $('conv-status').hidden = false;
   setStatus('Connecting…');
-  setHeading('');
+  setHeading(chat ? chatTitle(listed || {}) : '');
   $('conv-share').hidden = true;
   $('conv-share').replaceChildren();
   setComposer(null);
   showView(busy('md', 'Loading…'));
   try {
-    const page = await request(`/api/conversations/${enc(id)}/messages?server=${enc(state.server.id)}&limit=50`);
+    const page = await request(messagesUrl(id));
     if (conv.channel !== id) return;
-    const info = conv.list.find(c => c.id === id) || { kind: 'channel', name: page.channel.name };
-    const name = info.name || page.channel.name;
-    setHeading(label({ ...info, name }));
-    if (page.canShare && window.SlopbotShares) { $('conv-share').hidden = false; window.SlopbotShares.renderShareButton($('conv-share'), state.server.id, id); }
-    showView(transcriptView(id, page));
-    // The server says who may send. Sent replies arrive through the live stream, so the box adds nothing to the log.
-    if (page.canSend) { setComposer(chatComposer(state.server.id, id, info.kind === 'thread' ? `Message ${name}` : `Message #${name}`)); refreshUsage(); }
+    if (chat) {
+      // A chat with no messages shows the greeting, with the composer under it. Otherwise the composer is at the bottom.
+      const composer = chatComposer(id);
+      const empty = !page.messages.length;
+      showView(transcriptView(id, page, empty ? heroNode(composer) : null));
+      if (empty) hideSlot(); else setComposer(composer);
+      refreshUsage();
+    } else {
+      const info = listed || { kind: 'channel', name: page.channel.name };
+      const name = info.name || page.channel.name;
+      setHeading(label({ ...info, name }));
+      if (page.canShare && window.SlopbotShares) { $('conv-share').hidden = false; window.SlopbotShares.renderShareButton($('conv-share'), state.server.id, id); }
+      showView(transcriptView(id, page, null));
+      // Channels and threads have no composer. Replies are posted in Discord.
+      setComposer(textNode('p', 'Read-only. Reply in Discord.', 'chat-readonly'));
+    }
     conv.lastStream = page.streamId;
     conv.seen = page.streamId;
     const log = $('conv-log');
@@ -183,6 +237,77 @@ async function openConversation(id) {
     if (conv.channel === id) showView(textNode('p', error.message, 'small chat-none'));
     fail(error);
   }
+}
+
+// The message page route for the open item. A private chat has its own route. Both return the same page shape.
+function messagesUrl(id, before = '') {
+  const query = `limit=50${before ? `&before=${enc(before)}` : ''}`;
+  return conv.kind === 'chat' ? `/api/chats/${enc(id)}/messages?${query}` : `/api/conversations/${enc(id)}/messages?server=${enc(state.server.id)}&${query}`;
+}
+
+// The greeting of a new chat. The composer sits under it until the first message arrives.
+function heroNode(composer) {
+  const hero = document.createElement('section');
+  hero.className = 'chat-hero';
+  const logo = document.createElement('img');
+  logo.className = 'chat-hero-logo';
+  logo.alt = ''; logo.width = 56; logo.height = 56;
+  logo.src = document.documentElement.classList.contains('light') ? '/assets/logo-dark.svg' : '/assets/logo-light.svg';
+  const slot = textNode('div', '', 'chat-hero-composer');
+  slot.append(composer);
+  hero.append(logo, textNode('h2', "What's growing today?", 'chat-hero-title'), slot);
+  return hero;
+}
+
+// Moves the composer from the greeting to the bottom of the pane. A hero that is not on the page is ignored.
+function leaveEmpty(hero = document.querySelector('.chat-hero')) {
+  if (!hero || !hero.isConnected) return;
+  const form = hero.querySelector('.chat-form');
+  hero.remove();
+  if (form) setComposer(form);
+}
+
+function hideSlot() {
+  const slot = $('conv-reply');
+  if (!slot) return;
+  slot.replaceChildren();
+  slot.hidden = true;
+}
+
+// Creates a private chat on the server, then opens it with the greeting.
+async function newChat(button) {
+  button.disabled = true;
+  conv.chatNote = '';
+  try {
+    const result = await sendJson('POST', '/api/chats', { server: state.server.id });
+    conv.chats = [{ id: result.id, title: '', updated: Date.now() }, ...conv.chats];
+    await openConversation(result.id, 'chat');
+  } catch (error) {
+    if (error.status === 404) { conv.chatNote = 'Private chats are not available right now.'; drawList(); }
+    else fail(error);
+  } finally { button.disabled = false; }
+}
+
+// A JSON request with any method. Errors keep their status, as in request().
+async function sendJson(method, path, body) {
+  const response = await fetch(path, { method, headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) { const error = new Error(data.error || 'Request failed.'); error.status = response.status; throw error; }
+  return data;
+}
+
+// Reloads the private chat list, so the order and new titles show.
+async function refreshChats() {
+  const id = state.server?.id;
+  if (!id) return;
+  try {
+    const chats = await fetchChats(id);
+    if (conv.server !== id) return;
+    conv.chats = chats;
+    drawList();
+    const open = conv.kind === 'chat' ? conv.chats.find(c => c.id === conv.channel) : null;
+    if (open) setHeading(chatTitle(open));
+  } catch (error) { if (error.status === 401) fail(error); }
 }
 
 // The empty state for a channel with web transcripts off. Only a user who can manage the server sees the button.
@@ -217,7 +342,8 @@ async function turnOn(button, id) {
   }
 }
 
-function transcriptView(id, page) {
+// lead is an optional node put before the messages, such as the greeting of a new chat.
+function transcriptView(id, page, lead) {
   const wrap = document.createElement('div');
   wrap.className = 'chat-transcript';
   const older = textNode('button', 'Load older messages', 'chat-older');
@@ -226,6 +352,7 @@ function transcriptView(id, page) {
   const log = document.createElement('div');
   log.id = 'conv-log'; log.className = 'chat-log';
   log.setAttribute('role', 'log'); log.setAttribute('aria-live', 'polite'); log.setAttribute('aria-relevant', 'additions');
+  if (lead) log.append(lead);
   for (const m of page.messages) log.append(messageNode(m));
   regroup(log);
   const jump = textNode('button', '↓', 'chat-jump');
@@ -244,7 +371,7 @@ async function loadOlder(id) {
   const button = $('conv-older');
   button.disabled = true;
   try {
-    const page = await request(`/api/conversations/${enc(id)}/messages?server=${enc(state.server.id)}&limit=50&before=${enc(first.dataset.id)}`);
+    const page = await request(messagesUrl(id, first.dataset.id));
     if (conv.channel !== id) return;
     const before = log.scrollHeight;
     for (const m of page.messages) if (!log.querySelector(`[data-id="${m.id}"]`)) log.insertBefore(messageNode(m), log.firstChild);
@@ -535,7 +662,9 @@ function toolRow(name, status, args, extra, extraLabel, open) {
 function messageRow(id) { return document.querySelector(`[data-id="${id}"]`); }
 
 function openStream(id) {
-  const es = new EventSource(`/api/conversations/${enc(id)}/stream?server=${enc(state.server.id)}&after=${conv.lastStream}`);
+  const kind = conv.kind;
+  const url = kind === 'chat' ? `/api/chats/${enc(id)}/stream?after=${conv.lastStream}` : `/api/conversations/${enc(id)}/stream?server=${enc(state.server.id)}&after=${conv.lastStream}`;
+  const es = new EventSource(url);
   conv.source = es;
   // Stream IDs only go up. Skipping IDs already shown keeps a replayed event from showing twice.
   const on = (type, handler) => es.addEventListener(type, event => {
@@ -547,12 +676,12 @@ function openStream(id) {
   on('run.start', data => startLive(data.ref, data.requestId));
   on('run.delta', data => delta(data.ref, data.part, data.text));
   on('run.tool', data => tool(data));
-  on('run.end', data => { endLive(data.ref); refreshUsage(); refreshUsed(id); });
+  on('run.end', data => { endLive(data.ref); refreshUsage(); refreshUsed(id); if (kind === 'chat') refreshChats(); });
   // The server pruned events after this stream's position. Reload the messages from the newest page.
   es.addEventListener('reset', () => {
     if (conv.source !== es) return;
     closeStream();
-    openConversation(id).catch(fail);
+    openConversation(id, kind).catch(fail);
   });
   es.addEventListener('closed', event => {
     closeStream();
@@ -595,8 +724,9 @@ function nearBottom(log) { return log.scrollHeight - log.scrollTop - log.clientH
 
 function upsertMessage(m) {
   const log = $('conv-log');
-  if (!log || m.channel !== conv.channel) return;
-  conv.composer?.onMessage(m);
+  // A private chat stream carries only that chat. A channel stream is checked against the open channel.
+  if (!log || (conv.kind !== 'chat' && m.channel !== conv.channel)) return;
+  leaveEmpty();
   const stick = nearBottom(log);
   const node = messageNode(m), old = log.querySelector(`[data-id="${m.id}"]`);
   if (old) old.replaceWith(node); else insertInOrder(log, node);
@@ -784,18 +914,16 @@ function spoilerClick(event) {
   if (spoiler && spoiler.closest('.chat-text')) spoiler.classList.toggle('revealed');
 }
 
-// The reply box. It posts to the same route as renderReplyBox in app.js.
-function chatComposer(server, channel, placeholder) {
+// The message box for a private chat. It posts to the chat's messages route. Slopbot's reply arrives on the chat stream.
+function chatComposer(id) {
   const form = document.createElement('form');
   form.className = 'chat-form';
   const status = textNode('p', '', 'chat-status-line');
   status.setAttribute('aria-live', 'polite');
-  const note = textNode('p', 'Posted by Slopbot for you (it lacks Manage Webhooks)', 'chat-status-line');
-  note.hidden = true;
   const box = textNode('div', '', 'chat-input');
   const field = document.createElement('textarea');
-  field.name = 'text'; field.rows = 1; field.maxLength = 2000;
-  field.placeholder = placeholder;
+  field.name = 'text'; field.rows = 1; field.maxLength = 8000;
+  field.placeholder = 'Message Slopbot';
   field.setAttribute('aria-label', 'Message');
   const send = document.createElement('button');
   send.type = 'submit';
@@ -805,25 +933,10 @@ function chatComposer(server, channel, placeholder) {
   const meter = usageMeter();
   conv.meter = meter;
   box.append(field, meter.wrap, send);
-  form.append(status, note, box, textNode('p', 'Slopbot is AI and can make mistakes.', 'chat-foot'));
+  form.append(status, box, textNode('p', 'Slopbot is AI and can make mistakes.', 'chat-foot'));
   const sync = () => { box.classList.toggle('has-text', field.value.trim() !== ''); fitField(field); };
   let sending = false;
-  // The status line is empty when it has nothing to say, so it takes no space.
-  // A sent notice clears when the sent message arrives on the stream, or after 4 s. Errors stay until the next input or send.
-  let sentText = '', statusTimer = 0, noteTimer = 0;
-  const clearStatus = () => { clearTimeout(statusTimer); statusTimer = 0; sentText = ''; status.textContent = ''; };
-  const sentNotice = text => { clearStatus(); status.textContent = 'Sent. Slopbot will answer in the channel.'; sentText = text; statusTimer = setTimeout(clearStatus, 4000); };
-  // The Manage Webhooks note shows once per channel per page load and fades out after 6 s.
-  const showNote = () => {
-    if (conv.noted.has(channel)) return;
-    conv.noted.add(channel);
-    clearTimeout(noteTimer);
-    note.classList.remove('fading');
-    note.hidden = false;
-    noteTimer = setTimeout(() => { note.classList.add('fading'); noteTimer = setTimeout(() => { note.hidden = true; note.classList.remove('fading'); }, 600); }, 6000);
-  };
-  conv.composer = { onMessage(m) { if (sentText && m.channel === channel && (m.author === state.user || String(m.text ?? '').trim() === sentText)) clearStatus(); } };
-  field.addEventListener('input', () => { sync(); clearStatus(); });
+  field.addEventListener('input', () => { sync(); status.textContent = ''; });
   field.addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); }
   });
@@ -831,19 +944,18 @@ function chatComposer(server, channel, placeholder) {
     event.preventDefault();
     const text = field.value.trim();
     if (!text || sending) return;
-    sending = true; send.disabled = true; clearStatus(); status.textContent = 'Sending…';
+    sending = true; send.disabled = true; status.textContent = 'Sending…';
     try {
-      const response = await fetch(`/api/conversations/${enc(channel)}/reply`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ server, text }) });
+      const response = await fetch(`/api/chats/${enc(id)}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ text }) });
       const data = await response.json().catch(() => ({}));
       if (response.status === 401) { status.textContent = ''; showScreen('login'); return; }
       if (response.status === 429) { status.textContent = `Limit reached, resets ${new Date(data.resetAt).toLocaleString()}.`; return; }
-      if (!response.ok) throw new Error(data.error || 'Reply failed.');
-      field.value = '';
-      sync();
-      if (data.status === 'posted') sentNotice(text);
-      else status.textContent = 'Sent to Discord, but Slopbot did not pick it up in time, so it will not answer.';
-      if (data.via === 'bot') showNote();
-    } catch (error) { clearStatus(); status.textContent = error.message; }
+      if (!response.ok) throw new Error(data.error || 'Message failed.');
+      field.value = ''; sync(); status.textContent = '';
+      // The first message moves the composer to the bottom. The list is reloaded for the new order and title.
+      leaveEmpty(form.closest('.chat-hero'));
+      refreshChats();
+    } catch (error) { status.textContent = error.message; }
     finally { sending = false; send.disabled = false; }
   });
   return form;
@@ -862,6 +974,7 @@ async function searchConversations(text) {
   conv.channel = null; drawList();
   $('chat-root')?.classList.remove('drawer-open');
   $('conv-status').hidden = true;
+  $('chat-private').hidden = true;
   $('conv-share').hidden = true;
   $('conv-share').replaceChildren();
   setComposer(null);
