@@ -39,6 +39,10 @@ export function AskForm() {
         <button className="btn solid" type="submit" disabled={!text.trim()}>Ask</button>
       </form>
       <p className="ask-note">You will sign in with Discord, then Slopbot answers in a private chat.</p>
+      <p className="ask-note ask-warning">
+        Only ask what you wrote yourself. A prompt from someone else can make Slopbot use tools or read data you did
+        not mean to share.
+      </p>
     </>
   )
 }

@@ -61,6 +61,7 @@ h1 { font: 500 clamp(40px, 6vw, 64px)/1.05 var(--serif); color: var(--strong); m
 .ask input { flex: 1; background: none; border: 0; color: var(--strong); font: inherit; padding: 8px 10px; outline: none; min-width: 0; }
 .ask button:disabled { opacity: 0.5; cursor: not-allowed; }
 .ask-note { color: var(--muted); font-size: 14px; margin: 0 0 24px; }
+.ask-warning { font-size: 13px; margin-top: -16px; }
 
 /* Discord demo */
 .chat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
