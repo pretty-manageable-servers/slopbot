@@ -214,7 +214,7 @@ async function loadOlder(id) {
   finally { button.disabled = false; }
 }
 
-// One message. Slopbot answers have no bubble. The signed-in user's own messages are right-aligned bubbles.
+// One message. Slopbot answers have no bubble. The signed-in user's own messages are right-aligned bubbles with no header.
 function messageNode(m) {
   const kind = m.slopbot ? 'bot' : (state.user && m.author === state.user) ? 'mine' : 'human';
   const article = document.createElement('article');
@@ -223,6 +223,14 @@ function messageNode(m) {
   article.dataset.kind = kind;
   article.dataset.author = m.author || m.authorName || '';
   if (m.timestamp) article.dataset.time = String(m.timestamp);
+  if (kind === 'mine') {
+    const bubble = textNode('div', '', 'chat-text');
+    if (m.timestamp) bubble.title = timeLabel(m.timestamp);
+    renderText(bubble, m.text);
+    article.append(bubble);
+    if (m.editedAt) article.append(textNode('span', 'edited', 'chat-edited'));
+    return article;
+  }
   const head = document.createElement('header');
   head.className = 'chat-msg-head';
   if (m.slopbot) head.append(slopMark(false), textNode('strong', 'Slopbot'));
