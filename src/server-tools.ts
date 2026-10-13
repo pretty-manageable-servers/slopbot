@@ -33,6 +33,8 @@ export interface ServerToolServices {
   startTask(message: Message, goal: string): Promise<string>;
   reconcileTask(message: Message): Promise<string | undefined>;
   wakeWorker(): void;
+  // True for a member of the Developer Portal team that owns Slopbot (owner, admin or developer).
+  isTeamEditor(user: string): Promise<boolean>;
 }
 const channel: ToolField = { type: "channel", description: "Discord channel ID; defaults to the current channel" };
 const choice = (description: string, choices: string[]): ToolField => ({ type: "string", description, choices });
@@ -69,7 +71,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
   add({ name: "tool_display", scope: "discord", description: "Choose tool activity in completed replies: none, summary (one grey line with counts), or full (counts plus failed calls).", fields: { mode: { ...choice("Tool activity display", ["none", "summary", "full"]), required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
     async execute(_context, args) { await store.setSetting(server, "tool_display", args.mode!); return `Tool activity display set to ${args.mode}. Live progress remains enabled.`; }
   });
-  add(selfKnowledgeTool(registry, () => `Native function calling: enabled\nObject storage: ${config.objectStorage ? "configured" : "not configured"}; file_store scopes user/server/user_server, with ownership and sharing controls\nTool rounds per attempt: ${config.maxToolRounds}\nPMServers docs reviewed: 2026-10-12; latest changelog: 2026-10-12`));
+  add(selfKnowledgeTool(registry, services.isTeamEditor, () => `Native function calling: enabled\nObject storage: ${config.objectStorage ? "configured" : "not configured"}; file_store scopes user/server/user_server, with ownership and sharing controls\nTool rounds per attempt: ${config.maxToolRounds}\nPMServers docs reviewed: 2026-10-12; latest changelog: 2026-10-12`));
   const scoped = async (message: Message, target: Json | undefined): Promise<string> => {
     const id = target === undefined ? (await services.originMessage(message)).channel : String(target);
     if (!services.accepts(id)) throw new ToolError("That channel is not configured for Slopbot.");

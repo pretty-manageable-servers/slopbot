@@ -83,7 +83,7 @@ export class DiscordServer implements ChatGateway {
   private channels: string[];
   private historyTimer: ReturnType<typeof setInterval> | undefined;
 
-  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">) {
+  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">, team?: Pick<TeamAdmins, "canEdit">) {
     this.client = client;
     this.renderer = new ReplyRenderer(store, discordPresentation);
     this.chatGateway = new WebChatGateway(store, guildId);
@@ -128,6 +128,7 @@ export class DiscordServer implements ChatGateway {
     this.mcp = new McpManager(guildId, store, this.tools, remoteMcpConnector({ allowPrivate: process.env.MCP_ALLOW_PRIVATE === 'true' }), new McpSecrets(process.env.MCP_SECRET_KEY), message => this.validateChannel(message, message.channel));
     registerServerTools(this.tools, {
       config, server: guildId, store, participation, history: this.history,
+      isTeamEditor: async user => team ? await team.canEdit(user).catch(() => false) : false,
       channels: () => this.channels,
       setChannels: channels => this.setChannels(channels),
       findChannels: async (message, query) => {
@@ -730,7 +731,7 @@ export class DiscordAdapter {
     if (existing) return existing;
     if (!this.allowed(guildId)) return Promise.reject(new ToolError("Slopbot is not enabled for this server."));
     const opening = (async () => {
-      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage, this.access, this.members);
+      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage, this.access, this.members, this.team);
       await server.start();
       await server.ready(this.botUser!);
       return server;

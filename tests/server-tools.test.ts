@@ -31,7 +31,7 @@ function setup() {
     setChannels(value) { channels = value; }, async validateChannel(_message, id) { if (![channel, other].includes(id)) throw new ToolError("Cannot view channel"); },
     async findChannels() { return "chat: " + channel; },
     accepts: id => channels.includes(id), setReplyContext() {}, originMessage: value => value,
-    async startTask() { return other; }, async reconcileTask() { return undefined; }, wakeWorker() {},
+    async startTask() { return other; }, async reconcileTask() { return undefined; }, wakeWorker() {}, async isTeamEditor() { return false; },
   });
   return { store, history, registry, participation, channels: () => channels, setAdmin(value: boolean) { admin = value; } };
 }
