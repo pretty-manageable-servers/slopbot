@@ -3,6 +3,10 @@ name: opencode-dispatch
 # Triggered via workflow_dispatch by the Slopbot GitHub App when an owner
 # approves a development job.  The standard opencode.yml (comment-based) is
 # left unchanged for manual /oc usage.
+#
+# Only the GitHub App named in the SLOPBOT_APP_BOT repository variable (for
+# example my-app[bot]) may run this workflow. If that variable is not set,
+# every run is refused.
 on:
   workflow_dispatch:
     inputs:
@@ -34,9 +38,9 @@ jobs:
       issues: write
     steps:
       - name: Verify dispatch source
-        if: ${{ !endsWith(github.actor, '[bot]') }}
+        if: ${{ vars.SLOPBOT_APP_BOT == '' || github.actor != vars.SLOPBOT_APP_BOT }}
         run: |
-          echo "::error::This workflow can only be triggered by an authorized Slopbot GitHub App installation. Direct dispatch by users is not permitted."
+          echo "::error::This workflow can only be triggered by the GitHub App named in the SLOPBOT_APP_BOT repository variable (for example my-app[bot]). It is not set, or the actor does not match."
           exit 1
 
       - name: Checkout repository
@@ -50,8 +54,10 @@ jobs:
         with:
           model: ${{ inputs.model }}
           variant: high
-          issue_number: ${{ inputs.issue_number }}
-          prompt: ${{ inputs.prompt }}
+          prompt: |
+            Work on issue #${{ inputs.issue_number }} in this repository. Read it with gh before you start.
+
+            ${{ inputs.prompt }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENCODE_CONFIG_CONTENT: |
