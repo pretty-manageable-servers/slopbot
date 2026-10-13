@@ -206,3 +206,12 @@ test('progress changes the fun line on every update', async () => {
   assert.equal(lines.length, 4);
   for (let i = 1; i < lines.length; i++) assert.notEqual(lines[i], lines[i - 1]);
 });
+
+test('footer total time spans first tool start to last tool end', () => {
+  const calls: ToolActivity[] = [
+    {id:'1',name:'web_search',status:'completed',startedAt:1000,durationMs:2000},
+    {id:'2',name:'web_search',status:'completed',startedAt:1500,durationMs:4000},
+    {id:'3',name:'history_search',status:'completed',startedAt:40000,durationMs:3000},
+  ];
+  assert.equal(toolFooter(calls, 'summary'), '\n\n-# 🔎 2 web searches · 📜 1 history search · 42s');
+});

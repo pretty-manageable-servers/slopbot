@@ -8,7 +8,6 @@ export const funLines = [
   "Turning toward light…", "Spreading seeds…", "Opening up…", "Drinking rain…", "Feeling the breeze…",
   "Making pollen…", "Tending the garden…", "Stretching stems…", "Rooting around…", "Growing taller…",
 ];
-export const secretKey = /^(?:password|secret|token|api[_-]?key|authorization|credentials|access[_-]?token|client[_-]?secret)$/i;
 const special: Record<string, { emoji: string; group?: [string, string] }> = {
   web_search: { emoji: "🔎", group: ["web search", "web searches"] },
   history_search: { emoji: "📜", group: ["history search", "history searches"] },
@@ -35,7 +34,7 @@ export const escapeMarkdown = (text: string): string => text.replace(/\s+/g, " "
 // Short text for the "now" line. Only the query is shown, never other arguments.
 export function currentStep(name: string, query: unknown): string {
   if (name === "history_read") return "reading a message";
-  if (typeof query !== "string" || secretKey.test("query") || !query.trim()) return name;
+  if (typeof query !== "string" || !query.trim()) return name;
   const short = query.length <= 60 ? query : query.slice(0, 59).replace(/[\uD800-\uDBFF]$/, "") + "…";
   return `"${escapeMarkdown(short)}"`;
 }

@@ -20,6 +20,13 @@ const counts = (activity: readonly ToolActivity[]) => {
   for (const item of activity) groups.set(item.name, (groups.get(item.name) ?? 0) + 1);
   return groups;
 };
+// Wall time from the first tool start to the last tool end.
+const totalTime = (activity: readonly ToolActivity[]) => {
+  const timed = activity.filter(item => item.startedAt !== undefined && item.durationMs !== undefined);
+  if (!timed.length) return "";
+  const ms = Math.max(...timed.map(item => item.startedAt! + item.durationMs!)) - Math.min(...timed.map(item => item.startedAt!));
+  return ` · ${Math.max(1, Math.round(ms / 1000))}s`;
+};
 const title = (text: string) => text[0]!.toUpperCase() + text.slice(1);
 export function toolDisplayMode(value: unknown): ToolDisplayMode {
   return value === "none" || value === "full" ? value : "summary";
@@ -29,7 +36,7 @@ export function toolFooter(activity: readonly ToolActivity[], mode: ToolDisplayM
   if (!activity.length || mode === "none") return "";
   const groups = [...counts(activity)].map(([name, count]) => `${toolEmoji(name)} ${count} ${toolGroup(name)[count === 1 ? 0 : 1]}`);
   const failures = mode === "full" ? activity.filter(failed).map(item => `-# ❌ ${toolGroup(item.name)[0]} ${status(item)}${reason(item, 200)}`) : [];
-  return "\n\n" + [`-# ${groups.join(" · ")}`, ...failures].join("\n");
+  return "\n\n" + [`-# ${groups.join(" · ")}${totalTime(activity)}`, ...failures].join("\n");
 }
 export function toolProgress(activity: readonly ToolActivity[], funLine: string): string {
   const groups = [...counts(activity)].map(([name, count]) => `${toolEmoji(name)} ${title(toolGroup(name)[0])} × ${count}`);
