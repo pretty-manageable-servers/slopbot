@@ -92,3 +92,70 @@ test("deleting a private chat removes its messages, runs and events and keeps ot
   assert.deepEqual((await store.webChats("s", "alice")).map(row => row.id), ["e".repeat(32)]);
   assert.ok(await store.canonicalMessage("s", "web-other"), "other chats are untouched");
 });
+
+import { Application } from "../src/application.js";
+import { Bot, type ChatGateway, type Incoming } from "../src/bot.js";
+import { FakeLLM } from "../src/adapters/fake-llm.js";
+
+function botFor(store: SQLiteStore, tools?: ToolRegistry) {
+  const app = new Application(store, new FakeLLM(), { allowedChannels: [{ server: "s", channel: "100000000000000001" }] });
+  const outputs: { channel: string; text: string }[] = [];
+  let created = 0;
+  const gateway: ChatGateway = {
+    async reply(message, text) {
+      outputs.push({ channel: message.channel, text });
+      return [{ id: `out:${outputs.length}`, server: "s", channel: message.channel, author: "bot", text }];
+    },
+    async createTaskThread() { created++; return "thread"; },
+    typing() { return () => undefined; },
+  };
+  const bot = new Bot(app, store, store, gateway, "s", ["100000000000000001"], { knowledge: store, ...(tools ? { tools } : {}) });
+  return { bot, outputs, created: () => created };
+}
+
+const privateIncoming = (id: string, text: string, chat = privateChannel(privateId)): Incoming => ({
+  id, server: "s", channel: chat, author: "alice", text, addressed: true, source: "web", botAuthor: false, mentionsBot: false, repliesToBot: false,
+});
+
+test("a private chat is accepted only after it is opened, and only in its own server", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const { bot } = botFor(store);
+  assert.equal(bot.accepts("s", privateChannel(privateId)), false);
+  bot.openPrivateChat("s", privateChannel(privateId));
+  assert.equal(bot.accepts("s", privateChannel(privateId)), true);
+  assert.equal(bot.accepts("other", privateChannel(privateId)), false);
+  bot.closePrivateChat("s", privateChannel(privateId));
+  assert.equal(bot.accepts("s", privateChannel(privateId)), false);
+  assert.throws(() => bot.openPrivateChat("s", "100000000000000001"), /Not a private chat/);
+});
+
+test("a private chat gets an answer from the bot, with the message saved once", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const { bot, outputs } = botFor(store);
+  bot.openPrivateChat("s", privateChannel(privateId));
+  const message = privateIncoming("web-1", "hello there");
+  await store.ingest(message);
+  await bot.receive(message, { ingested: true });
+  assert.equal(outputs.length, 1);
+  assert.equal(outputs[0]!.channel, privateChannel(privateId));
+});
+
+test("a private chat cannot save memories or start tasks", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const { bot, outputs, created } = botFor(store);
+  bot.openPrivateChat("s", privateChannel(privateId));
+  await bot.receive(privateIncoming("web-2", "!remember I like tea"));
+  await bot.receive(privateIncoming("web-3", "!task plan a trip"));
+  assert.equal(created(), 0, "no task thread may be created");
+  assert.deepEqual(await store.memories("s", privateChannel(privateId)), []);
+  assert.ok(outputs.every(item => item.text === "This is not available in private chats."));
+});
+
+test("a private chat cannot run a write tool through the bot", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const tools = registry(store);
+  const { bot, created } = botFor(store, tools);
+  bot.openPrivateChat("s", privateChannel(privateId));
+  await assert.rejects(bot.executeTool(privateMessage, { name: "writer", arguments: {} }, "op-bot-write"), (error: unknown) => error instanceof ToolError);
+  assert.equal(created(), 0);
+});

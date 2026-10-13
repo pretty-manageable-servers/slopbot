@@ -10,6 +10,10 @@ import type { TaskWorker, QueueStore } from "./queue.js";
 import { ToolError, type ToolCall, type ToolRegistry, type ToolResult } from "./tools.js";
 import type { ParticipationGate } from "./participation.js";
 import { UserLimitError, limitReply } from "./user-limiter.js";
+import { isPrivateChannel } from "./private-chat.js";
+
+/** A private chat has no tasks, memories or writes. Its messages are never sent to Discord. */
+const PRIVATE_CHAT_NOTICE = "This is not available in private chats.";
 
 export interface Incoming extends Message {
   readonly botAuthor: boolean;
@@ -33,6 +37,8 @@ export interface TaskRegistry {
 export class Bot {
   private readonly tasks = new Set<string>();
   private readonly replies = new Map<string, Promise<void>>();
+  // Open private chats of this server. A chat is added when its web chat row exists, and removed when it is deleted.
+  private readonly privateChats = new Set<string>();
 
   constructor(
     private readonly app: Application,
@@ -52,25 +58,40 @@ export class Bot {
   }
 
   accepts(server: string, channel: string): boolean {
-    return server === this.server && (this.channels.includes(channel) || this.tasks.has(channel));
+    return server === this.server && (this.channels.includes(channel) || this.tasks.has(channel) || this.privateChats.has(channel));
   }
 
-  async receive(message: Incoming): Promise<void> {
+  /** Lets the bot answer in a private chat. Its messages are always addressed to the bot. */
+  openPrivateChat(server: string, channel: string): void {
+    if (server !== this.server || !isPrivateChannel(channel)) throw new Error("Not a private chat channel");
+    this.privateChats.add(channel);
+    this.app.allowChannel(server, channel);
+  }
+
+  closePrivateChat(server: string, channel: string): void {
+    if (server !== this.server) return;
+    this.privateChats.delete(channel);
+    this.app.disallowChannel(server, channel);
+  }
+
+  /** `ingested` is true when the caller already saved the message, so it is not saved twice. */
+  async receive(message: Incoming, options: { ingested?: boolean } = {}): Promise<void> {
     if (!this.accepts(message.server, message.channel)) return;
     if (message.botAuthor) message = { ...message, isBot: true };
     requestTimings.begin(message);
-    try { await requestTimings.withScope(message, () => this.receiveScoped(message)); }
+    try { await requestTimings.withScope(message, () => this.receiveScoped(message, options.ingested === true)); }
     catch (error) {
       if (!(error instanceof UserLimitError)) throw error;
       // Only a direct request gets the notice. Unsolicited replies stay silent.
       if (message.mentionsBot || message.repliesToBot || message.addressed === true || this.tasks.has(message.channel)) await this.send(message, limitReply(error.resetAt));
     }
   }
-  private async receiveScoped(message: Incoming): Promise<void> {
+  private async receiveScoped(message: Incoming, alreadyIngested: boolean): Promise<void> {
     const task = this.tasks.has(message.channel);
+    const privateChat = isPrivateChannel(message.channel);
     // A web reply arrives with addressed=true, so it always gets an answer and skips JEV.
     let addressed = task || message.mentionsBot || message.repliesToBot || message.addressed === true;
-    let ingested = false;
+    let ingested = alreadyIngested;
     if (!addressed) {
       if (!await this.store.ingest({ ...message, addressed: false })) return;
       ingested = true;
@@ -90,6 +111,8 @@ export class Bot {
       if (!ingested && !await this.store.ingest({ ...message, addressed: false })) return;
       const command = text.match(/^!(remember|memory|forget)(?:\s+([\s\S]*))?$/i)!;
       const kind = command[1]!.toLowerCase(), value = command[2]?.trim() ?? "";
+      // Private chats can list memories but never change them.
+      if (privateChat && kind !== "memory") { await this.send(message, PRIVATE_CHAT_NOTICE); return; }
       if (this.options.tools) {
         const name = kind === "remember" ? "memory_remember" : kind === "forget" ? "memory_forget" : "memory";
         const args = kind === "remember" ? { text: value } : kind === "forget" ? { id: value } : {};
@@ -113,6 +136,7 @@ export class Bot {
       return;
     }
     if (!task && /^!task(?:\s|$)/i.test(text)) {
+      if (privateChat) { if (!ingested && !await this.store.ingest({ ...message, addressed: false })) return; await this.send(message, PRIVATE_CHAT_NOTICE); return; }
       if (this.options.worker) { await this.options.worker.enqueue({ ...message, addressed: true }); return; }
       if (!ingested && !await this.store.ingest({ ...message, addressed: false })) return;
       const goal = text.replace(/^!task\s*/i, "");
@@ -170,6 +194,8 @@ export class Bot {
     if (!registry || !this.accepts(message.server, message.channel)) throw new ToolError("Tools are unavailable in this channel");
     registry.validate(call.name, call.arguments);
     await registry.checkAccess(message, call.name);
+    // Checked before the thread rule, so a private chat never starts a task thread.
+    if (isPrivateChannel(message.channel) && registry.effect(call.name, call.arguments) !== "read") throw new ToolError(PRIVATE_CHAT_NOTICE);
     if (registry.requiresThread(call.name, call.arguments) && !this.tasks.has(message.channel) && call.name !== "task_start") {
       const thread = await this.startTask(message, message.text);
       return { text: `Task started in <#${thread}>. Updates will appear there.`, handoff: { threadId: thread } };
