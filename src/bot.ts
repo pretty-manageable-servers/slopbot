@@ -31,8 +31,13 @@ export interface TaskRegistry {
   taskThreads(server: string): { thread: string; parent: string }[];
 }
 
+const BOT_REPLY_LIMIT = 3;
+const BOT_REPLY_WINDOW_MS = 10 * 60 * 1000;
+
 export class Bot {
   private readonly tasks = new Set<string>();
+  /** Times of recent replies to other bots, per channel. Stops bot-to-bot loops. */
+  private readonly botReplies = new Map<string, number[]>();
   private readonly replies = new Map<string, Promise<void>>();
   // Open private chats of this server. A chat is added when its web chat row exists, and removed when it is deleted.
   private readonly privateChats = new Set<string>();
@@ -89,6 +94,12 @@ export class Bot {
     // A web reply arrives with addressed=true, so it always gets an answer and skips JEV. A private chat always does, even without that flag.
     let addressed = task && !message.botAuthor || privateChat || message.mentionsBot || message.repliesToBot || message.addressed === true;
     let ingested = alreadyIngested;
+    // Another bot can mention or reply to Slopbot without end. Past the cap, its messages are saved but get no reply.
+    if (addressed && message.botAuthor && !this.allowBotReply(message.channel)) {
+      if (!ingested) await this.store.ingest({ ...message, addressed: false });
+      requestTimings.finish(message);
+      return;
+    }
     if (!addressed) {
       if (!await this.store.ingest({ ...message, addressed: false })) return;
       ingested = true;
@@ -167,6 +178,15 @@ export class Bot {
       stopped++;
     }
     return stopped;
+  }
+
+  /** True when Slopbot may answer one more bot message in this channel: at most BOT_REPLY_LIMIT in BOT_REPLY_WINDOW_MS. */
+  private allowBotReply(channel: string): boolean {
+    const now = Date.now();
+    const recent = (this.botReplies.get(channel) ?? []).filter(at => now - at < BOT_REPLY_WINDOW_MS);
+    if (recent.length >= BOT_REPLY_LIMIT) { this.botReplies.set(channel, recent); return false; }
+    recent.push(now); this.botReplies.set(channel, recent);
+    return true;
   }
 
   setChannels(channels: readonly string[]): void {
