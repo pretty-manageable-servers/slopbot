@@ -91,7 +91,7 @@ test("user limits match SQLite on Postgres", { skip: !process.env.TEST_DATABASE_
     await step.step("use 5h reset", () => store.useReset(WEB, "alice", "5h"));
     await step.step("usage after 5h reset", async () => usageOf(await store.userUsage(WEB, "alice")));
     await step.step("respend 5h", () => store.updateUserLimits(WEB, "alice", rows => ({ windows: [...rows, window("5h", 3000, 3)], result: undefined })));
-    await step.step("reset week only", () => store.resetUserUsage(WEB, "alice", "week"));
+    await step.step("reset week clears both windows", () => store.resetUserUsage(WEB, "alice", "week"));
     await step.step("usage after kind reset", async () => usageOf(await store.userUsage(WEB, "alice")));
     await step.step("reset all windows", () => store.resetUserUsage(WEB, "alice"));
     await step.step("usage after full reset keeps banked resets", async () => usageOf(await store.userUsage(WEB, "alice")));

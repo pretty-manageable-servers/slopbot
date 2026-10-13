@@ -553,7 +553,7 @@ function adminUsage(users, name, off) {
   const button = (item, action, kind, text) => `<button type="button" data-action="${action}" data-user="${esc(item.user.id)}" data-kind="${kind}"${off}>${text}</button>`;
   const row = item => {
     const five = pick(item, '5h'), week = pick(item, 'week');
-    return `<tr><td>${adminPerson(item.user)}</td><td>${spend(five)}</td><td>${resets(five)}</td><td>${spend(week)}</td><td>${resets(week)}</td><td>${five.banked} / ${week.banked}</td><td><div class="chan-actions">${button(item, 'reset', '5h', 'Reset 5h')}${button(item, 'reset', 'week', 'Reset week')}${button(item, 'grant', '5h', 'Grant 5h')}${button(item, 'grant', 'week', 'Grant full')}</div></td></tr>`;
+    return `<tr><td>${adminPerson(item.user)}</td><td>${spend(five)}</td><td>${resets(five)}</td><td>${spend(week)}</td><td>${resets(week)}</td><td>${five.banked} / ${week.banked}</td><td><div class="chan-actions">${button(item, 'reset', '5h', 'Reset 5h')}${button(item, 'reset', 'week', 'Reset full')}${button(item, 'grant', '5h', 'Grant 5h')}${button(item, 'grant', 'week', 'Grant full')}</div></td></tr>`;
   };
   const table = users.length
     ? `<table class="usage-table"><thead><tr><th>Member</th><th>5 hours</th><th>5h resets</th><th>Week</th><th>Week resets</th><th>Banked (5h / full)</th><th>Actions</th></tr></thead><tbody>${users.map(row).join('')}</tbody></table>`
@@ -721,9 +721,9 @@ async function renderServerDetail() {
     $('admin-users').onclick = event => {
       const button = event.target.closest('button[data-action]');
       if (!button) return;
-      const { action, user, kind } = button.dataset, label = kind === '5h' ? '5-hour' : 'weekly';
+      const { action, user, kind } = button.dataset;
       adminRun(button, async () => {
-        if (action === 'reset') { await request('/api/admin/usage/reset', { server: adminServer, user, kind }); notice(`The ${label} window is cleared for ${user}.`); }
+        if (action === 'reset') { await request('/api/admin/usage/reset', { server: adminServer, user, kind }); notice(kind === '5h' ? `The 5-hour window is cleared for ${user}.` : `The 5-hour and weekly windows are cleared for ${user}.`); }
         else { await request('/api/admin/usage/grant', { server: adminServer, user, kind, count: 1 }); notice(`Granted one ${kind === '5h' ? '5-hour' : 'full'} reset to ${user}.`); }
       });
     };
