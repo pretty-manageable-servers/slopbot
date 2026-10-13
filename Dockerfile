@@ -5,13 +5,10 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
-COPY tests ./tests
 COPY web ./web
 COPY architecture/BOT_GUIDE.md ./architecture/BOT_GUIDE.md
-COPY scripts/deployment ./scripts/deployment
-COPY scripts/development/error-regressions.test.mjs ./scripts/development/error-regressions.test.mjs
-COPY Dockerfile ./Dockerfile
-RUN npm test
+# Tests run in the CI test job before deploy, not in the image build.
+RUN npm run build
 RUN npm prune --omit=dev
 
 FROM tailscale/tailscale:stable AS tailscale
