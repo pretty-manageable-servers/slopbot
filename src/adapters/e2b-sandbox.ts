@@ -1,13 +1,47 @@
-import { Sandbox, CommandExitError, ServiceBusyError, AuthenticationError, Template, TemplateBase, BuildError, InvalidArgumentError, TemplateError, RateLimitError, NotFoundError } from 'e2b';
+import { Sandbox, CommandExitError, ServiceBusyError, AuthenticationError, Template, TemplateBase, BuildError, InvalidArgumentError, TemplateError, RateLimitError, NotFoundError, SandboxError } from 'e2b';
 import type { SandboxProvider, SandboxSession, SandboxTemplateSpec } from '../sandbox.js';
 import { ToolError, UncertainActionError } from '../tools.js';
 export interface E2BOptions { apiKey: string; apiUrl: string; sandboxUrl: string; template?: string }
+/** A 4xx answer from the API means the request was refused, so no sandbox was created. Timeouts (408) stay uncertain. */
+function refusedStatus(error: unknown): number | undefined {
+  const status = error instanceof SandboxError ? error.statusCode : undefined;
+  return typeof status === 'number' && status >= 400 && status < 500 && status !== 408 ? status : undefined;
+}
+function refusalError(status: number, template: string | undefined, defaultTemplate: string, cause: unknown): ToolError {
+  if (status === 404) return template
+    ? new ToolError(`Sandbox template "${template}" does not exist. Use action "templates" to list templates, or omit template to use the default.`, 'rejected', { cause })
+    : new ToolError(`The default sandbox template "${defaultTemplate}" does not exist on PMServers. Ask the server admin to check the sandbox configuration.`, 'rejected', { cause });
+  if (status === 401 || status === 403) return new ToolError(`PMServers refused the sandbox request (HTTP ${status}). Check the configured project token.`, 'failed', { cause });
+  return new ToolError(`PMServers rejected the sandbox request (HTTP ${status}). No sandbox was created. Check the template name and try again.`, 'rejected', { cause });
+}
 export class E2BSandboxProvider implements SandboxProvider {
   constructor(private readonly options: E2BOptions) {}
   private connection() {
     return { debug: false, apiKey: this.options.apiKey, apiUrl: this.options.apiUrl, sandboxUrl: this.options.sandboxUrl, requestTimeoutMs: 30000 };
   }
   get defaultTemplate(): string { return this.options.template ?? 'base'; }
+  /** Lists the template names and aliases this project can start, from the API. Only ready templates count. */
+  async listTemplates(): Promise<string[]> {
+    const names: string[] = [];
+    const base = this.options.apiUrl.replace(/\/+$/, '');
+    let nextToken: string | null = null;
+    for (let page = 0; page < 20; page++) {
+      const url = new URL(`${base}/v2/templates`);
+      url.searchParams.set('limit', '100');
+      if (nextToken) url.searchParams.set('nextToken', nextToken);
+      const response = await fetch(url, { headers: { 'X-API-Key': this.options.apiKey }, signal: AbortSignal.timeout(30000) });
+      if (!response.ok) throw new Error(`Template list failed with HTTP ${response.status}.`);
+      const body: unknown = await response.json();
+      if (!Array.isArray(body)) throw new Error('Template list has an unexpected shape.');
+      for (const item of body as Array<{ buildStatus?: unknown; names?: unknown; aliases?: unknown }>) {
+        if (item.buildStatus !== undefined && item.buildStatus !== 'ready') continue;
+        for (const value of [...(Array.isArray(item.names) ? item.names : []), ...(Array.isArray(item.aliases) ? item.aliases : [])]) if (typeof value === 'string') names.push(value);
+      }
+      nextToken = response.headers.get('X-Next-Token');
+      if (!nextToken) break;
+    }
+    return [...new Set(names)];
+  }
   async buildTemplate(spec: SandboxTemplateSpec): Promise<void> {
     try {
       let builder = Template().fromUbuntuImage('24.04');
@@ -35,6 +69,8 @@ export class E2BSandboxProvider implements SandboxProvider {
       if (error instanceof RateLimitError) throw new ToolError('PMServers sandbox limit reached. Close an unused workspace and try again.', 'failed', { cause: error });
       if (error instanceof ServiceBusyError) throw new ToolError('PMServers sandbox capacity is being prepared or is busy. Try again in a few minutes.', 'failed', { cause: error });
       if (error instanceof AuthenticationError) throw new ToolError('Sandbox authentication failed. Check the configured project token.', 'failed', { cause: error });
+      const status = refusedStatus(error);
+      if (status !== undefined) throw refusalError(status, template, this.defaultTemplate, error);
       throw new UncertainActionError('Sandbox creation could not be confirmed. Any orphan expires automatically; do not blindly retry.', { cause: error }); }
   }
   async connect(id: string): Promise<SandboxSession> {

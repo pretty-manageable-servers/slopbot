@@ -6,14 +6,14 @@ import type { ToolOutput } from "../tools.js";
 import { PostgresDatabase, serializeStore } from "./postgres-database.js";
 import { randomUUID } from "node:crypto";
 import { parseMessage, type Effort, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
-import type { AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow, TokenTotals, UserTokenTotalRow } from "../ports.js";
+import type { AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow, TokenTotals, UserTokenTotalRow, TokenTotalsSummary } from "../ports.js";
 import { cosine, searchTerms, type Embeddings, type Evidence, type MemoryRecord } from "../memory.js";
 import { attribution, type Attribution } from "../usage-meter.js";
 import { ToolError } from "../tools.js";
 import type { ProfileField, UserProfile } from "../profiles.js";
 import type { TaskContext } from "../context.js";
 import type { Job } from "../queue.js";
-import type { ToolArgs, ToolCall, ToolContext, ToolOperation } from "../tools.js";
+import type { BlockingOperation, ToolArgs, ToolCall, ToolContext, ToolOperation } from "../tools.js";
 import type { HistoryQuery, HistoryPage } from '../search/history-search.js';
 import { FUZZY_SCAN, FUZZY_TERMS, fuzzyWords, likePattern, rankFuzzy, type FuzzyHit, type FuzzyQuery } from '../search/fuzzy.js';
 import type { AppRecord } from '../records.js';
@@ -681,9 +681,12 @@ export class PostgresStore {
         const row = (await this.db.prepare("SELECT * FROM tool_operations WHERE id=?").get(id));
         return row ? { id, name: String(row.name), args: JSON.parse(String(row.args)) as ToolArgs, resource: row.resource === null ? null : String(row.resource), status: row.status as ToolOperation["status"], result: row.result === null ? null : String(row.result) } : undefined;
     }
-    async blockingOperation(resource: string, exceptId: string): Promise<string | undefined> {
-        const row = (await this.db.prepare("SELECT id FROM tool_operations WHERE resource=? AND id<>? AND status='started' LIMIT 1").get(resource, exceptId));
-        return row ? String(row.id) : undefined;
+    async blockingOperation(resource: string, exceptId: string): Promise<BlockingOperation | undefined> {
+        const row = (await this.db.prepare("SELECT id,created_at FROM tool_operations WHERE resource=? AND id<>? AND status='started' LIMIT 1").get(resource, exceptId));
+        return row ? { id: String(row.id), startedAt: Number(row.created_at) } : undefined;
+    }
+    async expireOperations(resource: string, startedBefore: number, exceptId: string, result: string): Promise<void> {
+        (await this.db.prepare("UPDATE tool_operations SET status='failed',result=? WHERE resource=? AND id<>? AND status='started' AND created_at<?").run(result, resource, exceptId, startedBefore));
     }
     async beginOperation(context: ToolContext, name: string, args: ToolArgs): Promise<void> {
         const message = context.message;
@@ -780,6 +783,16 @@ export class PostgresStore {
     async userTokenTotals(server: string, user: string): Promise<UserTokenTotalRow[]> {
         return (await this.db.prepare("SELECT model,requests,input_tokens,output_tokens,cached_tokens,cost_micros,first_at,last_at FROM user_token_totals WHERE server=? AND user_id=? ORDER BY model").all(server, user))
             .map(row => ({ model: String(row.model), requests: Number(row.requests), input: Number(row.input_tokens), output: Number(row.output_tokens), cached: Number(row.cached_tokens), costMicros: Number(row.cost_micros), firstAt: Number(row.first_at), lastAt: Number(row.last_at) }));
+    }
+    async tokenTotalsSummary(limit: number): Promise<TokenTotalsSummary> {
+        const [total] = await this.db.prepare("SELECT COALESCE(SUM(requests),0) AS requests, COALESCE(SUM(input_tokens),0) AS input, COALESCE(SUM(output_tokens),0) AS output, COALESCE(SUM(cached_tokens),0) AS cached, COALESCE(SUM(cost_micros),0) AS cost FROM user_token_totals").all();
+        const servers = await this.db.prepare("SELECT server, SUM(requests) AS requests, SUM(input_tokens) AS input, SUM(output_tokens) AS output, SUM(cached_tokens) AS cached, SUM(cost_micros) AS cost FROM user_token_totals GROUP BY server ORDER BY cost DESC, server LIMIT ?").all(limit);
+        const models = await this.db.prepare("SELECT model, SUM(requests) AS requests, SUM(input_tokens) AS input, SUM(output_tokens) AS output, SUM(cached_tokens) AS cached, SUM(cost_micros) AS cost FROM user_token_totals GROUP BY model ORDER BY cost DESC, model LIMIT ?").all(limit);
+        return {
+            total: { requests: Number(total?.requests ?? 0), input: Number(total?.input ?? 0), output: Number(total?.output ?? 0), cached: Number(total?.cached ?? 0), costMicros: Number(total?.cost ?? 0) },
+            servers: servers.map(row => ({ server: String(row.server), requests: Number(row.requests), input: Number(row.input), output: Number(row.output), cached: Number(row.cached), costMicros: Number(row.cost) })),
+            models: models.map(row => ({ model: String(row.model), requests: Number(row.requests), input: Number(row.input), output: Number(row.output), cached: Number(row.cached), costMicros: Number(row.cost) })),
+        };
     }
     async useReset(server: string, user: string, kind: string): Promise<boolean> {
         (await this.db.exec("BEGIN IMMEDIATE"));

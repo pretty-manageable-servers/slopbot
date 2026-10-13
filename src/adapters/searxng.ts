@@ -35,6 +35,17 @@ export class SearxNGSearch implements WebSearch {
       hits.push({ url: link.href, title: typeof raw.title === 'string' ? raw.title.slice(0, 200) : link.hostname, snippet: typeof raw.content === 'string' ? raw.content.slice(0, 800) : '' });
       if (hits.length >= limit) break;
     }
+    // No results with failed engines is a search service fault, not an empty web. The model gets the real cause, so it does not retry with new queries.
+    if (!hits.length) {
+      const failed = 'unresponsive_engines' in payload && Array.isArray(payload.unresponsive_engines) ? payload.unresponsive_engines.map(engineFailure).filter(Boolean) : [];
+      if (failed.length) throw new ToolError(`Web search is not working: the search engines failed (${failed.slice(0, 8).join('; ')}). This is a fault in the search service, not an empty result. Other queries will fail too. Tell the user that web search is down.`, 'failed');
+    }
     return hits;
   }
+}
+
+/** One SearXNG unresponsive engine entry, [name, reason], as "name: reason". */
+function engineFailure(entry: unknown): string {
+  if (!Array.isArray(entry) || typeof entry[0] !== 'string') return '';
+  return typeof entry[1] === 'string' && entry[1] ? `${entry[0].slice(0, 40)}: ${entry[1].slice(0, 80)}` : entry[0].slice(0, 40);
 }

@@ -17,6 +17,7 @@
     "search:stop": "docker compose -f compose.search.yaml down",
     "dev": "node scripts/development/start.mjs",
     "sandbox:smoke": "npm run build && node --env-file-if-exists=.env.development scripts/sandbox-smoke.mjs",
+    "sandbox:template": "node --env-file-if-exists=.env.development scripts/sandbox-template.mjs",
     "regression:audit": "npm run build && node --test scripts/development/error-regressions.test.mjs",
     "storage:smoke": "npm run build && node --env-file-if-exists=.env.development scripts/storage-smoke.mjs"
   },

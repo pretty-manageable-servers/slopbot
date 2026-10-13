@@ -47,7 +47,10 @@
 .settings-side{min-width:0;padding:20px 16px;overflow-y:auto;border-right:1px solid var(--line)}
 .settings-side nav{display:grid;gap:4px;margin:20px 0}
 .settings-side nav button{text-align:left;border:0}
-.settings-side>.small{margin:0}
+.settings-group>.small{margin:0}
+/* Team admin is its own group under the server settings, with a line between them. */
+.settings-team{margin-top:24px;padding-top:20px;border-top:1px solid var(--line)}
+.settings-team nav{margin:8px 0 12px}
 .settings-main{min-width:0;padding:24px 32px;overflow-y:auto;overscroll-behavior:contain}
 .settings-main h1{margin-top:4px}
 .base-note{padding:28px 32px}
@@ -56,6 +59,7 @@
  .settings-head{padding:6px 6px 6px 14px}
  .settings-body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
  .settings-side{padding:10px 12px;overflow:visible;border-right:0;border-bottom:1px solid var(--line)}
+ .settings-team{margin-top:10px;padding-top:10px}
  .settings-side nav{display:flex;gap:4px;margin:10px -12px 0;padding:0 12px 2px;overflow-x:auto;scrollbar-width:thin}
  .settings-side nav button{flex:none;white-space:nowrap;min-height:40px}
  .settings-side>.small{display:none}
@@ -110,3 +114,44 @@
 
 /* The search field is part of the dialog header: no box and no focus ring. */
 .palette .palette-input:focus,.palette .palette-input:focus-visible{outline:none;border:0;box-shadow:none}
+
+/* Admin system prompt: Write and Preview tabs, a monospace field and a character count. */
+.prompt-tabs{display:flex;gap:4px;margin:0 0 8px}
+.prompt-tab{min-height:34px;padding:6px 12px;border:0;border-radius:6px;background:none;color:var(--muted)}
+.prompt-tab:hover{color:var(--strong)}
+.prompt-tab[aria-pressed=true]{background:var(--pill);color:var(--strong)}
+.prompt-field{display:block;box-sizing:border-box;width:100%;min-width:0;min-height:320px;margin:0;padding:10px 12px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text);font-size:14px;line-height:1.5}
+textarea.prompt-field{font-family:'JetBrains Mono',monospace;resize:vertical}
+.prompt-preview{overflow:auto;overflow-wrap:anywhere;font-family:Inter,sans-serif}
+.prompt-preview p{margin:0 0 .8em}
+.prompt-preview p:last-child{margin-bottom:0}
+.prompt-preview ul,.prompt-preview ol{margin:.4em 0 .8em;padding-left:1.4em}
+.prompt-preview li{margin:.2em 0}
+.prompt-preview h3,.prompt-preview h4,.prompt-preview h5{margin:.8em 0 .4em;font-size:15px;font-weight:600;color:var(--strong)}
+.prompt-preview blockquote{margin:.6em 0;padding:0 0 0 14px;border-left:2px solid var(--line);color:var(--muted)}
+.prompt-preview a{color:var(--accent);text-decoration:none}
+.prompt-preview a:hover{text-decoration:underline}
+.prompt-preview code{font-family:'JetBrains Mono',monospace;font-size:.88em;background:var(--pill);border-radius:6px;padding:.1em .35em}
+.prompt-preview .md-code{margin:.6em 0;border:1px solid var(--line);border-radius:10px;background:var(--surface);overflow:hidden}
+.prompt-preview .md-code-lang{display:block;padding:6px 12px 0;font-size:12px;color:var(--muted)}
+.prompt-preview .md-code pre{margin:0;padding:8px 12px 12px;overflow-x:auto;white-space:pre;font:13px/1.55 'JetBrains Mono',monospace;color:var(--text)}
+.prompt-preview .md-code code{padding:0;background:none;font-size:inherit}
+.prompt-preview .md-sub{display:block;color:var(--muted);font-size:12px}
+.prompt-preview .md-mention{color:var(--accent);background:var(--pill);border-radius:4px;padding:0 .25em}
+.prompt-preview .md-spoiler{background:var(--pill);color:transparent;border-radius:4px;padding:0 .2em;cursor:pointer;user-select:none}
+.prompt-preview .md-spoiler.revealed{color:inherit;user-select:auto}
+.prompt-count{margin:6px 0 0;font-size:12px;color:var(--muted)}
+.prompt-count[data-over=true]{color:var(--usage-high);font-weight:500}
+.prompt-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-start;margin-top:14px}
+.prompt-actions>button{display:inline-flex;align-items:center;justify-content:center;height:40px;min-height:40px;margin:0;padding:0 14px;box-sizing:border-box;line-height:1}
+.prompt-actions>.primary{margin:0}
+@media(max-width:760px){textarea.prompt-field{font-size:16px}}
+/* The per-user usage table scrolls sideways in its card instead of breaking words. */
+.usage-table{min-width:760px}.usage-table th,.usage-table td{white-space:nowrap}.usage-table .admin-person{white-space:nowrap}
+.admin-server{display:flex;align-items:center;gap:12px;min-width:0}.admin-server .server-icon{width:32px;height:32px;display:grid;place-items:center;font-size:13px}
+/* Model prices and usage totals: cells never wrap, so the table scrolls sideways in its card. Numbers are right-aligned with tabular digits. */
+.price-table th,.price-table td,.usage-totals th,.usage-totals td{white-space:nowrap}
+.price-table input{width:120px;padding:6px 8px}.price-table input[data-price-new="model"]{width:200px}
+.price-table s{color:var(--muted)}
+.usage-totals .num{text-align:right;font-variant-numeric:tabular-nums}
+.price-table .chan-actions{flex-wrap:nowrap;gap:6px;justify-content:flex-start}.price-table .chan-actions button{min-height:30px;padding:4px 10px}.price-table td{vertical-align:middle}

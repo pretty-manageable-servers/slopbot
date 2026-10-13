@@ -9,7 +9,7 @@ export function registerWebSearch(registry: ToolRegistry, search: WebSearch): vo
       await context.assertActive();
       const hits = await search.search(String(args.query), Number(args.limit ?? 5));
       await context.assertActive();
-      if (!hits.length) return { text: 'No web results found. Try a different query.', data: { results: [] }, sources: [] };
+      if (!hits.length) return { text: 'The search service worked, but no page matched this query. Try a different query once. If that also finds nothing, tell the user.', data: { results: [] }, sources: [] };
       return { text: hits.map((hit, index) => `${index + 1}. ${hit.title}\n${hit.url}\n${hit.snippet}`).join('\n\n'), data: { results: hits.map(hit => ({ title: hit.title, url: hit.url, snippet: hit.snippet })) }, sources: hits.map(hit => ({ kind: 'web' as const, url: hit.url, title: hit.title })) };
     },
   });

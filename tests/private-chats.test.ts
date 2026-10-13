@@ -13,9 +13,12 @@ const discordMessage: Message = { id: "m2", server: "s", channel: "1000000000000
 function registry(store: SQLiteStore) {
   const tools = new ToolRegistry(store, async () => false);
   const reader: ToolDefinition = { name: "reader", description: "reads", fields: {}, access: "member", effect: "read", retrySafe: true, async execute() { return "read ok"; } };
+  // Like the sandbox tool: a write that does not act on Discord.
   const writer: ToolDefinition = { name: "writer", description: "writes", fields: {}, access: "member", effect: "write", retrySafe: false, async execute() { return "wrote"; } };
+  const poster: ToolDefinition = { name: "poster", description: "posts to Discord", fields: {}, access: "member", effect: "write", retrySafe: false, scope: "discord", async execute() { return "posted"; } };
   tools.register(reader);
   tools.register(writer);
+  tools.register(poster);
   return tools;
 }
 
@@ -26,21 +29,32 @@ test("private channel IDs are recognised by their prefix only", () => {
   assert.equal(privateChatTitle("x".repeat(100)).length, 60);
 });
 
-test("a private chat is offered read-only tools only", async t => {
+test("a private chat is offered every tool except Discord-scoped ones", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const tools = registry(store);
-  assert.deepEqual(tools.schemas(privateMessage).map(item => item.function.name), ["reader"]);
-  assert.doesNotMatch(tools.catalog(privateMessage), /"writer"/);
-  assert.deepEqual(tools.schemas(discordMessage).map(item => item.function.name), ["reader", "writer"]);
-  assert.deepEqual(tools.schemas().map(item => item.function.name), ["reader", "writer"]);
+  assert.deepEqual(tools.schemas(privateMessage).map(item => item.function.name), ["reader", "writer"]);
+  assert.doesNotMatch(tools.catalog(privateMessage), /"poster"/);
+  assert.match(tools.catalog(privateMessage), /"writer"/);
+  assert.deepEqual(tools.schemas(discordMessage).map(item => item.function.name), ["poster", "reader", "writer"]);
+  assert.deepEqual(tools.schemas().map(item => item.function.name), ["poster", "reader", "writer"]);
 });
 
-test("a private chat cannot run a write tool, even when asked directly", async t => {
+test("a private chat runs a write tool, but a Discord-scoped call throws", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const tools = registry(store);
-  await assert.rejects(tools.invokeResult(privateMessage, "writer", {}, "op-private-write", "agent"), (error: unknown) => error instanceof ToolError && /private chats/.test(error.message));
+  await assert.rejects(tools.invokeResult(privateMessage, "poster", {}, "op-private-post", "agent"), (error: unknown) => error instanceof ToolError && error.message === "This action is only available in Discord.");
+  assert.equal((await tools.invokeResult(privateMessage, "writer", {}, "op-private-write", "agent")).text, "wrote");
   assert.equal((await tools.invokeResult(privateMessage, "reader", {}, "op-private-read", "agent")).text, "read ok");
-  assert.equal((await tools.invokeResult(discordMessage, "writer", {}, "op-discord-write", "agent")).text, "wrote");
+  assert.equal((await tools.invokeResult(discordMessage, "poster", {}, "op-discord-post", "agent")).text, "posted");
+});
+
+test("a private chat is never forced into a Discord-scoped call", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const tools = registry(store);
+  const lookup: ToolDefinition = { name: "lookup", description: "reads Discord state", fields: {}, access: "member", effect: "read", retrySafe: true, scope: "discord", matchRead: () => ({}), async execute() { return "looked"; } };
+  tools.register(lookup);
+  assert.equal(tools.suggest({ ...privateMessage, text: "look it up" }), undefined);
+  assert.deepEqual(tools.suggest({ ...discordMessage, text: "look it up" }), { name: "lookup", arguments: {} });
 });
 
 test("a private chat has its transcript switch on, a Discord channel does not", t => {
@@ -142,23 +156,25 @@ test("a private chat gets an answer from the bot, with the message saved once", 
   assert.equal(outputs[0]!.channel, privateChannel(privateId));
 });
 
-test("a private chat cannot save memories or start tasks", async t => {
+test("a private chat saves memories, but cannot start tasks", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const { bot, outputs, created } = botFor(store);
   bot.openPrivateChat("s", privateChannel(privateId));
   await bot.receive(privateIncoming("web-2", "!remember I like tea"));
   await bot.receive(privateIncoming("web-3", "!task plan a trip"));
   assert.equal(created(), 0, "no task thread may be created");
-  assert.deepEqual(await store.memories("s", privateChannel(privateId)), []);
-  assert.ok(outputs.every(item => item.text === "This is not available in private chats."));
+  assert.deepEqual((await store.memories("s", privateChannel(privateId))).map(note => note.content), ["I like tea"]);
+  assert.equal(outputs.at(-1)!.text, "This action is only available in Discord.");
 });
 
-test("a private chat cannot run a write tool through the bot", async t => {
+test("a private chat runs a write tool through the bot, but a Discord-scoped one is refused", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const tools = registry(store);
   const { bot, created } = botFor(store, tools);
   bot.openPrivateChat("s", privateChannel(privateId));
-  await assert.rejects(bot.executeTool(privateMessage, { name: "writer", arguments: {} }, "op-bot-write"), (error: unknown) => error instanceof ToolError);
+  assert.equal((await bot.executeTool(privateMessage, { name: "writer", arguments: {} }, "op-bot-write")).text, "wrote");
+  assert.equal(created(), 0, "a private write never starts a task thread");
+  await assert.rejects(bot.executeTool(privateMessage, { name: "poster", arguments: {} }, "op-bot-post"), (error: unknown) => error instanceof ToolError && error.message === "This action is only available in Discord.");
   assert.equal(created(), 0);
 });
 

@@ -89,7 +89,7 @@ test('uncertain writes return to the model while remaining journaled and blockin
  assert.equal((await app.handle(message))?.text,'Inspect the write before retrying.');
  assert.equal((await store.harnessState('s','m'))?.kind,'WaitingForUserMessage');
  assert.equal((await store.operation(store.agentTurns(message)[0]!.id + ':0'))?.status,'started');
- await assert.rejects(tools.invokeResult(message,'write',{},'another-write','agent'), /unresolved action/);
+ await assert.rejects(tools.invokeResult(message,'write',{},'another-write','agent'), /did not finish/);
  assert.equal(writes,1);
 });
 

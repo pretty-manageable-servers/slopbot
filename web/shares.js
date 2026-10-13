@@ -292,7 +292,7 @@
         return;
       }
       const chat = await request(`/api/shares/${encodeURIComponent(id)}/continue`, { method: 'POST', headers: { 'X-CSRF-Token': session.csrf } });
-      location.href = `/console#chat/${encodeURIComponent(chat.id)}`;
+      location.href = `/chat/${encodeURIComponent(chat.id)}`;
     } catch (failure) {
       show(failure.status === 404 ? 'This shared chat is no longer available.' : failure.message);
       button.disabled = false;

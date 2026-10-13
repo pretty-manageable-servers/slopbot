@@ -24,6 +24,7 @@ export interface SandboxTemplateSpec {
 export interface SandboxProvider {
   readonly defaultTemplate?: string;
   buildTemplate?(spec: SandboxTemplateSpec): Promise<void>;
+  listTemplates?(): Promise<string[]>;
   create(metadata: Record<string, string>, lifetimeMs: number, template?: string): Promise<SandboxSession>;
   connect(id: string): Promise<SandboxSession>;
 }
@@ -36,17 +37,75 @@ function packages(value: unknown, kind: 'apt' | 'pip'): string[] {
   return [...new Set(value)] as string[];
 }
 const limit = (text: string) => text.length > 16000 ? `${text.slice(0, 16000)}\n[Output truncated; use a narrower command.]` : text;
+/** How long a template list stays fresh, and how long to wait after a failed list before trying again. */
+export const templateCacheMs = 5 * 60 * 1000;
+function normalizeNames(list: readonly string[]): readonly string[] {
+  return [...new Set(list.filter(name => templateName.test(name)))].sort();
+}
+/** Caches the project template names. Refreshes at most every five minutes, and after a template build. */
+export class TemplateCatalog {
+  private names: readonly string[] | undefined;
+  private loadedAt = Number.NEGATIVE_INFINITY;
+  private retryAt = Number.NEGATIVE_INFINITY;
+  private lastError: unknown;
+  private pending: Promise<readonly string[]> | undefined;
+  constructor(private readonly load: () => Promise<readonly string[]>, private readonly now: () => number = Date.now, private readonly ttlMs = templateCacheMs) {}
+  /** The names known now, without waiting. Starts a background refresh when the cache is stale. */
+  current(): readonly string[] | undefined {
+    if (!this.pending && this.now() - this.loadedAt >= this.ttlMs && this.now() >= this.retryAt) this.refresh().catch(() => undefined);
+    return this.names;
+  }
+  /** Returns the cached names while fresh, otherwise loads them. A failed load keeps the last good names and waits before the next try. */
+  refresh(): Promise<readonly string[]> {
+    if (this.pending) return this.pending;
+    const now = this.now();
+    if (this.names && (now - this.loadedAt < this.ttlMs || now < this.retryAt)) return Promise.resolve(this.names);
+    if (now < this.retryAt) return Promise.reject(this.lastError);
+    this.pending = this.load().then(list => {
+      this.names = normalizeNames(list);
+      this.loadedAt = this.now();
+      this.retryAt = Number.NEGATIVE_INFINITY;
+      return this.names;
+    }, error => {
+      this.lastError = error;
+      this.retryAt = this.now() + this.ttlMs;
+      throw error;
+    }).finally(() => { this.pending = undefined; });
+    return this.pending;
+  }
+  /** Marks the cache stale, so the next refresh loads again. */
+  invalidate(): void {
+    this.loadedAt = Number.NEGATIVE_INFINITY;
+    this.retryAt = Number.NEGATIVE_INFINITY;
+  }
+}
+const slopbotNote = 'slopbot: Python 3 with pip, venv and common data packages (numpy, pandas, requests, httpx, matplotlib, pillow, beautifulsoup4, lxml, pyyaml, openpyxl and more); Node.js LTS with npm; git, curl, wget, jq, ripgrep, fd, sqlite3, zip and build-essential.';
+function templateListLine(names: readonly string[] | undefined): string {
+  if (names === undefined) return 'The template list is unavailable right now.';
+  return names.length ? `Templates in this project: ${names.join(', ')}.` : 'This project has no ready templates yet.';
+}
+function templateNote(defaultTemplate: string, names: readonly string[] | undefined): string {
+  return names?.includes('slopbot') || defaultTemplate === 'slopbot' ? ` ${slopbotNote}` : '';
+}
 export interface SandboxAttachments {
   resolve(message: Message, id: string | undefined): Promise<Message>;
   fetcher?: FileFetcher;
 }
 export function sandboxTool(store: RecordStore, provider?: SandboxProvider, attachments?: SandboxAttachments, storage?: UserFileStorage): ToolDefinition {
   const fetcher = attachments?.fetcher ?? new DiscordFileFetcher();
+  const listTemplates = provider?.listTemplates?.bind(provider);
+  const catalog = listTemplates ? new TemplateCatalog(() => listTemplates()) : undefined;
   return {
-    name: 'sandbox', description: 'Import Discord attachments or stored files, run code and read/write files in an isolated remote PMServers sandbox shared by this task thread. Use template to select a prebuilt name or name:tag at creation. build_template builds an Ubuntu 24.04 image with apt/pip packages for reuse; templates lists templates built by this server. Template sandboxes run as user in /home/user; sudo is unavailable, install packages at build time. Reuse files across calls. Expires ten minutes after last command, file write or import. No bot credentials are forwarded. Read status before assuming a workspace still exists.',
+    name: 'sandbox', description: 'Import Discord attachments or stored files, run code and read/write files in an isolated remote PMServers sandbox shared by this task thread. Use template to select a prebuilt name or name:tag at creation. build_template builds an Ubuntu 24.04 image with apt/pip packages for reuse; templates lists the templates this PMServers project can start. Template sandboxes run as user in /home/user; sudo is unavailable, install packages at build time. Reuse files across calls. Expires ten minutes after last command, file write or import. No bot credentials are forwarded. Read status before assuming a workspace still exists.',
     fields: {
       action: { type: 'string', required: true, choices: ['run', 'read', 'write', 'import_attachment', 'import_storage', 'status', 'close', 'templates', 'build_template'], description: 'run/write/import_attachment/import_storage creates a sandbox when none is recorded; close destroys it' },
-      template: { type: 'string', max: 129, description: 'Prebuilt template name or name:tag for a new workspace; required for build_template. An active workspace cannot change templates: close it first, which deletes its files.' },
+      // A getter, so the description reads the cached list each time the tool is offered. Names are sorted, so the text stays the same while the list is unchanged.
+      get template(): ToolDefinition['fields'][string] {
+        const names = catalog?.current();
+        const defaultTemplate = provider?.defaultTemplate ?? 'base';
+        const listed = catalog ? templateListLine(names) : 'This sandbox provider does not list templates.';
+        return { type: 'string', max: 129, description: `Template name or name:tag for a new workspace; required for build_template. Omit it for the default: ${defaultTemplate}. ${listed}${templateNote(defaultTemplate, names)} Do not guess names; action "templates" lists them again. An active workspace cannot change templates: close it first, which deletes its files.` };
+      },
       apt_packages: { type: 'json', schema: { type: 'array', maxItems: 40, items: { type: 'string', maxLength: 200 } }, description: 'build_template only: Ubuntu package names, optionally name=version, e.g. ["python3", "python3-pip", "ffmpeg"]' },
       pip_packages: { type: 'json', schema: { type: 'array', maxItems: 40, items: { type: 'string', maxLength: 200 } }, description: 'build_template only: Python packages, optionally name==version, e.g. ["numpy", "pandas"]' },
       command: { type: 'string', description: 'Shell command to execute remotely, never on the bot host' },
@@ -60,6 +119,8 @@ export function sandboxTool(store: RecordStore, provider?: SandboxProvider, atta
       seconds: { type: 'integer', min: 1, max: 60, description: 'Command timeout, default 30 seconds' },
     },
     access: 'member', effect: 'write', execution: 'thread', retrySafe: false,
+    // An uncertain create or command is an orphan or a lost result that expires on its own within this time.
+    staleAfterMs: lifetimeMs,
     writes: args => !['read', 'status', 'templates'].includes(String(args.action)),
     // Mutations share the task lock; reads remain available to inspect uncertain actions.
     resource: (message, args) => args.action === 'build_template' ? `sandbox-template:${String(args.template)}` : `sandbox:${message.server}:${message.channel}`,
@@ -88,12 +149,16 @@ export function sandboxTool(store: RecordStore, provider?: SandboxProvider, atta
       await context.assertActive();
       const { message } = context;
       if (args.action === 'templates') {
+        const defaultTemplate = provider.defaultTemplate ?? 'base';
+        const listed = await catalog?.refresh().catch(() => undefined);
+        if (listed) return limit(`Default template: ${defaultTemplate}. ${templateListLine(listed)}${templateNote(defaultTemplate, listed)}`);
+        // The PMServers list could not be read, so fall back to the templates this server recorded.
         const records = await store.records(message.server, 'sandbox-template');
         const names = records.map(record => {
           const spec = record.value as {aptPackages?: string[]; pipPackages?: string[]};
           return `${record.id} (apt: ${spec.aptPackages?.join(', ') || 'none'}; pip: ${spec.pipPackages?.join(', ') || 'none'})`;
         });
-        return limit(`Default template: ${provider.defaultTemplate ?? 'base'}.\nTemplates built by this server: ${names.join(', ') || 'none recorded'}. Other prebuilt templates in the configured PMServers project can also be selected by name or name:tag.`);
+        return limit(`Default template: ${defaultTemplate}. The PMServers template list could not be read. Templates built by this server (local records): ${names.join(', ') || 'none recorded'}.`);
       }
       if (args.action === 'build_template') {
         if (!provider.buildTemplate) throw new ToolError('Template builds are not supported by this sandbox provider.');
@@ -102,6 +167,9 @@ export function sandboxTool(store: RecordStore, provider?: SandboxProvider, atta
         await requestTimings.wait('sandbox template build', () => provider.buildTemplate!(spec));
         await context.assertActive();
         if (!await store.putRecord(message.server, 'sandbox-template', spec.name, { aptPackages: spec.aptPackages, pipPackages: spec.pipPackages, builtAt: Date.now() }, previous?.revision ?? 0)) throw new ToolError('Template built, but its local record changed concurrently. Use the template name to create a sandbox.');
+        // A new build changes the project list, so reload it now.
+        catalog?.invalidate();
+        await catalog?.refresh().catch(() => undefined);
         return `Template ${spec.name} built with Ubuntu 24.04. apt: ${spec.aptPackages.join(', ') || 'none'}; pip: ${spec.pipPackages.join(', ') || 'none'}. Select template:${spec.name} on the first run, write or import in a task. No workspace was replaced.`;
       }
       let imported: { source?: Message; bytes: Uint8Array; name: string } | undefined;
