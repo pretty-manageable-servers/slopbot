@@ -49,6 +49,7 @@ import { configuredChannels, registerServerTools, webTranscriptKey, webTranscrip
 import { ChannelAccess } from "../channel-access.js";
 import { TeamAdmins, discordTeamSource } from "../team-admins.js";
 import { publishMessage, publishMessageDelete, publishTool, runEvents } from "../run-events.js";
+import { ShareService } from "../shares.js";
 import { discordChannelAccessSource, wireChannelAccessEvents } from "./discord-channel-access.js";
 import { displayToolResult, ToolError, ToolRegistry, UncertainActionError, stableOperationId } from "../tools.js";
 import { WebReplies, asWebUser, webReplyKey } from "../web-replies.js";
@@ -615,6 +616,8 @@ export class DiscordAdapter {
   readonly access: ChannelAccess;
   /** Team roles of the Developer Portal team that owns the bot. Used by the console admin panel. */
   readonly team: TeamAdmins;
+  /** Share links for the web console. The team admin check is added here when the team panel exists. */
+  readonly shares: ShareService;
 
   constructor(private readonly config: Config, private readonly store: RuntimeStore, private readonly llm: LLM, client?: Client) {
     this.usage = createUsageMeter(config, store);
@@ -623,6 +626,7 @@ export class DiscordAdapter {
     this.access = new ChannelAccess(discordChannelAccessSource(this.client));
     wireChannelAccessEvents(this.client, this.access);
     runEvents.attach(store);
+    this.shares = new ShareService({ store, access: this.access, rule: { manager: (user, server) => this.hasManageServer(user, server) } });
     this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;
     this.client.once(Events.ClientReady, async client => {
       this.botUser = client.user.id;
@@ -718,6 +722,12 @@ export class DiscordAdapter {
     const opening = this.servers.get(guildId);
     if (!opening) throw new ToolError('Slopbot is not running in that server.');
     return (await opening).adminSetTranscript(channel, enabled);
+  }
+  /** Manage Server in one guild. A user who is not a member, or has no permission, gets false. */
+  async hasManageServer(user: string, server: string): Promise<boolean> {
+    const guild = await this.client.guilds.fetch(server);
+    const member = await guild.members.fetch({ user, force: true }).catch(() => undefined);
+    return member?.permissions.has(PermissionFlagsBits.ManageGuild) ?? false;
   }
   async start(): Promise<void> { await this.client.login(this.config.discordToken); }
   async stop(): Promise<void> {

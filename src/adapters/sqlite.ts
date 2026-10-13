@@ -22,6 +22,8 @@ import type { ConversationEvent } from '../run-events.js';
 const CONVERSATION_PRUNE_BATCH = 10000;
 
 import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
+import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, revokeShare, revokeAllShares } from '../share-store.js';
+import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
 export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore {
   async record(
     server: string,
@@ -373,6 +375,8 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       CREATE INDEX IF NOT EXISTS web_webhooks_hook ON web_webhooks(server,webhook_id);
       CREATE TABLE IF NOT EXISTS web_replies (id TEXT PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, user_id TEXT NOT NULL, status TEXT NOT NULL, message_id TEXT, created_at INTEGER NOT NULL, via TEXT NOT NULL DEFAULT 'webhook');
       CREATE INDEX IF NOT EXISTS web_replies_message ON web_replies(server,message_id);
+      CREATE TABLE IF NOT EXISTS shares (id TEXT PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, created_by TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER, body TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS shares_server ON shares(server,created_at);
     `);
     if (!this.db.prepare("PRAGMA table_info(web_replies)").all().some(column => column.name === "via")) this.db.exec("ALTER TABLE web_replies ADD COLUMN via TEXT NOT NULL DEFAULT 'webhook'");
     const operationColumns = this.db.prepare("PRAGMA table_info(tool_operations)").all();
@@ -556,6 +560,13 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     const row = this.db.prepare("SELECT state FROM harness_events WHERE server=? AND message_id=? ORDER BY sequence DESC LIMIT 1").get(server, id);
     return row ? JSON.parse(String(row.state)) as HarnessState : undefined;
   }
+  async shareMessages(server: string, channel: string, range: ShareMessageRange): Promise<ShareMessageResult> { return shareMessages(this.db, server, channel, range); }
+  async shareRequestEvents(server: string, requests: readonly string[]) { return shareRequestEvents(this.db, server, requests); }
+  async insertShare(row: ShareRow): Promise<void> { return insertShare(this.db, row); }
+  async getShare(id: string): Promise<ShareRow | undefined> { return getShare(this.db, id); }
+  async listShares(server: string, limit: number) { return listShares(this.db, server, limit); }
+  async revokeShare(server: string, id: string, at: number): Promise<boolean> { return revokeShare(this.db, server, id, at); }
+  async revokeAllShares(server: string, at: number): Promise<number> { return revokeAllShares(this.db, server, at); }
   async startRun(runId: string, message: Message, prompt: Prompt): Promise<void> {
     this.db.prepare("INSERT INTO runs(id,message,prompt,status,result,context_version) VALUES(?,?,?,?,NULL,?)")
       .run(runId, JSON.stringify(message), JSON.stringify(prompt), "running", await this.contextVersion(message.server, message.channel));

@@ -21,6 +21,8 @@ import type { ConversationEvent } from '../run-events.js';
 const CONVERSATION_PRUNE_BATCH = 10000;
 
 import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
+import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, revokeShare, revokeAllShares } from '../share-store.js';
+import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
 export class PostgresStore {
   async record(
     server: string,
@@ -440,6 +442,13 @@ export class PostgresStore {
         const row = (await this.db.prepare("SELECT state FROM harness_events WHERE server=? AND message_id=? ORDER BY sequence DESC LIMIT 1").get(server, id));
         return row ? JSON.parse(String(row.state)) as HarnessState : undefined;
     }
+    async shareMessages(server: string, channel: string, range: ShareMessageRange): Promise<ShareMessageResult> { return shareMessages(this.db, server, channel, range); }
+    async shareRequestEvents(server: string, requests: readonly string[]) { return shareRequestEvents(this.db, server, requests); }
+    async insertShare(row: ShareRow): Promise<void> { return insertShare(this.db, row); }
+    async getShare(id: string): Promise<ShareRow | undefined> { return getShare(this.db, id); }
+    async listShares(server: string, limit: number) { return listShares(this.db, server, limit); }
+    async revokeShare(server: string, id: string, at: number): Promise<boolean> { return revokeShare(this.db, server, id, at); }
+    async revokeAllShares(server: string, at: number): Promise<number> { return revokeAllShares(this.db, server, at); }
     async startRun(runId: string, message: Message, prompt: Prompt): Promise<void> {
         (await this.db.prepare("INSERT INTO runs(id,message,prompt,status,result,context_version) VALUES(?,?,?,?,NULL,?)")
             .run(runId, JSON.stringify(message), JSON.stringify(prompt), "running", await (await this.contextVersion(message.server, message.channel))));

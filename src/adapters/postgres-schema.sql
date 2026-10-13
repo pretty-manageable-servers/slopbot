@@ -108,3 +108,6 @@ ALTER TABLE web_replies ADD COLUMN IF NOT EXISTS via TEXT NOT NULL DEFAULT 'webh
 CREATE INDEX IF NOT EXISTS web_replies_message ON web_replies(server,message_id);
 
 CREATE INDEX IF NOT EXISTS messages_fulltext ON messages USING gin(to_tsvector('simple',body::jsonb->>'text'));
+
+CREATE TABLE IF NOT EXISTS shares (id TEXT PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, created_by TEXT NOT NULL, created_at BIGINT NOT NULL, revoked_at BIGINT, body TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS shares_server ON shares(server,created_at);
