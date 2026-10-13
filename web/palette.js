@@ -66,7 +66,7 @@
     add('actions', 'Go to Servers', ICONS.server, () => { closeSettings(); window.SlopbotChat.view('servers'); });
     add('actions', 'Open settings', ICONS.gear, () => openSettings(null, returnFocus));
     const dark = !document.documentElement.classList.contains('light');
-    add('actions', dark ? 'Switch to light theme' : 'Switch to dark theme', dark ? ICONS.sun : ICONS.moon, () => theme(dark));
+    add('actions', dark ? 'Switch to light theme' : 'Switch to dark theme', dark ? ICONS.sun : ICONS.moon, () => switchTheme());
     add('actions', 'Docs', ICONS.book, () => window.open('https://docs.pmservers.org', '_blank', 'noopener'));
     add('actions', 'Sign out', ICONS.logout, () => $('logout').click());
     for (const [section, name] of SECTION_NAMES) {

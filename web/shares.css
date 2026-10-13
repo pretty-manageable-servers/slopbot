@@ -49,4 +49,4 @@ body.share-page{min-height:100vh}
 .share-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 12px;align-items:center;padding:12px 0;border-top:1px solid var(--line)}
 .share-row:first-child{border-top:0}
 .share-row .meta{color:var(--muted);font-size:12px}
-.share-row .off{color:var(--muted)}
+.share-row .off{color:var(--muted)}::view-transition-old(root),::view-transition-new(root){animation-duration:.25s;animation-timing-function:ease-out}

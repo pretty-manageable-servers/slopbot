@@ -113,7 +113,7 @@ const landingCsp = consoleCsp.replace("script-src 'self'", "script-src 'self' 'u
 const consoleFile = (path: string) => {
   if (path === '/console' || path === '/console/') return 'index.html';
   const name = path.startsWith('/console/') ? path.slice('/console/'.length) : '';
-  return /^(app\.js|palette\.js|conversations\.js|markdown\.js|style\.css|chat\.css|console\.css|shares\.js|shares\.css|assets\/(logo-(light|dark)\.svg|[a-z0-9-]+\.woff2))$/.test(name) ? name : undefined;
+  return /^(app\.js|palette\.js|conversations\.js|markdown\.js|style\.css|chat\.css|console\.css|shares\.js|shares\.css|assets\/(logo-(light|dark)\.svg|favicon\.svg|[a-z0-9-]+\.woff2))$/.test(name) ? name : undefined;
 };
 /** Landing file for a path: the home page, /_next/ files and top-level files such as /favicon.svg. */
 const landingFile = (path: string) => path === '/' ? 'index.html' : path.startsWith('/_next/') || /^\/[^/]+$/.test(path) ? path.slice(1) : undefined;

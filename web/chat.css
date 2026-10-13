@@ -1,6 +1,6 @@
 /* Conversations tab: a chat view. Colors come from the tokens in style.css. Every rule is scoped under .chat. */
 :root{--chat-code:#E8917A;--chat-online:#4CAF7A}
-html.light{--chat-code:#B4432B;--chat-online:#2E8B57}
+html.light{--chat-code:#A2533F;--chat-online:#2E8B57}
 .layout>main.chat-mode{padding:0;max-width:none;min-width:0}
 
 .chat{display:grid;position:relative;grid-template-columns:240px minmax(0,1fr);height:calc(var(--viewport-height) - var(--header-height));min-height:0}

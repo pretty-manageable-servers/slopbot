@@ -308,7 +308,7 @@
     document.getElementById('share-theme').addEventListener('click', () => {
       const light = !isLight();
       try { localStorage.setItem('slopbot-theme', light ? 'light' : 'dark'); } catch { }
-      applyTheme(light);
+      if (document.startViewTransition && !matchMedia("(prefers-reduced-motion: reduce)").matches) document.startViewTransition(() => applyTheme(light)); else applyTheme(light);
       document.querySelectorAll('img.chat-mark').forEach(img => { img.src = light ? LOGO.dark : LOGO.light; });
     });
     document.getElementById('share-log').replaceChildren(...data.messages.map(shareMessage));

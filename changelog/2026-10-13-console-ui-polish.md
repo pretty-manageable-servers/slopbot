@@ -10,3 +10,5 @@
 - Each channel and thread in the Servers view expands to a list of its conversations with Slopbot. A conversation is one Slopbot run, joined with runs that reply to it or that the same person started from its reply within 10 minutes. "All messages" keeps the full history.
 - Smooth switch between Chats and Servers. The command menu has a header search field, type filters, icons and key hints.
 - Focus rings use the neutral brand color, not blue.
+- The favicon follows the browser's light or dark theme.
+- A softer light theme, and a short cross-fade when you switch themes.

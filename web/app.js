@@ -14,7 +14,13 @@ function sizeConsoleViewport() {
 sizeConsoleViewport();
 window.visualViewport?.addEventListener('resize', sizeConsoleViewport);
 window.addEventListener('resize', sizeConsoleViewport);
-$('theme').onclick = () => theme(!document.documentElement.classList.contains('light'));
+// The switch cross-fades when the browser has View Transitions and motion is allowed.
+function switchTheme() {
+  const next = !document.documentElement.classList.contains('light');
+  if (!document.startViewTransition || matchMedia('(prefers-reduced-motion: reduce)').matches) { theme(next); return; }
+  document.startViewTransition(() => theme(next));
+}
+$('theme').onclick = switchTheme;
 // Settings is a modal over the chat. Its section comes from the caller, else from the URL (#settings/<section> or ?tab=<section>).
 const SECTIONS = ['server', 'channels', 'mcp', 'profile', 'admin'];
 function settingsFromUrl() {
