@@ -25,7 +25,8 @@ The web shows a conversation as a list of messages. A Slopbot message has a "sho
 | Which channels | Only channels a server admin turns on in the console. Off by default. |
 | Web replies | Allowed. Posted through a channel webhook with the user's display name and avatar. The user must have live **Send Messages** permission (**Send Messages in Threads** for threads). |
 | Web reply answers | A web reply always gets an answer. It skips the participation (JEV) check. |
-| Rate limits | One per-user limit for all input. A web reply cannot get around it (see below). |
+| Rate limits | Per-user limits by API cost, in a 5-hour window and a weekly window. One gate for all input. A web reply cannot get around it (see below). |
+| Admin panel | A separate console section for members of the Discord Developer Portal team that owns the bot. The Read-only role can only view. |
 | Run detail | Tool calls, thinking and streamed tokens. No cost. |
 | Live | Tokens stream with SSE and show smoothly. |
 | History | Old conversations and runs can be listed and searched. |
@@ -52,9 +53,21 @@ There is no per-user limit today. Explicit requests skip the unsolicited cooldow
    - The slash command handler (`src/adapters/discord.ts`) before `tools.invokeResult`. Slash commands call tools directly and do not use the queue.
    - Any new entry point must call it too. A test lists the entry points and fails if one does not call it.
 2. **Key** by server ID and Discord user ID. Store the counters in Postgres so that restarts and more workers share them.
-3. **Limits by plan** (Seed, Bloom, Garden). Start with one setting for each server, and link it to the plan later.
-4. **Check before posting.** The web reply endpoint calls `UserLimiter.check` before it posts the webhook message. If the user is over the limit, nothing is posted, and the web shows "Limit reached" with the reset time. The queue gate checks again, so a race cannot get past it.
-5. **Webhook messages are not trusted by themselves.** See the next section.
+3. **Limit by API cost, not by request count.** Each LLM call for a user's run adds its cost to that user. `src/usage-cost.ts` changes the provider usage (input, cached input and output tokens) into cost with a price table for each model. An unknown model uses a fallback price, never 0.
+4. **Two windows.** A 5-hour window and a weekly (7-day) window. Each window starts at the user's first request after the last window ended. New work starts only if both windows are below their limits.
+5. **Wrap-up allowance.** A run that started below the limit can finish. If the run goes past the limit plus the grace percent (default 10%), it starts no new tool rounds and writes a short final answer. A reply is never cut while it streams.
+6. **Banked resets.** Admins give a user resets for the 5-hour or the weekly window. A user sees their usage and uses a reset with the `usage` tool. Using a reset clears that window and takes one reset from the bank, in one atomic step.
+7. **Numbers in the admin panel.** Limits, grace percent and model prices are settings. The defaults are placeholders. Later the limits link to the plans (Seed, Bloom, Garden).
+8. **Check before posting.** The web reply endpoint calls `UserLimiter.check` before it posts the webhook message. If the user is over the limit, nothing is posted, and the web shows "Limit reached" with the reset time. The queue gate checks again, so a race cannot get past it.
+9. **Webhook messages are not trusted by themselves.** See the next section.
+
+## Team admin panel
+
+- A separate admin section in the console.
+- Access: the bot gets its application with `client.application.fetch()`. The application owner is the Developer Portal team. A logged-in user whose Discord user ID is a team member can open the panel. Check by user ID only, never by email.
+- Roles: Owner, Admin and Developer can change things. Read-only can only view.
+- Load the team again every 5 minutes. A removed member loses access within that time.
+- Contents: limits, grace percent and model prices; usage of each user, with reset and "grant banked resets" (5-hour or weekly); channel switches and share links for all servers.
 
 ## Web replies through a webhook
 
@@ -117,12 +130,13 @@ Other AI apps (ChatGPT, Claude.ai, Gemini) all use frozen snapshots that can be 
 
 ## Steps (one PR each)
 
-1. `UserLimiter` in the queue, with tests. Useful without the web.
+1. Cost limits (5-hour and weekly), wrap-up allowance, banked resets and the `usage` tool, with tests. Useful without the web.
 2. Channel switch for admins, and `channel-access` permission checks.
-3. Read-only transcript and history API, and the web view.
-4. Live SSE stream and the smooth display.
-5. Web replies through a webhook, with tests for webhooks from other sources and for limits.
-6. Share links (admins only).
+3. Team admin panel.
+4. Read-only transcript and history API, and the web view.
+5. Live SSE stream and the smooth display.
+6. Web replies through a webhook, with tests for webhooks from other sources and for limits.
+7. Share links (admins only).
 
 ## Tests
 
@@ -132,6 +146,10 @@ Other AI apps (ChatGPT, Claude.ai, Gemini) all use frozen snapshots that can be 
 - A leaked token posts the same text before the real post returns: only the message with the returned ID gets the user identity.
 - `messageCreate` comes before the webhook post returns: the event is kept in the buffer and then matched.
 - Slash commands over the limit: refused before the tool runs.
+- Cost from usage tokens matches the price table. An unknown model uses the fallback price.
+- A run past the limit plus grace starts no new tool rounds and still sends a final answer.
+- A banked reset clears only its window and takes one from the bank. Two resets at the same time use two from the bank.
+- A Read-only team member cannot change settings. A user who is not in the team cannot open the panel.
 - SSE reconnect across two runs and Discord messages: no event is lost or sent twice.
 - Channel permission removed: the next read returns 403, and the stream closes.
 - Channel turned off: no list entry, no stream, no reply.
@@ -139,6 +157,6 @@ Other AI apps (ChatGPT, Claude.ai, Gemini) all use frozen snapshots that can be 
 
 ## Open questions
 
-- Limit numbers for each plan.
+- Limit numbers and model prices (set later in the admin panel).
 - Should the thinking text show for all members in the live view, or only for admins?
 - One webhook for each channel, or one for each server with channel moves?
