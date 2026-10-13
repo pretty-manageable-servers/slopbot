@@ -16,11 +16,25 @@ export interface SandboxSession {
   renew(timeoutMs: number): Promise<void>;
   close(): Promise<void>;
 }
+export interface SandboxTemplateSpec {
+  name: string;
+  aptPackages: string[];
+  pipPackages: string[];
+}
 export interface SandboxProvider {
-  create(metadata: Record<string, string>, lifetimeMs: number): Promise<SandboxSession>;
+  readonly defaultTemplate?: string;
+  buildTemplate?(spec: SandboxTemplateSpec): Promise<void>;
+  create(metadata: Record<string, string>, lifetimeMs: number, template?: string): Promise<SandboxSession>;
   connect(id: string): Promise<SandboxSession>;
 }
 const lifetimeMs = 600000;
+const templateName = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}(?::[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63})?$/;
+function packages(value: unknown, kind: 'apt' | 'pip'): string[] {
+  if (value === undefined) return [];
+  const pattern = kind === 'apt' ? /^[a-z0-9][a-z0-9+.-]*(?:=[a-zA-Z0-9+.:~_-]+)?$/ : /^[a-zA-Z0-9][a-zA-Z0-9_.-]*(?:\[[a-zA-Z0-9_,.-]+\])?(?:==[a-zA-Z0-9_.+!-]+)?$/;
+  if (!Array.isArray(value) || value.length > 40 || value.some(item => typeof item !== 'string' || item.length > 200 || !pattern.test(item))) throw new ToolError(`${kind}_packages must be an array of at most 40 package names, optionally pinned with ${kind === 'apt' ? '=' : '=='}. URLs, options and shell commands are not allowed.`);
+  return [...new Set(value)] as string[];
+}
 const limit = (text: string) => text.length > 16000 ? `${text.slice(0, 16000)}\n[Output truncated; use a narrower command.]` : text;
 export interface SandboxAttachments {
   resolve(message: Message, id: string | undefined): Promise<Message>;
@@ -29,9 +43,12 @@ export interface SandboxAttachments {
 export function sandboxTool(store: RecordStore, provider?: SandboxProvider, attachments?: SandboxAttachments, storage?: UserFileStorage): ToolDefinition {
   const fetcher = attachments?.fetcher ?? new DiscordFileFetcher();
   return {
-    name: 'sandbox', description: 'Import Discord attachments or stored files, run code and read/write files in an isolated remote PMServers sandbox shared by this task thread. Reuse files across calls. Expires ten minutes after last command, file write or import. No bot credentials are forwarded. Read status before assuming a workspace still exists.',
+    name: 'sandbox', description: 'Import Discord attachments or stored files, run code and read/write files in an isolated remote PMServers sandbox shared by this task thread. Use template to select a prebuilt name or name:tag at creation. build_template builds an Ubuntu 24.04 image with apt/pip packages for reuse; templates lists templates built by this server. Template sandboxes run as user in /home/user; sudo is unavailable, install packages at build time. Reuse files across calls. Expires ten minutes after last command, file write or import. No bot credentials are forwarded. Read status before assuming a workspace still exists.',
     fields: {
-      action: { type: 'string', required: true, choices: ['run', 'read', 'write', 'import_attachment', 'import_storage', 'status', 'close'], description: 'run/write/import_attachment/import_storage creates a sandbox when none is recorded; close destroys it' },
+      action: { type: 'string', required: true, choices: ['run', 'read', 'write', 'import_attachment', 'import_storage', 'status', 'close', 'templates', 'build_template'], description: 'run/write/import_attachment/import_storage creates a sandbox when none is recorded; close destroys it' },
+      template: { type: 'string', max: 129, description: 'Prebuilt template name or name:tag for a new workspace; required for build_template. An active workspace cannot change templates: close it first, which deletes its files.' },
+      apt_packages: { type: 'json', schema: { type: 'array', maxItems: 40, items: { type: 'string', maxLength: 200 } }, description: 'build_template only: Ubuntu package names, optionally name=version, e.g. ["python3", "python3-pip", "ffmpeg"]' },
+      pip_packages: { type: 'json', schema: { type: 'array', maxItems: 40, items: { type: 'string', maxLength: 200 } }, description: 'build_template only: Python packages, optionally name==version, e.g. ["numpy", "pandas"]' },
       command: { type: 'string', description: 'Shell command to execute remotely, never on the bot host' },
       path: { type: 'string', description: 'Absolute sandbox file path, e.g. /tmp/example.py' },
       storage_scope: { type: 'string', choices: storageScopes, description: 'Stored-file namespace for import_storage: user, server or user_server (default)' },
@@ -43,10 +60,16 @@ export function sandboxTool(store: RecordStore, provider?: SandboxProvider, atta
       seconds: { type: 'integer', min: 1, max: 60, description: 'Command timeout, default 30 seconds' },
     },
     access: 'member', effect: 'write', execution: 'thread', retrySafe: false,
-    writes: args => !['read', 'status'].includes(String(args.action)),
+    writes: args => !['read', 'status', 'templates'].includes(String(args.action)),
     // Mutations share the task lock; reads remain available to inspect uncertain actions.
-    resource: message => `sandbox:${message.server}:${message.channel}`,
+    resource: (message, args) => args.action === 'build_template' ? `sandbox-template:${String(args.template)}` : `sandbox:${message.server}:${message.channel}`,
     validate(args) {
+      if (args.template !== undefined && (typeof args.template !== 'string' || !templateName.test(args.template))) throw new ToolError('template must be a name or name:tag using letters, digits, dots, underscores and hyphens.');
+      if (args.action === 'build_template') {
+        if (!args.template) throw new ToolError('build_template requires a template name.');
+        packages(args.apt_packages, 'apt'); packages(args.pip_packages, 'pip');
+      } else if (args.apt_packages !== undefined || args.pip_packages !== undefined) throw new ToolError('Package lists are only supported by build_template.');
+      if (args.template !== undefined && !['build_template', 'run', 'write', 'import_attachment', 'import_storage'].includes(String(args.action))) throw new ToolError('template selects a new workspace or a template build; omit it for read/status/close/templates.');
       if (args.action === 'run' && (typeof args.command !== 'string' || !args.command.trim() || args.command.length > 16000)) throw new ToolError('run requires a command of 1–16000 characters.');
       if (['read', 'write', 'import_attachment', 'import_storage'].includes(String(args.action)) && (typeof args.path !== 'string' || !args.path.startsWith('/') || args.path.includes('\0') || args.path.length > 1024)) throw new ToolError('Provide an absolute sandbox file path.');
       if (args.action === 'write' && (typeof args.text !== 'string' || args.text.length > 64000)) throw new ToolError('write requires text of at most 64000 characters.');
@@ -64,6 +87,23 @@ export function sandboxTool(store: RecordStore, provider?: SandboxProvider, atta
       if (!provider) throw new ToolError('Sandbox is not configured. Set E2B_API_KEY to a PMServers project token.');
       await context.assertActive();
       const { message } = context;
+      if (args.action === 'templates') {
+        const records = await store.records(message.server, 'sandbox-template');
+        const names = records.map(record => {
+          const spec = record.value as {aptPackages?: string[]; pipPackages?: string[]};
+          return `${record.id} (apt: ${spec.aptPackages?.join(', ') || 'none'}; pip: ${spec.pipPackages?.join(', ') || 'none'})`;
+        });
+        return limit(`Default template: ${provider.defaultTemplate ?? 'base'}.\nTemplates built by this server: ${names.join(', ') || 'none recorded'}. Other prebuilt templates in the configured PMServers project can also be selected by name or name:tag.`);
+      }
+      if (args.action === 'build_template') {
+        if (!provider.buildTemplate) throw new ToolError('Template builds are not supported by this sandbox provider.');
+        const spec = { name: String(args.template), aptPackages: packages(args.apt_packages, 'apt'), pipPackages: packages(args.pip_packages, 'pip') };
+        const previous = await store.record(message.server, 'sandbox-template', spec.name);
+        await requestTimings.wait('sandbox template build', () => provider.buildTemplate!(spec));
+        await context.assertActive();
+        if (!await store.putRecord(message.server, 'sandbox-template', spec.name, { aptPackages: spec.aptPackages, pipPackages: spec.pipPackages, builtAt: Date.now() }, previous?.revision ?? 0)) throw new ToolError('Template built, but its local record changed concurrently. Use the template name to create a sandbox.');
+        return `Template ${spec.name} built with Ubuntu 24.04. apt: ${spec.aptPackages.join(', ') || 'none'}; pip: ${spec.pipPackages.join(', ') || 'none'}. Select template:${spec.name} on the first run, write or import in a task. No workspace was replaced.`;
+      }
       let imported: { source?: Message; bytes: Uint8Array; name: string } | undefined;
       if (args.action === 'import_attachment') {
         if (!attachments) throw new ToolError('Attachment import is not configured.');
@@ -83,19 +123,21 @@ export function sandboxTool(store: RecordStore, provider?: SandboxProvider, atta
         imported = { bytes, name: file.path };
       }
       const record = await store.record(message.server, 'sandbox', message.channel);
-      const value = record?.value as { id?: string; expiresAt?: number } | undefined;
+      const value = record?.value as { id?: string; expiresAt?: number; template?: string } | undefined;
       let id = value?.id;
       if (id && (value?.expiresAt ?? 0) <= Date.now()) id = undefined;
+      if (id && args.template !== undefined && args.template !== value?.template) throw new ToolError(`This task already has a sandbox using ${value?.template ?? 'an unrecorded template'}. Continue without template, or close it before selecting another template. Closing deletes its files.`);
+      const selectedTemplate = id ? value?.template : typeof args.template === 'string' ? args.template : provider.defaultTemplate ?? 'base';
       if (!id && ['status', 'read', 'close'].includes(String(args.action))) return 'No active sandbox recorded for this task. Run a command or write a file to create one.';
       let session: SandboxSession;
       if (id) session = await requestTimings.wait('sandbox connect', () => provider.connect(id!));
       else {
-        session = await requestTimings.wait('sandbox create', () => provider.create({ server: message.server, channel: message.channel, operation: context.operationId }, lifetimeMs));
+        session = await requestTimings.wait('sandbox create', () => provider.create({ server: message.server, channel: message.channel, operation: context.operationId }, lifetimeMs, selectedTemplate));
         try {
-          if (!await store.putRecord(message.server, 'sandbox', message.channel, { id: session.id, expiresAt: Date.now() + lifetimeMs }, record?.revision ?? 0)) throw new ToolError('Sandbox workspace changed concurrently.');
+          if (!await store.putRecord(message.server, 'sandbox', message.channel, { id: session.id, expiresAt: Date.now() + lifetimeMs, ...(selectedTemplate ? { template: selectedTemplate } : {}) }, record?.revision ?? 0)) throw new ToolError('Sandbox workspace changed concurrently.');
         } catch (error) { await session.close().catch(secondary => logError("sandbox_create_cleanup_failed", secondary, { stage: "sandbox cleanup", operationId: context.operationId }, true)); throw error; }
       }
-      if (args.action === 'status') return `Sandbox ${session.id} is connected. Recorded lease expires at ${new Date(value!.expiresAt!).toISOString()}.`;
+      if (args.action === 'status') return `Sandbox ${session.id} is connected. Template: ${value?.template ?? 'unknown (legacy workspace)'}. Recorded lease expires at ${new Date(value!.expiresAt!).toISOString()}.`;
       if (args.action === 'read') return { text: limit(await requestTimings.wait('sandbox read', () => session.read(String(args.path)))) };
       const fresh = await store.record(message.server, 'sandbox', message.channel);
       if (args.action === 'close') {
@@ -104,7 +146,7 @@ export function sandboxTool(store: RecordStore, provider?: SandboxProvider, atta
         return 'Sandbox closed. Its files and processes are gone.';
       }
       await requestTimings.wait('sandbox lease', () => session.renew(lifetimeMs));
-      if (!await store.putRecord(message.server, 'sandbox', message.channel, { id: session.id, expiresAt: Date.now() + lifetimeMs }, fresh!.revision)) throw new ToolError('Sandbox record changed during lease renewal.');
+      if (!await store.putRecord(message.server, 'sandbox', message.channel, { id: session.id, expiresAt: Date.now() + lifetimeMs, ...(selectedTemplate ? { template: selectedTemplate } : {}) }, fresh!.revision)) throw new ToolError('Sandbox record changed during lease renewal.');
       if (imported) {
         await context.assertActive();
         await requestTimings.wait('sandbox attachment upload', () => session.write(String(args.path), imported!.bytes));

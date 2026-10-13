@@ -8,8 +8,13 @@ function setup(attachments?: SandboxAttachments) {
   const store = new SQLiteStore();
   const sessions = new Map<string, SandboxSession>();
   let created = 0, runs = 0, closed = 0;
+  const selected: (string | undefined)[] = [];
+  const builds: import('../src/sandbox.js').SandboxTemplateSpec[] = [];
   const provider: SandboxProvider = {
-    async create(_metadata, lifetime) {
+    defaultTemplate: 'base',
+    async buildTemplate(spec) { builds.push(spec); },
+    async create(_metadata, lifetime, template) {
+      selected.push(template);
       assert.equal(lifetime, 600000);
       const files = new Map<string, string | Uint8Array>();
       const session: SandboxSession = {
@@ -27,7 +32,7 @@ function setup(attachments?: SandboxAttachments) {
   const registry = new ToolRegistry(store, async () => false);
   registry.register(sandboxTool(store, provider, attachments));
   const message = { id: 'm', server: 's', channel: 'task', author: 'a', text: 'run code' };
-  return { store, registry, provider, sessions, message, counts: () => ({ created, runs, closed }) };
+  return { store, registry, provider, sessions, message, selected, builds, counts: () => ({ created, runs, closed }) };
 }
 
 test('sandbox keeps task files, isolates other tasks, journals runs and closes', async t => {
@@ -154,4 +159,109 @@ test('the SDK adapter uploads binary data as an ArrayBuffer with exact bytes', a
   const session = await new E2BSandboxProvider({ apiKey: 'test', apiUrl: 'https://example.com', sandboxUrl: 'https://example.com' }).create({}, 600000);
   await session.write('/tmp/file', new Uint8Array([99, ...expected, 99]).subarray(1, 4));
   assert.equal(writes, 1);
+});
+
+
+test('selects tagged templates at creation, retains selection on renewal, and protects task files', async t => {
+  const f = setup(); t.after(() => f.store.close());
+  const invoke = (args: object, id: string) => f.registry.invoke(f.message, 'sandbox', args, id, 'agent');
+  await invoke({action:'write',template:'science:v2',path:'/tmp/input',text:'keep me'}, 'templated-write');
+  assert.deepEqual(f.selected, ['science:v2']);
+  await invoke({action:'run',command:'python --version'}, 'reuse');
+  assert.equal(f.counts().created, 1);
+  assert.equal(((await f.store.record('s','sandbox','task'))!.value as {template:string}).template, 'science:v2');
+  assert.match(await invoke({action:'status'}, 'template-status'), /Template: science:v2/);
+  await assert.rejects(invoke({action:'run',template:'other',command:'echo wrong'}, 'mismatch'), /already has a sandbox/);
+  assert.equal(await invoke({action:'read',path:'/tmp/input'}, 'still-there'), 'keep me');
+  await invoke({action:'close'}, 'close-template');
+  await invoke({action:'run',template:'other',command:'echo new'}, 'switch');
+  assert.deepEqual(f.selected, ['science:v2', 'other']);
+});
+
+test('default template, expired workspaces, and legacy records remain compatible', async t => {
+  const f = setup(); t.after(() => f.store.close());
+  const provider = {...f.provider, defaultTemplate:'operator:v1'};
+  const registry = new ToolRegistry(f.store, async () => false); registry.register(sandboxTool(f.store, provider));
+  await registry.invoke(f.message, 'sandbox', {action:'run',command:'first'}, 'default', 'agent');
+  assert.deepEqual(f.selected, ['operator:v1']);
+  let record = (await f.store.record('s','sandbox','task'))!;
+  await f.store.putRecord('s','sandbox','task',{id:'workspace-1',expiresAt:Date.now()+600000},record.revision);
+  await registry.invoke(f.message, 'sandbox', {action:'run',command:'legacy'}, 'legacy', 'agent');
+  assert.equal(f.counts().created, 1);
+  record = (await f.store.record('s','sandbox','task'))!;
+  await f.store.putRecord('s','sandbox','task',{id:'workspace-1',expiresAt:0},record.revision);
+  await registry.invoke(f.message, 'sandbox', {action:'run',command:'next',template:'fresh:v2'}, 'expired', 'agent');
+  assert.deepEqual(f.selected, ['operator:v1', 'fresh:v2']);
+});
+
+test('builds are journaled, discoverable, and do not replace active task workspaces', async t => {
+  const f = setup(); t.after(() => f.store.close());
+  await f.registry.invoke(f.message,'sandbox',{action:'write',path:'/tmp/keep',text:'retained'},'before-build','agent');
+  const args = {action:'build_template',template:'analysis:v2',apt_packages:['ffmpeg','ffmpeg'],pip_packages:['numpy==2.0.0','pandas']};
+  await f.registry.invoke(f.message,'sandbox',args,'build','agent');
+  await f.registry.invoke(f.message,'sandbox',args,'build','agent');
+  assert.deepEqual(f.builds, [{name:'analysis:v2',aptPackages:['ffmpeg'],pipPackages:['numpy==2.0.0','pandas']}]);
+  assert.equal(f.counts().created, 1);
+  assert.equal(await f.registry.invoke(f.message,'sandbox',{action:'read',path:'/tmp/keep'},'after-build','agent'), 'retained');
+  const restored = new ToolRegistry(f.store, async () => false); restored.register(sandboxTool(f.store, f.provider));
+  assert.match(await restored.invoke(f.message,'sandbox',{action:'templates'},'list-templates','command'), /analysis:v2/);
+  assert.equal(restored.effect('sandbox',{action:'templates'}),'read');
+  const other = await restored.invoke({...f.message,server:'other'},'sandbox',{action:'templates'},'other-list','command');
+  assert.match(other, /none recorded/);
+});
+
+test('template arguments reject invalid names and package injection before contacting the provider', async t => {
+  const f = setup(); t.after(() => f.store.close());
+  const invalid = [
+    {action:'build_template'}, {action:'build_template',template:'bad name'},
+    {action:'build_template',template:'ok',apt_packages:['curl; whoami']},
+    {action:'build_template',template:'ok',pip_packages:['--index-url']},
+    {action:'build_template',template:'ok',pip_packages:['https://example.com/pkg.whl']},
+    {action:'build_template',template:'ok',pip_packages:['numpy>=2']},
+    {action:'run',command:'echo hi',pip_packages:['numpy']},
+    {action:'status',template:'ok'},
+  ];
+  for (const [i,args] of invalid.entries()) await assert.rejects(f.registry.invoke(f.message,'sandbox',args,`bad-template-${i}`,'agent'),ToolError);
+  assert.equal(f.builds.length, 0); assert.equal(f.counts().created, 0);
+});
+
+test('SDK creation passes template as the documented positional argument and keeps credentials in options', async t => {
+  const {Sandbox} = await import('e2b');
+  const {E2BSandboxProvider} = await import('../src/adapters/e2b-sandbox.js');
+  const create = t.mock.method(Sandbox, 'create', async () => ({sandboxId:'new-sandbox'}));
+  const provider = new E2BSandboxProvider({apiKey:'test-only',apiUrl:'https://api.pmservers.org/sandboxes',sandboxUrl:'https://sandbox.pmservers.org',template:'default:v1'});
+  await provider.create({operation:'op'},600000,'science:v2');
+  const args = create.mock.calls[0]!.arguments as unknown as [string, Record<string, unknown>];
+  assert.equal(args[0], 'science:v2');
+  assert.equal(args[1].apiKey, 'test-only');
+  assert.deepEqual(args[1].metadata, {operation:'op'});
+  await provider.create({},600000);
+  assert.equal((create.mock.calls[1]!.arguments as unknown as [string])[0], 'default:v1');
+});
+
+test('SDK template builds use supported steps and a venv for Python packages', async t => {
+  const {Template, TemplateBase} = await import('e2b');
+  const {E2BSandboxProvider} = await import('../src/adapters/e2b-sandbox.js');
+  let recipe = '';
+  const build = t.mock.method(TemplateBase, 'build', async (builder: Parameters<typeof Template.toJSON>[0]) => {recipe = await Template.toJSON(builder);});
+  const provider = new E2BSandboxProvider({apiKey:'test-only',apiUrl:'https://api.pmservers.org/sandboxes',sandboxUrl:'https://sandbox.pmservers.org'});
+  await provider.buildTemplate({name:'science:v2',aptPackages:['ffmpeg'],pipPackages:['numpy==2.0.0']});
+  assert.match(recipe, /ubuntu:24.04/); assert.match(recipe, /ffmpeg/); assert.match(recipe, /python3-venv/);
+  assert.match(recipe, /venv \/opt\/slopbot-python/); assert.match(recipe, /pip install numpy==2.0.0/);
+  assert.ok(!recipe.includes('test-only'));
+  const args = build.mock.calls[0]!.arguments as unknown as [unknown, string, Record<string,unknown>];
+  assert.equal(args[1], 'science:v2'); assert.equal(args[2].apiUrl, 'https://api.pmservers.org/sandboxes');
+});
+
+test('template build failures do not advertise success; lost responses remain uncertain', async t => {
+  const {TemplateBase, BuildError, NotFoundError} = await import('e2b');
+  const {E2BSandboxProvider} = await import('../src/adapters/e2b-sandbox.js');
+  const provider = new E2BSandboxProvider({apiKey:'test-only',apiUrl:'https://api.pmservers.org/sandboxes',sandboxUrl:'https://sandbox.pmservers.org'});
+  const build = t.mock.method(TemplateBase, 'build', async () => {throw new BuildError('build failed');});
+  await assert.rejects(provider.buildTemplate({name:'broken',aptPackages:[],pipPackages:[]}), ToolError);
+  build.mock.mockImplementation(async () => {throw Error('response lost');});
+  await assert.rejects(provider.buildTemplate({name:'unknown',aptPackages:[],pipPackages:[]}), UncertainActionError);
+  const {Sandbox} = await import('e2b');
+  t.mock.method(Sandbox, 'create', async () => {throw new NotFoundError('missing template');});
+  await assert.rejects(provider.create({},600000,'missing'), error => error instanceof ToolError && /template/.test(error.message));
 });

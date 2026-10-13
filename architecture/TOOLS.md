@@ -75,7 +75,7 @@ Documentation is versioned with the running build, not proof of live service hea
 ## Remote sandbox
 
 `sandbox` uses the `SandboxProvider` interface, implemented by the E2B SDK adapter.
-It supports `run`, `read`, `write`, `import_attachment`, `import_storage`, `status`, and `close`. Commands, imports and writes
+It supports `run`, `read`, `write`, `import_attachment`, `import_storage`, `status`, `close`, `templates`, and `build_template`. Commands, imports and writes
 belong in a task thread, and each thread owns one recorded workspace. There are
 no model-supplied provider URLs, credentials, or sandbox IDs. Reads/status are
 read operations; mutations share a resource lock and are not automatically
@@ -86,7 +86,7 @@ Set `E2B_API_KEY` to a PMServers project token, `E2B_API_URL` to
 `https://api.pmservers.org/sandboxes`, and `E2B_SANDBOX_URL` to
 `https://sandbox.pmservers.org`. A sandbox never receives these control-plane
 credentials or the bot's environment. An optional `E2B_TEMPLATE` chooses the
-provider template. TTL is ten minutes, command timeout at most sixty seconds.
+default provider template. Per-call `template` overrides it when creating a workspace. TTL is ten minutes, command timeout at most sixty seconds.
 The SDK's external declarations require `skipLibCheck` with our exact optional
 property checks; application code retains strict type checking.
 
@@ -135,3 +135,20 @@ Setup requires an approved PMServers account, a dedicated bucket and bucket-scop
 Live Discord status shows recent calls with arguments, status, and elapsed time. Delegated task seeds post directly in the task thread. Long live arguments are clipped to fit Discord's message limit; credential fields are redacted. Parallel program calls update a single status message.
 
 Completed replies default to a summary such as `web_search` × 3. Server managers can choose **No tool calls**, **Summary**, or **Full expansion** in the web console, or use `/slopbot tool_display mode:none|summary|full`. Full expansion lists each call with its arguments, status, timing, and failure reason. This setting persists per server and leaves live progress enabled.
+
+
+## Sandbox templates
+
+PMServers supports prebuilt images selected with a name or `name:tag`. Slopbot passes this name as the first argument to the official SDK's `Sandbox.create`. The task record preserves the selected template across lease renewals and reconnects. A different template is rejected while a workspace is active; close it explicitly before switching. Expired workspaces can select a new template. Existing records without a template remain reusable.
+
+To build an environment with preinstalled software, call `sandbox` with:
+
+```json
+{"action":"build_template","template":"analysis:v1","apt_packages":["ffmpeg"],"pip_packages":["numpy","pandas"]}
+```
+
+Builds use the official SDK with the configured PMServers project token and Ubuntu 24.04, then supported apt/run/environment/pip build steps. Python packages install in `/opt/slopbot-python`, a virtual environment on PATH for later commands. Package lists allow names and exact pins, at most 40 per manager; credentials, custom registry URLs, arbitrary host files and build shell snippets are not accepted. Builds are journaled mutations in a task thread. Known build failures are reported as failures; a lost response stays uncertain and is not blindly rebuilt. A successful build records its package list; `action:templates` lists this server's recorded builds, not the provider's whole project inventory.
+
+Create a task workspace with `{"action":"run","template":"analysis:v1","command":"python -c 'import pandas; print(pandas.__version__)'"}`. Builds leave an existing task workspace intact. Template sandboxes use `/home/user` and user `user`; sudo is unavailable. The operator's `E2B_TEMPLATE` remains the default when a call omits `template`.
+
+Sources reviewed 2026-10-12: https://docs.pmservers.org/sandboxes/templates/ and https://docs.pmservers.org/sandboxes/overview/ . Named tags and image builds are supported; snapshot, fork, private registry and tag-route features remain unsupported. Live provider builds are separate from the mocked SDK tests.
