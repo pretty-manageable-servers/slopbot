@@ -37,6 +37,8 @@ export interface PrivateChatHandle {
   closeChat(channel: string): void;
   /** Hands a message that is already saved to the bot. The limit is checked by the service first. */
   receiveChat(message: Message): Promise<void>;
+  /** Stops the responses in a channel that this user may stop. Returns how many stopped. */
+  stopResponses(channel: string, user: string, manager: boolean): Promise<number>;
 }
 
 export interface ChatHost {
@@ -322,6 +324,13 @@ export class WebChatService {
   }
 
   /** The chat, when the user owns it and is still in its server. Anything else is a 404. */
+  /** Stops the Slopbot response in a chat. Only the owner can open the chat, so the owner stops it. */
+  async stop(user: string, id: string): Promise<{ stopped: number }> {
+    const chat = await this.owned(user, id);
+    const handle = await this.handle(chat.server);
+    return { stopped: await handle.stopResponses(privateChannel(chat.id), user, false) };
+  }
+
   private async owned(user: string, id: string): Promise<WebChatRow> {
     const chat = CHAT_ID.test(id) ? await this.store.webChat(id) : undefined;
     if (!chat || chat.deleted || chat.owner !== user) throw new ChatError(404, "Not found.");
@@ -390,6 +399,7 @@ export function createChatRoutes(service: WebChatService): ChatRoutes {
           }
           if (req.method === "POST") return json(res, 201, await service.send(user, id, input.text, input.images));
         }
+        if (parts.length === 3 && parts[2] === "stop" && req.method === "POST") return json(res, 200, await service.stop(user, id));
         if (parts.length === 3 && parts[2] === "stream" && req.method === "GET") return await service.openStream(req, res, user, id);
         if (parts[2] === "shares") {
           if (parts.length === 3 && req.method === "GET") return json(res, 200, await service.shareList(user, id));

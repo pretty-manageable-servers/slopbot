@@ -24,6 +24,8 @@ export interface QueueStore {
   hasPendingOther(server: string, channel: string, messageId: string): boolean | Promise<boolean>;
   jobs(server: string, channel: string): Job[] | Promise<Job[]>;
   retryJob(server: string, channel: string, id: string): boolean | Promise<boolean>;
+  /** Marks a pending, ready, running or sending job as cancelled. True when it changed. */
+  cancelJob(id: string): boolean | Promise<boolean>;
 }
 export class TaskWorker {
   private readonly owner = randomUUID();
@@ -92,6 +94,8 @@ export class TaskWorker {
       const transient = error instanceof ProviderError && (error.status === 429 || error.status >= 500) || error instanceof TypeError;
       if (transient && job.attempts < 2) { await this.store.retryLater(job.id, Date.now() + 5000 * (job.attempts + 1)); requestTimings.start(job.message, "retry backoff"); return; }
       await this.store.failJob(job.id, errorSummary(error), error instanceof UncertainActionError);
+      // A stopped response is not a failure. It gets no failure notice.
+      if (error instanceof Error && error.name === "HarnessInterrupted") return;
       try { await this.onFailure(job, error); } catch (noticeError) { logError("task_failure_notice_failed", noticeError, { stage: "failure notice delivery", jobId: job.id }); }
 
     }

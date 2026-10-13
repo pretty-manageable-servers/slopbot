@@ -13,6 +13,11 @@ export function buildUsageCommand(): SlashCommandBuilder {
   return command;
 }
 
+/** The top-level /stop command. Stops the Slopbot responses in this channel. */
+export function buildStopCommand(): SlashCommandBuilder {
+  return new SlashCommandBuilder().setName("stop").setDescription("Stop the Slopbot response in this channel");
+}
+
 /** A text bar of 10 blocks. No limit gives an empty bar. */
 export function usageBar(percent: number | null): string {
   const filled = percent === null ? 0 : Math.round(percent / 100 * BAR_BLOCKS);
