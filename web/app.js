@@ -613,25 +613,73 @@ function wireAdminSearch(server) {
 function adminTranscripts(server, channels, off) {
   return `<section class="card"><h2>Web transcripts</h2><p class="scope">Per channel. Off by default. Discord permissions still decide who can see a transcript.</p><div id="admin-transcripts">${channels.length ? `<ul class="chan-list">${channels.map(channel => `<li class="chan"><div class="chan-info"><strong>#${esc(channel.name)}</strong></div><div class="chan-actions"><label class="switch"><input type="checkbox" data-server="${esc(server)}" data-channel="${esc(channel.id)}"${channel.enabled ? ' checked' : ''}${off}><span>${channel.enabled ? 'On' : 'Off'}</span></label><button type="button" data-action="rotate" data-server="${esc(server)}" data-channel="${esc(channel.id)}" data-name="${esc(channel.name)}"${off}>Rotate webhook</button></div></li>`).join('')}</ul>` : '<p class="small">Slopbot serves no channels in this server yet.</p>'}</div></section>`;
 }
-// Bot admin: usage over all servers, model prices and the system prompt. Same for every team member; writes need canEdit.
+// Web search keys. Every team member adds and removes keys; the owner or an editor removes a key. Editors also set the monthly cap of each provider.
+// Slopbot spreads searches over all keys that have credits left this month. A saved key is never shown again: only its last four characters.
+const WEB_KEY_PROVIDERS = [['tavily', 'Tavily'], ['firecrawl', 'Firecrawl']];
+function adminWebKeys(webKeys, edit) {
+  const groups = WEB_KEY_PROVIDERS.map(([provider, name]) => {
+    const keys = webKeys.keys.filter(key => key.provider === provider), cap = webKeys.caps[provider];
+    const rows = keys.map(key => {
+      const owner = key.mine ? 'You' : `<code>${esc(key.owner)}</code>`;
+      const badge = key.exhausted ? ' <span class="chip">Out of credits</span>' : '';
+      const remove = key.mine || edit ? `<button type="button" data-web-key-remove="${esc(key.id)}">Remove</button>` : '';
+      return `<tr><td>${esc(key.label || name)}</td><td><code>••••${esc(key.last4)}</code></td><td>${owner}</td><td>${key.used} / ${cap} credits${badge}</td><td>${remove ? `<div class="chan-actions">${remove}</div>` : ''}</td></tr>`;
+    }).join('');
+    const table = keys.length ? `<div class="table-wrap"><table class="web-key-table"><thead><tr><th>Label</th><th>Key</th><th>Added by</th><th>Used this month</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="small">No keys yet.</p>';
+    return `<div class="web-key-group"><h3>${name}</h3>${table}</div>`;
+  }).join('');
+  const off = webKeys.enabled ? '' : ' disabled';
+  const offNote = webKeys.enabled ? '' : '<p class="web-key-off" role="status">Web search keys are off. The operator must set WEB_KEYS_SECRET on the server, then restart Slopbot. Until then no key can be added.</p>';
+  const add = `<form id="admin-web-key-add" class="web-key-form"><h3>Add a key</h3><div class="row"><label>Service<select name="provider"${off}>${WEB_KEY_PROVIDERS.map(([id, name]) => `<option value="${id}">${name}</option>`).join('')}</select></label><label>Label (optional)<input name="label" maxlength="60" autocomplete="off"${off}></label></div><label>API key<input name="secret" type="password" required minlength="8" maxlength="200" pattern="[!-~]{8,200}" title="8 to 200 printable characters, no spaces" autocomplete="off" autocapitalize="off" spellcheck="false"${off}></label><p class="small">Only the last four characters show again. The key is not sent back to the browser.</p><button class="primary"${off}>Add key</button></form>`;
+  const caps = edit
+    ? `<form id="admin-web-key-caps" class="web-key-form"><h3>Monthly cap per key</h3><p class="small">Credits one key may use each month before Slopbot moves on to another key.</p><div class="row">${WEB_KEY_PROVIDERS.map(([id, name]) => `<label>${name} credits<input name="${id}" type="number" min="1" max="100000" step="1" value="${webKeys.caps[id]}" required></label>`).join('')}</div><button class="primary">Save caps</button></form>`
+    : `<p class="small">Monthly cap per key: ${WEB_KEY_PROVIDERS.map(([id, name]) => `${name} ${webKeys.caps[id]} credits`).join(', ')}.</p>`;
+  return `<section class="card" id="admin-web-keys"><h2>Web search keys</h2><p class="scope">Team keys for Tavily and Firecrawl. You can remove your own keys. Editors can remove any key.</p>${offNote}${groups}${add}${caps}</section>`;
+}
+function wireWebKeys(edit) {
+  const card = $('admin-web-keys');
+  card.onclick = async event => {
+    const button = event.target.closest('[data-web-key-remove]');
+    if (!button || !(await askConfirm({ title: 'Remove this key?', body: 'Slopbot stops using it at once.', confirmLabel: 'Remove', danger: true }))) return;
+    const id = button.dataset.webKeyRemove;
+    adminRun(button, async () => { await request('/api/admin/web-keys/delete', { id }); notice('Key removed.'); });
+  };
+  $('admin-web-key-add').onsubmit = event => {
+    event.preventDefault();
+    const form = event.currentTarget, data = new FormData(form);
+    const body = { provider: data.get('provider'), label: String(data.get('label') || '').trim(), secret: data.get('secret') };
+    // The key leaves the field at once, so it does not stay in the page after the request.
+    form.querySelector('[name=secret]').value = '';
+    adminRun(form.querySelector('button'), async () => { await request('/api/admin/web-keys/add', body); notice('Key added.'); });
+  };
+  if (edit) $('admin-web-key-caps').onsubmit = event => {
+    event.preventDefault();
+    const form = event.currentTarget, data = new FormData(form);
+    const body = Object.fromEntries(WEB_KEY_PROVIDERS.map(([id]) => [id, Number(data.get(id))]));
+    adminRun(form.querySelector('button'), async () => { await request('/api/admin/web-keys/caps', body); notice('Key caps saved.'); });
+  };
+}
+// Bot admin: usage over all servers, model prices, web search keys and the system prompt. Same for every team member; writes need canEdit, except the member's own keys.
 async function renderBotAdmin() {
   const edit = admin.canEdit, off = edit ? '' : ' disabled';
   $('breadcrumb').textContent = 'Settings / Bot admin';
   $('title').textContent = 'Bot admin';
-  $('description').textContent = 'Usage, model prices and the system prompt for all servers. Read-only members can view everything.';
+  $('description').textContent = 'Usage, model prices, web search keys and the system prompt for all servers. Read-only members can view everything and add their own web search keys.';
   $('content').replaceChildren(busy('md', 'Loading…'));
   try {
-    const [totals, prices, systemPrompt, full] = await Promise.all([
+    const [totals, prices, webKeys, systemPrompt, full] = await Promise.all([
       request('/api/admin/usage/total'),
       request('/api/admin/prices'),
+      request('/api/admin/web-keys'),
       request('/api/admin/system-prompt'),
       request('/api/admin/system-prompt/full'),
     ]);
     if (tab !== 'bot') return;
     priceState = { prices, edit, editing: '' };
-    $('content').innerHTML = [adminTotals(totals), '<section class="card" id="admin-prices"></section>', adminSystemPrompt(systemPrompt, full.text, off)].join('');
+    $('content').innerHTML = [adminTotals(totals), '<section class="card" id="admin-prices"></section>', adminWebKeys(webKeys, edit), adminSystemPrompt(systemPrompt, full.text, off)].join('');
     paintPrices();
     wireSystemPrompt(systemPrompt);
+    wireWebKeys(edit);
     if (edit) {
       $('admin-prices').onclick = priceCardClick;
       $('admin-prices').onkeydown = priceCardKey;

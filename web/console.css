@@ -155,3 +155,12 @@ textarea.prompt-field{font-family:'JetBrains Mono',monospace;resize:vertical}
 .price-table s{color:var(--muted)}
 .usage-totals .num{text-align:right;font-variant-numeric:tabular-nums}
 .price-table .chan-actions{flex-wrap:nowrap;gap:6px;justify-content:flex-start}.price-table .chan-actions button{min-height:30px;padding:4px 10px}.price-table td{vertical-align:middle}
+
+/* Web search keys (Bot admin): the key tables do not wrap, the add form is one column, and the off notice is a quiet box. */
+.web-key-group h3,.web-key-form h3{margin:16px 0 6px;font-size:15px;color:var(--strong)}
+.web-key-table th,.web-key-table td{white-space:nowrap}
+.web-key-table td .chip{margin-left:6px}
+.web-key-off{margin:0 0 12px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--pill);color:var(--strong);font-size:13px}
+.web-key-form{margin-top:8px;padding-top:4px;border-top:1px solid var(--line)}
+.web-key-form .primary{margin-top:10px}
+.web-key-form .small{margin:6px 0 0}

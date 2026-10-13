@@ -118,6 +118,8 @@ CREATE INDEX IF NOT EXISTS web_sessions_expires ON web_sessions(expires);
 CREATE TABLE IF NOT EXISTS web_chats (id TEXT PRIMARY KEY, server TEXT NOT NULL, owner TEXT NOT NULL, title TEXT NOT NULL, created BIGINT NOT NULL, updated BIGINT NOT NULL, deleted BIGINT NOT NULL DEFAULT 0);
 ALTER TABLE web_chats ADD COLUMN IF NOT EXISTS effort TEXT;
 CREATE INDEX IF NOT EXISTS web_chats_owner ON web_chats(server,owner,updated);
+CREATE TABLE IF NOT EXISTS web_provider_keys (id TEXT PRIMARY KEY, provider TEXT NOT NULL, owner TEXT NOT NULL, label TEXT NOT NULL, last4 TEXT NOT NULL, secret_encrypted TEXT NOT NULL, created_at BIGINT NOT NULL);
+CREATE TABLE IF NOT EXISTS web_provider_usage (key_id TEXT NOT NULL, month TEXT NOT NULL, used BIGINT NOT NULL, exhausted BIGINT NOT NULL DEFAULT 0, PRIMARY KEY(key_id, month));
 
 -- Remove legacy chat vectors only in this schema; chat history stays in messages.
 DO $$ BEGIN

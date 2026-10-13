@@ -7,6 +7,7 @@ import { PostgresDatabase, serializeStore } from "./postgres-database.js";
 import { randomUUID } from "node:crypto";
 import { parseMessage, type Effort, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
 import type { AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow, TokenTotals, UserTokenTotalRow, TokenTotalsSummary } from "../ports.js";
+import type { KeyedProvider, ProviderKeyRow, ProviderKeyUsage } from "../web-providers.js";
 import { cosine, searchTerms, type Embeddings, type Evidence, type MemoryRecord } from "../memory.js";
 import { attribution, type Attribution } from "../usage-meter.js";
 import { ToolError } from "../tools.js";
@@ -29,6 +30,9 @@ import { isPrivateChannel } from '../private-chat.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
 import { getWebSession, saveWebSession, deleteWebSession, deleteExpiredWebSessions } from '../web-session-store.js';
 import type { WebSessionRow } from '../web-session-store.js';
+function providerKeyRow(row: Record<string, any>): ProviderKeyRow {
+    return { id: String(row.id), provider: String(row.provider) as KeyedProvider, owner: String(row.owner), label: String(row.label), last4: String(row.last4), secretEncrypted: String(row.secret_encrypted), createdAt: Number(row.created_at) };
+}
 export class PostgresStore {
   async record(
     server: string,
@@ -808,6 +812,46 @@ export class PostgresStore {
             (await this.db.exec("COMMIT"));
             return true;
         } catch (error) { (await this.db.exec("ROLLBACK")); throw error; }
+    }
+    async listProviderKeys(): Promise<ProviderKeyRow[]> {
+        return (await this.db.prepare("SELECT id,provider,owner,label,last4,secret_encrypted,created_at FROM web_provider_keys ORDER BY created_at,id").all()).map(providerKeyRow);
+    }
+    async addProviderKey(row: ProviderKeyRow): Promise<void> {
+        (await this.db.prepare("INSERT INTO web_provider_keys (id,provider,owner,label,last4,secret_encrypted,created_at) VALUES(?,?,?,?,?,?,?)").run(row.id, row.provider, row.owner, row.label, row.last4, row.secretEncrypted, row.createdAt));
+    }
+    async deleteProviderKey(id: string): Promise<boolean> {
+        (await this.db.exec("BEGIN IMMEDIATE"));
+        try {
+            (await this.db.prepare("DELETE FROM web_provider_usage WHERE key_id=?").run(id));
+            const changes = (await this.db.prepare("DELETE FROM web_provider_keys WHERE id=?").run(id)).changes;
+            (await this.db.exec("COMMIT"));
+            return changes === 1;
+        } catch (error) { (await this.db.exec("ROLLBACK")); throw error; }
+    }
+    // Every reservation for one provider and month takes the same advisory lock, which also works across server processes.
+    // READ COMMITTED gives the select below a new snapshot after the lock is granted, so it sees the last committed upsert.
+    async reserveProviderCredits(provider: KeyedProvider, month: string, credits: number, cap: number): Promise<ProviderKeyRow | undefined> {
+        if (!Number.isSafeInteger(credits) || credits < 1) throw new Error("Provider credits must be a positive integer");
+        (await this.db.exec("BEGIN IMMEDIATE"));
+        try {
+            (await this.db.prepare("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))").get(`web_provider:${provider}:${month}`));
+            const row = await this.db.prepare(`SELECT k.id,k.provider,k.owner,k.label,k.last4,k.secret_encrypted,k.created_at FROM web_provider_keys k
+                LEFT JOIN web_provider_usage u ON u.key_id=k.id AND u.month=?
+                WHERE k.provider=? AND COALESCE(u.exhausted,0)=0 AND COALESCE(u.used,0)+?<=?
+                ORDER BY COALESCE(u.used,0), k.created_at, k.id LIMIT 1`).get(month, provider, credits, cap);
+            if (!row) { (await this.db.exec("COMMIT")); return undefined; }
+            const picked = providerKeyRow(row);
+            (await this.db.prepare("INSERT INTO web_provider_usage (key_id,month,used,exhausted) VALUES(?,?,?,0) ON CONFLICT(key_id,month) DO UPDATE SET used=web_provider_usage.used+excluded.used").run(picked.id, month, credits));
+            (await this.db.exec("COMMIT"));
+            return picked;
+        } catch (error) { (await this.db.exec("ROLLBACK")); throw error; }
+    }
+    async exhaustProviderKey(id: string, month: string): Promise<void> {
+        (await this.db.prepare("INSERT INTO web_provider_usage (key_id,month,used,exhausted) VALUES(?,?,0,1) ON CONFLICT(key_id,month) DO UPDATE SET exhausted=1").run(id, month));
+    }
+    async providerKeyUsage(month: string): Promise<ProviderKeyUsage[]> {
+        return (await this.db.prepare("SELECT key_id,month,used,exhausted FROM web_provider_usage WHERE month=? ORDER BY key_id").all(month))
+            .map(row => ({ keyId: String(row.key_id), month: String(row.month), used: Number(row.used), exhausted: Number(row.exhausted) !== 0 }));
     }
   async reindex(server: string, channels: readonly string[]): Promise<number> {
     if (!this.embeddings || !channels.length) return 0;

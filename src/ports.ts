@@ -1,6 +1,7 @@
 import type { TaskContext } from "./context.js";
 import type { ToolCall, ToolOutput } from "./tools.js";
 import type { Message, ModelEvent, Prompt, PromptItem, Reply } from "./domain.js";
+import type { ProviderKeyStore } from "./web-providers.js";
 
 export interface LLM {
   // The model id that prices this LLM's calls. Unnamed LLMs get the fallback price.
@@ -11,7 +12,7 @@ export interface LLM {
 }
 
 // Async contracts allow remote databases without changing application logic.
-export interface Store {
+export interface Store extends ProviderKeyStore {
   lastContextChange?(server: string, channel: string): unknown | Promise<unknown>;
   partialReply?(message: Message): Promise<string | undefined>;
   recordSources(runId: string, server: string, sourceIds: readonly string[]): Promise<void>;
