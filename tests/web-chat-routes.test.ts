@@ -58,7 +58,7 @@ async function setup(t: TestContext): Promise<Fixture> {
     logins[user] = { cookie: `slopbot_session=${id}`, csrf };
   }
   const web = createConsole({ origin: ORIGIN, host: "127.0.0.1", port: 3000, clientId: "id", clientSecret: "secret" }, {
-    sessions: store,
+    sessions: store, async canSignIn() { return true; },
     async snapshot() { return {}; },
     async invoke() { return {}; },
     chats: createChatRoutes(service),

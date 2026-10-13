@@ -22,7 +22,7 @@ test('web console is opt-in and rejects insecure public origins', () => {
 });
 test('Discord login binds state to browser, protects writes, and destroys logout sessions', async t => {
   let user = '', name = '', deny = false;
-  const server = createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'}, { sessions: new SQLiteStore(),
+  const server = createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'}, { sessions: new SQLiteStore(), async canSignIn() { return true; },
     async snapshot(id) { if (deny) throw new ToolError('Membership revoked'); return {user:id}; },
     async invoke(id, _server, _channel, tool) { if (deny) throw new ToolError('Permission revoked'); user=id;name=tool;return {text:'Saved'}; },
     async mcp(id, _server, input) { if (deny) throw new ToolError('Manage Server permission is required.'); user=id;name='mcp';return {text:'Connected',input}; },
@@ -83,7 +83,7 @@ test('landing serves the static export, console serves under /console, and trave
   await writeFile(join(dir,'site/out/favicon.svg'),'<svg xmlns="http://www.w3.org/2000/svg"/>');
   await writeFile(join(dir,'site/out/404.html'),'<!doctype html>');
   await writeFile(join(dir,'secret.txt'),'secret');
-  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:join(dir,'site/out')},{ sessions: new SQLiteStore(),async snapshot(){return {};},async invoke(){return {};}});
+  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:join(dir,'site/out')},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});
   server.listen(0,'127.0.0.1');await once(server,'listening');
   t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
   const address=server.address();assert.ok(address&&typeof address!=='string');
@@ -115,7 +115,7 @@ test('landing serves the static export, console serves under /console, and trave
   assert.equal((await fetch(base+'/assets/logo-light.svg')).status,404);
 });
 test('landing returns 404 when site/out is missing',async t=>{
-  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:join(tmpdir(),'slopbot-no-such-site')},{ sessions: new SQLiteStore(),async snapshot(){return {};},async invoke(){return {};}});
+  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:join(tmpdir(),'slopbot-no-such-site')},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});
   server.listen(0,'127.0.0.1');await once(server,'listening');
   t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
   const address=server.address();assert.ok(address&&typeof address!=='string');
@@ -134,7 +134,7 @@ test('team admin routes need team membership, and only editors can change settin
   const panel = new AdminPanel({ model: 'nimbus', jevModel: 'cirrus', embeddingModel: 'embed', baseUrl: 'https://models.example.com/v1', modelPrices: {}, fallbackPrice: { input: 1, cached_input: 1, output: 1 }, userLimit5hCostMicros: 100, userLimitWeekCostMicros: 0, userLimitGracePercent: 10 }, store, limiter, directory);
   const rotated: string[] = [];
   const admin: ConsoleAdmin = { role: id => teams.role(id), canEdit: id => teams.canEdit(id), servers: async () => ({ servers: [{ id: SERVER, name: 'Test server', channels: [] }] }), setTranscript: async (server, channel, enabled) => ({ server, channel, enabled }), rotateWebhook: async (_server, channel) => { rotated.push(channel); return { webhookId: 'hook-2' }; }, panel };
-  const server = createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'}, { sessions: new SQLiteStore(),
+  const server = createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'}, { sessions: new SQLiteStore(), async canSignIn() { return true; },
     async snapshot() { return {}; }, async invoke() { return {}; }, admin,
   });
   server.listen(0,'127.0.0.1'); await once(server,'listening');
@@ -254,4 +254,47 @@ test('team admin routes need team membership, and only editors can change settin
   // Losing the role takes effect after the team reload.
   members = [];
   assert.equal((await get('/api/admin/me', developer)).status, 200, 'the cache still holds the old team');
+});
+test('Sign-in needs a shared server, and old logins stop when the user leaves', async t => {
+  let mode: 'member' | 'none' | 'error' = 'member';
+  const store = new SQLiteStore();
+  const server = createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'}, { sessions: store,
+    async canSignIn() { if (mode === 'error') throw new Error('Discord down'); return mode === 'member'; },
+    async snapshot(id) { return {user:id}; }, async invoke() { return {}; },
+  });
+  server.listen(0,'127.0.0.1'); await once(server,'listening');
+  t.after(() => new Promise<void>(resolve => server.close(()=>resolve())));
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  const base = `http://127.0.0.1:${address.port}`, originalFetch = globalThis.fetch;
+  t.mock.method(globalThis,'fetch',async (url: string | URL | Request, init?:RequestInit) => {
+    if (String(url) === 'https://discord.com/api/oauth2/token') return Response.json({access_token:'oauth-secret'});
+    if (String(url) === 'https://discord.com/api/users/@me') return Response.json({id:'123456789012345678'});
+    return originalFetch(url,init);
+  });
+  const signIn = async () => {
+    const login = await originalFetch(base+'/auth/login',{redirect:'manual'});
+    const state = new URL(login.headers.get('location')!).searchParams.get('state')!;
+    return originalFetch(base+`/auth/callback?state=${state}&code=x`,{redirect:'manual',headers:{Cookie:`slopbot_state=${state}`}});
+  };
+  mode = 'none';
+  const denied = await signIn();
+  assert.equal(denied.status,403);
+  assert.match(await denied.text(),/not in any of your Discord servers/);
+  assert.ok(!denied.headers.getSetCookie().some(item => item.includes('slopbot_session=') && !item.includes('Max-Age=0')));
+  mode = 'error';
+  const failed = await signIn();
+  assert.equal(failed.status,503);
+  assert.match(await failed.text(),/Try again/);
+  assert.ok(!failed.headers.getSetCookie().some(item => item.includes('slopbot_session=')));
+  mode = 'member';
+  const ok = await signIn();
+  assert.equal(ok.status,302);
+  const cookie = ok.headers.getSetCookie()[0]!.split(';')[0]!;
+  assert.equal((await originalFetch(base+'/api/settings',{headers:{Cookie:cookie}})).status,200);
+  mode = 'none';
+  const gone = await originalFetch(base+'/api/settings',{headers:{Cookie:cookie}});
+  assert.equal(gone.status,401);
+  assert.match(gone.headers.get('set-cookie')!,/Max-Age=0/);
+  mode = 'member';
+  assert.equal((await originalFetch(base+'/api/settings',{headers:{Cookie:cookie}})).status,401);
 });

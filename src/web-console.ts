@@ -27,6 +27,8 @@ export interface ConsoleBackend {
   /** Share links. Public page and snapshot routes, plus the admin list and writes. */
   shares?: ShareService;
   snapshot(user: string, server?: string): Promise<unknown>;
+  /** True when the user shares at least one server with Slopbot. Throws when Discord cannot answer, so callers fail closed. */
+  canSignIn(user: string): Promise<boolean>;
   invoke(user: string, server: string | undefined, channel: string, name: string, args: ToolArgs): Promise<unknown>;
   mcp?(user: string, server: string | undefined, input: unknown): Promise<unknown>;
   transcripts?(user: string, server: string): Promise<unknown>;
@@ -118,6 +120,7 @@ async function readInside(root: string, name: string): Promise<StaticFile | unde
   const info = await stat(file).catch(() => undefined);
   return info?.isFile() ? { content: await readFile(file), type } : undefined;
 }
+const noticePage = (title: string, text: string, link: [string, string][]) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><link rel="stylesheet" href="/console/style.css"></head><body><main style="max-width:480px;margin:15vh auto;padding:0 16px;font-family:system-ui,sans-serif"><h1>${title}</h1><p>${text}</p><p>${link.map(([href, label]) => `<a href="${href}">${label}</a>`).join(' &middot; ')}</p></main></body></html>`;
 export function createConsole(options: ConsoleOptions, backend: ConsoleBackend): Server {
   const sessions = backend.sessions;
   const states = new Map<string, number>();
@@ -173,6 +176,11 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         if (!identity.ok) throw new Error('Identity lookup failed');
         const user = await identity.json() as { id: string };
         if (!/^\d{17,20}$/.test(user.id)) throw new Error('Invalid identity');
+        const page = (status: number, html: string) => { res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Set-Cookie': cookie('slopbot_state', '', 0) }); res.end(html); };
+        let member: boolean;
+        try { member = await backend.canSignIn(user.id); }
+        catch (error) { logError('web_signin_check_failed', error, { stage: 'web console' }); return page(503, noticePage('Could not sign you in', 'Slopbot could not check your Discord servers. Try again.', [['/auth/login', 'Try again']])); }
+        if (!member) return page(403, noticePage('Slopbot is not in your servers', 'Slopbot is not in any of your Discord servers. Ask a server admin to add Slopbot, then sign in again.', [['/#start', 'Add to Discord'], ['/auth/login', 'Sign in again']]));
         await backend.snapshot(user.id);
         const id = token();
         await sessions.saveSession({ id_hash: sessionHash(id), user_id: user.id, csrf: token(), expires: now + SESSION_MS, created: now });
@@ -210,6 +218,8 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         if (req.method === 'GET' && routePath === '/api/settings') {
           const server = url.searchParams.get('server') ?? undefined;
           if (server !== undefined && !/^\d{17,20}$/.test(server)) return send(res, 400, { error: 'Invalid server.' });
+          // A user who left every shared server loses the login.
+          if (!(await backend.canSignIn(session.user))) { await sessions.deleteSession(session.hash); res.setHeader('Set-Cookie', cookie('slopbot_session', '', 0)); return send(res, 401, { error: 'Sign in with Discord to continue.' }); }
           return send(res, 200, { data: await backend.snapshot(session.user, server), csrf: session.csrf });
         }
         if (req.method === 'GET' && routePath.startsWith('/api/admin/')) return await admin(res, session.user, 'GET', routePath, url.searchParams, undefined);

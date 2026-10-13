@@ -118,7 +118,7 @@ function keysOf(value: unknown, found: string[] = []): string[] {
 
 test("transcript routes answer 403 without a session", async t => {
   const f = await fixture(t);
-  const web = createConsole({ origin: "http://localhost:3000", host: "127.0.0.1", port: 3000, clientId: "id", clientSecret: "secret" }, { sessions: new SQLiteStore(),
+  const web = createConsole({ origin: "http://localhost:3000", host: "127.0.0.1", port: 3000, clientId: "id", clientSecret: "secret" }, { sessions: new SQLiteStore(), async canSignIn() { return true; },
     async snapshot() { return {}; },
     async invoke() { return {}; },
     conversations: createTranscripts(f.host),
