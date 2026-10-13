@@ -24,6 +24,45 @@ export interface WireMessage {
   tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[];
   tool_call_id?: string;
 }
+/** Largest image that is inlined for the model. Same limit as a web chat upload. */
+const INLINE_IMAGE_BYTES = 25 * 1024 * 1024;
+
+/**
+ * The gateway accepts only data: URLs for images; it does not fetch remote URLs. So each remote image URL is fetched
+ * here and sent as a data: URL. The bytes stay in memory for this one request. An image that cannot be fetched is
+ * replaced by a short text note, so the request still goes through.
+ */
+export async function inlineImages(messages: WireMessage[], fetcher: typeof fetch, signal?: AbortSignal): Promise<WireMessage[]> {
+  const cache = new Map<string, Promise<string | undefined>>();
+  const load = (url: string) => {
+    let hit = cache.get(url);
+    if (!hit) {
+      hit = (async () => {
+        try {
+          const response = await fetcher(url, { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000) });
+          if (!response.ok) return undefined;
+          const type = (response.headers.get("content-type") ?? "").split(";")[0]!.trim();
+          if (!type.startsWith("image/")) return undefined;
+          const bytes = Buffer.from(await response.arrayBuffer());
+          if (bytes.length > INLINE_IMAGE_BYTES) return undefined;
+          return `data:${type};base64,${bytes.toString("base64")}`;
+        } catch { return undefined; }
+      })();
+      cache.set(url, hit);
+    }
+    return hit;
+  };
+  return Promise.all(messages.map(async message => {
+    if (!Array.isArray(message.content)) return message;
+    const content = await Promise.all(message.content.map(async part => {
+      if (part.type !== "image_url" || part.image_url.url.startsWith("data:")) return part;
+      const data = await load(part.image_url.url);
+      return data ? { type: "image_url" as const, image_url: { url: data } } : { type: "text" as const, text: "[An image could not be loaded.]" };
+    }));
+    return { ...message, content };
+  }));
+}
+
 export function wireMessages(prompt: Prompt): WireMessage[] {
   const items = promptItems(prompt), messages: WireMessage[] = [];
   const ordinary = (item: typeof items[number]): WireMessage => {
@@ -121,8 +160,9 @@ export class ChatCompletionsLLM implements LLM {
   async *stream(prompt: Prompt, signal?: AbortSignal): AsyncIterable<ModelEvent> {
     const maxOutputTokens = prompt.maxOutputTokens ?? this.outputTokenLimit;
     const phase = prompt.prefixVersion.startsWith("participation") ? "decision model" : prompt.purpose === "checkpoint" ? "checkpoint model" : prompt.purpose === "inspection" ? "inspection model" : "reply model";
-    const messages = wireMessages(prompt);
-    yield { kind: "opaque", payload: this.cacheDiagnostics.compare(prompt, messages) };
+    const wire = wireMessages(prompt);
+    yield { kind: "opaque", payload: this.cacheDiagnostics.compare(prompt, wire) };
+    const messages = await inlineImages(wire, fetch, signal);
     let response: Response;
     const request = (effort: string | undefined) => this.aliases.request(this.options.model, model => requestTimings.wait(`${phase} response headers`, () => this.fetcher(`${this.options.baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
