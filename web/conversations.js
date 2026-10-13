@@ -39,6 +39,7 @@ function relTime(ts) {
 
 // The chat view has no page title. The breadcrumb, title and description are hidden while it shows.
 function setChatMode(on) {
+  if (!on) setConversationDrawer(false);
   for (const id of ['breadcrumb', 'title', 'description']) $(id).hidden = on;
   document.querySelector('main').classList.toggle('chat-mode', on);
   $('console').classList.toggle('chat-only', on);
@@ -69,19 +70,46 @@ function renderConversations() {
   setChatMode(true);
   conv.blank = false;
   setPageTitle('Chat');
-  $('content').innerHTML = '<div id="chat-root" class="chat"><aside id="chat-side" class="chat-side"><div id="chat-server" class="chat-server" hidden></div><input id="conv-search" class="chat-search" type="search" placeholder="Search messages" aria-label="Search messages"><div id="conv-list" class="chat-list"></div></aside><section id="conv-main" class="chat-pane"><header class="chat-head"><button id="chat-drawer" class="chat-drawer" type="button" aria-expanded="false" aria-controls="chat-side">Conversations</button><h2 id="chat-title" class="chat-title"></h2><div class="chat-tools"><span id="chat-private" class="chat-private" hidden>' + LOCK_ICON + '<span>Private</span></span><span id="conv-status" class="chat-status"></span><div id="conv-share" class="chat-share" hidden></div></div></header><div id="conv-view" class="chat-view"></div><div id="conv-reply" class="chat-composer" hidden></div></section></div>';
+  $('content').innerHTML = '<div id="chat-root" class="chat"><button id="chat-backdrop" class="chat-backdrop" type="button" aria-label="Close conversations" tabindex="-1"></button><aside id="chat-side" class="chat-side" aria-label="Conversations"><button id="chat-drawer-close" class="chat-drawer-close" type="button">Conversations <span aria-hidden="true">×</span></button><div id="chat-server" class="chat-server" hidden></div><input id="conv-search" class="chat-search" type="search" placeholder="Search messages" aria-label="Search messages"><div id="conv-list" class="chat-list"></div></aside><section id="conv-main" class="chat-pane"><header class="chat-head"><button id="chat-drawer" class="chat-drawer" type="button" aria-expanded="false" aria-controls="chat-side" aria-label="Open conversations" title="Conversations"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button><h2 id="chat-title" class="chat-title"></h2><div class="chat-tools"><span id="chat-private" class="chat-private" hidden>' + LOCK_ICON + '<span>Private</span></span><span id="conv-status" class="chat-status"></span><div id="conv-share" class="chat-share" hidden></div></div></header><div id="conv-view" class="chat-view"></div><div id="conv-reply" class="chat-composer" hidden></div></section></div>';
   $('conv-search').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); searchConversations($('conv-search').value); } };
   $('chat-drawer').onclick = toggleDrawer;
+  $('chat-drawer-close').onclick = () => setConversationDrawer(false, true);
+  $('chat-backdrop').onclick = () => setConversationDrawer(false, true);
+  $('chat-root').onkeydown = event => {
+    if (event.defaultPrevented || !$('chat-root').classList.contains('drawer-open')) return;
+    if (event.key === 'Escape') { event.preventDefault(); setConversationDrawer(false, true); }
+    if (event.key === 'Tab' && window.matchMedia('(max-width:760px)').matches) {
+      const items = [...$('chat-side').querySelectorAll('button:not(:disabled),input:not(:disabled),[tabindex="0"]')].filter(node => node.getClientRects().length);
+      const first = items[0], last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    }
+  };
   renderChatServers();
   drawList();
   if (conv.channel === null && (conv.list.length || conv.chats.length)) showPick(); else showView(busy('md', 'Loading…'));
   loadConversations().catch(fail);
 }
 
-function toggleDrawer() {
-  const open = $('chat-root').classList.toggle('drawer-open');
+function setConversationDrawer(open, refocus = false) {
+  const root = $('chat-root');
+  if (!root) return;
+  const wasOpen = root.classList.contains('drawer-open');
+  root.classList.toggle('drawer-open', open);
   $('chat-drawer').setAttribute('aria-expanded', String(open));
+  const mobile = window.matchMedia('(max-width:760px)').matches;
+  $('conv-main').inert = open && mobile;
+  document.querySelector('.topbar').inert = open && mobile;
+  const side = $('chat-side');
+  if (open && mobile) { side.setAttribute('role', 'dialog'); side.setAttribute('aria-modal', 'true'); }
+  else { side.removeAttribute('role'); side.removeAttribute('aria-modal'); }
+  if (open) $('conv-search').focus();
+  else if (mobile && wasOpen && (refocus || side.contains(document.activeElement))) $('chat-drawer').focus();
 }
+function toggleDrawer() { setConversationDrawer(!$('chat-root').classList.contains('drawer-open')); }
+window.addEventListener('resize', () => {
+  if ($('chat-root') && !window.matchMedia('(max-width:760px)').matches) setConversationDrawer(false);
+});
 
 // The private chats of one server, newest first. The route returns a list.
 async function fetchChats(id) {
@@ -348,8 +376,7 @@ async function openConversation(id, kind = 'channel', replace = false) {
   setItemHash(kind, id, replace);
   const chat = kind === 'chat';
   drawList();
-  $('chat-root')?.classList.remove('drawer-open');
-  $('chat-drawer')?.setAttribute('aria-expanded', 'false');
+  setConversationDrawer(false, true);
   // A channel with web transcripts off has no messages to load. The server does not send them either.
   const listed = chat ? conv.chats.find(c => c.id === id) : conv.list.find(c => c.id === id);
   $('chat-private').hidden = !chat;
@@ -489,8 +516,7 @@ function openBlankChat() {
   conv.chatNote = '';
   if (location.hash !== '#chat') history.pushState(null, '', '#chat');
   drawList();
-  $('chat-root')?.classList.remove('drawer-open');
-  $('chat-drawer')?.setAttribute('aria-expanded', 'false');
+  setConversationDrawer(false, true);
   $('chat-private').hidden = false;
   $('conv-status').hidden = true;
   $('conv-share').hidden = true;
@@ -1487,7 +1513,7 @@ async function searchConversations(text) {
   if (q.length < 2) { notice('Search needs at least 2 characters.'); return; }
   closeStream();
   conv.channel = null; conv.blank = false; drawList();
-  $('chat-root')?.classList.remove('drawer-open');
+  setConversationDrawer(false, true);
   $('conv-status').hidden = true;
   $('chat-private').hidden = true;
   $('conv-share').hidden = true;
@@ -1721,7 +1747,7 @@ function imageTray(form, box, field, status, ensure) {
   const attach = document.createElement('button');
   attach.type = 'button'; attach.className = 'chat-attach'; attach.textContent = '+';
   attach.setAttribute('aria-label', 'Attach images'); attach.title = 'Attach images';
-  box.prepend(attach);
+  box.querySelector('textarea').after(attach);
   form.append(input);
   const show = () => { tray.hidden = items.length === 0; };
   const remove = item => {

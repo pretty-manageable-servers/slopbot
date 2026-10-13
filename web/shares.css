@@ -6,7 +6,7 @@ body.share-page{min-height:100vh}
 .share-list{display:grid;gap:14px;margin-top:28px}
 .share-msg{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow-wrap:anywhere}
 .share-msg.bot{border-color:var(--accent)}
-.share-msg header{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:6px}
+.share-msg header{height:auto;padding:0;border:0;display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:6px}
 .share-msg header strong{color:var(--strong)}
 .share-msg time{color:var(--muted);font-size:12px;margin-left:auto}
 .tag{font-size:11px;color:var(--accent);background:var(--pill);border-radius:999px;padding:0 8px}
@@ -33,3 +33,6 @@ body.share-page{min-height:100vh}
 .share-row .meta{color:var(--muted);font-size:12px}
 .share-row .off{color:var(--muted)}
 .share-imgs{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 0}.share-img{max-width:240px;max-height:240px;border-radius:10px;border:1px solid var(--line)}
+
+.share-img{max-width:min(240px,100%)}.share-msg{min-width:0}.share-row>*{min-width:0;overflow-wrap:anywhere}
+@media(max-width:760px){.share{padding:24px 12px 32px}.share h1{font-size:25px}.share-list{gap:10px;margin-top:18px}.share-msg{padding:12px}.share-row{grid-template-columns:minmax(0,1fr)}.share-list-box{padding:0 12px}.share-msg time{margin-left:0}}

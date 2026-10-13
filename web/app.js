@@ -7,6 +7,13 @@ const recall = key => { try { return localStorage.getItem(key); } catch { return
 const remember = (key, value) => { try { localStorage.setItem(key, value); } catch { } };
 function theme(light) { document.documentElement.classList.toggle('light', light); document.querySelectorAll('img[src*="logo-"]').forEach(img => img.src = `/console/assets/logo-${light ? 'dark' : 'light'}.svg`); const next = light ? 'Switch to dark theme' : 'Switch to light theme'; $('theme').setAttribute('aria-label', next); $('theme').title = next; $('theme-sun').hidden = light; $('theme-moon').hidden = !light; remember('slopbot-theme', light ? 'light' : 'dark'); }
 theme(recall('slopbot-theme') === 'light');
+// Follow the visible viewport when a mobile keyboard opens.
+function sizeConsoleViewport() {
+  document.documentElement.style.setProperty('--viewport-height', `${window.visualViewport?.height || window.innerHeight}px`);
+}
+sizeConsoleViewport();
+window.visualViewport?.addEventListener('resize', sizeConsoleViewport);
+window.addEventListener('resize', sizeConsoleViewport);
 $('theme').onclick = () => theme(!document.documentElement.classList.contains('light'));
 // Top bar: Chat or Settings, and the account menu. Chat is the default when the user can view a conversation.
 function setView(view) {
@@ -182,7 +189,7 @@ function askConfirm({ title, body = '', confirmLabel = 'Confirm', danger = false
     (danger ? cancel : ok).focus();
   });
 }
-function showScreen(name) { $('top-tabs').hidden = name !== 'console'; $('boot').hidden = name !== 'boot'; $('login').hidden = name !== 'login'; $('console').hidden = name !== 'console'; $('account').hidden = name !== 'console'; }
+function showScreen(name) { if (name !== 'console') setConversationDrawer(false); $('top-tabs').hidden = name !== 'console'; $('boot').hidden = name !== 'boot'; $('login').hidden = name !== 'login'; $('console').hidden = name !== 'console'; $('account').hidden = name !== 'console'; }
 const loader = size => { const svg = $('loader').content.firstElementChild.cloneNode(true); if (size) svg.classList.add(size); return svg; };
 function busy(size, text) { const box = document.createElement('div'), label = document.createElement('p'); box.className = 'busy'; label.textContent = text; box.append(loader(size), label); return box; }
 async function request(path, body) {
@@ -203,7 +210,7 @@ async function run(button, task) {
 }
 const refresh = async () => applySettings(await settingsFor(state.server.id));
 const input = (label, name, value, max, min = 0) => `<label>${label}<input name="${name}" type="number" min="${min}" max="${max}" value="${esc(value)}" required></label>`;
-const checkbox = (label, name, value) => `<label><input name="${name}" type="checkbox" ${value ? 'checked' : ''}>${label}</label>`;
+const checkbox = (label, name, value) => `<label class="checkbox-field"><input name="${name}" type="checkbox" ${value ? 'checked' : ''}>${label}</label>`;
 const card = (id, title, scope, body, button = 'Save changes') => `<form class="card" id="${id}"><h2>${title}</h2><p class="scope">${scope}</p>${body}<button class="primary">${button}</button></form>`;
 function bind(id, handler) { const form = $(id); if (!form) return; form.onsubmit = event => { event.preventDefault(); run(form.querySelector('button'), () => handler(new FormData(form))); }; }
 async function save(name, args, channel = state.channels[0]?.id) { if (!channel) throw new Error('You and Slopbot need access to a server text channel.'); const result = await request('/api/settings', { name, args, channel, server: state.server.id }); notice(result.text || 'Saved.'); }
@@ -281,6 +288,7 @@ async function pollChannels() {
 }
 function render() {
   document.querySelectorAll('[data-tab]').forEach(button => { button.classList.toggle('selected', button.dataset.tab === tab); button.setAttribute('aria-current', button.dataset.tab === tab ? 'page' : 'false'); button.onclick = () => { tab = button.dataset.tab; render(); }; });
+  $('content').classList.toggle('settings-cards', ['server', 'profile'].includes(tab) && !!state.server);
   const onChat = tab === 'conversations' && !!state.server;
   setChatMode(onChat);
   if (!onChat) setPageTitle('Settings');
@@ -290,7 +298,7 @@ function render() {
   if (tab === 'conversations') return renderConversations();
   if (state.partial) { $('breadcrumb').textContent = 'Settings'; $('content').replaceChildren(busy('md', 'Loading…')); return; }
   $('breadcrumb').textContent = `Settings / ${tab === 'profile' ? 'My profile' : tab === 'channels' ? 'Channels' : tab === 'mcp' ? 'MCP connections' : 'Server'}`;
-  $('title').textContent = {server:'Make room for good ideas.',channels:'Choose where Slopbot listens.',mcp:'Connect more tools.',profile:'Introduce yourself.'}[tab];
+  $('title').textContent = {server:'Server settings',channels:'Channels & history',mcp:'MCP connections',profile:'My profile'}[tab];
   $('description').textContent = {server:'Set how Slopbot participates in your server.',channels:'Manage monitored channels and saved chat history. Only saved lessons and memories use embeddings.',mcp:'Add remote MCP servers and choose their tools. Changes apply without restarting or redeploying Slopbot.',profile:'Your profile is public to this Discord server. You control who can edit it.'}[tab];
   const s = state.settings;
   if (tab !== 'profile' && !state.admin) { $('content').innerHTML = '<p>Manage Server permission is required for these controls.</p>'; return; }
@@ -319,7 +327,6 @@ function render() {
       run(form.querySelector('button'), () => save('index', { action: 'window', days }, id));
     };
     drawChannels();
-    draw('');
   } else if (tab === 'mcp') {
     renderMcp();
   } else {
@@ -439,7 +446,7 @@ function adminTranscripts(servers, off) {
 async function renderAdmin() {
   const edit = admin.canEdit, off = edit ? '' : ' disabled';
   $('breadcrumb').textContent = 'Settings / Team admin';
-  $('title').textContent = 'Run Slopbot for your team.';
+  $('title').textContent = 'Team admin';
   $('description').textContent = 'Limits, model prices, usage and web transcripts. Read-only members can view everything.';
   $('content').replaceChildren(busy('md', 'Loading…'));
   try {
