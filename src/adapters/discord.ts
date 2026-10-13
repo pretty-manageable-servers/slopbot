@@ -47,6 +47,7 @@ import { createUsageMeter, type UsageMeter } from "../usage-meter.js";
 import { registerUsageTool } from "../usage-tools.js";
 import { configuredChannels, registerServerTools, webTranscriptKey, webTranscriptsEnabled } from "../server-tools.js";
 import { ChannelAccess } from "../channel-access.js";
+import { ShareService } from "../shares.js";
 import { discordChannelAccessSource, wireChannelAccessEvents } from "./discord-channel-access.js";
 import { displayToolResult, ToolError, ToolRegistry, UncertainActionError, stableOperationId } from "../tools.js";
 
@@ -557,12 +558,15 @@ export class DiscordAdapter {
   private botUser: string | undefined;
   /** Live per-user view and send checks for the web console. */
   readonly access: ChannelAccess;
+  /** Share links for the web console. The team admin check is added here when the team panel exists. */
+  readonly shares: ShareService;
 
   constructor(private readonly config: Config, private readonly store: RuntimeStore, private readonly llm: LLM, client?: Client) {
     this.usage = createUsageMeter(config, store);
     this.client = client ?? new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent], partials: [Partials.Message, Partials.Channel] });
     this.access = new ChannelAccess(discordChannelAccessSource(this.client));
     wireChannelAccessEvents(this.client, this.access);
+    this.shares = new ShareService({ store, access: this.access, rule: { manager: (user, server) => this.hasManageServer(user, server) } });
     this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;
     this.client.once(Events.ClientReady, async client => {
       this.botUser = client.user.id;
@@ -639,6 +643,12 @@ export class DiscordAdapter {
   }
   async consoleSetTranscript(user: string, guildId: string, channel: string, enabled: boolean): Promise<unknown> {
     return (await this.server(user, guildId)).consoleSetTranscript(user, channel, enabled);
+  }
+  /** Manage Server in one guild. A user who is not a member, or has no permission, gets false. */
+  async hasManageServer(user: string, server: string): Promise<boolean> {
+    const guild = await this.client.guilds.fetch(server);
+    const member = await guild.members.fetch({ user, force: true }).catch(() => undefined);
+    return member?.permissions.has(PermissionFlagsBits.ManageGuild) ?? false;
   }
   async start(): Promise<void> { await this.client.login(this.config.discordToken); }
   async stop(): Promise<void> {

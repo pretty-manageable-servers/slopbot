@@ -5,8 +5,11 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { ToolError, type ToolArgs } from './tools.js';
 import type { ChannelAccess } from './channel-access.js';
+import { ShareError, isShareWrite, type ShareService } from './shares.js';
 
 export interface ConsoleBackend {
+  /** Share links. Public page and snapshot routes, plus the admin list and writes. */
+  shares?: ShareService;
   snapshot(user: string, server?: string): Promise<unknown>;
   invoke(user: string, server: string | undefined, channel: string, name: string, args: ToolArgs): Promise<unknown>;
   mcp?(user: string, server: string | undefined, input: unknown): Promise<unknown>;
@@ -69,6 +72,18 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         const id = token(); sessions.set(id, { user: user.id, csrf: token(), expires: now + 3_600_000 });
         res.writeHead(302, { Location: '/', 'Set-Cookie': [cookie('slopbot_session', id, 3600), cookie('slopbot_state', '', 0)] }); res.end(); return;
       }
+      // Public share pages and snapshots. They never need a login and are never indexed.
+      if (req.method === 'GET' && backend.shares && (/^\/s\/[A-Za-z0-9_-]{22}$/.test(routePath) || /^\/api\/shares\/[A-Za-z0-9_-]{22}$/.test(routePath))) {
+        res.setHeader('X-Robots-Tag', 'noindex');
+        const shareId = routePath.slice(routePath.lastIndexOf('/') + 1);
+        if (routePath.startsWith('/s/')) {
+          const html = await backend.shares.page(shareId);
+          if (!html) return send(res, 404, { error: 'Not found.' });
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end(html); return;
+        }
+        const snapshot = await backend.shares.snapshot(shareId);
+        return snapshot ? send(res, 200, snapshot) : send(res, 404, { error: 'Not found.' });
+      }
       if (routePath.startsWith('/api/')) {
         const id = cookies(req).slopbot_session || '', session = sessions.get(id);
         if (!session) return send(res, 401, { error: 'Sign in with Discord to continue.' });
@@ -83,14 +98,24 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
           if (!backend.transcripts) return send(res, 404, { error: 'Not found.' });
           return send(res, 200, await backend.transcripts(session.user, server));
         }
+        if (req.method === 'GET' && routePath === '/api/shares') {
+          if (!backend.shares) return send(res, 404, { error: 'Not found.' });
+          return send(res, 200, await backend.shares.list(session.user, url.searchParams.get('server') ?? ''));
+        }
         if (req.method !== 'POST' || req.headers.origin !== new URL(options.origin).origin || req.headers['x-csrf-token'] !== session.csrf) return send(res, 403, { error: 'Invalid request.' });
         if (routePath === '/api/logout') { sessions.delete(id); res.setHeader('Set-Cookie', cookie('slopbot_session', '', 0)); return send(res, 200, { ok: true }); }
-        if (!['/api/settings', '/api/mcp', '/api/web-transcripts/channels'].includes(routePath)) return send(res, 404, { error: 'Not found.' });
+        if (!['/api/settings', '/api/mcp', '/api/web-transcripts/channels'].includes(routePath) && !isShareWrite(routePath)) return send(res, 404, { error: 'Not found.' });
         if (!req.headers['content-type']?.startsWith('application/json')) return send(res, 415, { error: 'Send JSON.' });
         let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > (routePath === '/api/mcp' ? 65536 : 16384)) return send(res, 413, { error: 'Request too large.' }); }
         let input: { server?: string; channel?: string; name?: string; args?: ToolArgs; enabled?: boolean };
         try { input = JSON.parse(body); } catch { return send(res, 400, { error: 'Invalid JSON.' }); }
         if (input?.server !== undefined && (typeof input.server !== 'string' || !/^\d{17,20}$/.test(input.server))) return send(res, 400, { error: 'Invalid server.' });
+        if (isShareWrite(routePath)) {
+          if (!backend.shares) return send(res, 404, { error: 'Not found.' });
+          if (routePath === '/api/shares') return send(res, 200, await backend.shares.create(session.user, input));
+          if (routePath === '/api/shares/revoke-all') return send(res, 200, await backend.shares.revokeAll(session.user, input?.server));
+          return send(res, 200, await backend.shares.revoke(session.user, routePath.split('/')[3]!));
+        }
         if (routePath === '/api/mcp') {
           if (!backend.mcp) return send(res, 404, { error: 'MCP configuration is unavailable.' });
           return send(res, 200, await backend.mcp(session.user, input.server, input));
@@ -106,13 +131,14 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         return send(res, 200, await backend.invoke(session.user, input.server, input.channel, input.name, input.args || {}));
       }
       if (req.method !== 'GET') return send(res, 405, { error: 'Method not allowed.' });
-      const assets: Record<string, string> = { '/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/assets/logo-light.svg': 'assets/logo-light.svg', '/assets/logo-dark.svg': 'assets/logo-dark.svg' };
+      const assets: Record<string, string> = { '/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/assets/logo-light.svg': 'assets/logo-light.svg', '/assets/logo-dark.svg': 'assets/logo-dark.svg', '/shares.js': 'shares.js', '/shares.css': 'shares.css' };
       const file = assets[routePath];
       if (!file && !/^\/assets\/[a-z0-9-]+\.woff2$/.test(routePath)) return send(res, 404, { error: 'Not found.' });
       let content = await readFile(resolve('web', file || routePath.slice(1)));
       res.setHeader('Content-Type', routePath.endsWith('.js') ? 'text/javascript' : routePath.endsWith('.css') ? 'text/css' : routePath.endsWith('.svg') ? 'image/svg+xml' : routePath.endsWith('.woff2') ? 'font/woff2' : 'text/html');
       res.end(content);
     } catch (error) {
+      if (error instanceof ShareError) return send(res, error.status, { error: error.message });
       logError('web_console_failed', error, { stage: 'web console' });
       const info = describeError(error);
       send(res, error instanceof ToolError && error.status === 'rejected' ? 403 : 502, { error: errorSummary(error), code: info.code, recovery: info.recovery });

@@ -17,6 +17,8 @@ import type { ToolArgs, ToolCall, ToolContext, ToolJournal, ToolOperation } from
 
 import type { HistoryQuery, HistoryPage } from '../search/history-search.js';
 import type { AppRecord } from '../records.js';
+import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, revokeShare, revokeAllShares } from '../share-store.js';
+import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
 export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore {
   async record(
     server: string,
@@ -357,6 +359,8 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       CREATE TABLE IF NOT EXISTS settings (server TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(server,key));
       CREATE TABLE IF NOT EXISTS user_limit_counters (server TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, window_start INTEGER NOT NULL, spent INTEGER NOT NULL, PRIMARY KEY(server,user_id,kind));
       CREATE TABLE IF NOT EXISTS user_limit_resets (server TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(server,user_id,kind));
+      CREATE TABLE IF NOT EXISTS shares (id TEXT PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, created_by TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER, body TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS shares_server ON shares(server,created_at);
     `);
     const operationColumns = this.db.prepare("PRAGMA table_info(tool_operations)").all();
     if (!operationColumns.some(column => column.name === "resource")) this.db.exec("ALTER TABLE tool_operations ADD COLUMN resource TEXT");
@@ -539,6 +543,13 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     const row = this.db.prepare("SELECT state FROM harness_events WHERE server=? AND message_id=? ORDER BY sequence DESC LIMIT 1").get(server, id);
     return row ? JSON.parse(String(row.state)) as HarnessState : undefined;
   }
+  async shareMessages(server: string, channel: string, range: ShareMessageRange): Promise<ShareMessageResult> { return shareMessages(this.db, server, channel, range); }
+  async shareRequestEvents(server: string, requests: readonly string[]) { return shareRequestEvents(this.db, server, requests); }
+  async insertShare(row: ShareRow): Promise<void> { return insertShare(this.db, row); }
+  async getShare(id: string): Promise<ShareRow | undefined> { return getShare(this.db, id); }
+  async listShares(server: string, limit: number) { return listShares(this.db, server, limit); }
+  async revokeShare(server: string, id: string, at: number): Promise<boolean> { return revokeShare(this.db, server, id, at); }
+  async revokeAllShares(server: string, at: number): Promise<number> { return revokeAllShares(this.db, server, at); }
   async startRun(runId: string, message: Message, prompt: Prompt): Promise<void> {
     this.db.prepare("INSERT INTO runs(id,message,prompt,status,result,context_version) VALUES(?,?,?,?,NULL,?)")
       .run(runId, JSON.stringify(message), JSON.stringify(prompt), "running", await this.contextVersion(message.server, message.channel));

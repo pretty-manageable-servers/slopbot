@@ -95,3 +95,6 @@ CREATE INDEX IF NOT EXISTS messages_channel ON messages(server,channel,sequence)
 CREATE TABLE IF NOT EXISTS app_records (server TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, revision BIGINT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(server,kind,id));
 
 CREATE INDEX IF NOT EXISTS messages_fulltext ON messages USING gin(to_tsvector('simple',body::jsonb->>'text'));
+
+CREATE TABLE IF NOT EXISTS shares (id TEXT PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, created_by TEXT NOT NULL, created_at BIGINT NOT NULL, revoked_at BIGINT, body TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS shares_server ON shares(server,created_at);
