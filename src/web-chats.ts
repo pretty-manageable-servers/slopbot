@@ -23,7 +23,7 @@ export interface ChatStore extends TranscriptStore, ConversationEventStore, Shar
   ingest(message: Message): Promise<boolean>;
   insertWebChat(row: WebChatRow): Promise<void>;
   webChat(id: string): Promise<WebChatRow | undefined>;
-  webChats(server: string, owner: string): Promise<WebChatRow[]>;
+  webChats(owner: string): Promise<WebChatRow[]>;
   renameWebChat(id: string, title: string, updated: number): Promise<void>;
   setWebChatEffort(id: string, effort: Effort | null): Promise<void>;
   touchWebChat(id: string, updated: number): Promise<void>;
@@ -101,9 +101,19 @@ export class WebChatService {
     this.storage = host.images ?? new LocalDiskStorage();
   }
 
-  async list(user: string, server: string): Promise<{ id: string; title: string; updated: number; effort: Effort }[]> {
-    await this.requireMember(user, server);
-    return (await this.store.webChats(server, user)).map(chat => ({ id: chat.id, title: chat.title, updated: chat.updated, effort: this.effortOf(chat) }));
+  /**
+   * All live chats of the user, from every server, newest first. The server of a chat only hosts its runs, so the list
+   * is the same on every device. Chats in a server that the user or Slopbot left are not shown (they cannot be opened).
+   */
+  async list(user: string): Promise<{ id: string; title: string; updated: number; effort: Effort }[]> {
+    const chats = await this.store.webChats(user);
+    const member = new Map<string, Promise<boolean>>();
+    const open = (server: string) => {
+      if (!member.has(server)) member.set(server, SNOWFLAKE.test(server) ? this.host.member(user, server).catch(() => false) : Promise.resolve(false));
+      return member.get(server)!;
+    };
+    const kept = await Promise.all(chats.map(chat => open(chat.server)));
+    return chats.filter((_, index) => kept[index]).map(chat => ({ id: chat.id, title: chat.title, updated: chat.updated, effort: this.effortOf(chat) }));
   }
 
   /** The chat's own effort, else the server default, else medium. */
@@ -369,7 +379,7 @@ export function createChatRoutes(service: WebChatService): ChatRoutes {
         const parts = url.pathname.split("/").slice(2);
         const input = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
         if (parts.length === 1) {
-          if (req.method === "GET") return json(res, 200, await service.list(user, url.searchParams.get("server") ?? ""));
+          if (req.method === "GET") return json(res, 200, await service.list(user));
           if (req.method === "POST") return json(res, 201, await service.create(user, String(input.server ?? "")));
         }
         const id = parts[1] ?? "";

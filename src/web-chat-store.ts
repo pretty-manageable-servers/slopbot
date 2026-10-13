@@ -26,9 +26,9 @@ export async function getWebChat(db: ChatDb, id: string): Promise<WebChatRow | u
   return row ? chatOf(row) : undefined;
 }
 
-/** Live chats of one owner in one server, newest first. */
-export async function listWebChats(db: ChatDb, server: string, owner: string): Promise<WebChatRow[]> {
-  const rows = await db.prepare(`SELECT ${COLUMNS} FROM web_chats WHERE server=? AND owner=? AND deleted=0 ORDER BY updated DESC, id`).all(server, owner);
+/** Live chats of one owner in all servers, newest first. A private chat belongs to its owner, not to a server. */
+export async function listWebChats(db: ChatDb, owner: string): Promise<WebChatRow[]> {
+  const rows = await db.prepare(`SELECT ${COLUMNS} FROM web_chats WHERE owner=? AND deleted=0 ORDER BY updated DESC, id`).all(owner);
   return rows.map(chatOf);
 }
 
