@@ -128,6 +128,32 @@ test('stream event batches preserve all deltas in an isolated Postgres schema', 
   }
 });
 
+test("slow background embeddings do not block another server or resurrect deleted messages", { skip: !process.env.TEST_DATABASE_URL, timeout: 5000 }, async () => {
+  const url = process.env.TEST_DATABASE_URL!;
+  let release!: (vector: number[]) => void, started!: () => void;
+  const pending = new Promise<number[]>(resolve => { release = resolve; });
+  const fetching = new Promise<void>(resolve => { started = resolve; });
+  const store = await PostgresStore.connect(url, { model: "test-slow", async embed() { started(); return pending; } }, "slopbot_test_slow");
+  const message: Message = { server: "first", channel: "chat", id: "slow", author: "person", text: "Slow embedding", timestamp: 1 };
+  try {
+    await store.ingest(message);
+    await store.remember(message, "Slow saved memory");
+    await fetching;
+    await store.setSetting("second", "monitoring", false);
+    assert.equal(store.setting("second", "monitoring"), false);
+    await store.remove(message.server, message.channel, message.id);
+    release([1, 0, 0]);
+    await store.finishIndexing();
+    assert.equal((await store.indexStats(message.server, message.channel)).vectors, 0);
+  } finally {
+    release([1, 0, 0]);
+    await store.finishIndexing();
+    await store.close();
+    const cleanup = new Client({ connectionString: url }); await cleanup.connect();
+    await cleanup.query('DROP SCHEMA slopbot_test_slow CASCADE'); await cleanup.end();
+  }
+});
+
  test("Postgres keeps live UI outside semantic context and refreshes source revisions", {skip: !process.env.TEST_DATABASE_URL}, async () => {
  const store=await PostgresStore.connect(process.env.TEST_DATABASE_URL!);
  const m:Message={server:'context-audit',channel:'chat',id:'source',author:'human',text:'Original',timestamp:1,revisionTimestamp:10};

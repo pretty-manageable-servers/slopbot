@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { Events, type Client } from 'discord.js';
+import { Events, type Client, type Interaction } from 'discord.js';
 import { DiscordAdapter } from '../src/adapters/discord.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { loadConfig } from '../src/config.js';
@@ -38,4 +38,25 @@ test('DISCORD_GUILD_IDS limits the servers Slopbot runs in', async t => {
   const f = fixture({ DISCORD_GUILD_IDS: one }); t.after(async () => { await f.adapter.stop(); f.store.close(); });
   f.client.emit(Events.ClientReady, f.client); await settle();
   assert.deepEqual((await f.adapter.consoleServers(user)).map(item => item.id), [one]);
+});
+
+test('secondary server slash commands defer and return their own channel settings', async t => {
+  const f = fixture({ DISCORD_GUILD_ID: one });
+  t.after(async () => { await f.adapter.stop(); f.store.close(); });
+  f.client.emit(Events.ClientReady, f.client); await settle();
+  const calls: string[] = [];
+  let complete!: () => void;
+  const completed = new Promise<void>(resolve => { complete = resolve; });
+  f.client.emit(Events.InteractionCreate, {
+    guildId: two, channelId: '1528063444874432737', id: 'command-test', commandName: 'slopbot',
+    user: { id: user, username: 'user', globalName: null }, guild: { name: 'Alpha' },
+    isButton: () => false, isStringSelectMenu: () => false, isChatInputCommand: () => true, inCachedGuild: () => false,
+    options: { getSubcommand: () => 'channels', getString: () => null, getChannel: () => null },
+    async deferReply() { calls.push('defer'); },
+    async editReply(value: { content: string } | string) { calls.push(typeof value === 'string' ? value : value.content); complete(); },
+  } as unknown as Interaction);
+  await Promise.race([completed, new Promise((_, reject) => {
+    const timer = setTimeout(() => reject(new Error('Command was not acknowledged')), 1000); timer.unref();
+  })]);
+  assert.deepEqual(calls, ['defer', 'No channels configured.']);
 });

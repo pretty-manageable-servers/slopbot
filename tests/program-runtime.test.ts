@@ -1,0 +1,73 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { ProgramRuntime, programLimits } from '../src/program-runtime.js';
+import { ToolError } from '../src/tools.js';
+
+test('programs await parallel reads, derive arguments, and return only reduced outputs', async () => {
+  let active = 0, peak = 0;
+  const runtime = new ProgramRuntime({ ...programLimits, concurrency: 2 });
+  const result = await runtime.run(`
+    const values = await Promise.all([1,2,3,4].map(n => tools.read({n})));
+    const total = values.reduce((sum, item) => sum + item.value, 0);
+    const doubled = await tools.read({n:total});
+    text({sum:total, doubled:doubled.value});
+  `, ['read'], async (_name, args) => {
+    active++; peak = Math.max(peak, active);
+    await new Promise(resolve => setImmediate(resolve)); active--;
+    return { value: Number(args.n) * 2, intermediate: 'not emitted' };
+  });
+  assert.deepEqual(result.outputs, [{ sum: 20, doubled: 40 }]);
+  assert.equal(result.calls, 5); assert.equal(peak, 2);
+  assert.ok(!JSON.stringify(result).includes('not emitted'));
+});
+
+test('guest code has no Node, host globals, network, timers, or module access', async () => {
+  const result = await new ProgramRuntime().run(`
+    let imported = false;
+    try { await import('node:fs'); imported = true; } catch {}
+    text({process:typeof process, require:typeof require, fetch:typeof fetch,
+      timer:typeof setTimeout, worker:typeof Worker, imported,
+      constructorEscape:tools.read.constructor('return typeof process')()});
+  `, ['read'], async () => ({}));
+  assert.deepEqual(result.outputs, [{ process: 'undefined', require: 'undefined', fetch: 'undefined', timer: 'undefined', worker: 'undefined', imported: false, constructorEscape: 'undefined' }]);
+});
+
+test('CPU, memory, output, call-count, argument-size, and input limits stop programs', async () => {
+  await assert.rejects(new ProgramRuntime({ ...programLimits, cpuMs: 50 }).run('while(true){}', [], async () => ({})), /interrupted|failed/);
+  await assert.rejects(new ProgramRuntime({ ...programLimits, memoryBytes: 1024 * 1024 }).run('const a=[]; while(true)a.push({text:"x".repeat(1000)});', [], async () => ({})), /memory|failed|exited/);
+  await assert.rejects(new ProgramRuntime({ ...programLimits, maxOutputBytes: 100 }).run('text("x".repeat(101));', [], async () => ({})), /limit|failed/);
+  await assert.rejects(new ProgramRuntime({ ...programLimits, maxCalls: 2 }).run('await Promise.all([tools.read({}),tools.read({}),tools.read({})]); text("done");', ['read'], async () => ({})), /limit|failed/);
+  await assert.rejects(new ProgramRuntime().run('await tools.read({x:"x".repeat(65000)});text("done");', ['read'], async () => ({})), /limit|failed/);
+  await assert.rejects(new ProgramRuntime({ ...programLimits, maxInputBytes: 100 }).run('text(await tools.read({}));', ['read'], async () => ({ x: 'x'.repeat(101) })), /input budget/);
+});
+
+test('wall-clock deadline and cancellation terminate the worker and abort host dispatch', async () => {
+  let received: AbortSignal | undefined, called!: () => void;
+  const started = new Promise<void>(resolve => { called = resolve; });
+  const runtime = new ProgramRuntime({ ...programLimits, timeoutMs: 2000 });
+  const controller = new AbortController();
+  const program = runtime.run('await tools.read({});text("done");', ['read'], async (_name, _args, _index, signal) => {
+    received = signal; called(); return new Promise(() => {});
+  }, controller.signal);
+  const rejected = assert.rejects(program, /interrupted/);
+  await started; controller.abort(); await rejected; assert.equal(received!.aborted, true);
+  await assert.rejects(new ProgramRuntime({ ...programLimits, timeoutMs: 50 }).run('await tools.read({});', ['read'], async () => new Promise(() => {})), /deadline/);
+  // Resource slots and guest state are released after a failure.
+  assert.deepEqual((await runtime.run('text(typeof priorRun);', [], async () => ({}))).outputs, ['undefined']);
+});
+
+test('unresolved promises and missing output fail instead of silently completing', async () => {
+  await assert.rejects(new ProgramRuntime().run('await new Promise(()=>{});', [], async () => ({})), /promise/);
+  await assert.rejects(new ProgramRuntime().run('const value=1;', [], async () => ({})), /text/);
+});
+
+test('caught tool failures remain visible and fire-and-forget calls are drained', async () => {
+  const runtime = new ProgramRuntime();
+  const caught = await runtime.run('try {await tools.read({});}catch{}text("partial");', ['read'], async () => { throw new ToolError('Access revoked'); });
+  assert.deepEqual(caught.failures, [{ name: 'read', error: 'Access revoked' }]);
+  let finished = false;
+  const result = await runtime.run('tools.read({});text("sent");', ['read'], async () => {
+    await new Promise(resolve => setTimeout(resolve, 10)); finished = true; return {};
+  });
+  assert.equal(finished, true); assert.equal(result.calls, 1);
+});

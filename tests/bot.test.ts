@@ -94,7 +94,26 @@ test("other bots in task threads continue the task", async t => {
   assert.equal(f.llm.prompts.length, count + 1);
   const observer = incoming("observer", "status", { channel: "thread", botAuthor: true });
   await f.bot.receive(observer);
+  assert.equal(f.llm.prompts.length, count + 1);
   assert.ok((await f.store.context(observer, 10)).some(message => message.id === "external"));
+});
+
+test('unaddressed bot error commentary cannot enqueue task work or trigger participation', async t => {
+  const f = setup(); t.after(() => f.store.close());
+  await f.bot.receive(incoming('start', '!task plan', { mentionsBot: true }));
+  let enqueued = 0, decisions = 0;
+  const { ParticipationGate } = await import('../src/participation.js');
+  const participation = new ParticipationGate({ classify: async () => {
+    decisions++; return { respond: true, addressed: true, reason: 'continue' };
+  } }, { enabled: true, contextMessages: 10, cooldownMs: 0, maxUnsolicitedPerHour: 10 });
+  const worker = { enqueue: async () => { enqueued++; } } as unknown as import('../src/queue.js').TaskWorker;
+  const bot = new Bot(f.app, f.store, f.store, f.gateway, 's', ['c'], { participation, worker });
+  await bot.receive(incoming('comment', 'Same CHECKPOINT_INVALID failure. Stop retrying.', { channel: 'thread', author: 'other-bot', botAuthor: true }));
+  assert.equal(enqueued, 0); assert.equal(decisions, 0);
+  assert.ok((await f.store.canonicalMessage('s', 'comment'))?.isBot);
+  await bot.receive(incoming('collaborate', 'Review my contribution', { channel: 'thread', author: 'other-bot', botAuthor: true, mentionsBot: true }));
+  await bot.receive(incoming('human', 'Continue', { channel: 'thread' }));
+  assert.equal(enqueued, 2);
 });
 
 test("source edits invalidate copied task context but preserve reasoning events", async t => {

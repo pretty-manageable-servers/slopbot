@@ -168,7 +168,7 @@ export class ChatCompletionsLLM implements LLM {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.options.apiKey}` },
       body: JSON.stringify({ model, messages, ...(prompt.tools?.length ? { tools: prompt.tools, tool_choice: "auto" } : {}), stream: true, stream_options: { include_usage: true }, max_tokens: maxOutputTokens, ...(effort ? { reasoning_effort: effort } : {}) }),
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(this.options.timeoutMs ?? 120_000)]) : AbortSignal.timeout(this.options.timeoutMs ?? 120_000),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(this.options.timeoutMs ?? 900_000)]) : AbortSignal.timeout(this.options.timeoutMs ?? 900_000),
     })));
     try {
       const effort = prompt.effort && !this.noEffort.has(this.options.model) ? prompt.effort : undefined;

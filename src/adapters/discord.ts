@@ -1,10 +1,11 @@
 import { LocalDiskStorage } from "../web-chat-images.js";
-import { objectStorageTool, UserFileStorage, MAX_STORED_FILE_BYTES, fileStorageScope } from '../object-storage.js';
-import { sendStoredFile } from './discord-storage.js';
-import { S3StorageProvider } from './s3-storage.js';
 import { contextChangedError, legacyToolProgress, sourceFingerprint, stableAttachmentUrl, toolProgressFooter } from "../source-context.js";
 import { errorReply, logError } from "../errors.js";
 import { sandboxTool, readSandboxFile } from "../sandbox.js";
+import { objectStorageTool, UserFileStorage, MAX_STORED_FILE_BYTES, fileStorageScope } from '../object-storage.js';
+import { sendStoredFile } from './discord-storage.js';
+import { S3StorageProvider } from './s3-storage.js';
+import { programTool } from '../program-tools.js';
 import { McpManager, McpSecrets } from '../mcp.js';
 import { remoteMcpConnector } from './mcp-client.js';
 import { E2BSandboxProvider } from "./e2b-sandbox.js";
@@ -217,6 +218,7 @@ export class DiscordServer implements ChatGateway {
       accepts: channel => this.bot.accepts(guildId, channel),
     });
     registerUsageTool(this.tools, this.limiter);
+    this.tools.register(programTool(this.tools));
     this.app = new Application(store, llm, {
       allowedChannels: this.channels.map(channel => ({ server: guildId, channel })),
       recentMessages: savedLimit("reply_context", config.replyContextMessages, 100),
@@ -234,12 +236,12 @@ export class DiscordServer implements ChatGateway {
       });
     }, presentation: discordPresentation, profiles: store, harness: store, tools: {
       catalog: message => this.tools.catalog(message), schemas: message => this.tools.schemas(message), suggest: message => this.tools.suggest(message),
-      execute: (message, call, id, version) => this.bot.executeTool(message, call, id, version),
+      execute: (message, call, id, version, invocation) => this.bot.executeTool(message, call, id, version, invocation),
       snapshot: () => {
         const selected = this.tools.capture();
-        return { catalog: selected.catalog, schemas: selected.schemas, suggest: selected.suggest, execute: (message, call, id, version) => {
+        return { catalog: selected.catalog, schemas: selected.schemas, suggest: selected.suggest, execute: (message, call, id, version, invocation) => {
           selected.assertCurrent(call.name);
-          return this.bot.executeTool(message, call, id, version);
+          return this.bot.executeTool(message, call, id, version, { ...invocation, assertTool: selected.assertCurrent });
         } };
       },
     } });

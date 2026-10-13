@@ -62,6 +62,24 @@ test("SSE handles split Unicode, CRLF, comments and multiple data lines", async 
   assert.deepEqual(values.map(value => JSON.parse(value)), [{ text: "🙂" }]);
 });
 
+test("provider receives the full reply budget without a Discord size cap", async () => {
+  const text = "Long response 🙂\n".repeat(5000);
+  const llm = new ChatCompletionsLLM(options, async (_url, init) => {
+    assert.equal(JSON.parse(String(init?.body)).max_tokens, 50000);
+    return new Response(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: text }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+  });
+  let result = "";
+  for await (const event of llm.stream({ ...prompt, maxOutputTokens: 50000 })) {
+    if (event.kind === "text") result += event.payload.text;
+  }
+  const { splitReply } = await import("../src/bot.js");
+  const parts = splitReply(result);
+  assert.ok(parts.length > 2);
+  assert.ok(parts.every(part => part.length <= 1900));
+  assert.equal(parts.join(""), text);
+  assert.deepEqual(splitReply(result), parts);
+});
+
 test("HTTP errors do not expose response bodies or credentials", async () => {
   const llm = new ChatCompletionsLLM(options, async () => new Response("sensitive upstream body", { status: 401 }));
   await assert.rejects(async () => { for await (const event of llm.stream(prompt)) void event; }, error => {
@@ -155,22 +173,4 @@ test("provider output exhaustion reports the budget and checkpoint stage", async
     return true;
   });
   assert.deepEqual(partial, ["partial"]);
-});
-
-test("provider receives the full reply budget without a Discord size cap", async () => {
-  const text = "Long response 🙂\n".repeat(5000);
-  const llm = new ChatCompletionsLLM(options, async (_url, init) => {
-    assert.equal(JSON.parse(String(init?.body)).max_tokens, 50000);
-    return new Response(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: text }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
-  });
-  let result = "";
-  for await (const event of llm.stream({ ...prompt, maxOutputTokens: 50000 })) {
-    if (event.kind === "text") result += event.payload.text;
-  }
-  const { splitReply } = await import("../src/bot.js");
-  const parts = splitReply(result);
-  assert.ok(parts.length > 2);
-  assert.ok(parts.every(part => part.length <= 1900));
-  assert.equal(parts.join(""), text);
-  assert.deepEqual(splitReply(result), parts);
 });

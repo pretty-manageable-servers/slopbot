@@ -57,7 +57,30 @@ Bearer credentials are write-only console input. Set `MCP_SECRET_KEY` once to a 
 
 The network adapter validates the address used by each socket to block private/reserved destinations and DNS rebinding; it refuses redirects and cross-origin SSE message endpoints. `MCP_ALLOW_PRIVATE=true` is an operator-only override for trusted local/private servers and also allows plain HTTP. Defaults are 15-second RPC deadlines and four simultaneous calls per connection. Limits are 20 connections, 100 discovered tools per server, and configurable 1–60-second deadlines / 1–16 concurrent calls. Enabled schemas consume the normal context budget; deferred tool search is not implemented yet.
 
-This implementation covers runtime MCP configuration with the existing model protocol. OpenAI Responses API programmatic calling is a separate adapter/continuation change and is not enabled by this feature. OAuth onboarding and host process/stdio servers are also not implemented; use anonymous or bearer-authenticated HTTP/SSE endpoints.
+Runtime MCP configuration uses the existing model protocol. Slopbot's own programmatic runtime composes eligible reads as described below. OpenAI-hosted Responses API programmatic calling is a separate adapter/continuation change. OAuth onboarding and host process/stdio servers are not implemented; use anonymous or bearer-authenticated HTTP/SSE endpoints.
+
+## Bot-owned programmatic calling
+
+`program_exec` lets the current model generate an async JavaScript function body through the existing JSON tool protocol. It does not require OpenAI's Responses API or an OpenAI model. For example, its arguments can contain:
+
+```json
+{
+  "tools": ["web_search"],
+  "code": "const results = await Promise.all([tools.web_search({query:'topic one'}), tools.web_search({query:'topic two'})]); text(results.flatMap(result => result.results).map(hit => ({title:hit.title,url:hit.url})));"
+}
+```
+
+The model chooses a bounded orchestration stage, lists its tools, writes loops/conditions or parallel calls, and emits a compact result with `text(value)`. Each `tools.NAME(arguments)` promise resolves to the tool's `data` JSON. Only program outputs and compact call metadata enter the next model turn; intermediate payloads remain in the child operation journals. Failed calls reject their promises and remain reported even when the program catches the error. Programs must preserve URLs/message IDs needed for final evidence; Slopbot also retains source and artifact metadata from successful child reads. Use direct calls for semantic judgment, mutations, native UI, and final artifact validation.
+
+`ProgramRuntime` starts a worker running QuickJS compiled to WebAssembly. The worker receives code, an explicit tool-name allowlist, and limits. It creates a fresh guest runtime with only a JSON tool bridge and `text(...)`. Generated code never runs through Node eval, Function, or node:vm. The guest has no host environment, filesystem, network, modules, subprocesses, timers, or persistent state. Main-process callbacks resolve guest promises with bounded JSON. QuickJS interrupt/memory limits bound guest execution; the parent enforces the wall-clock deadline and always terminates the worker.
+
+Defaults are 30 seconds wall time, two seconds cumulative guest CPU, 32 MiB guest memory, 32 calls, four concurrent calls, one MB total incoming structured tool data, and 16 KB total emitted output. Code is limited to 16,000 characters; the allowlist contains at most 16 distinct tool names and can be empty for pure computation. At most four programs run concurrently. No timers or sleeps are available in guest code. Unresolved promises with no tool capable of resolving them fail promptly. Fire-and-forget tool requests already dispatched are drained before a successful result is returned. On timeout or interruption, no new reads are issued; already-dispatched reads may still finish and retain their journal results.
+
+Native tools opt in with `programmatic: true`, an `outputSchema`, and a structured `data` result. Native web search supplies `{results:[{title,url,snippet}]}`. MCP tools qualify when explicitly granted as reads and when they have an output schema. Other tools remain direct-only. Actual validated arguments determine whether a mixed-action tool is a read; writes and recursive programs are denied regardless of the outer program's read classification. UI/handoff results require direct calls.
+
+Every nested call uses the shared registry with the original requester, source, context version, signal, and captured catalog checks. Each child has a stable operation ID derived from parent ID, call index, tool name, and canonical arguments. Interrupted-process recovery and transient read failures reuse completed child operations while rechecking permissions. Cached parent results also recheck each recorded child's resource authorization before returning data. Child calls appear in the normal Discord progress display and final activity list. No credentials or Node references cross into the guest.
+
+Verification covers parallel/dependent calls, native plus multiple MCP providers, structured reduction, source preservation and invalidation, direct-only/write/recursive denial, permission changes, catalog snapshots, replay recovery, interruption, isolation, quotas, CPU/memory/output/input limits, caught failures, and unresolved promises. OpenAI-hosted program items, deferred discovery, and programmatic writes are separate work.
 
 Use `invokeResult()` when metadata is needed. `invoke()` formats text and artifact links for existing command handlers. The action journal stores the complete result with a version marker; older plain-text operation records and agent turns remain readable. Agent turns persist structured results as JSON. The runner adds canonical message sources to its manifest, preserves web citations and artifacts in the model trace, and follows explicit handoffs without parsing display text.
 

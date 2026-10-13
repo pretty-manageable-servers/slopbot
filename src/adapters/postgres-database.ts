@@ -70,7 +70,7 @@ export function postgresSql(input: string, values: unknown[]): { sql: string; va
 }
 
 // A transaction and its nested repository calls share one connection. Background
-// indexing acquires its own turn after the initiating operation has finished.
+// indexing runs network requests outside the queue and serializes only its SQL.
 export function serializeStore<T extends object>(store: T): T {
   const scope = new AsyncLocalStorage<{ active: boolean }>();
   let tail = Promise.resolve();

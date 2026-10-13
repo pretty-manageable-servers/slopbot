@@ -90,11 +90,14 @@ export class Bot {
     const task = this.tasks.has(message.channel);
     const privateChat = isPrivateChannel(message.channel);
     // A web reply arrives with addressed=true, so it always gets an answer and skips JEV. A private chat always does, even without that flag.
-    let addressed = task || privateChat || message.mentionsBot || message.repliesToBot || message.addressed === true;
+    let addressed = task && !message.botAuthor || privateChat || message.mentionsBot || message.repliesToBot || message.addressed === true;
     let ingested = alreadyIngested;
     if (!addressed) {
       if (!await this.store.ingest({ ...message, addressed: false })) return;
       ingested = true;
+      // Other bots' status/error commentary is evidence, not an automatic task
+      // request. Explicit mentions and replies still support collaboration.
+      if (message.botAuthor) { requestTimings.finish(message); return; }
       const gate = this.options.participation;
       if (!gate) return;
       const context = await requestTimings.measure(message, "participation context", () => this.store.context(message, gate.options.contextMessages));
@@ -189,7 +192,7 @@ export class Bot {
     else await this.enqueue(seed);
     return thread;
   }
-  async executeTool(message: Message, call: ToolCall, operationId: string, expectedVersion?: number): Promise<ToolResult> {
+  async executeTool(message: Message, call: ToolCall, operationId: string, expectedVersion?: number, invocation?: import('./tools.js').ToolInvocation): Promise<ToolResult> {
     const registry = this.options.tools;
     if (!registry || !this.accepts(message.server, message.channel)) throw new ToolError("Tools are unavailable in this channel");
     registry.validate(call.name, call.arguments);
@@ -202,7 +205,7 @@ export class Bot {
     }
     if (registry.effect(call.name, call.arguments) === "write" && call.name !== "task_retry" && (await this.options.queueStore?.hasBlocked(message.server, message.channel))) throw new ToolError("This task has an uncertain action. Reconcile that job before new writes.");
     if (registry.effect(call.name, call.arguments) === "write" && call.name !== "task_retry" && (await this.options.queueStore?.hasPendingOther(message.server, message.channel, message.id))) throw new ToolError("New contributions are queued. Pause actions so the next contribution can be reviewed before proceeding.");
-    const result = await registry.invokeResult(message, call.name, call.arguments, operationId, "agent", expectedVersion);
+    const result = await registry.invokeResult(message, call.name, call.arguments, operationId, "agent", expectedVersion, invocation);
     return result;
   }
   async deliver(message: Message, reply: import("./domain.js").Reply, deliveryId: string): Promise<void> {
