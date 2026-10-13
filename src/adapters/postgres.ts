@@ -761,7 +761,8 @@ export class PostgresStore {
         } catch (error) { (await this.db.exec("ROLLBACK")); throw error; }
     }
     async resetUserUsage(server: string, user: string, kind?: string): Promise<void> {
-        if (kind === undefined) (await this.db.prepare("DELETE FROM user_limit_counters WHERE server=? AND user_id=?").run(server, user));
+        // No kind, or a week reset (a full reset), clears both windows.
+        if (kind === undefined || kind === "week") (await this.db.prepare("DELETE FROM user_limit_counters WHERE server=? AND user_id=?").run(server, user));
         else (await this.db.prepare("DELETE FROM user_limit_counters WHERE server=? AND user_id=? AND kind=?").run(server, user, kind));
     }
     async listUserUsage(server: string, limit: number): Promise<UserLimitRow[]> {

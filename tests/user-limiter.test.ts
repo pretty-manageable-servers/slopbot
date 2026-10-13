@@ -127,6 +127,14 @@ test("a banked week reset is a full reset: it clears the 5-hour and weekly windo
   store.close();
 });
 
+test("an admin week reset clears the 5-hour and weekly windows", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 100, 1000);
+  await limits.record("s", "u", 100, 0);
+  await store.resetUserUsage("s", "u", "week");
+  assert.deepEqual((await limits.usage("s", "u", 1)).map(window => window.spent), [0, 0]);
+  store.close();
+});
+
 test("two concurrent resets of one banked reset cannot both succeed", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 0);
   await store.grantResets("s", "u", "5h", 1);
