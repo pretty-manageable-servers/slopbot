@@ -1,6 +1,12 @@
-// Conversations tab: a chat view of channel and thread transcripts, Slopbot runs, the live stream and the reply box.
+// Conversations tab: a chat view of channel and thread transcripts (read-only), private chats with a composer, Slopbot runs and the live stream.
 // Uses globals from app.js: $, request, busy, fail, notice, state, csrf, showScreen.
-const conv = { server: '', list: [], channel: null, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, composer: null, noted: new Set(), folded: new Set() };
+const conv = { server: '', list: [], chats: [], chatNote: '', kind: 'channel', channel: null, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, folded: new Set() };
+const NEW_CHAT = 'New chat';
+const chatTitle = c => c.title || NEW_CHAT;
+// Times may be a number or a date string. A missing time counts as 0.
+const timeValue = v => (typeof v === 'number' ? v : Date.parse(v)) || 0;
+const LOCK_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
+const PENCIL_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>';
 const enc = encodeURIComponent;
 const GROUP_MS = 5 * 60 * 1000;
 const DONE_STATUS = /^(completed|delegated|done|ok)$/;
@@ -60,14 +66,14 @@ function renderChatServers() {
 }
 
 function renderConversations() {
-  if (conv.server !== state.server.id) { closeConversation(); conv.server = state.server.id; conv.channel = null; conv.list = []; }
+  if (conv.server !== state.server.id) { closeConversation(); conv.server = state.server.id; conv.channel = null; conv.list = []; conv.chats = []; conv.chatNote = ''; }
   setChatMode(true);
-  $('content').innerHTML = '<div id="chat-root" class="chat"><aside id="chat-side" class="chat-side"><div id="chat-server" class="chat-server" hidden></div><input id="conv-search" class="chat-search" type="search" placeholder="Search messages" aria-label="Search messages"><div id="conv-list" class="chat-list"></div></aside><section id="conv-main" class="chat-pane"><header class="chat-head"><button id="chat-drawer" class="chat-drawer" type="button" aria-expanded="false" aria-controls="chat-side">Conversations</button><h2 id="chat-title" class="chat-title"></h2><div class="chat-tools"><span id="conv-status" class="chat-status"></span><div id="conv-share" class="chat-share" hidden></div></div></header><div id="conv-view" class="chat-view"></div><div id="conv-reply" class="chat-composer" hidden></div></section></div>';
+  $('content').innerHTML = '<div id="chat-root" class="chat"><aside id="chat-side" class="chat-side"><div id="chat-server" class="chat-server" hidden></div><input id="conv-search" class="chat-search" type="search" placeholder="Search messages" aria-label="Search messages"><div id="conv-list" class="chat-list"></div></aside><section id="conv-main" class="chat-pane"><header class="chat-head"><button id="chat-drawer" class="chat-drawer" type="button" aria-expanded="false" aria-controls="chat-side">Conversations</button><h2 id="chat-title" class="chat-title"></h2><div class="chat-tools"><span id="chat-private" class="chat-private" hidden>' + LOCK_ICON + '<span>Private</span></span><span id="conv-status" class="chat-status"></span><div id="conv-share" class="chat-share" hidden></div></div></header><div id="conv-view" class="chat-view"></div><div id="conv-reply" class="chat-composer" hidden></div></section></div>';
   $('conv-search').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); searchConversations($('conv-search').value); } };
   $('chat-drawer').onclick = toggleDrawer;
   renderChatServers();
   drawList();
-  if (conv.channel === null && conv.list.length) showPick(); else showView(busy('md', 'Loading…'));
+  if (conv.channel === null && (conv.list.length || conv.chats.length)) showPick(); else showView(busy('md', 'Loading…'));
   loadConversations().catch(fail);
 }
 
@@ -76,13 +82,23 @@ function toggleDrawer() {
   $('chat-drawer').setAttribute('aria-expanded', String(open));
 }
 
+// The private chats of one server, newest first. The route returns a list.
+async function fetchChats(id) {
+  const result = await request(`/api/chats?server=${enc(id)}`);
+  return Array.isArray(result) ? result.slice().sort((a, b) => timeValue(b.updated) - timeValue(a.updated)) : [];
+}
+
 async function loadConversations() {
   const id = state.server.id;
-  const result = await request(`/api/conversations?server=${enc(id)}`);
+  // A failed chat list (for example a 404 before the server routes exist) leaves the Private chats group empty. The channels still load.
+  const chats = fetchChats(id).catch(error => { if (error.status === 401) throw error; return []; });
+  const [result, privateChats] = await Promise.all([request(`/api/conversations?server=${enc(id)}`), chats]);
   if (conv.server !== id || !$('conv-list')) return;
   conv.list = result.conversations;
+  conv.chats = privateChats;
   drawList();
-  if (conv.channel && conv.list.some(c => c.id === conv.channel)) return openConversation(conv.channel);
+  if (conv.channel && conv.kind === 'chat' && conv.chats.some(c => c.id === conv.channel)) return openConversation(conv.channel, 'chat');
+  if (conv.channel && conv.kind !== 'chat' && conv.list.some(c => c.id === conv.channel)) return openConversation(conv.channel);
   // Opens the newest channel that is on. A channel that is off is opened only when nothing else is listed.
   const first = conv.list.find(c => c.enabled !== false) || conv.list[0];
   if (first) return openConversation(first.id);
