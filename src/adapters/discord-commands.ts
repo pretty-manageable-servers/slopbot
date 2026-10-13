@@ -41,13 +41,13 @@ export interface UsageReply { content?: string; embeds: APIEmbed[] }
  * Builds the /usage reply for one user. Read-only, and it never checks the UserLimiter gate,
  * so a user over the limit still sees their usage and can use a banked reset.
  */
-export async function usageReply(limiter: UserLimiter, server: string, user: string, reset: string | null): Promise<UsageReply> {
+export async function usageReply(limiter: UserLimiter, user: string, reset: string | null): Promise<UsageReply> {
   if (reset !== null) {
     if (reset !== "5h" && reset !== "week") return { content: "Choose 5-hour or weekly to reset.", embeds: [] };
-    if (!await limiter.useReset(server, user, reset)) return { content: `You have no banked ${WINDOW_LABELS[reset]} reset.`, embeds: [] };
-    return { content: `Used one ${WINDOW_LABELS[reset]} reset. That window is cleared.`, embeds: [usageEmbed(usageView(await limiter.usage(server, user)))] };
+    if (!await limiter.useReset(user, reset)) return { content: `You have no banked ${WINDOW_LABELS[reset]} reset.`, embeds: [] };
+    return { content: `Used one ${WINDOW_LABELS[reset]} reset. That window is cleared.`, embeds: [usageEmbed(usageView(await limiter.usage(user)))] };
   }
-  return { embeds: [usageEmbed(usageView(await limiter.usage(server, user)))] };
+  return { embeds: [usageEmbed(usageView(await limiter.usage(user)))] };
 }
 
 export function buildToolCommands(registry: ToolRegistry): SlashCommandBuilder {

@@ -87,6 +87,18 @@ CREATE TABLE IF NOT EXISTS tool_operations (
       , resource TEXT);
 CREATE TABLE IF NOT EXISTS user_limit_counters (server TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, window_start BIGINT NOT NULL, spent BIGINT NOT NULL, PRIMARY KEY(server,user_id,kind));
 CREATE TABLE IF NOT EXISTS user_limit_resets (server TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, count BIGINT NOT NULL, PRIMARY KEY(server,user_id,kind));
+-- Usage limits are shared by one user across all servers (scope 'global').
+-- Merge old rows for each server once: sum spent of running windows (earliest start), sum banked resets.
+INSERT INTO user_limit_counters(server,user_id,kind,window_start,spent)
+  SELECT 'global', user_id, kind, MIN(window_start), SUM(spent)::BIGINT FROM user_limit_counters
+  WHERE server<>'global' AND window_start + CASE kind WHEN '5h' THEN 18000000 ELSE 604800000 END > (EXTRACT(EPOCH FROM now())*1000)::BIGINT
+  GROUP BY user_id, kind
+  ON CONFLICT(server,user_id,kind) DO UPDATE SET window_start=LEAST(user_limit_counters.window_start,excluded.window_start), spent=user_limit_counters.spent+excluded.spent;
+DELETE FROM user_limit_counters WHERE server<>'global';
+INSERT INTO user_limit_resets(server,user_id,kind,count)
+  SELECT 'global', user_id, kind, SUM(count)::BIGINT FROM user_limit_resets WHERE server<>'global' GROUP BY user_id, kind
+  ON CONFLICT(server,user_id,kind) DO UPDATE SET count=user_limit_resets.count+excluded.count;
+DELETE FROM user_limit_resets WHERE server<>'global';
 CREATE TABLE IF NOT EXISTS user_token_totals (server TEXT NOT NULL, user_id TEXT NOT NULL, model TEXT NOT NULL, requests BIGINT NOT NULL, input_tokens BIGINT NOT NULL, output_tokens BIGINT NOT NULL, cached_tokens BIGINT NOT NULL, cost_micros BIGINT NOT NULL, first_at BIGINT NOT NULL, last_at BIGINT NOT NULL, PRIMARY KEY(server,user_id,model));
 CREATE TABLE IF NOT EXISTS reply_runs (server TEXT NOT NULL, message_id TEXT NOT NULL, run_id TEXT NOT NULL, PRIMARY KEY(server,message_id,run_id));
 CREATE TABLE IF NOT EXISTS conversation_events (

@@ -392,10 +392,29 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     const runColumns = this.db.prepare("PRAGMA table_info(runs)").all();
     if (!runColumns.some(column => column.name === "context_version")) this.db.exec("ALTER TABLE runs ADD COLUMN context_version INTEGER NOT NULL DEFAULT 0");
     if (!this.db.prepare("PRAGMA table_info(author_directory)").all().some(column => column.name === "identity")) this.db.exec("ALTER TABLE author_directory ADD COLUMN identity TEXT NOT NULL DEFAULT '{}'");
+    this.mergeUserLimits(Date.now());
     const columns = this.db.prepare("PRAGMA table_info(task_history)").all();
     if (!columns.some(column => column.name === "valid")) {
       this.db.exec("ALTER TABLE task_history ADD COLUMN valid INTEGER NOT NULL DEFAULT 1");
     }
+  }
+
+  /** Usage limits are shared by one user across all servers (scope 'global'). Merges old rows for each server once: sum spent of running windows (earliest start), sum banked resets. */
+  private mergeUserLimits(now: number): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare(`INSERT INTO user_limit_counters(server,user_id,kind,window_start,spent)
+        SELECT 'global', user_id, kind, MIN(window_start), SUM(spent) FROM user_limit_counters
+        WHERE server<>'global' AND window_start + CASE kind WHEN '5h' THEN 18000000 ELSE 604800000 END > ?
+        GROUP BY user_id, kind
+        ON CONFLICT(server,user_id,kind) DO UPDATE SET window_start=MIN(user_limit_counters.window_start,excluded.window_start), spent=user_limit_counters.spent+excluded.spent`).run(now);
+      this.db.prepare("DELETE FROM user_limit_counters WHERE server<>'global'").run();
+      this.db.prepare(`INSERT INTO user_limit_resets(server,user_id,kind,count)
+        SELECT 'global', user_id, kind, SUM(count) FROM user_limit_resets WHERE server<>'global' GROUP BY user_id, kind
+        ON CONFLICT(server,user_id,kind) DO UPDATE SET count=user_limit_resets.count+excluded.count`).run();
+      this.db.prepare("DELETE FROM user_limit_resets WHERE server<>'global'").run();
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
 
   private namedMessage(message: Message): Message {

@@ -98,7 +98,7 @@ test("a recording error is logged and never thrown to the caller", async t => {
   assert.match(String(logged[0]), /token_totals_record_failed/);
   // The charge itself still happened.
   const limiter = new UserLimiter(store, { fiveHourCostMicros: 0, weekCostMicros: 0, gracePercent: 10 });
-  assert.equal((await limiter.usage(server, alice))[0]?.spent, 2000 + 400);
+  assert.equal((await limiter.usage(alice))[0]?.spent, 2000 + 400);
 });
 
 test("the totals table is created in both schemas and no delete path touches it", () => {

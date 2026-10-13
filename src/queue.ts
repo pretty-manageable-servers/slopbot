@@ -53,7 +53,7 @@ export class TaskWorker {
   }
   async enqueue(message: Message): Promise<Job> {
     // Bot messages are not user input. A task seed is covered by the request that created it. Model cost is recorded during the run.
-    if (!message.isBot && !message.id.startsWith("task-seed:")) { const limit = await this.limiter.check(message.server, message.author); if (!limit.allowed) throw new UserLimitError(limit.resetAt); }
+    if (!message.isBot && !message.id.startsWith("task-seed:")) { const limit = await this.limiter.check(message.author); if (!limit.allowed) throw new UserLimitError(limit.resetAt); }
     requestTimings.start(message, "queue"); const job=await this.store.enqueueJob(message);await this.pump();return job;
   }
   wake(): void { void this.pump().catch(error => logError("worker_pump_failed", error, { server: this.server })); }

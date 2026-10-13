@@ -126,13 +126,13 @@ async function withKey<T>(pool: ProviderKeyPool, charge: WebCharge | undefined, 
 export class LimiterWebCharge implements WebCharge {
   constructor(private readonly limiter: Pick<UserLimiter, 'check' | 'record'>, private readonly settings: { setting(server: string, key: string): unknown }) {}
 
-  async check(server: string, user: string): Promise<void> {
-    const limit = await this.limiter.check(server, user);
+  async check(_server: string, user: string): Promise<void> {
+    const limit = await this.limiter.check(user);
     if (!limit.allowed) throw new UserLimitError(limit.resetAt);
   }
 
-  async charge(server: string, user: string, provider: WebProvider): Promise<void> {
-    await this.limiter.record(server, user, this.cost(provider));
+  async charge(_server: string, user: string, provider: WebProvider): Promise<void> {
+    await this.limiter.record(user, this.cost(provider));
   }
 
   private cost(provider: WebProvider): number {

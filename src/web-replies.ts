@@ -150,7 +150,7 @@ export class WebReplies {
     if (!(await this.options.access.check(server, channel, user)).send) throw new WebReplyError(403, "You cannot send messages in this channel.");
     const text = typeof input.text === "string" ? input.text.trim() : "";
     if (!text || [...text].length > 2000) throw new WebReplyError(400, "Write 1 to 2000 characters.");
-    const limit = await this.options.limiter.check(server, user);
+    const limit = await this.options.limiter.check(user);
     if (!limit.allowed) throw new WebReplyError(429, "Usage limit reached.", limit.resetAt);
     const author = await this.discord.member(server, user);
     if (!author) throw new WebReplyError(403, "You are not a member of this server.");
