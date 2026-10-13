@@ -2,7 +2,15 @@ export type Json = null | boolean | number | string | Json[] | { [key: string]: 
 
 export interface Attachment { readonly name: string; readonly url: string; readonly contentType?: string; readonly size?: number; readonly preview?: boolean }
 
+/** Reasoning effort a user can choose. Providers that do not support it ignore it. */
+export const EFFORTS = ["low", "medium", "xhigh"] as const;
+export type Effort = typeof EFFORTS[number];
+export function parseEffort(value: unknown): Effort | undefined {
+  return EFFORTS.find(effort => effort === value);
+}
+
 export interface Message {
+  readonly effort?: Effort;
   readonly attachments?: readonly Attachment[];
   readonly id: string;
   readonly server: string;
@@ -44,6 +52,7 @@ export interface Prompt {
   readonly history: readonly PromptItem[];
   readonly inputs: readonly PromptItem[];
   readonly maxOutputTokens?: number;
+  readonly effort?: Effort;
   readonly purpose?: "reply" | "checkpoint" | "inspection";
   readonly tools?: readonly ModelTool[];
 }

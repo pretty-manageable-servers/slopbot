@@ -63,6 +63,9 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
   add({ name: "timing", description: "Toggle request timing footers for this server; full delivery timings remain in logs", fields: { enabled: { type: "boolean", description: "Show timing at the end of replies", required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
     async execute(_context, args) { await store.setSetting(server, "timing_footer", args.enabled!); return `Timing footers ${args.enabled ? "enabled" : "disabled"}. Footer totals end before Discord delivery; logs include delivery.`; }
   });
+  add({ name: "default_effort", description: "Choose the default reasoning effort for this server: low, medium, xhigh, or default (the provider decides). Models without effort support ignore it.", fields: { level: { ...choice("Default reasoning effort", ["default", "low", "medium", "xhigh"]), required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
+    async execute(_context, args) { await store.setSetting(server, "default_effort", args.level!); return `Default reasoning effort set to ${args.level}.`; }
+  });
   add({ name: "tool_display", description: "Choose tool activity in completed replies: none, summary (one grey line with counts), or full (counts plus failed calls).", fields: { mode: { ...choice("Tool activity display", ["none", "summary", "full"]), required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
     async execute(_context, args) { await store.setSetting(server, "tool_display", args.mode!); return `Tool activity display set to ${args.mode}. Live progress remains enabled.`; }
   });

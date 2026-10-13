@@ -4,13 +4,15 @@ export interface ChatDb {
   prepare(sql: string): { all(...values: any[]): any; get(...values: any[]): any; run(...values: any[]): any };
 }
 
-/** One private chat. `channel` is `web:<id>`. */
-export interface WebChatRow { id: string; server: string; owner: string; title: string; created: number; updated: number; deleted: boolean }
+import { parseEffort, type Effort } from "./domain.js";
 
-const COLUMNS = "id,server,owner,title,created,updated,deleted";
+/** One private chat. `channel` is `web:<id>`. */
+export interface WebChatRow { id: string; server: string; owner: string; title: string; created: number; updated: number; deleted: boolean; effort?: Effort }
+
+const COLUMNS = "id,server,owner,title,created,updated,deleted,effort";
 
 function chatOf(row: Record<string, unknown>): WebChatRow {
-  return { id: String(row.id), server: String(row.server), owner: String(row.owner), title: String(row.title), created: Number(row.created), updated: Number(row.updated), deleted: Number(row.deleted) === 1 };
+  return { id: String(row.id), server: String(row.server), owner: String(row.owner), title: String(row.title), created: Number(row.created), updated: Number(row.updated), deleted: Number(row.deleted) === 1, ...(parseEffort(row.effort) ? { effort: parseEffort(row.effort)! } : {}) };
 }
 
 export async function insertWebChat(db: ChatDb, row: WebChatRow): Promise<void> {
@@ -42,6 +44,10 @@ export async function renameWebChat(db: ChatDb, id: string, title: string, updat
 
 export async function touchWebChat(db: ChatDb, id: string, updated: number): Promise<void> {
   await db.prepare("UPDATE web_chats SET updated=? WHERE id=? AND deleted=0").run(updated, id);
+}
+
+export async function setWebChatEffort(db: ChatDb, id: string, effort: Effort | null): Promise<void> {
+  await db.prepare("UPDATE web_chats SET effort=? WHERE id=? AND deleted=0").run(effort, id);
 }
 
 /** Marks a chat deleted. The caller removes its messages, runs and events (see deleteChatRows). */

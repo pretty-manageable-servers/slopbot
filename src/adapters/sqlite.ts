@@ -4,7 +4,7 @@ import type { HarnessJournal, HarnessState, HarnessEvent } from "../harness-stat
 import type { ToolOutput } from "../tools.js";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
-import { parseMessage, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
+import { parseMessage, type Effort, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
 import type { Store, AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow } from "../ports.js";
 import { cosine, searchTerms, type Embeddings, type Evidence, type Knowledge, type MemoryRecord, type Recall } from "../memory.js";
 import { attribution, type Attribution } from "../usage-meter.js";
@@ -24,7 +24,7 @@ const CONVERSATION_PRUNE_BATCH = 10000;
 import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
 import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, listChatShares, revokeShare, revokeAllShares, deleteChatShares } from '../share-store.js';
 import { getWebSession, saveWebSession, deleteWebSession, deleteExpiredWebSessions } from '../web-session-store.js';
-import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../web-chat-store.js';
+import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatEffort, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../web-chat-store.js';
 import { isPrivateChannel } from '../private-chat.js';
 import type { WebSessionRow } from '../web-session-store.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
@@ -350,6 +350,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       CREATE INDEX IF NOT EXISTS web_chats_owner ON web_chats(server,owner,updated);
     `);
     if (!this.db.prepare("PRAGMA table_info(web_replies)").all().some(column => column.name === "via")) this.db.exec("ALTER TABLE web_replies ADD COLUMN via TEXT NOT NULL DEFAULT 'webhook'");
+    if (!this.db.prepare("PRAGMA table_info(web_chats)").all().some(column => column.name === "effort")) this.db.exec("ALTER TABLE web_chats ADD COLUMN effort TEXT");
     const operationColumns = this.db.prepare("PRAGMA table_info(tool_operations)").all();
     if (!operationColumns.some(column => column.name === "resource")) this.db.exec("ALTER TABLE tool_operations ADD COLUMN resource TEXT");
     const jobColumns = this.db.prepare("PRAGMA table_info(jobs)").all();
@@ -545,6 +546,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   async webChats(server: string, owner: string): Promise<WebChatRow[]> { return listWebChats(this.db, server, owner); }
   async liveWebChatChannels(server: string): Promise<string[]> { return liveWebChatChannels(this.db, server); }
   async renameWebChat(id: string, title: string, updated: number): Promise<void> { return renameWebChat(this.db, id, title, updated); }
+  async setWebChatEffort(id: string, effort: Effort | null): Promise<void> { return setWebChatEffort(this.db, id, effort); }
   async touchWebChat(id: string, updated: number): Promise<void> { return touchWebChat(this.db, id, updated); }
   /** Deletes a private chat: its runs, events and queue rows, then its messages. The row stays, marked deleted. */
   async deleteWebChat(id: string, server: string, channel: string, at: number): Promise<void> {
