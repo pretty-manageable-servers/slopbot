@@ -22,9 +22,9 @@ function switchTheme() {
 }
 $('theme').onclick = switchTheme;
 // Settings is a modal over the chat. Its section comes from the caller, else from the URL (#settings/<section> or ?tab=<section>).
-const SECTIONS = ['server', 'channels', 'mcp', 'profile', 'bot', 'servers-admin', 'users'];
+const SECTIONS = ['server', 'channels', 'mcp', 'profile', 'bot', 'users', 'servers-admin'];
 // Team tabs. Only team members see them. The old #settings/admin section opens Bot admin.
-const ADMIN_TABS = ['bot', 'servers-admin', 'users'];
+const ADMIN_TABS = ['bot', 'users', 'servers-admin'];
 // The settings link is #settings/<tab>[/<id>]. The id is a server (servers-admin) or a user (users).
 let settingsId = '', pendingTab = null;
 function settingsFromUrl() {
@@ -136,7 +136,7 @@ function openSettings(section, returnTo = document.activeElement, id = '') {
   // Team status may still be loading. Keep the wanted tab and apply it when loadAdmin finishes.
   pendingTab = !admin && !adminLoaded && ADMIN_TABS.includes(wanted) ? { tab: wanted, id, fallback: tab } : null;
   settingsId = tab === 'users' ? id : '';
-  if (tab === 'servers-admin') { adminServer = id; adminUser = ''; }
+  if (tab === 'servers-admin') { adminServer = id; }
   if (!dialog.open) { settingsReturn = returnTo; dialog.showModal(); }
   settingsOpen = true;
   render();
@@ -431,7 +431,7 @@ function renderMcp() {
     run(button, () => configure({action:button.dataset.mcpAction,id:button.dataset.mcpId}));
   }; });
 }
-let admin = null, adminServer = '', adminUser = '', adminLoaded = false;
+let admin = null, adminServer = '', adminLoaded = false;
 const dollars = micros => (micros / 1000000).toFixed(2);
 const money = micros => `$${dollars(micros)}`;
 const priceText = micros => String(Number((micros / 1000000).toFixed(6)));
@@ -444,7 +444,7 @@ async function loadAdmin() {
   // A team tab from the URL waits for this answer. Apply it only if the user did not pick another tab meanwhile.
   const wait = pendingTab;
   pendingTab = null;
-  if (wait && admin && tab === wait.fallback) { tab = wait.tab; settingsId = wait.tab === 'users' ? wait.id : ''; if (wait.tab === 'servers-admin') { adminServer = wait.id; adminUser = ''; } }
+  if (wait && admin && tab === wait.fallback) { tab = wait.tab; settingsId = wait.tab === 'users' ? wait.id : ''; if (wait.tab === 'servers-admin') { adminServer = wait.id; } }
   if (wait && settingsOpen) render();
 }
 async function adminRun(button, task) {
@@ -453,8 +453,9 @@ async function adminRun(button, task) {
   try { await task(); await renderAdmin(); } catch (error) { fail(error); }
   finally { button.disabled = false; button.removeAttribute('aria-busy'); button.textContent = label; }
 }
-function adminLimits(limits, name, edit, off) {
-  return `<form class="card" id="admin-limits"><h2>Limits</h2><p class="scope">Per user, in ${esc(name)}. Zero means no limit.</p><div class="row"><label>5-hour limit ($)<input name="five" type="number" min="0" max="1000000" step="0.01" value="${dollars(limits.five_hour_cost_micros)}" required${off}></label><label>Weekly limit ($)<input name="week" type="number" min="0" max="1000000" step="0.01" value="${dollars(limits.week_cost_micros)}" required${off}></label></div><label>Grace percent<input name="grace" type="number" min="0" max="1000" step="1" value="${limits.grace_percent}" required${off}></label><p class="small">Defaults: ${money(limits.defaults.five_hour_cost_micros)} for 5 hours, ${money(limits.defaults.week_cost_micros)} for a week, ${limits.defaults.grace_percent}% grace.</p>${edit ? '<button class="primary">Save limits</button>' : ''}</form>`;
+// The global limits card. Its scope line says where the limits apply.
+function adminLimits(limits, scope, edit, off) {
+  return `<form class="card" id="admin-limits"><h2>Limits</h2><p class="scope">${esc(scope)}</p><div class="row"><label>5-hour limit ($)<input name="five" type="number" min="0" max="1000000" step="0.01" value="${dollars(limits.five_hour_cost_micros)}" required${off}></label><label>Weekly limit ($)<input name="week" type="number" min="0" max="1000000" step="0.01" value="${dollars(limits.week_cost_micros)}" required${off}></label></div><label>Grace percent<input name="grace" type="number" min="0" max="1000" step="1" value="${limits.grace_percent}" required${off}></label><p class="small">Defaults: ${money(limits.defaults.five_hour_cost_micros)} for 5 hours, ${money(limits.defaults.week_cost_micros)} for a week, ${limits.defaults.grace_percent}% grace.</p>${edit ? '<button class="primary">Save limits</button>' : ''}</form>`;
 }
 // Model prices. Each row shows the default (the configured price, or the fallback) and the saved override.
 // Edit turns the row's cells into inputs. Enter saves, Escape cancels. Read-only members see no actions.
@@ -570,25 +571,6 @@ function adminPerson(profile) {
 function paintBars(root) {
   for (const bar of root.querySelectorAll('[data-pct]')) bar.style.width = `${bar.dataset.pct}%`;
 }
-const shortWhen = ms => new Date(ms).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-// Per-user table for one server: spend against each limit, reset times, banked resets and actions.
-function adminUsage(users, name, off) {
-  const pick = (item, kind) => item.windows.find(window => window.kind === kind) ?? { spent: 0, limit: 0, resetAt: null, banked: 0 };
-  const spend = stat => {
-    const pct = stat.limit ? Math.min(100, Math.round(stat.spent * 100 / stat.limit)) : 0;
-    return `<span>${money(stat.spent)} / ${stat.limit ? money(stat.limit) : 'no limit'}</span><div class="progress" role="progressbar" aria-label="Share of the limit used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span data-pct="${pct}"></span></div>`;
-  };
-  const resets = stat => stat.resetAt ? esc(shortWhen(stat.resetAt)) : '<span class="small">No window</span>';
-  const button = (item, action, kind, text) => `<button type="button" data-action="${action}" data-user="${esc(item.user.id)}" data-kind="${kind}"${off}>${text}</button>`;
-  const row = item => {
-    const five = pick(item, '5h'), week = pick(item, 'week');
-    return `<tr><td>${adminPerson(item.user)}</td><td>${spend(five)}</td><td>${resets(five)}</td><td>${spend(week)}</td><td>${resets(week)}</td><td>${five.banked} / ${week.banked}</td><td><div class="chan-actions">${button(item, 'reset', '5h', 'Reset 5h')}${button(item, 'reset', 'week', 'Reset full')}${button(item, 'grant', '5h', 'Grant 5h')}${button(item, 'grant', 'week', 'Grant full')}</div></td></tr>`;
-  };
-  const table = users.length
-    ? `<table class="usage-table"><thead><tr><th>Member</th><th>5 hours</th><th>5h resets</th><th>Week</th><th>Week resets</th><th>Banked (5h / full)</th><th>Actions</th></tr></thead><tbody>${users.map(row).join('')}</tbody></table>`
-    : '<p class="small">No users have spend or banked resets in this server yet.</p>';
-  return `<section class="card"><h2>Usage</h2><p class="scope">${adminUser ? 'One user.' : `The ${users.length} users with the highest 5-hour spend in ${esc(name)}.`}</p><div class="admin-search"><label>Find a member<input id="admin-search-input" type="search" maxlength="100" autocomplete="off" placeholder="Name or @username"></label>${adminUser ? '<button type="button" id="admin-all">Show all users</button>' : ''}<div id="admin-matches" class="admin-matches" hidden></div></div><div id="admin-users" class="table-wrap">${table}</div></section>`;
-}
 // Bot admin: lifetime usage over all servers. One row for all servers, then the top 10 servers and models by cost.
 // Same columns in all three tables. Numbers are right-aligned, with thousands separators; cost has two decimals.
 function adminTotals(totals) {
@@ -607,38 +589,177 @@ function adminTotals(totals) {
   const models = totals.models.length ? table('Model', totals.models.map(item => `<tr><td><code>${esc(item.model)}</code></td>${cells(item)}</tr>`)) : '<p class="small">No usage yet.</p>';
   return `<section class="card"><h2>Usage, all servers</h2><p class="scope">Lifetime totals for every server. Total tokens is input (uncached) plus input (cached) plus output. The server and model tables show the top 10 by cost.</p><p class="eyebrow">Lifetime</p>${lifetime}<p class="eyebrow">Top servers by cost</p>${servers}<p class="eyebrow">Top models by cost</p>${models}</section>`;
 }
-// Member picker: typing (250 ms pause) lists matching members. Choosing one loads that user's usage by ID.
-function wireAdminSearch(server) {
-  const input = $('admin-search-input'), list = $('admin-matches');
-  let timer = 0, latest = 0;
-  const hide = () => { latest++; list.hidden = true; list.replaceChildren(); };
-  const search = async query => {
-    const mine = ++latest;
-    try {
-      const result = await request(`/api/admin/members?server=${encodeURIComponent(server)}&q=${encodeURIComponent(query)}`);
-      if (mine !== latest || server !== adminServer) return;
-      list.innerHTML = result.members.map(item => `<button type="button" class="admin-match" data-user="${esc(item.id)}">${adminPerson(item)}</button>`).join('') || '<p class="small admin-none">No member matches.</p>';
-      list.hidden = false;
-    } catch (error) {
-      if (mine !== latest) return;
-      list.innerHTML = `<p class="small admin-none">${esc(error.message)}</p>`;
-      list.hidden = false;
-    }
-  };
-  input.oninput = () => {
-    clearTimeout(timer);
-    const query = input.value.trim();
-    if (!query) return hide();
-    timer = setTimeout(() => search(query), 250);
-  };
-  input.onkeydown = event => { if (event.key === 'Escape') { clearTimeout(timer); input.value = ''; hide(); } };
-  list.onclick = event => {
-    const button = event.target.closest('button[data-user]');
-    if (!button) return;
-    adminUser = button.dataset.user;
-    renderAdmin();
-  };
+// Manage users: every known user, across all servers. Search, page size and page are kept between redraws.
+// A row (or its name button) opens the user dialog. Each dialog answer also refreshes that row.
+const USER_PAGE_SIZES = [5, 10, 25, 50];
+let userQuery = '', userLimit = 25, userOffset = 0, userLoads = 0, userOpen = '';
+// The global limits from the last load. The override fields show them as placeholders.
+let globalLimits = null;
+// One window of a user. A user with no spend yet has no window, so a zero window stands in.
+const windowOf = (view, kind) => view.windows.find(win => win.kind === kind) ?? { kind, spent: 0, limit: 0, resetAt: null, banked: 0 };
+// Spent share of a limit, in whole percent, capped at 100. Only used when the limit is above 0.
+const sharePct = win => Math.min(100, Math.round(win.spent * 100 / win.limit));
+// The share as table text: "—" when there is no window, "no limit" when the limit is 0, else a percent and a bar.
+function windowShare(win) {
+  if (!win.spent && !win.resetAt) return '<span class="small">—</span>';
+  if (!win.limit) return '<span class="small">no limit</span>';
+  const pct = sharePct(win);
+  return `<span>${pct}%</span><div class="progress" role="progressbar" aria-label="Share of the limit used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span data-pct="${pct}"></span></div>`;
 }
+const serverChips = view => view.servers.length ? view.servers.map(server => `<span class="chip">${esc(server.name)}</span>`).join('') : '<span class="chip">Web only</span>';
+function userRow(view) {
+  const id = esc(view.user.id), five = windowOf(view, '5h'), week = windowOf(view, 'week');
+  return `<tr class="user-row" data-user="${id}"><td><button type="button" class="user-open">${adminPerson(view.user)}</button></td><td><div class="chips">${serverChips(view)}</div></td><td>${windowShare(five)}</td><td>${windowShare(week)}</td><td>${five.banked} / ${week.banked}</td></tr>`;
+}
+function userTable(page) {
+  const table = page.users.length
+    ? `<div class="table-wrap"><table class="users-table"><thead><tr><th>User</th><th>Servers</th><th>5h used</th><th>Week used</th><th>Banked (5h / full)</th></tr></thead><tbody>${page.users.map(userRow).join('')}</tbody></table></div>`
+    : `<p class="small">${userQuery ? 'No users match this search.' : 'No users are known yet.'}</p>`;
+  const first = userOffset + 1, last = userOffset + page.users.length;
+  const text = page.total ? `${first}–${last} of ${page.total}` : '0 users';
+  const pager = `<div class="chan-actions users-pager"><button type="button" data-page="prev"${userOffset === 0 ? ' disabled' : ''}>Previous</button><span class="small">${text}</span><button type="button" data-page="next"${userOffset + userLimit >= page.total ? ' disabled' : ''}>Next</button></div>`;
+  return table + pager;
+}
+// Loads one page into #user-table. Only that part is redrawn, so the search box keeps its focus.
+async function loadUserTable() {
+  const box = $('user-table');
+  if (!box) return;
+  const mine = ++userLoads;
+  box.replaceChildren(busy('md', 'Loading…'));
+  try {
+    const page = await request(`/api/admin/users?q=${encodeURIComponent(userQuery)}&limit=${userLimit}&offset=${userOffset}`);
+    if (mine !== userLoads || tab !== 'users' || !box.isConnected) return;
+    box.innerHTML = userTable(page);
+    paintBars(box);
+  } catch (error) {
+    if (mine !== userLoads || tab !== 'users') return;
+    box.innerHTML = `<p class="small">${esc(error.message)}</p>`;
+    fail(error);
+  }
+}
+// Manage users: the global limits card on top, then the user table. A limits save redraws the page; search and page size are kept.
+async function renderUsersAdmin() {
+  const edit = admin.canEdit, off = edit ? '' : ' disabled';
+  $('breadcrumb').textContent = 'Settings / Manage users';
+  $('title').textContent = 'Manage users';
+  $('description').textContent = 'Limits and usage for each user, across all servers. Read-only members can view everything.';
+  $('content').replaceChildren(busy('md', 'Loading…'));
+  try {
+    const limits = await request('/api/admin/limits');
+    if (tab !== 'users') return;
+    globalLimits = limits;
+    $('content').innerHTML = adminLimits(limits, 'For each user, across all servers. Zero means no limit.', edit, off)
+      + `<section class="card"><h2>Users</h2><div class="admin-search"><label>Find a user<input id="user-search" type="search" maxlength="100" autocomplete="off" placeholder="Name, @username or ID" value="${esc(userQuery)}"></label><label class="user-size">Per page<select id="user-limit">${USER_PAGE_SIZES.map(size => `<option value="${size}"${size === userLimit ? ' selected' : ''}>${size}</option>`).join('')}</select></label></div><div id="user-table"></div></section>`;
+    if (edit) $('admin-limits').onsubmit = event => {
+      event.preventDefault();
+      const form = event.target, data = new FormData(form);
+      adminRun(form.querySelector('button'), async () => { await request('/api/admin/limits', { five_hour_cost_micros: toMicros(data.get('five')), week_cost_micros: toMicros(data.get('week')), grace_percent: Number(data.get('grace')) }); notice('Limits saved.'); });
+    };
+    const search = $('user-search');
+    let timer = 0;
+    const apply = query => { if (query === userQuery) return; userQuery = query; userOffset = 0; loadUserTable(); };
+    search.oninput = () => { clearTimeout(timer); timer = setTimeout(() => apply(search.value.trim()), 250); };
+    search.onkeydown = event => { if (event.key === 'Escape') { clearTimeout(timer); search.value = ''; apply(''); } };
+    $('user-limit').onchange = event => { userLimit = Number(event.target.value); userOffset = 0; loadUserTable(); };
+    $('user-table').onclick = event => {
+      const step = event.target.closest('button[data-page]'), row = event.target.closest('tr[data-user]');
+      if (step) { userOffset = Math.max(0, userOffset + (step.dataset.page === 'next' ? userLimit : -userLimit)); loadUserTable(); }
+      else if (row) openUser(row.dataset.user);
+    };
+    await loadUserTable();
+    // A refresh or a shared link: #settings/users/<id> opens that user.
+    const wanted = settingsUrlId();
+    if (wanted && tab === 'users' && !userOpen) openUser(wanted);
+  } catch (error) { if (tab === 'users') fail(error); }
+}
+// Opens the user dialog. It shows the loading text until the detail answer comes.
+async function openUser(id) {
+  const dialog = $('user-dialog');
+  userOpen = id;
+  setSettingsUrlId(id);
+  if (!dialog.open) dialog.showModal();
+  $('user-body').replaceChildren(busy('md', 'Loading…'));
+  try {
+    const view = await request(`/api/admin/users/one?user=${encodeURIComponent(id)}`);
+    if (userOpen === id && dialog.open) paintUser(view);
+  } catch (error) {
+    if (userOpen === id) $('user-body').innerHTML = `<p class="small">${esc(error.message)}</p>`;
+    fail(error);
+  }
+}
+function userWindowCard(win) {
+  const label = win.kind === '5h' ? '5-hour window' : 'Week window';
+  const bar = win.limit ? `<div class="progress" role="progressbar" aria-label="Share of the limit used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${sharePct(win)}"><span data-pct="${sharePct(win)}"></span></div>` : '';
+  const reset = win.resetAt ? `Resets ${esc(when(win.resetAt))}` : 'No window running. It starts at the first spend.';
+  return `<div class="user-window"><h4>${label}</h4><p>${money(win.spent)} of ${win.limit ? money(win.limit) : 'no limit'}</p>${bar}<p class="small">${reset}</p><p class="small">Banked resets: ${win.banked}</p></div>`;
+}
+function userActions(off) {
+  return `<section class="user-section"><h3>Resets and grants</h3><p class="scope">A reset clears spend. A full reset clears the 5-hour and weekly windows. A grant adds one banked reset for the user to use later.</p><div class="chan-actions"><button type="button" data-user-action="reset" data-kind="5h"${off}>Reset 5h</button><button type="button" data-user-action="reset" data-kind="week"${off}>Full reset</button><button type="button" data-user-action="grant" data-kind="5h"${off}>Grant 5h reset</button><button type="button" data-user-action="grant" data-kind="week"${off}>Grant full reset</button></div></section>`;
+}
+function userOverrideForm(view, off) {
+  const override = view.override, field = (name, label, micros, global) => {
+    const placeholder = global == null ? 'Global limit' : `Global ${money(global)}`;
+    return `<label>${label}<input name="${name}" type="number" min="0" max="1000000" step="0.01" value="${micros == null ? '' : dollars(micros)}" placeholder="${esc(placeholder)}"${off}></label>`;
+  };
+  const status = override ? 'This user has an override. A blank field uses the global limit.' : 'This user uses the global limit.';
+  return `<section class="user-section"><h3>Limit override</h3><p class="scope">${status} It replaces the global limit in all servers. Zero means no limit.</p><form id="user-override" class="user-form"><div class="row">${field('five', '5-hour limit ($)', override?.five_hour_cost_micros, globalLimits?.five_hour_cost_micros)}${field('week', 'Weekly limit ($)', override?.week_cost_micros, globalLimits?.week_cost_micros)}</div><div class="chan-actions"><button class="primary"${off}>Save override</button><button type="button" data-user-action="clear"${off}>Clear override</button></div></form></section>`;
+}
+function userTotals(view) {
+  if (!view.totals.length) return '<p class="small">No usage yet.</p>';
+  const count = value => value.toLocaleString();
+  const rows = view.totals.map(item => `<tr><td>${esc(item.serverName)}</td><td><code>${esc(item.model)}</code></td><td class="num">${count(item.requests)}</td><td class="num">${count(item.input)}</td><td class="num">${count(item.cached)}</td><td class="num">${count(item.output)}</td><td class="num">${money(item.costMicros)}</td></tr>`).join('');
+  return `<div class="table-wrap"><table class="usage-totals"><thead><tr><th>Server</th><th>Model</th><th class="num">Requests</th><th class="num">Input (uncached)</th><th class="num">Input (cached)</th><th class="num">Output</th><th class="num">Cost</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+// Draws the dialog from one detail answer: profile, servers, windows, actions, override and lifetime totals.
+function paintUser(view) {
+  const off = admin.canEdit ? '' : ' disabled';
+  $('user-title').textContent = view.user.displayName || view.user.id;
+  $('user-body').innerHTML = `<div class="user-profile">${adminPerson(view.user)}</div><div class="chips">${serverChips(view)}</div>`
+    + `<section class="user-section"><h3>Usage</h3><div class="row">${userWindowCard(windowOf(view, '5h'))}${userWindowCard(windowOf(view, 'week'))}</div></section>`
+    + userActions(off) + userOverrideForm(view, off)
+    + `<section class="user-section"><h3>Lifetime totals</h3>${userTotals(view)}</section>`;
+  paintBars($('user-body'));
+}
+// Shows one detail answer: the table row always, the dialog only while it shows that user.
+function applyUser(view) {
+  const box = $('user-table'), id = view.user.id;
+  const row = box?.querySelector(`tr[data-user="${CSS.escape(id)}"]`);
+  if (row) { row.outerHTML = userRow(view); paintBars(box); }
+  if (userOpen === id && $('user-dialog').open) paintUser(view);
+}
+// Runs one dialog action. The answer redraws the dialog and the row. A failed action leaves the dialog as it was.
+async function userRun(button, path, body, done) {
+  const label = button.textContent;
+  button.disabled = true; button.setAttribute('aria-busy', 'true'); button.replaceChildren(loader('sm'));
+  try { const view = await request(path, body); notice(done); applyUser(view); }
+  catch (error) { fail(error); }
+  finally { button.disabled = false; button.removeAttribute('aria-busy'); button.textContent = label; }
+}
+$('user-body').addEventListener('click', event => {
+  const button = event.target.closest('button[data-user-action]');
+  if (!button || !userOpen) return;
+  const id = userOpen, { userAction: action, kind } = button.dataset;
+  if (action === 'reset') userRun(button, '/api/admin/users/reset', { user: id, kind }, kind === '5h' ? 'The 5-hour window is reset.' : 'The 5-hour and weekly windows are reset.');
+  else if (action === 'grant') userRun(button, '/api/admin/users/grant', { user: id, kind, count: 1 }, kind === '5h' ? 'Granted one 5-hour reset.' : 'Granted one full reset.');
+  else if (action === 'clear') userRun(button, '/api/admin/users/override', { user: id, five_hour_cost_micros: null, week_cost_micros: null }, 'The override is cleared. The global limit applies.');
+});
+$('user-body').addEventListener('submit', event => {
+  const form = event.target;
+  if (form.id !== 'user-override' || !userOpen) return;
+  event.preventDefault();
+  if (!form.reportValidity()) return;
+  const id = userOpen, data = new FormData(form), micros = name => data.get(name) === '' ? null : toMicros(data.get(name));
+  userRun(form.querySelector('button.primary'), '/api/admin/users/override', { user: id, five_hour_cost_micros: micros('five'), week_cost_micros: micros('week') }, 'The override is saved.');
+});
+// Closing gives focus back to the name button of the user's row, as the row may have been redrawn. Escape and the close button both close the dialog.
+$('user-dialog').addEventListener('close', () => {
+  const row = $('user-table')?.querySelector(`tr[data-user="${CSS.escape(userOpen)}"] .user-open`);
+  userOpen = '';
+  setSettingsUrlId('');
+  row?.focus();
+});
+$('user-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) event.currentTarget.close(); });
+$('user-close').onclick = () => $('user-dialog').close();
 function adminTranscripts(server, channels, off) {
   return `<section class="card"><h2>Web transcripts</h2><p class="scope">Per channel. Off by default. Discord permissions still decide who can see a transcript.</p><div id="admin-transcripts">${channels.length ? `<ul class="chan-list">${channels.map(channel => `<li class="chan"><div class="chan-info"><strong>#${esc(channel.name)}</strong></div><div class="chan-actions"><label class="switch"><input type="checkbox" data-server="${esc(server)}" data-channel="${esc(channel.id)}"${channel.enabled ? ' checked' : ''}${off}><span>${channel.enabled ? 'On' : 'Off'}</span></label><button type="button" data-action="rotate" data-server="${esc(server)}" data-channel="${esc(channel.id)}" data-name="${esc(channel.name)}"${off}>Rotate webhook</button></div></li>`).join('')}</ul>` : '<p class="small">Slopbot serves no channels in this server yet.</p>'}</div></section>`;
 }
@@ -738,14 +859,14 @@ async function renderBotAdmin() {
     }
   } catch (error) { fail(error); }
 }
-// Manage servers: a searchable, paged list. Opening a server shows its limits, usage and web transcripts.
+// Manage servers: a searchable, paged list. Opening a server shows its web transcripts and shares.
 const SERVER_PAGE = 20;
 let serverQuery = '', serverOffset = 0, serverLoads = 0;
 async function renderServersAdmin() {
   if (adminServer) return renderServerDetail();
   $('breadcrumb').textContent = 'Settings / Manage servers';
   $('title').textContent = 'Manage servers';
-  $('description').textContent = 'Limits, usage and web transcripts for each server. Read-only members can view everything.';
+  $('description').textContent = 'Web transcripts for each server. Read-only members can view everything.';
   $('content').innerHTML = `<section class="card"><h2>Servers</h2><p class="scope" id="admin-server-count"></p><div class="admin-search"><label>Find a server<input id="admin-server-search" type="search" maxlength="100" autocomplete="off" placeholder="Server name" value="${esc(serverQuery)}"></label></div><div id="admin-server-list"></div></section>`;
   const search = $('admin-server-search');
   let timer = 0;
@@ -773,51 +894,27 @@ async function loadServerList() {
     if (page.total > SERVER_PAGE) list.innerHTML += `<div class="chan-actions"><button type="button" data-page="prev"${serverOffset === 0 ? ' disabled' : ''}>Previous</button><span class="small">Page ${current} of ${pages}</span><button type="button" data-page="next"${serverOffset + SERVER_PAGE >= page.total ? ' disabled' : ''}>Next</button></div>`;
     list.onclick = event => {
       const open = event.target.closest('button[data-server]'), step = event.target.closest('button[data-page]');
-      if (open) { adminServer = open.dataset.server; adminUser = ''; renderAdmin(); return; }
+      if (open) { adminServer = open.dataset.server; renderAdmin(); return; }
       if (step) { serverOffset = Math.max(0, serverOffset + (step.dataset.page === 'next' ? SERVER_PAGE : -SERVER_PAGE)); loadServerList(); }
     };
   } catch (error) { if (mine === serverLoads) fail(error); }
 }
-// One server: back link, Limits, Usage, Web transcripts and shares. Its channels come from one call.
+// One server: back link, Web transcripts and shares. Its channels come from one call.
 async function renderServerDetail() {
   const edit = admin.canEdit, off = edit ? '' : ' disabled', id = encodeURIComponent(adminServer);
   $('breadcrumb').textContent = 'Settings / Manage servers';
   $('content').replaceChildren(busy('md', 'Loading…'));
   try {
-    const [channels, limits, usage] = await Promise.all([
-      request(`/api/admin/servers/channels?server=${id}`),
-      request(`/api/admin/limits?server=${id}`),
-      request(`/api/admin/usage?server=${id}${adminUser ? `&user=${encodeURIComponent(adminUser)}` : ''}`),
-    ]);
+    const channels = await request(`/api/admin/servers/channels?server=${id}`);
     if (tab !== 'servers-admin' || !adminServer) return;
-    const users = adminUser ? [{ user: usage.user, windows: usage.windows }] : usage.users;
     $('title').textContent = channels.name;
-    $('description').textContent = 'Limits and usage apply to this server. Web transcripts are set per channel.';
+    $('description').textContent = 'Web transcripts are set per channel.';
     $('content').innerHTML = [
       '<p><a href="#" id="admin-back">All servers</a></p>',
-      adminLimits(limits, channels.name, edit, off),
-      adminUsage(users, channels.name, off),
       adminTranscripts(adminServer, channels.channels, off),
       '<section class="card" id="admin-shares"></section>',
     ].join('');
     wireBack();
-    if (edit) $('admin-limits').onsubmit = event => {
-      event.preventDefault();
-      const form = event.target, data = new FormData(form);
-      adminRun(form.querySelector('button'), async () => { await request('/api/admin/limits', { server: adminServer, five_hour_cost_micros: toMicros(data.get('five')), week_cost_micros: toMicros(data.get('week')), grace_percent: Number(data.get('grace')) }); notice('Limits saved.'); });
-    };
-    wireAdminSearch(adminServer);
-    if ($('admin-all')) $('admin-all').onclick = () => { adminUser = ''; renderAdmin(); };
-    $('admin-users').onclick = event => {
-      const button = event.target.closest('button[data-action]');
-      if (!button) return;
-      const { action, user, kind } = button.dataset;
-      adminRun(button, async () => {
-        if (action === 'reset') { await request('/api/admin/usage/reset', { server: adminServer, user, kind }); notice(kind === '5h' ? `The 5-hour window is cleared for ${user}.` : `The 5-hour and weekly windows are cleared for ${user}.`); }
-        else { await request('/api/admin/usage/grant', { server: adminServer, user, kind, count: 1 }); notice(`Granted one ${kind === '5h' ? '5-hour' : 'full'} reset to ${user}.`); }
-      });
-    };
-    paintBars($('admin-users'));
     $('admin-transcripts').onclick = async event => {
       const button = event.target.closest('button[data-action="rotate"]');
       if (!button || !edit) return;
@@ -843,12 +940,12 @@ async function renderServerDetail() {
 }
 function wireBack() {
   const link = $('admin-back');
-  if (link) link.onclick = event => { event.preventDefault(); adminServer = ''; adminUser = ''; renderAdmin(); };
+  if (link) link.onclick = event => { event.preventDefault(); adminServer = ''; renderAdmin(); };
 }
 // The admin tabs share one entry point: Bot admin, or Manage servers (list or one server).
 async function renderAdmin() {
   syncSettingsUrl();
-  return tab === 'bot' ? renderBotAdmin() : renderServersAdmin();
+  return tab === 'bot' ? renderBotAdmin() : tab === 'users' ? renderUsersAdmin() : renderServersAdmin();
 }
 $('server').onchange = async () => {
   const select = $('server'), id = select.value;

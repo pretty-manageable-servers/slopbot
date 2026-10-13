@@ -1,7 +1,7 @@
 // Command palette: Cmd+K on Mac, Ctrl+K elsewhere. A dialog with a borderless search field, filter pills, and sections of chats, channels, servers, actions and message hits.
 // Uses globals from app.js (state, admin, theme, openSettings, closeSettings, $), conversations.js (newChat, relTime, msgTime, fuzzyScore, renderText) and window.SlopbotChat.
 (() => {
-  const SECTION_NAMES = [['server', 'Server settings'], ['channels', 'Channels & history'], ['mcp', 'MCP connections'], ['profile', 'My profile'], ['bot', 'Bot admin'], ['servers-admin', 'Manage servers']];
+  const SECTION_NAMES = [['server', 'Server settings'], ['channels', 'Channels & history'], ['mcp', 'MCP connections'], ['profile', 'My profile'], ['bot', 'Bot admin'], ['users', 'Manage users'], ['servers-admin', 'Manage servers']];
   // Filter pills in order. Each key is also a section key. The section titles keep the order of the typed-search sections.
   const FILTERS = [['all', 'All'], ['chats', 'Chats'], ['channels', 'Channels'], ['servers', 'Servers'], ['messages', 'Messages'], ['actions', 'Actions']];
   const TITLES = { chats: 'Chats', channels: 'Channels', servers: 'Servers', actions: 'Actions', messages: 'Messages' };
@@ -70,7 +70,7 @@
     add('actions', 'Docs', ICONS.book, () => window.open('https://docs.pmservers.org', '_blank', 'noopener'));
     add('actions', 'Sign out', ICONS.logout, () => $('logout').click());
     for (const [section, name] of SECTION_NAMES) {
-      if ((section === 'bot' || section === 'servers-admin') && !admin) continue;
+      if ((section === 'bot' || section === 'users' || section === 'servers-admin') && !admin) continue;
       add('actions', name, ICONS.gear, () => openSettings(section, returnFocus));
     }
     for (const item of window.SlopbotChat?.items() || []) {
