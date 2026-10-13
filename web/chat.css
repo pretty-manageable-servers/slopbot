@@ -93,19 +93,18 @@ main.chat-mode{padding:0;max-width:none;min-width:0}
 .chat .chat-run-box>*{display:block;width:100%;margin:0;border:0;border-top:1px solid var(--line)}
 .chat .chat-run-box>:first-child{border-top:0}
 .chat .chat-run-box .busy{padding:10px 12px}
-.chat .chat-round{padding:8px 12px;font-size:12px;color:var(--muted)}
 .chat .chat-run-prose{padding:10px 12px;font-size:13px;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
 .chat .chat-run-error{padding:10px 12px;font-size:13px;color:var(--muted)}
 .chat .chat-think{padding:10px 12px;border-radius:0;background:none;text-align:left;color:var(--muted);font-size:13px}
 .chat .chat-think:hover{background:var(--pill)}
 .chat .chat-think-label{display:block;font-size:12px;margin-bottom:2px}
-.chat .chat-think-text{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere}
+.chat .chat-think-text{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere}
 .chat .chat-think.open .chat-think-text{display:block;overflow:visible}
 .chat .chat-tool-line{display:flex;align-items:baseline;gap:8px;padding:9px 12px;border:0;border-radius:0;background:none;color:var(--text);font-size:14px;text-align:left}
 .chat .chat-tool-line:hover{background:var(--pill)}
 .chat .chat-tool-status{flex:none;width:14px;text-align:center;color:var(--muted)}
-.chat .chat-tool-name{flex:none;color:var(--strong)}
-.chat .chat-tool-args{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:13px}
+.chat .chat-tool-name{flex:none;color:var(--muted)}
+.chat .chat-tool-args{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
 .chat .chat-tool[data-open=true] .chat-chev{transform:rotate(90deg)}
 .chat .chat-tool-detail{margin:0;padding:10px 12px 12px 34px;max-height:260px;overflow:auto;font:12px/1.55 'JetBrains Mono',monospace;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
 
