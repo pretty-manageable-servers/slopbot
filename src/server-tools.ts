@@ -1,14 +1,18 @@
+import { MAX_MUTE_MINUTES, MUTED_USERS_KEY, mutedUsers, userId } from "./muted-users.js";
+import { BOT_REPLY_LIMIT_KEY, MAX_BOT_REPLIES, MAX_BOT_REPLY_MINUTES, botReplyLimit } from "./bot-reply-limit.js";
+import { GLOBAL_SETTINGS_SCOPE } from "./usage-cost.js";
 import { isPrivateChannel } from "./private-chat.js";
 import type { Config } from "./config.js";
 import { selfKnowledgeTool } from "./self-knowledge.js";
 import type { Json, Message } from "./domain.js";
 import type { Knowledge } from "./memory.js";
 import type { ParticipationOptions } from "./participation.js";
+import { decisionThresholds, type ParticipationHistoryStore } from './participation-history.js';
 import type { HistoryImporter } from "./history.js";
 import type { QueueStore } from "./queue.js";
 import { ToolError, type ToolField, type ToolRegistry, type ToolDefinition } from "./tools.js";
 
-export interface ServerToolStore extends Knowledge, QueueStore {
+export interface ServerToolStore extends Knowledge, QueueStore, ParticipationHistoryStore {
   setting(server: string, key: string): unknown;
   setSetting(server: string, key: string, value: Json): void | Promise<void>;
   indexStats(server: string, channel: string): {
@@ -71,6 +75,34 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
   add({ name: "tool_display", scope: "discord", description: "Choose tool activity in completed replies: none, summary (one grey line with counts), or full (counts plus failed calls).", fields: { mode: { ...choice("Tool activity display", ["none", "summary", "full"]), required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
     async execute(_context, args) { await store.setSetting(server, "tool_display", args.mode!); return `Tool activity display set to ${args.mode}. Live progress remains enabled.`; }
   });
+  add({ name: "bot_replies", description: "Read or set how often Slopbot answers other bots in one channel (for all servers). replies=0 means never answer bots. Only the Slopbot team can set it. Use it when the team asks Slopbot to stop or limit replies to bots.", fields: { action: { ...choice("get or set", ["get", "set"]), required: true }, replies: integer("Most replies to bots in the window", MAX_BOT_REPLIES, false), minutes: integer("Window length in minutes", MAX_BOT_REPLY_MINUTES, false, 1) }, publicResult: () => true, access: "member", effect: "write", execution: "inline", retrySafe: true,
+    async execute(context, args) {
+      const current = botReplyLimit(store.setting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY));
+      if (args.action !== "set") return `Slopbot answers other bots at most ${current.replies} times in ${current.minutes} minutes per channel.`;
+      if (!await services.isTeamEditor(context.message.author)) throw new ToolError("Only the Slopbot team can change replies to bots.");
+      const next = botReplyLimit({ replies: args.replies ?? current.replies, minutes: args.minutes ?? current.minutes });
+      await store.setSetting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY, next as unknown as Json);
+      return next.replies === 0 ? "Slopbot now does not answer other bots." : `Slopbot now answers other bots at most ${next.replies} times in ${next.minutes} minutes per channel.`;
+    }
+  });
+  add({ name: "mute_users", description: "Stop Slopbot from answering a user (a person or a bot) in this server for some minutes, end a mute, or list mutes. Only the Slopbot team can mute or unmute, and team members cannot be muted. Use it when the team asks Slopbot to ignore or not reply to someone.", fields: { action: { ...choice("mute, unmute or list", ["mute", "unmute", "list"]), required: true }, user: { type: "string", description: "Discord user ID or mention, for mute and unmute", max: 40 }, minutes: integer("Mute length in minutes, for mute", MAX_MUTE_MINUTES, false, 1) }, publicResult: () => true, access: "member", effect: "write", execution: "inline", retrySafe: true,
+    async execute(context, args) {
+      const mutes = mutedUsers(store.setting(server, MUTED_USERS_KEY));
+      if (args.action === "list") {
+        const rows = Object.entries(mutes);
+        return rows.length ? `Muted users: ${rows.map(([user, until]) => `<@${user}> until ${new Date(until).toISOString()}`).join(", ")}.` : "No users are muted.";
+      }
+      if (!await services.isTeamEditor(context.message.author)) throw new ToolError("Only the Slopbot team can mute or unmute users.");
+      const user = userId(args.user);
+      if (!user) throw new ToolError("Give a Discord user ID or mention.");
+      if (args.action === "unmute") { delete mutes[user]; await store.setSetting(server, MUTED_USERS_KEY, mutes); return `<@${user}> is not muted now.`; }
+      if (await services.isTeamEditor(user)) throw new ToolError("Slopbot team members cannot be muted.");
+      const minutes = Number(args.minutes ?? 60);
+      mutes[user] = Date.now() + minutes * 60_000;
+      await store.setSetting(server, MUTED_USERS_KEY, mutes);
+      return `Slopbot will not answer <@${user}> in this server until ${new Date(mutes[user]!).toISOString()}.`;
+    }
+  });
   add(selfKnowledgeTool(registry, services.isTeamEditor, () => `Native function calling: enabled\nObject storage: ${config.objectStorage ? "configured" : "not configured"}; file_store scopes user/server/user_server, with ownership and sharing controls\nTool rounds per attempt: ${config.maxToolRounds}\nPMServers docs reviewed: 2026-10-12; latest changelog: 2026-10-12`));
   const scoped = async (message: Message, target: Json | undefined): Promise<string> => {
     const id = target === undefined ? (await services.originMessage(message)).channel : String(target);
@@ -106,11 +138,60 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
       participation.options.cooldownMs = Number(args.seconds) * 1000; participation.options.maxUnsolicitedPerHour = Number(args.per_hour);
       return `Unsolicited replies: ${args.per_hour}/hour per channel, at least ${args.seconds}s apart. Explicit requests bypass limits.`;
     } });
-  add({ name: "why", description: "Inspect the latest JEV decision in a channel", fields: { channel }, access: "admin", effect: "read", retrySafe: true,
+  const thresholdFields = {
+    addressed: integer('Addressing score cutoff, percent (0–100). Default 65', 100, false),
+    respond: integer('Reply score cutoff for addressed requests, percent. Default 50', 100, false),
+    unsolicited: integer('Reply score cutoff for unsolicited contributions, percent. Default 90', 100, false),
+    funny: integer('Funny score cutoff for a reaction, percent. Default 90', 100, false),
+  };
+  add({ name: 'calibration', scope: 'discord', description: 'Inspect or set participation score cutoffs for this server. Percentages from 0 to 100; changes apply immediately and persist.',
+    fields: { action: choice('Default: get. Use set to change supplied cutoffs', ['get', 'set']), ...thresholdFields }, access: 'admin', effect: 'write', retrySafe: true, writes: args => args.action === 'set',
+    async execute(_context, args) {
+      const supplied = Object.keys(thresholdFields).filter(key => args[key] !== undefined) as (keyof typeof thresholdFields)[];
+      const thresholds = decisionThresholds(participation.options.thresholds, config.jevThresholds);
+      if (args.action === 'set') {
+        if (!supplied.length) throw new ToolError('Supply at least one cutoff to set.');
+        for (const key of supplied) thresholds[key] = Number(args[key]) / 100;
+        await store.setSetting(server, 'participation_thresholds', { ...thresholds });
+        participation.options.thresholds = thresholds;
+      } else if (supplied.length) throw new ToolError('Use action:set to change cutoffs.');
+      return `Participation cutoffs: addressed ${(thresholds.addressed * 100).toFixed(1)}%, addressed reply ${(thresholds.respond * 100).toFixed(1)}%, unsolicited reply ${(thresholds.unsolicited * 100).toFixed(1)}%, funny ${(thresholds.funny * 100).toFixed(1)}%. Reaction frequency is a separate setting. These cutoffs apply to native decision scores; the chat fallback supplies booleans without scores.`;
+    } });
+  add({ name: "why", description: "Explain saved participation decisions with scores and cutoffs. Defaults to last 10; filter by channel, time, message, author or text. Reply allowed does not prove delivery.", fields: {
+    channel, count: integer('Newest matching decisions to return; default 10, maximum 100', 100, false, 1),
+    after: { type: 'string', description: 'Inclusive ISO timestamp with timezone, e.g. 2026-10-13T14:00:00-04:00' },
+    before: { type: 'string', description: 'Exclusive ISO timestamp with timezone; also useful for paging older decisions' },
+    since_minutes: integer('Only decisions in the past N minutes; alternative to after', 43200, false, 1),
+    message_id: { type: 'string', description: 'Exact Discord message ID to inspect' },
+    author: { type: 'string', description: 'Exact author Discord ID or mention' },
+    query: { type: 'string', description: 'Case-insensitive literal text to find in message excerpts', max: 200 },
+  }, access: "member", effect: "read", retrySafe: true, programmatic: true,
+    outputSchema: { type: 'object', properties: { channel: { type: 'string' }, records: { type: 'array', items: { type: 'object' } } }, required: ['channel', 'records'], additionalProperties: false },
     async execute(context, args) {
       const id = await scoped(context.message, args.channel);
-      const reason = participation.diagnostics.get(JSON.stringify([server, id]));
-      return `Monitoring enabled: ${participation.options.enabled}\nLast JEV outcome: ${reason ?? "none since startup"}\nExplicit requests bypass JEV and unsolicited cooldowns.`;
+      const timestamp = (value: Json | undefined): number | undefined => {
+        if (value === undefined) return undefined;
+        if (typeof value !== 'string' || !/T.*(?:Z|[+-]\d{2}:\d{2})$/i.test(value) || !Number.isFinite(Date.parse(value))) throw new ToolError('Use ISO timestamps with an explicit timezone for after/before.');
+        return Date.parse(value);
+      };
+      if (args.after !== undefined && args.since_minutes !== undefined) throw new ToolError('Choose after or since_minutes, not both.');
+      const after = args.since_minutes === undefined ? timestamp(args.after) : Date.now() - Number(args.since_minutes) * 60000;
+      const before = timestamp(args.before);
+      if (after !== undefined && before !== undefined && after >= before) throw new ToolError('after must be earlier than before.');
+      const records = await store.participationHistory(server, id, { count: Number(args.count ?? 10),
+        ...(after !== undefined ? { after } : {}), ...(before !== undefined ? { before } : {}),
+        ...(args.message_id ? { messageId: String(args.message_id) } : {}),
+        ...(args.author ? { author: String(args.author).replace(/^<@!?(\d+)>$/, '$1') } : {}), ...(args.query ? { text: String(args.query) } : {}),
+      });
+      const lines = records.map(record => {
+        const { decision: d, thresholds: t } = record, scores = d.scores;
+        const replyThreshold = scores && scores.addressed >= t.addressed ? t.respond : t.unsolicited;
+        const compare = (score: number, threshold: number) => `${score.toFixed(3)} ${score >= threshold ? '>=' : '<'} ${threshold.toFixed(3)}`;
+        const scoreText = scores ? `Addressed ${compare(scores.addressed, t.addressed)}; reply ${compare(scores.respond, replyThreshold)}; funny ${scores.funny === undefined ? 'not provided' : compare(scores.funny, t.funny)}.` : 'Scores unavailable: classifier bypassed, disabled, failed, or chat fallback.';
+        const source = /^\d+$/.test(record.messageId) && !isPrivateChannel(id) ? `https://discord.com/channels/${server}/${id}/${record.messageId}` : record.messageId;
+        return `${new Date(record.timestamp).toISOString()} ${source}\n${record.text.replace(/@(everyone|here)/gi, '@\u200b$1')}\n${scoreText}\nOutcome: ${d.reason}; reply allowed=${d.respond}; reaction=${d.emoji ?? 'none'}. ${record.detail}`;
+      });
+      return { text: `Monitoring now: ${participation.options.enabled}. ${records.length} matching decision(s), newest first. Scores are compared against cutoffs used at the time. Excerpts show the current source text; edits can differ from what was evaluated.\n${lines.join('\n\n') || 'No matching decisions recorded.'}\nMentions, replies, task threads and private chats bypass classification. Historical classifier-only records cannot explain later usage blocks or delivery.`, data: { channel: id, records: records as unknown as Json } };
     } });
   add({ name: "channel_find", description: "Find visible server text channels by name before changing channel settings", fields: { query: { type: "string", description: "Channel name to search", required: true } }, access: "admin", effect: "read", retrySafe: true,
     async execute(context, args) { return services.findChannels(context.message, String(args.query)); } });

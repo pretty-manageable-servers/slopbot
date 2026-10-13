@@ -365,8 +365,9 @@ function renderSettings() {
   const s = state.settings;
   if (tab !== 'profile' && !state.admin) { $('content').innerHTML = '<p>Manage Server permission is required for these controls.</p>'; return; }
   if (tab === 'server') {
-    $('content').innerHTML = card('monitoring','Join the conversation','Applies to this server',checkbox('Monitor unaddressed conversations','enabled',s.monitoring) + '<p class="small">Direct mentions and replies still work when monitoring is off.</p>' + (s.mock ? '<p>Mock mode disables automatic participation.</p>' : '')) + card('context','Conversation context','Applies to this server', '<div class="row">' + input('Participation context, messages','jev',s.classifier_context,100) + input('Reply context, messages','reply',s.reply_context,100) + '</div>') + card('cooldown','Automatic reply limits','Server policy, counted separately for each channel','<div class="row">' + input('Minimum interval, seconds','seconds',s.cooldown_seconds,3600) + input('Replies per hour','per_hour',s.max_unsolicited_per_hour,1000) + '</div><p class="small">Zero replies per hour disables unsolicited replies. Direct requests bypass these limits.</p>') + card('tool_display','Tool activity','Applies to completed replies in this server', '<label>Display<select name="mode">' + [['none','No tool calls'],['summary','Summary'],['full','Full expansion']].map(([value,label]) => `<option value="${value}" ${s.tool_display === value ? 'selected' : ''}>${label}</option>`).join('') + '</select></label><p class="small">Summary shows one grey line with counts. Full expansion adds failed calls and their reasons.</p>') + card('default_effort','Reasoning effort','Default for this server. Web chats can pick their own.', '<fieldset class="radios"><legend class="small">Default effort</legend>' + [['default','Provider default'],['low','Low'],['medium','Medium'],['xhigh','Extra high']].map(([value,label]) => `<label><input type="radio" name="level" value="${value}" ${(s.default_effort || 'default') === value ? 'checked' : ''}> ${label}</label>`).join(' ') + '</fieldset><p class="small">Web chats use medium when nothing is set. Models without effort support ignore this.</p>') + card('timing','Timing diagnostics','Applies to this server',checkbox('Show request timing in reply footers','enabled',s.timing_footer)) + '<section class="card"><h2>Web transcripts</h2><p class="scope">Per channel. Off by default. Turn a channel on to show its transcript in the web console. Discord permissions still decide who can see it.</p><ul id="transcripts" class="chan-list"><li class="small">Loading channels…</li></ul></section>';
+    $('content').innerHTML = card('monitoring','Join the conversation','Applies to this server',checkbox('Monitor unaddressed conversations','enabled',s.monitoring) + '<p class="small">Direct mentions and replies still work when monitoring is off.</p>' + (s.mock ? '<p>Mock mode disables automatic participation.</p>' : '')) + card('calibration','Participation cutoffs','Applies immediately to this server', '<div class="row">' + input('Addressed, %','addressed',(s.participation_thresholds?.addressed ?? 0.65)*100,100) + input('Addressed reply, %','respond',(s.participation_thresholds?.respond ?? 0.5)*100,100) + '</div><div class="row">' + input('Unsolicited reply, %','unsolicited',(s.participation_thresholds?.unsolicited ?? 0.9)*100,100) + input('Funny reaction, %','funny',(s.participation_thresholds?.funny ?? 0.9)*100,100) + '</div><p class="small">Lower cutoffs allow more participation. Use Slopbot’s why tool to compare recorded scores with the cutoffs used. Reaction frequency is a separate setting.</p>') + card('context','Conversation context','Applies to this server', '<div class="row">' + input('Participation context, messages','jev',s.classifier_context,100) + input('Reply context, messages','reply',s.reply_context,100) + '</div>') + card('cooldown','Automatic reply limits','Server policy, counted separately for each channel','<div class="row">' + input('Minimum interval, seconds','seconds',s.cooldown_seconds,3600) + input('Replies per hour','per_hour',s.max_unsolicited_per_hour,1000) + '</div><p class="small">Zero replies per hour disables unsolicited replies. Direct requests bypass these limits.</p>') + card('tool_display','Tool activity','Applies to completed replies in this server', '<label>Display<select name="mode">' + [['none','No tool calls'],['summary','Summary'],['full','Full expansion']].map(([value,label]) => `<option value="${value}" ${s.tool_display === value ? 'selected' : ''}>${label}</option>`).join('') + '</select></label><p class="small">Summary shows one grey line with counts. Full expansion adds failed calls and their reasons.</p>') + card('default_effort','Reasoning effort','Default for this server. Web chats can pick their own.', '<fieldset class="radios"><legend class="small">Default effort</legend>' + [['default','Provider default'],['low','Low'],['medium','Medium'],['xhigh','Extra high']].map(([value,label]) => `<label><input type="radio" name="level" value="${value}" ${(s.default_effort || 'default') === value ? 'checked' : ''}> ${label}</label>`).join(' ') + '</fieldset><p class="small">Web chats use medium when nothing is set. Models without effort support ignore this.</p>') + card('timing','Timing diagnostics','Applies to this server',checkbox('Show request timing in reply footers','enabled',s.timing_footer)) + '<section class="card"><h2>Web transcripts</h2><p class="scope">Per channel. Off by default. Turn a channel on to show its transcript in the web console. Discord permissions still decide who can see it.</p><ul id="transcripts" class="chan-list"><li class="small">Loading channels…</li></ul></section>';
     bind('monitoring', f => save('monitoring',{enabled:f.has('enabled')}));
+    bind('calibration', f => save('calibration',{action:'set',addressed:Number(f.get('addressed')),respond:Number(f.get('respond')),unsolicited:Number(f.get('unsolicited')),funny:Number(f.get('funny'))}));
     bind('context', async f => { await save('context',{messages:Number(f.get('jev')),target:'jev'}); try { await save('context',{messages:Number(f.get('reply')),target:'reply'}); } catch (error) { throw new Error(`Participation context saved. Reply context failed: ${error.message}`); } });
     bind('cooldown', f => save('cooldown',{seconds:Number(f.get('seconds')),per_hour:Number(f.get('per_hour'))}));
     bind('tool_display', f => save('tool_display',{mode:f.get('mode')}));
@@ -521,6 +522,10 @@ function priceCardKey(event) {
   const save = row?.querySelector('[data-price="save"], [data-price="add"]'), cancel = row?.querySelector('[data-price="cancel"]');
   if (event.key === 'Enter' && save) { event.preventDefault(); save.click(); }
   else if (event.key === 'Escape' && cancel) { event.preventDefault(); cancel.click(); }
+}
+// Replies to other bots: at most this many in this many minutes, per channel. Zero replies means Slopbot never answers bots.
+function adminBotReplies(limit, off) {
+  return `<form class="card" id="admin-bot-replies"><h2>Replies to other bots</h2><p class="scope">For all servers, counted for each channel. Default: ${limit.default.replies} in ${limit.default.minutes} minutes. Zero replies stops all replies to bots.</p><div class="row">${input('Replies','replies',limit.replies,1000)}${input('Minutes','minutes',limit.minutes,1440,1)}</div><button class="primary" id="admin-bot-replies-save"${off}>Save limit</button></form>`;
 }
 function adminSystemPrompt(prompt, full, off) {
   // The field shows the saved text, or the default when nothing is saved.
@@ -839,22 +844,28 @@ async function renderBotAdmin() {
   $('description').textContent = 'Usage, model prices, web search keys and the system prompt for all servers. Read-only members can view everything and add their own web search keys.';
   $('content').replaceChildren(busy('md', 'Loading…'));
   try {
-    const [totals, prices, webKeys, systemPrompt, full] = await Promise.all([
+    const [totals, prices, webKeys, systemPrompt, full, botReplies] = await Promise.all([
       request('/api/admin/usage/total'),
       request('/api/admin/prices'),
       request('/api/admin/web-keys'),
       request('/api/admin/system-prompt'),
       request('/api/admin/system-prompt/full'),
+      request('/api/admin/bot-replies'),
     ]);
     if (tab !== 'bot') return;
     priceState = { prices, edit, editing: '' };
-    $('content').innerHTML = [adminTotals(totals), '<section class="card" id="admin-prices"></section>', adminWebKeys(webKeys, edit), adminSystemPrompt(systemPrompt, full.text, off)].join('');
+    $('content').innerHTML = [adminTotals(totals), '<section class="card" id="admin-prices"></section>', adminWebKeys(webKeys, edit), adminBotReplies(botReplies, off), adminSystemPrompt(systemPrompt, full.text, off)].join('');
     paintPrices();
     wireSystemPrompt(systemPrompt);
     wireWebKeys(edit);
     if (edit) {
       $('admin-prices').onclick = priceCardClick;
       $('admin-prices').onkeydown = priceCardKey;
+      $('admin-bot-replies').onsubmit = event => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        adminRun($('admin-bot-replies-save'), async () => { await request('/api/admin/bot-replies', { replies: Number(form.replies.value), minutes: Number(form.minutes.value) }); notice('Bot reply limit saved.'); });
+      };
       $('admin-system-prompt').onsubmit = event => {
         event.preventDefault();
         adminRun($('admin-system-prompt-save'), async () => { await request('/api/admin/system-prompt', { text: $('admin-system-prompt-text').value }); notice('System prompt saved.'); });

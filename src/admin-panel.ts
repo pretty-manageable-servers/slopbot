@@ -1,3 +1,4 @@
+import { BOT_REPLY_LIMIT_KEY, DEFAULT_BOT_REPLY_LIMIT, MAX_BOT_REPLIES, MAX_BOT_REPLY_MINUTES, botReplyLimit, type BotReplyLimit } from "./bot-reply-limit.js";
 import type { Config } from "./config.js";
 import type { Json } from "./domain.js";
 import type { KnownUserRow, Store, TokenSums, UserTokenTotalRow } from "./ports.js";
@@ -213,6 +214,20 @@ export class AdminPanel {
     };
     await this.store.setSetting(GLOBAL_SETTINGS_SCOPE, "model_prices", table as Json);
     return this.prices();
+  }
+
+  /** How often Slopbot answers other bots in one channel, for all servers. */
+  botReplies(): BotReplyLimit & { default: BotReplyLimit } {
+    return { ...botReplyLimit(this.store.setting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY)), default: DEFAULT_BOT_REPLY_LIMIT };
+  }
+
+  async saveBotReplies(body: unknown): Promise<BotReplyLimit & { default: BotReplyLimit }> {
+    const input = object(body, "Send the limit as an object.");
+    const replies = wholeNumber(input.replies, MAX_BOT_REPLIES, `Replies must be a whole number from 0 to ${MAX_BOT_REPLIES}.`);
+    const minutes = wholeNumber(input.minutes, MAX_BOT_REPLY_MINUTES, `Minutes must be a whole number from 1 to ${MAX_BOT_REPLY_MINUTES}.`);
+    if (minutes < 1) throw new AdminInputError(`Minutes must be a whole number from 1 to ${MAX_BOT_REPLY_MINUTES}.`);
+    await this.store.setSetting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY, { replies, minutes });
+    return this.botReplies();
   }
 
   /** The saved system prompt for all servers, or null when the default is used. */

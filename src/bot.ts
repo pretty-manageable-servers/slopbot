@@ -7,6 +7,7 @@ import type { Message } from "./domain.js";
 import type { Store } from "./ports.js";
 import type { Knowledge } from "./memory.js";
 import type { TaskWorker, QueueStore } from "./queue.js";
+import { DEFAULT_BOT_REPLY_LIMIT, type BotReplyLimit } from "./bot-reply-limit.js";
 import { ToolError, discordOnlyMessage, type ToolCall, type ToolRegistry, type ToolResult } from "./tools.js";
 import type { ParticipationGate } from "./participation.js";
 import { UserLimitError, limitReply } from "./user-limiter.js";
@@ -31,9 +32,6 @@ export interface TaskRegistry {
   taskThreads(server: string): { thread: string; parent: string }[];
 }
 
-const BOT_REPLY_LIMIT = 3;
-const BOT_REPLY_WINDOW_MS = 10 * 60 * 1000;
-
 export class Bot {
   private readonly tasks = new Set<string>();
   /** Times of recent replies to other bots, per channel. Stops bot-to-bot loops. */
@@ -49,7 +47,7 @@ export class Bot {
     private readonly gateway: ChatGateway,
     private readonly server: string,
     private channels: readonly string[],
-    private readonly options: { knowledge?: Knowledge; participation?: ParticipationGate; worker?: TaskWorker; tools?: ToolRegistry; queueStore?: QueueStore; profiles?: ProfileStore } = {},
+    private readonly options: { knowledge?: Knowledge; participation?: ParticipationGate; worker?: TaskWorker; tools?: ToolRegistry; queueStore?: QueueStore; profiles?: ProfileStore; botReplyLimit?: () => BotReplyLimit; mutedUntil?: (user: string) => number | undefined } = {},
   ) {
     for (const task of registry.taskThreads(server)) {
       if (channels.includes(task.parent)) {
@@ -94,6 +92,16 @@ export class Bot {
     // A web reply arrives with addressed=true, so it always gets an answer and skips JEV. A private chat always does, even without that flag.
     let addressed = task && !message.botAuthor || privateChat || message.mentionsBot || message.repliesToBot || message.addressed === true;
     let ingested = alreadyIngested;
+    // The Slopbot team muted this user. The message is saved but gets no reply.
+    const muted = this.options.mutedUntil?.(message.author);
+    if (muted !== undefined && muted > Date.now()) {
+      if (!ingested) await this.store.ingest({ ...message, addressed: false });
+      await this.options.participation?.recordBlocked?.(message, 'muted');
+      requestTimings.finish(message);
+      return;
+    }
+    if (addressed && !message.botAuthor) await this.options.participation?.recordBypass?.(message,
+      privateChat ? 'private_chat' : task ? 'task_thread' : message.mentionsBot ? 'mention' : message.repliesToBot ? 'reply_to_bot' : 'explicit_request');
     // Another bot can mention or reply to Slopbot without end. Past the cap, its messages are saved but get no reply.
     if (addressed && message.botAuthor && !this.allowBotReply(message.channel)) {
       if (!ingested) await this.store.ingest({ ...message, addressed: false });
@@ -155,7 +163,12 @@ export class Bot {
     }
     const request: Message = { ...message, text: text || "Hello", addressed: true, ...(task ? { taskId: message.channel } : {}) };
     if (this.options.worker) {
-      await this.options.worker.enqueue(request);
+      try { await this.options.worker.enqueue(request); }
+      catch (error) {
+        if (!(error instanceof UserLimitError)) throw error;
+        await this.options.participation?.recordLimit(message);
+        if (addressed) await this.send(request, limitReply(error.resetAt));
+      }
     } else if (task) {
       await this.enqueue(request);
     } else { await this.process(request, ingested); }
@@ -164,27 +177,39 @@ export class Bot {
   /**
    * Stops the responses in a channel: cancels queued jobs and interrupts running ones.
    * An admin stops all of them. Other users stop only the responses that their own messages started.
-   * Returns the number of stopped responses.
+   * Returns the IDs of the stopped jobs.
    */
-  async stop(server: string, channel: string, user: string, admin: boolean): Promise<number> {
+  async stop(server: string, channel: string, user: string, admin: boolean): Promise<string[]> {
     const store = this.options.queueStore;
-    if (server !== this.server || !store) return 0;
-    let stopped = 0;
+    if (server !== this.server || !store) return [];
+    const stopped: string[] = [];
     for (const job of await store.jobs(server, channel)) {
       if (!["pending", "ready", "running", "sending"].includes(job.status)) continue;
       if (!admin && job.message.author !== user) continue;
       if (!await store.cancelJob(job.id)) continue;
       await this.app.interrupt(server, job.message.id).catch(error => logError("stop_interrupt_failed", error, { server, jobId: job.id }));
-      stopped++;
+      stopped.push(job.id);
     }
     return stopped;
   }
 
-  /** True when Slopbot may answer one more bot message in this channel: at most BOT_REPLY_LIMIT in BOT_REPLY_WINDOW_MS. */
+  /** Continues a stopped job from its recorded progress. The same rule as stop: an admin, or the author of the message that started it. */
+  async resume(server: string, channel: string, jobId: string, user: string, admin: boolean): Promise<boolean> {
+    const store = this.options.queueStore;
+    if (server !== this.server || !store) return false;
+    const job = (await store.jobs(server, channel)).find(item => item.id === jobId);
+    if (!job || job.status !== "cancelled" || (!admin && job.message.author !== user)) return false;
+    if (!await store.resumeJob(job.id)) return false;
+    this.options.worker?.wake();
+    return true;
+  }
+
+  /** True when Slopbot may answer one more bot message in this channel. The team sets the limit in Bot admin. */
   private allowBotReply(channel: string): boolean {
+    const limit = this.options.botReplyLimit?.() ?? DEFAULT_BOT_REPLY_LIMIT;
     const now = Date.now();
-    const recent = (this.botReplies.get(channel) ?? []).filter(at => now - at < BOT_REPLY_WINDOW_MS);
-    if (recent.length >= BOT_REPLY_LIMIT) { this.botReplies.set(channel, recent); return false; }
+    const recent = (this.botReplies.get(channel) ?? []).filter(at => now - at < limit.minutes * 60_000);
+    if (recent.length >= limit.replies) { this.botReplies.set(channel, recent); return false; }
     recent.push(now); this.botReplies.set(channel, recent);
     return true;
   }

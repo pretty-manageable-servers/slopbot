@@ -35,9 +35,12 @@ import { ReplyRenderer } from "../reply-renderer.js";
 import { registerFileTool, inspectFile } from '../files.js';
 import {
   Client, Events, GatewayIntentBits, Partials, ThreadAutoArchiveDuration,
-  MessageFlags, PermissionFlagsBits, ChannelType, ActivityType,
+  MessageFlags, PermissionFlagsBits, ChannelType, ActivityType, ActionRowBuilder, ButtonBuilder, ButtonStyle, type ButtonInteraction,
   type ChatInputCommandInteraction, type Interaction, type Message as DiscordMessage, type PartialMessage,
 } from "discord.js";
+import { BOT_REPLY_LIMIT_KEY, botReplyLimit } from "../bot-reply-limit.js";
+import { MUTED_USERS_KEY, mutedUsers } from "../muted-users.js";
+import { GLOBAL_SETTINGS_SCOPE } from "../usage-cost.js";
 import { buildStopCommand, buildToolCommands, buildUsageCommand, usageReply } from "./discord-commands.js";
 import { registerProfileTools } from "../profiles.js";
 import { Application } from "../application.js";
@@ -50,6 +53,7 @@ import type { RuntimeStore } from "../runtime-store.js";
 import { LLMClassifier, ParticipationGate } from "../participation.js";
 import { HistoryImporter } from "../history.js";
 import { DecisionClassifier } from "./decisions.js";
+import { decisionThresholds } from '../participation-history.js';
 import { TaskWorker } from "../queue.js";
 import { UserLimiter, UserLimitError, limitReply, usageView } from "../user-limiter.js";
 import { createUsageMeter, type UsageMeter } from "../usage-meter.js";
@@ -116,11 +120,12 @@ export class DiscordServer implements ChatGateway {
     const savedMonitoring = store.setting(guildId, "monitoring");
     const participation = new ParticipationGate(new DecisionClassifier({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.jevModel, usage }, store, undefined, new LLMClassifier(llm, store, usage)), {
       enabled: (typeof savedMonitoring === "boolean" ? savedMonitoring : config.jevEnabled) && !config.mock,
+      thresholds: decisionThresholds(store.setting(guildId, 'participation_thresholds'), config.jevThresholds),
       reactionFrequency: savedLimit("reaction_frequency", store.setting(guildId, "reactions_enabled") === false ? 0 : 60, 100),
       contextMessages: savedLimit("classifier_context", config.jevContextMessages, 100),
       cooldownMs: savedLimit("cooldown_seconds", config.jevCooldownSeconds, 3600) * 1000,
       maxUnsolicitedPerHour: savedLimit("max_unsolicited_per_hour", config.jevMaxRepliesPerHour, 1000),
-    });
+    }, undefined, store);
     this.tools = new ToolRegistry(store, async message => {
       if (message.server !== guildId) return false;
       const guild = await this.client.guilds.fetch(guildId);
@@ -286,7 +291,7 @@ export class DiscordServer implements ChatGateway {
       if (!this.bot.accepts(job.message.server, job.message.channel)) return;
       await this.reply(job.message, errorReply(error, job.id), `job-error:${job.id}`);
     });
-    this.bot = new Bot(this.app, store, store, this, guildId, this.channels, { profiles: store, knowledge: store, participation, worker: this.worker, tools: this.tools, queueStore: store });
+    this.bot = new Bot(this.app, store, store, this, guildId, this.channels, { profiles: store, knowledge: store, participation, worker: this.worker, tools: this.tools, queueStore: store, botReplyLimit: () => botReplyLimit(store.setting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY)), mutedUntil: user => mutedUsers(store.setting(guildId, MUTED_USERS_KEY))[user] });
   }
   /** Private chats: the chat service opens, closes and hands messages in through these. */
   openChat(channel: string): void { this.bot.openPrivateChat(this.guildId, channel); }
@@ -316,6 +321,7 @@ export class DiscordServer implements ChatGateway {
     }
     if (interaction.isChatInputCommand() && interaction.commandName === "slopbot") void this.command(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isChatInputCommand() && interaction.commandName === "usage") void this.usageCommand(interaction).catch(error => logError("Command failed.", error));
+    if (interaction.isButton() && interaction.customId.startsWith("slopstop:")) void this.continueButton(interaction).catch(error => logError("Continue button failed.", error));
     if (interaction.isChatInputCommand() && interaction.commandName === "stop") void this.stopCommand(interaction).catch(error => logError("Command failed.", error));
   }
   messageCreate(message: DiscordMessage): void { void this.receive(message).catch(error => logError("Discord event failed. Check channel permissions.", error)); }
@@ -366,23 +372,39 @@ export class DiscordServer implements ChatGateway {
     const global = await this.client.application?.commands.fetch();
     if (global?.size) await this.client.application!.commands.set([]);
   }
-  /** Stops responses in a channel. The web console calls it too. Manage Server and team editors stop all responses. */
-  async stopResponses(channel: string, user: string, manager: boolean): Promise<number> {
-    const admin = manager || (this.team ? await this.team.canEdit(user).catch(() => false) : false);
-    return this.bot.stop(this.guildId, channel, user, admin);
+  /** True for Manage Server in this server or a Slopbot team editor. They stop and continue any response. */
+  private async stopAdmin(user: string, manager: boolean): Promise<boolean> {
+    return manager || (this.team ? await this.team.canEdit(user).catch(() => false) : false);
   }
-  /** The /stop command. Stops the Slopbot responses in this channel. */
+  /** Stops responses in a channel. The web console calls it too. Returns the stopped job IDs. */
+  async stopResponses(channel: string, user: string, manager: boolean): Promise<string[]> {
+    return this.bot.stop(this.guildId, channel, user, await this.stopAdmin(user, manager));
+  }
+  /** The /stop command. A stop posts a public notice with a Continue button. Nothing to stop gets a private reply. */
   private async stopCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     if (interaction.guildId !== this.guildId) return;
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
       const manager = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? false;
       const stopped = await this.stopResponses(interaction.channelId, interaction.user.id, manager);
-      await interaction.editReply({ content: stopped ? `Stopped ${stopped} response${stopped === 1 ? "" : "s"}.` : "No response to stop. You can stop only the responses that you started.", allowedMentions: { parse: [] } });
+      if (!stopped.length) { await interaction.editReply({ content: "No response to stop. You can stop only the responses that you started.", allowedMentions: { parse: [] } }); return; }
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId(`slopstop:${stopped[0]}`).setLabel("Continue").setStyle(ButtonStyle.Primary));
+      // Edit the deferred private reply first. Otherwise the first followUp takes its place, and is private.
+      await interaction.editReply({ content: `Stopped ${stopped.length} response${stopped.length === 1 ? "" : "s"}.`, allowedMentions: { parse: [] } });
+      await interaction.followUp({ content: "Slopbot's response was interrupted. Continue?", components: [row], allowedMentions: { parse: [] } });
     } catch (error) {
       logError("command_failed", error, { stage: "stop command", server: this.guildId, messageId: interaction.id });
       await interaction.editReply({ content: errorReply(error), allowedMentions: { parse: [] } });
     }
+  }
+  /** The Continue button of a stop notice. Continues the stopped response from its recorded progress. */
+  private async continueButton(interaction: ButtonInteraction): Promise<void> {
+    if (interaction.guildId !== this.guildId) return;
+    const jobId = interaction.customId.slice("slopstop:".length);
+    const manager = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? false;
+    const resumed = await this.bot.resume(this.guildId, interaction.channelId, jobId, interaction.user.id, await this.stopAdmin(interaction.user.id, manager));
+    if (!resumed) { await interaction.reply({ content: "This response cannot continue. You can continue only the responses that you started.", flags: MessageFlags.Ephemeral }); return; }
+    await interaction.update({ content: "Slopbot's response was interrupted. Continued.", components: [] });
   }
   /**
    * The /usage command. Read-only, so it never checks the UserLimiter gate: a user over the limit
@@ -640,6 +662,7 @@ export class DiscordServer implements ChatGateway {
       mcp: admin ? this.mcp.snapshot() : null,
       settings: admin ? {
         monitoring: this.store.setting(guild.id, 'monitoring') ?? this.config.jevEnabled,
+        participation_thresholds: decisionThresholds(this.store.setting(guild.id, 'participation_thresholds'), this.config.jevThresholds),
         classifier_context: this.store.setting(guild.id, 'classifier_context') ?? this.config.jevContextMessages,
         reply_context: this.store.setting(guild.id, 'reply_context') ?? this.config.replyContextMessages,
         cooldown_seconds: this.store.setting(guild.id, 'cooldown_seconds') ?? this.config.jevCooldownSeconds,

@@ -84,7 +84,7 @@ const SESSION_AGE = SESSION_MS / 1000;
 const SESSION_SWEEP_MS = 3_600_000;
 /** The database stores only this hash of the cookie value. */
 const sessionHash = (id: string) => createHash('sha256').update(id).digest('hex');
-const allowed = new Set(['monitoring', 'context', 'cooldown', 'channels', 'index', 'profile', 'timing', 'tool_display', 'default_effort']);
+const allowed = new Set(['calibration', 'monitoring', 'context', 'cooldown', 'channels', 'index', 'profile', 'timing', 'tool_display', 'default_effort']);
 /** Team admin routes. Every one needs team membership; POST also needs an editing role, except the web key add and delete routes. */
 async function adminRoute(admin: ConsoleAdmin, user: string, method: string, path: string, query: URLSearchParams, body: unknown): Promise<unknown> {
   const role = await admin.role(user);
@@ -102,6 +102,7 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
     if (path === '/api/admin/users/one') return panel.user(query.get('user'), info);
     if (path === '/api/admin/prices') return panel.prices();
     if (path === '/api/admin/system-prompt') return panel.systemPrompt();
+    if (path === '/api/admin/bot-replies') return panel.botReplies();
     if (path === '/api/admin/servers') return admin.servers(serverPage(query));
     if (path === '/api/admin/servers/channels') return admin.serverChannels(snowflake(query.get('server'), 'server'));
     if (path === '/api/admin/usage/total') return panel.totalUsage(id => admin.serverInfo(id));
@@ -117,6 +118,7 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
   if (path === '/api/admin/web-keys/reset') return panel.resetWebKey(user, await admin.canEdit(user), body);
   if (path === '/api/admin/prices') return panel.savePrice(body);
   if (path === '/api/admin/system-prompt') return panel.saveSystemPrompt(body);
+  if (path === '/api/admin/bot-replies') return panel.saveBotReplies(body);
   if (path === '/api/admin/transcripts') {
     const input = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
     if (typeof input.enabled !== 'boolean') throw new AdminInputError('Invalid web transcript setting.');

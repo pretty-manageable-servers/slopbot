@@ -189,3 +189,7 @@ Builds use the official SDK with the configured PMServers project token and Ubun
 Create a task workspace with `{"action":"run","template":"analysis:v1","command":"python -c 'import pandas; print(pandas.__version__)'"}`. Builds leave an existing task workspace intact. Template sandboxes use `/home/user` and user `user`; sudo is unavailable. The operator's `E2B_TEMPLATE` remains the default when a call omits `template`.
 
 Sources reviewed 2026-10-12: https://docs.pmservers.org/sandboxes/templates/ and https://docs.pmservers.org/sandboxes/overview/ . Named tags and image builds are supported; snapshot, fork, private registry and tag-route features remain unsupported. Live provider builds are separate from the mocked SDK tests.
+
+### Participation diagnostics
+
+`calibration action:get|set` inspects or updates addressed/respond/unsolicited/funny cutoffs, expressed as integer percentages. Changes require Manage Server and apply immediately. `why` is a read available to members in permitted configured channels. It returns the last 10 decisions by default, up to 100, and supports channel, message_id, author ID or mention, literal query, inclusive after, exclusive before and since_minutes. The agent can combine filters and use before for older results. Scores and thresholds are historical snapshots; allowed participation does not confirm reply delivery. Older classifier records lack final gate outcomes. Excerpts use current canonical sources, and deleted sources are excluded.

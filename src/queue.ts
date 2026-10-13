@@ -26,6 +26,8 @@ export interface QueueStore {
   retryJob(server: string, channel: string, id: string): boolean | Promise<boolean>;
   /** Marks a pending, ready, running or sending job as cancelled. True when it changed. */
   cancelJob(id: string): boolean | Promise<boolean>;
+  /** Puts a cancelled job back in the queue. True when it changed. */
+  resumeJob(id: string): boolean | Promise<boolean>;
 }
 export class TaskWorker {
   private readonly owner = randomUUID();

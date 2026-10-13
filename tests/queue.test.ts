@@ -115,3 +115,13 @@ test("a cancelled job is not claimed and does not finish later", () => {
   assert.equal(store.jobs("s", "t")[0]?.status, "cancelled");
   store.close();
 });
+
+test("a cancelled job can be resumed once", () => {
+  const store = new SQLiteStore();
+  const job = store.enqueueJob(message("1"));
+  store.cancelJob(job.id);
+  assert.equal(store.resumeJob(job.id), true);
+  assert.equal(store.resumeJob(job.id), false);
+  assert.equal(store.claimJob("s")?.id, job.id);
+  store.close();
+});
