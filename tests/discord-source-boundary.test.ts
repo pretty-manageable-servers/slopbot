@@ -6,6 +6,7 @@ import { DiscordServer } from '../src/adapters/discord.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { loadConfig } from '../src/config.js';
 import { describeError } from '../src/errors.js';
+import { toolProgressFooter } from '../src/source-context.js';
 
 const guild = '1528063444874432734', channel = '1528064977913647236', bot = '1514413259522838528';
 function fixture(fresh: { content: string; url: string; size?: number; author?: string }) {
@@ -44,6 +45,14 @@ test('Discord normalization marks its own progress UI transient and keeps human 
   assert.ok(!('transient' in human) || human.transient !== true);
 });
 
+test('own progress with the current header and footer is transient', t => {
+  const f = fixture({ content: '', url: 'https://cdn.discordapp.com/a/file.txt', author: bot });
+  t.after(() => f.store.close());
+  const progress = { ...f.message, content: '<a:slopbot_pulse:1559390627152531586> Blooming…\n🔎 Web search × 1\n-# now: 🔎 "rbc"', embeds: [{ footer: { text: toolProgressFooter }, fields: [] }] };
+  const normalized = f.adapter['normalize'](progress as unknown as DiscordMessage);
+  assert.ok('transient' in normalized && normalized.transient === true);
+});
+
 test('an automatic image preview does not invalidate unchanged human instructions', async t => {
   const f = fixture({ content: 'See https://example.com/image', url: 'https://cdn.discordapp.com/attachments/a/file.txt' });
   t.after(() => f.store.close());
@@ -76,6 +85,7 @@ for (const id of ['task-seed:source', 'command:reminder:source', 'source']) test
   await observer({id,server:guild,channel:thread,author:'person',text:'request',taskId:thread},
     {id:'call',name:'web_search',status:'running',arguments:{query:'weather'}});
   assert.equal(payloads.length, 1);
-  assert.match(payloads[0]!.content, /"query": "weather"/);
+  assert.match(payloads[0]!.content, /-# now: 🔎 "weather"$/);
+  assert.ok(!payloads[0]!.content.includes('"query"'));
   assert.equal(Boolean(payloads[0]!.reply), id === 'source');
 });

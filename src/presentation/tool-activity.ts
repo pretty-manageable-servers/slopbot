@@ -1,4 +1,5 @@
 import type { ToolActivity } from "../tool-activity.js";
+import { currentStep, slopbotEmoji, toolEmoji, toolGroup } from "./tool-labels.js";
 const label = (name: string) =>
   "`" + name.replace(/[^a-zA-Z0-9_]/g, "").slice(0, 80) + "`";
 const status = (item: ToolActivity) => {
@@ -12,44 +13,35 @@ export function toolFailureSummary(activity: readonly ToolActivity[]): string {
   return activity.filter(item => item.status === "rejected" || item.status === "failed")
     .map(item => `- ${label(item.name)}: ${status(item)}${reason(item)}`).join("\n");
 }
-const duration = (item: ToolActivity) =>
-  item.durationMs === undefined
-    ? ""
-    : ` | ${(item.durationMs / 1000).toFixed(1)}s`;
 export type ToolDisplayMode = "none" | "summary" | "full";
+const failed = (item: ToolActivity) => item.status === "rejected" || item.status === "failed";
+const counts = (activity: readonly ToolActivity[]) => {
+  const groups = new Map<string, number>();
+  for (const item of activity) groups.set(item.name, (groups.get(item.name) ?? 0) + 1);
+  return groups;
+};
+// Wall time from the first tool start to the last tool end.
+const totalTime = (activity: readonly ToolActivity[]) => {
+  const timed = activity.filter(item => item.startedAt !== undefined && item.durationMs !== undefined);
+  if (!timed.length) return "";
+  const ms = Math.max(...timed.map(item => item.startedAt! + item.durationMs!)) - Math.min(...timed.map(item => item.startedAt!));
+  return ` · ${Math.max(1, Math.round(ms / 1000))}s`;
+};
+const title = (text: string) => text[0]!.toUpperCase() + text.slice(1);
 export function toolDisplayMode(value: unknown): ToolDisplayMode {
   return value === "none" || value === "full" ? value : "summary";
 }
 const clip = (text: string, limit: number) => text.length <= limit ? text : text.slice(0, Math.max(0, limit - 1)).replace(/[\uD800-\uDBFF]$/, "") + "…";
-function argumentsBlock(item: ToolActivity, limit?: number): string {
-  if (!item.arguments || !Object.keys(item.arguments).length) return "";
-  const json = JSON.stringify(item.arguments, (key, value) =>
-    /^(?:password|secret|token|api[_-]?key|authorization|credentials|access[_-]?token|client[_-]?secret)$/i.test(key) ? "[redacted]" : value, 2)
-    .replace(/`/g, "\\u0060");
-  return "\n```json\n" + (limit === undefined ? json : clip(json, limit)) + "\n```";
-}
 export function toolFooter(activity: readonly ToolActivity[], mode: ToolDisplayMode = "full"): string {
   if (!activity.length || mode === "none") return "";
-  const prefix = "\n\n**Tool activity**\n";
-  if (mode === "summary") {
-    const groups = new Map<string, number>();
-    for (const item of activity) groups.set(item.name, (groups.get(item.name) ?? 0) + 1);
-    return prefix + [...groups].map(([name, count]) => `${label(name)} × ${count}`).join(" · ");
-  }
-  return prefix + activity.map(item =>
-    `- ${label(item.name)}: ${status(item)}${duration(item)}${reason(item)}${argumentsBlock(item)}`
-  ).join("\n");
+  const groups = [...counts(activity)].map(([name, count]) => `${toolEmoji(name)} ${count} ${toolGroup(name)[count === 1 ? 0 : 1]}`);
+  const failures = mode === "full" ? activity.filter(failed).map(item => `-# ❌ ${toolGroup(item.name)[0]} ${status(item)}${reason(item, 200)}`) : [];
+  return "\n\n" + [`-# ${groups.join(" · ")}${totalTime(activity)}`, ...failures].join("\n");
 }
-export function toolProgress(activity: readonly ToolActivity[]): string {
-  const prefix = "**Working**\n" + (activity.length > 8 ? `Earlier steps: ${activity.length - 8}\n` : "");
-  const recent = activity.slice(-8);
-  const rows = recent.map((item, index) => `${activity.length - recent.length + index + 1}. ${label(item.name)}: ${status(item)}${duration(item)}`);
-  const fixed = prefix.length + rows.join('\n').length;
-  const budget = Math.max(0, Math.floor((2000 - fixed) / Math.max(1, recent.length)));
-  return prefix + rows.map((row, index) => {
-    const item = recent[index]!;
-    const detail = reason(item, Math.min(200, Math.max(0, item.arguments ? Math.floor(budget / 3) : budget - 20)));
-    const args = argumentsBlock(item, Math.max(0, budget - detail.length - 16));
-    return row + detail + args;
-  }).join('\n');
+export function toolProgress(activity: readonly ToolActivity[], funLine: string): string {
+  const groups = [...counts(activity)].map(([name, count]) => `${toolEmoji(name)} ${title(toolGroup(name)[0])} × ${count}`);
+  const failures = activity.filter(failed).slice(-3).map(item => `-# ❌ ${toolGroup(item.name)[0]} ${status(item)}${reason(item, 120)}`);
+  const last = activity[activity.length - 1];
+  const now = last ? [`-# now: ${toolEmoji(last.name)} ${currentStep(last.name, last.arguments?.query)}`] : [];
+  return clip([`${slopbotEmoji.pulse} ${funLine}`, ...groups, ...failures, ...now].join("\n"), 2000);
 }

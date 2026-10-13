@@ -359,7 +359,7 @@ export class DiscordServer implements ChatGateway {
     const media = attachments.map(item => `[Attachment ${item.name}, type ${'contentType' in item ? item.contentType : 'unknown'}: ${stableAttachmentUrl(item.url)}; content not inspected]`).join("\n");
     const normalized: Message = { attachments, id: message.id, server: message.guildId!, channel: message.channelId, author: message.author.id, authorName: message.member?.displayName ?? message.author.globalName ?? message.author.username, authorAliases: [message.author.username, ...(message.author.globalName ? [message.author.globalName] : [])], isBot: message.author.bot || Boolean(message.webhookId), authorIdentity: { discord_handle: message.author.username, discord_name: message.author.globalName ?? message.author.username, server_nickname: message.member?.displayName ?? message.author.username, server_name: message.guild?.name ?? "" }, text: [text, embedText, media].filter(Boolean).join("\n"), timestamp: message.createdTimestamp, revisionTimestamp: message.editedTimestamp ?? message.createdTimestamp,
       ...(message.reference?.messageId ? { replyTo: message.reference.messageId } : {}) };
-    const ownProgress = message.author.id === this.client.user?.id && ((text.startsWith("**Working**\n") && message.embeds.some(embed => embed.footer?.text === toolProgressFooter)) || legacyToolProgress(normalized));
+    const ownProgress = message.author.id === this.client.user?.id && (message.embeds.some(embed => embed.footer?.text === toolProgressFooter) || legacyToolProgress(normalized));
     return ownProgress ? { ...normalized, transient: true } : normalized;
   }
   private async receive(message: DiscordMessage): Promise<void> {
