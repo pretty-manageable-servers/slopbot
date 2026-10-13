@@ -65,12 +65,13 @@ function render() {
   const s = state.settings;
   if (tab !== 'profile' && !state.admin) { $('content').innerHTML = '<p>Manage Server permission is required for these controls.</p>'; return; }
   if (tab === 'server') {
-    $('content').innerHTML = card('monitoring','Join the conversation','Applies to this server',checkbox('Monitor unaddressed conversations','enabled',s.monitoring) + '<p class="small">Direct mentions and replies still work when monitoring is off.</p>' + (s.mock ? '<p>Mock mode disables automatic participation.</p>' : '')) + card('context','Conversation context','Applies to this server', '<div class="row">' + input('Participation context, messages','jev',s.classifier_context,100) + input('Reply context, messages','reply',s.reply_context,100) + '</div>') + card('cooldown','Automatic reply limits','Server policy, counted separately for each channel','<div class="row">' + input('Minimum interval, seconds','seconds',s.cooldown_seconds,3600) + input('Replies per hour','per_hour',s.max_unsolicited_per_hour,1000) + '</div><p class="small">Zero replies per hour disables unsolicited replies. Direct requests bypass these limits.</p>') + card('tool_display','Tool activity','Applies to completed replies in this server', '<label>Display<select name="mode">' + [['none','No tool calls'],['summary','Summary'],['full','Full expansion']].map(([value,label]) => `<option value="${value}" ${s.tool_display === value ? 'selected' : ''}>${label}</option>`).join('') + '</select></label><p class="small">Summary shows one grey line with counts. Full expansion adds failed calls and their reasons.</p>') + card('timing','Timing diagnostics','Applies to this server',checkbox('Show request timing in reply footers','enabled',s.timing_footer)) + `<div class="card"><h2>Reply model</h2><pre>${esc(s.model)}</pre><p class="small">Provider models, credentials, and token budgets are operator settings configured on the bot host.</p></div>`;
+    $('content').innerHTML = card('monitoring','Join the conversation','Applies to this server',checkbox('Monitor unaddressed conversations','enabled',s.monitoring) + '<p class="small">Direct mentions and replies still work when monitoring is off.</p>' + (s.mock ? '<p>Mock mode disables automatic participation.</p>' : '')) + card('context','Conversation context','Applies to this server', '<div class="row">' + input('Participation context, messages','jev',s.classifier_context,100) + input('Reply context, messages','reply',s.reply_context,100) + '</div>') + card('cooldown','Automatic reply limits','Server policy, counted separately for each channel','<div class="row">' + input('Minimum interval, seconds','seconds',s.cooldown_seconds,3600) + input('Replies per hour','per_hour',s.max_unsolicited_per_hour,1000) + '</div><p class="small">Zero replies per hour disables unsolicited replies. Direct requests bypass these limits.</p>') + card('tool_display','Tool activity','Applies to completed replies in this server', '<label>Display<select name="mode">' + [['none','No tool calls'],['summary','Summary'],['full','Full expansion']].map(([value,label]) => `<option value="${value}" ${s.tool_display === value ? 'selected' : ''}>${label}</option>`).join('') + '</select></label><p class="small">Summary shows one grey line with counts. Full expansion adds failed calls and their reasons.</p>') + card('timing','Timing diagnostics','Applies to this server',checkbox('Show request timing in reply footers','enabled',s.timing_footer)) + '<section class="card"><h2>Web transcripts</h2><p class="scope">Per channel. Off by default. Turn a channel on to show its transcript in the web console. Discord permissions still decide who can see it.</p><ul id="transcripts" class="chan-list"><li class="small">Loading channels…</li></ul></section>' + `<div class="card"><h2>Reply model</h2><pre>${esc(s.model)}</pre><p class="small">Provider models, credentials, and token budgets are operator settings configured on the bot host.</p></div>`;
     bind('monitoring', f => save('monitoring',{enabled:f.has('enabled')}));
     bind('context', async f => { await save('context',{messages:Number(f.get('jev')),target:'jev'}); try { await save('context',{messages:Number(f.get('reply')),target:'reply'}); } catch (error) { throw new Error(`Participation context saved. Reply context failed: ${error.message}`); } });
     bind('cooldown', f => save('cooldown',{seconds:Number(f.get('seconds')),per_hour:Number(f.get('per_hour'))}));
     bind('tool_display', f => save('tool_display',{mode:f.get('mode')}));
     bind('timing', f => save('timing',{enabled:f.has('enabled')}));
+    loadTranscripts();
   } else if (tab === 'channels') {
     $('content').innerHTML = '<input id="filter" class="filter" type="search" placeholder="Filter channels" aria-label="Filter channels" hidden><ul id="channels" class="chan-list"></ul>';
     const list = $('channels'), filter = $('filter');
@@ -92,6 +93,21 @@ function render() {
     bind('profile',f=>save('profile',{action:'set',field:f.get('field'),value:f.get('value')}));
     document.querySelectorAll('[data-remove]').forEach(button=>{button.onclick=() => run(button, () => save('profile',{action:'remove',field:button.dataset.remove}));});
   }
+}
+async function loadTranscripts() {
+  const id = state.server.id, list = $('transcripts');
+  list.onchange = async event => {
+    const box = event.target;
+    box.disabled = true;
+    try { const result = await request('/api/web-transcripts/channels', { server: id, channel: box.dataset.transcript, enabled: box.checked }); box.nextElementSibling.textContent = result.enabled ? 'On' : 'Off'; notice(`Web transcripts ${result.enabled ? 'on' : 'off'} for this channel.`); }
+    catch (error) { box.checked = !box.checked; fail(error); }
+    finally { box.disabled = false; }
+  };
+  try {
+    const result = await request(`/api/web-transcripts/channels?server=${encodeURIComponent(id)}`);
+    if (!$('transcripts') || state.server?.id !== id) return;
+    $('transcripts').innerHTML = result.channels.map(c => `<li class="chan"><div class="chan-info"><strong>#${esc(c.name)}</strong></div><div class="chan-actions"><label class="switch"><input type="checkbox" data-transcript="${esc(c.id)}" ${c.enabled ? 'checked' : ''}><span>${c.enabled ? 'On' : 'Off'}</span></label></div></li>`).join('') || '<li class="small">Slopbot serves no channels in this server yet.</li>';
+  } catch (error) { if ($('transcripts')) $('transcripts').innerHTML = `<li class="small">${esc(error.message)}</li>`; fail(error); }
 }
 function renderMcp() {
   const connections = state.mcp.connections;

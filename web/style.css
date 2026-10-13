@@ -17,4 +17,5 @@
 .chan-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
 .chan-window{grid-column:1/-1;display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:0}.chan-window label{display:flex;align-items:center;gap:8px;margin:0}.chan-window input{width:110px;padding:7px 10px}.chan-window .small{margin:0}.chan-window button{padding:7px 14px}
 .filter{margin:0 0 16px}
+.switch{display:flex;align-items:center;gap:8px;margin:0}.switch input{margin:0}
 @media(max-width:760px){.chan{grid-template-columns:1fr}.chan-actions{justify-content:flex-start}.chan-window input{width:100px}}

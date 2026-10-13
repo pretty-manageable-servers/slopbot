@@ -45,7 +45,9 @@ import { TaskWorker } from "../queue.js";
 import { UserLimiter, UserLimitError, limitReply } from "../user-limiter.js";
 import { createUsageMeter, type UsageMeter } from "../usage-meter.js";
 import { registerUsageTool } from "../usage-tools.js";
-import { configuredChannels, registerServerTools } from "../server-tools.js";
+import { configuredChannels, registerServerTools, webTranscriptKey, webTranscriptsEnabled } from "../server-tools.js";
+import { ChannelAccess } from "../channel-access.js";
+import { discordChannelAccessSource, wireChannelAccessEvents } from "./discord-channel-access.js";
 import { displayToolResult, ToolError, ToolRegistry, UncertainActionError, stableOperationId } from "../tools.js";
 
 /** Slopbot state and services for one Discord server. All servers share one client. */
@@ -521,6 +523,22 @@ export class DiscordServer implements ChatGateway {
     await this.mcp.configure(user, input);
     return { text: 'MCP configuration applied. Available tools update without a restart.', mcp: this.mcp.snapshot() };
   }
+  private async assertManager(user: string): Promise<void> {
+    const guild = await this.client.guilds.fetch(this.guildId);
+    const member = await guild.members.fetch({ user, force: true });
+    if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) throw new ToolError('Manage Server permission is required.');
+  }
+  async consoleTranscripts(user: string): Promise<unknown> {
+    await this.assertManager(user);
+    const names = await (await this.client.guilds.fetch(this.guildId)).channels.fetch();
+    return { channels: this.channels.map(id => ({ id, name: names.get(id)?.name ?? id, enabled: webTranscriptsEnabled(this.store, this.guildId, id) })) };
+  }
+  async consoleSetTranscript(user: string, channel: string, enabled: boolean): Promise<unknown> {
+    await this.assertManager(user);
+    if (!this.channels.includes(channel)) throw new ToolError('Choose a channel that Slopbot serves in this server.');
+    await this.store.setSetting(this.guildId, webTranscriptKey(channel), enabled);
+    return { channel, enabled };
+  }
   async start(): Promise<void> { await this.mcp.restore(); }
   async stop(): Promise<void> {
     if (this.historyTimer) clearInterval(this.historyTimer);
@@ -537,10 +555,14 @@ export class DiscordAdapter {
   // One meter for the process. Its limiter is shared by every server, and discord-main attaches it to the embeddings.
   readonly usage: UsageMeter;
   private botUser: string | undefined;
+  /** Live per-user view and send checks for the web console. */
+  readonly access: ChannelAccess;
 
   constructor(private readonly config: Config, private readonly store: RuntimeStore, private readonly llm: LLM, client?: Client) {
     this.usage = createUsageMeter(config, store);
     this.client = client ?? new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent], partials: [Partials.Message, Partials.Channel] });
+    this.access = new ChannelAccess(discordChannelAccessSource(this.client));
+    wireChannelAccessEvents(this.client, this.access);
     this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;
     this.client.once(Events.ClientReady, async client => {
       this.botUser = client.user.id;
@@ -611,6 +633,12 @@ export class DiscordAdapter {
   }
   async consoleMcp(user: string, guildId: string | undefined, input: unknown): Promise<unknown> {
     return (await this.server(user, guildId)).consoleMcp(user, input);
+  }
+  async consoleTranscripts(user: string, guildId: string): Promise<unknown> {
+    return (await this.server(user, guildId)).consoleTranscripts(user);
+  }
+  async consoleSetTranscript(user: string, guildId: string, channel: string, enabled: boolean): Promise<unknown> {
+    return (await this.server(user, guildId)).consoleSetTranscript(user, channel, enabled);
   }
   async start(): Promise<void> { await this.client.login(this.config.discordToken); }
   async stop(): Promise<void> {

@@ -4,11 +4,16 @@ import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { ToolError, type ToolArgs } from './tools.js';
+import type { ChannelAccess } from './channel-access.js';
 
 export interface ConsoleBackend {
   snapshot(user: string, server?: string): Promise<unknown>;
   invoke(user: string, server: string | undefined, channel: string, name: string, args: ToolArgs): Promise<unknown>;
   mcp?(user: string, server: string | undefined, input: unknown): Promise<unknown>;
+  transcripts?(user: string, server: string): Promise<unknown>;
+  setTranscript?(user: string, server: string, channel: string, enabled: boolean): Promise<unknown>;
+  /** Live per-user view and send checks for the read and send routes. */
+  access?: ChannelAccess;
 }
 export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string }
 export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOptions | undefined {
@@ -72,17 +77,29 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
           if (server !== undefined && !/^\d{17,20}$/.test(server)) return send(res, 400, { error: 'Invalid server.' });
           return send(res, 200, { data: await backend.snapshot(session.user, server), csrf: session.csrf });
         }
+        if (req.method === 'GET' && routePath === '/api/web-transcripts/channels') {
+          const server = url.searchParams.get('server') ?? '';
+          if (!/^\d{17,20}$/.test(server)) return send(res, 400, { error: 'Invalid server.' });
+          if (!backend.transcripts) return send(res, 404, { error: 'Not found.' });
+          return send(res, 200, await backend.transcripts(session.user, server));
+        }
         if (req.method !== 'POST' || req.headers.origin !== new URL(options.origin).origin || req.headers['x-csrf-token'] !== session.csrf) return send(res, 403, { error: 'Invalid request.' });
         if (routePath === '/api/logout') { sessions.delete(id); res.setHeader('Set-Cookie', cookie('slopbot_session', '', 0)); return send(res, 200, { ok: true }); }
-        if (!['/api/settings', '/api/mcp'].includes(routePath)) return send(res, 404, { error: 'Not found.' });
+        if (!['/api/settings', '/api/mcp', '/api/web-transcripts/channels'].includes(routePath)) return send(res, 404, { error: 'Not found.' });
         if (!req.headers['content-type']?.startsWith('application/json')) return send(res, 415, { error: 'Send JSON.' });
         let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > (routePath === '/api/mcp' ? 65536 : 16384)) return send(res, 413, { error: 'Request too large.' }); }
-        let input: { server?: string; channel?: string; name?: string; args?: ToolArgs };
+        let input: { server?: string; channel?: string; name?: string; args?: ToolArgs; enabled?: boolean };
         try { input = JSON.parse(body); } catch { return send(res, 400, { error: 'Invalid JSON.' }); }
         if (input?.server !== undefined && (typeof input.server !== 'string' || !/^\d{17,20}$/.test(input.server))) return send(res, 400, { error: 'Invalid server.' });
         if (routePath === '/api/mcp') {
           if (!backend.mcp) return send(res, 404, { error: 'MCP configuration is unavailable.' });
           return send(res, 200, await backend.mcp(session.user, input.server, input));
+        }
+        if (routePath === '/api/web-transcripts/channels') {
+          const { server, channel, enabled } = input ?? {};
+          if (!backend.setTranscript) return send(res, 404, { error: 'Not found.' });
+          if (typeof server !== 'string' || !/^\d{17,20}$/.test(server) || typeof channel !== 'string' || !/^\d{17,20}$/.test(channel) || typeof enabled !== 'boolean') return send(res, 400, { error: 'Invalid web transcript setting.' });
+          return send(res, 200, await backend.setTranscript(session.user, server, channel, enabled));
         }
         if (!input || typeof input.channel !== 'string' || typeof input.name !== 'string' || !allowed.has(input.name)) return send(res, 400, { error: 'Unsupported setting.' });
         if (input.name === 'profile' && !['set', 'remove', 'lock'].includes(String(input.args?.action))) return send(res, 400, { error: 'Unsupported profile action.' });
