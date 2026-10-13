@@ -1,0 +1,67 @@
+name: opencode-dispatch
+
+# Triggered via workflow_dispatch by the Slopbot GitHub App when an owner
+# approves a development job.  The standard opencode.yml (comment-based) is
+# left unchanged for manual /oc usage.
+#
+# Only the GitHub App named in the SLOPBOT_APP_BOT repository variable (for
+# example my-app[bot]) may run this workflow. If that variable is not set,
+# every run is refused.
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue or PR number to work on
+        required: true
+        type: number
+      prompt:
+        description: The prompt/instruction for OpenCode
+        required: true
+        type: string
+      model:
+        description: OpenCode model id
+        required: false
+        type: string
+        default: opencode/mimo-v2.6-flash-free
+
+concurrency:
+  group: opencode-dispatch-${{ inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  opencode:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Verify dispatch source
+        if: ${{ vars.SLOPBOT_APP_BOT == '' || github.actor != vars.SLOPBOT_APP_BOT }}
+        run: |
+          echo "::error::This workflow can only be triggered by the GitHub App named in the SLOPBOT_APP_BOT repository variable (for example my-app[bot]). It is not set, or the actor does not match."
+          exit 1
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run opencode
+        uses: anomalyco/opencode/github@77fc88c8ade8e5a620ebbe1197f3a572d29ae91a
+        with:
+          model: ${{ inputs.model }}
+          variant: high
+          prompt: |
+            Work on issue #${{ inputs.issue_number }} in this repository. Read it with gh before you start.
+
+            ${{ inputs.prompt }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_CONFIG_CONTENT: |
+            {
+              "$schema": "https://opencode.ai/config.json",
+              "permission": "allow"
+            }
