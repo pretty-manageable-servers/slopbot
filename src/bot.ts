@@ -96,9 +96,12 @@ export class Bot {
     const muted = this.options.mutedUntil?.(message.author);
     if (muted !== undefined && muted > Date.now()) {
       if (!ingested) await this.store.ingest({ ...message, addressed: false });
+      await this.options.participation?.recordBlocked?.(message, 'muted');
       requestTimings.finish(message);
       return;
     }
+    if (addressed && !message.botAuthor) await this.options.participation?.recordBypass?.(message,
+      privateChat ? 'private_chat' : task ? 'task_thread' : message.mentionsBot ? 'mention' : message.repliesToBot ? 'reply_to_bot' : 'explicit_request');
     // Another bot can mention or reply to Slopbot without end. Past the cap, its messages are saved but get no reply.
     if (addressed && message.botAuthor && !this.allowBotReply(message.channel)) {
       if (!ingested) await this.store.ingest({ ...message, addressed: false });
@@ -160,7 +163,12 @@ export class Bot {
     }
     const request: Message = { ...message, text: text || "Hello", addressed: true, ...(task ? { taskId: message.channel } : {}) };
     if (this.options.worker) {
-      await this.options.worker.enqueue(request);
+      try { await this.options.worker.enqueue(request); }
+      catch (error) {
+        if (!(error instanceof UserLimitError)) throw error;
+        await this.options.participation?.recordLimit(message);
+        if (addressed) await this.send(request, limitReply(error.resetAt));
+      }
     } else if (task) {
       await this.enqueue(request);
     } else { await this.process(request, ingested); }

@@ -3,11 +3,14 @@ import { participationPrompt, reactionEmoji } from "./participation-prompts.js";
 import { randomUUID } from "node:crypto";
 import { EventJournal } from "./event-journal.js";
 import { requestTimings } from "./request-timing.js";
-import type { Message, Prompt } from "./domain.js";
+import type { Json, Message, Prompt } from "./domain.js";
 import type { LLM, Store } from "./ports.js";
 import { attribution, streamMetered, type UsageMeter } from "./usage-meter.js";
+import { decisionThresholds, scoredDecision, type DecisionScores, type DecisionThresholds, type ParticipationRecord } from './participation-history.js';
+import type { RecordStore } from './records.js';
 
 export interface ParticipationDecision {
+  scores?: DecisionScores;
   emoji?: string | undefined;
   respond: boolean;
   addressed: boolean;
@@ -54,6 +57,7 @@ export class LLMClassifier implements Classifier {
 }
 
 export interface ParticipationOptions {
+  thresholds?: DecisionThresholds;
   reactionFrequency?: number;
   enabled: boolean;
   contextMessages: number;
@@ -66,7 +70,7 @@ export class ParticipationGate {
   private readonly replies = new Map<string, number[]>();
   readonly diagnostics = new Map<string, string>();
 
-  constructor(private readonly classifier: Classifier, readonly options: ParticipationOptions, private readonly random: () => number = Math.random) {}
+  constructor(private readonly classifier: Classifier, readonly options: ParticipationOptions, private readonly random: () => number = Math.random, private readonly store?: RecordStore) {}
 
   async decide(message: Message, context: readonly Message[]): Promise<ParticipationDecision> {
     const key = JSON.stringify([message.server, message.channel]);
@@ -78,31 +82,55 @@ export class ParticipationGate {
     await requestTimings.wait("participation queue", () => previous);
     requestTimings.end(message, "participation queue");
     try {
-      if (!this.options.enabled) return this.finish(key, { respond: false, addressed: false, reason: "monitoring_disabled" });
+      const thresholds = decisionThresholds(this.options.thresholds);
+      const finish = (decision: ParticipationDecision, detail: string) => this.finish(key, decision, message, thresholds, detail);
+      if (!this.options.enabled) return finish({ respond: false, addressed: false, reason: "monitoring_disabled" }, 'Monitoring is disabled.');
       let decision: ParticipationDecision;
       try { decision = await requestTimings.measure(message, "decision classifier", () => this.classifier.classify(message, context)); }
-      catch (error) { logError("participation_classifier_failed_staying_silent", error, { stage: "participation classification", server: message.server, channel: message.channel, messageId: message.id }, true); return this.finish(key, { respond: false, addressed: false, reason: "classifier_failed" }); }
+      catch (error) { logError("participation_classifier_failed_staying_silent", error, { stage: "participation classification", server: message.server, channel: message.channel, messageId: message.id }, true); return finish({ respond: false, addressed: false, reason: "classifier_failed" }, errorSummary(error)); }
+      if (decision.scores) decision = scoredDecision(decision.scores, thresholds);
       const emoji = reactionEmoji(decision.emoji);
       const frequency = Math.max(0, Math.min(100, this.options.reactionFrequency ?? 60));
       const allowReaction = emoji && frequency > 0 && (frequency === 100 || this.random() < frequency / 100);
       decision = { ...decision, emoji: allowReaction ? emoji : undefined };
-      if (!decision.respond) return this.finish(key, { ...decision, reason: "classifier_silent" });
+      const reaction = emoji ? allowReaction ? 'Reaction selected.' : `Reaction skipped by frequency setting (${frequency}%).` : 'No reaction selected.';
+      if (!decision.respond) return finish({ ...decision, reason: "classifier_silent" }, reaction);
       if (!decision.addressed) {
         const now = Date.now();
         const recent = (this.replies.get(key) ?? []).filter(time => now - time < 3_600_000);
-        if (recent.length >= this.options.maxUnsolicitedPerHour) return this.finish(key, { ...decision, respond: false, reason: "hourly_limit" });
-        if (recent.length && now - recent.at(-1)! < this.options.cooldownMs) return this.finish(key, { ...decision, respond: false, reason: "cooldown" });
+        if (recent.length >= this.options.maxUnsolicitedPerHour) return finish({ ...decision, respond: false, reason: "hourly_limit" }, reaction);
+        if (recent.length && now - recent.at(-1)! < this.options.cooldownMs) return finish({ ...decision, respond: false, reason: "cooldown" }, reaction);
         this.replies.set(key, [...recent, now]);
       }
-      return this.finish(key, { ...decision, reason: decision.addressed ? "name_request" : "unsolicited_allowed" });
+      return finish({ ...decision, reason: decision.addressed ? "name_request" : "unsolicited_allowed" }, `${reaction} Reply allowed by participation; delivery is a separate step.`);
     } finally {
       release();
       if (this.channelTails.get(key) === tail) this.channelTails.delete(key);
     }
   }
 
-  private finish(key: string, decision: ParticipationDecision): ParticipationDecision {
+  async recordBypass(message: Message, reason: string): Promise<void> {
+    await this.finish(JSON.stringify([message.server, message.channel]), { respond: true, addressed: true, reason }, message, decisionThresholds(this.options.thresholds), 'Classifier bypassed. Reply delivery is a separate step.');
+  }
+  async recordBlocked(message: Message, reason: string): Promise<void> {
+    await this.finish(JSON.stringify([message.server, message.channel]), { respond: false, addressed: false, reason }, message, decisionThresholds(this.options.thresholds), 'Participation blocked before classification.');
+  }
+  async recordLimit(message: Message): Promise<void> {
+    if (!this.store) return;
+    try {
+      const saved = await this.store.record(message.server, 'participation_decision', message.id);
+      if (!saved) return;
+      const record = saved.value as unknown as ParticipationRecord;
+      await this.store.putRecord(message.server, 'participation_decision', message.id, { ...record, decision: { ...record.decision, respond: false, reason: 'usage_limit' }, detail: `${record.detail} Reply blocked by the user's usage limit.` } as unknown as Json, saved.revision);
+    } catch (error) { logError('participation_diagnostic_save_failed', error, { server: message.server, channel: message.channel }, true); }
+  }
+  private async finish(key: string, decision: ParticipationDecision, message: Message, thresholds: DecisionThresholds, detail: string): Promise<ParticipationDecision> {
     this.diagnostics.set(key, decision.reason);
+    if (this.store) {
+      const record: ParticipationRecord = { messageId: message.id, channel: message.channel, author: message.author, text: message.text.slice(0, 240), timestamp: message.timestamp ?? Date.now(), decision, thresholds, detail };
+      try { await this.store.putRecord(message.server, 'participation_decision', message.id, record as unknown as Json, 0); }
+      catch (error) { logError('participation_diagnostic_save_failed', error, { server: message.server, channel: message.channel }, true); }
+    }
     return decision;
   }
 }

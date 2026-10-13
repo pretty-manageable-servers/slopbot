@@ -9,6 +9,7 @@ import { ProviderError, providerError } from "../errors.js";
 import { attribution, DECISION_OUTPUT_TOKENS, promptEstimate, type UsageMeter } from "../usage-meter.js";
 
 import { decisionQuestions as questions } from "../participation-prompts.js";
+import { defaultDecisionThresholds, scoredDecision } from '../participation-history.js';
 
 function probability(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) throw new Error("Invalid decision probability");
@@ -47,10 +48,8 @@ export class DecisionClassifier implements Classifier {
       await this.store.appendEvent(runId, 0, { kind: "opaque", payload: raw as Json });
       const direct = probability(raw.answers?.addressed?.probabilities?.yes);
       const useful = probability(raw.answers?.respond?.probabilities?.yes);
-      const addressed = direct >= 0.65;
-      const respond = addressed ? useful >= 0.5 : useful >= 0.9;
-      const emoji = raw.answers?.funny ? (probability(raw.answers.funny.probabilities?.yes) >= 0.9 ? "😂" : undefined) : undefined;
-      const decision = { respond, addressed, ...(emoji ? { emoji } : {}), reason: `addressed=${direct.toFixed(3)},respond=${useful.toFixed(3)}` };
+      const funny = raw.answers?.funny ? probability(raw.answers.funny.probabilities?.yes) : undefined;
+      const decision = scoredDecision({ addressed: direct, respond: useful, ...(funny !== undefined ? { funny } : {}) }, defaultDecisionThresholds);
       await this.store.complete(runId, undefined, [], JSON.stringify(decision));
       return decision;
     } catch (error) {

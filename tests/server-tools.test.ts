@@ -7,6 +7,8 @@ import { loadConfig } from "../src/config.js";
 import { HistoryImporter } from "../src/history.js";
 import { buildToolCommands } from "../src/adapters/discord-commands.js";
 import type { Message } from "../src/domain.js";
+import type { ParticipationOptions } from '../src/participation.js';
+import { ParticipationGate } from '../src/participation.js';
 
 const server = "12345678901234567", channel = "12345678901234568", other = "12345678901234569";
 const config = loadConfig({ DISCORD_BOT_TOKEN: "test", DISCORD_GUILD_ID: server, DISCORD_CHANNEL_IDS: channel, LLM_MODE: "mock" });
@@ -26,7 +28,7 @@ function setup() {
   let channels = configuredChannels(config, store, server), admin = true;
   const history = new HistoryImporter(server, store, { async fetch() { return []; } });
   const registry = new ToolRegistry(store, async () => admin);
-  const participation = { options: { enabled: true, contextMessages: 8, cooldownMs: 60000, maxUnsolicitedPerHour: 3 }, diagnostics: new Map<string, string>() };
+  const participation = { options: { enabled: true, contextMessages: 8, cooldownMs: 60000, maxUnsolicitedPerHour: 3 } as ParticipationOptions, diagnostics: new Map<string, string>() };
   registerServerTools(registry, { config, server, store, participation, history, channels: () => channels,
     setChannels(value) { channels = value; }, async validateChannel(_message, id) { if (![channel, other].includes(id)) throw new ToolError("Cannot view channel"); },
     async findChannels() { return "chat: " + channel; },
@@ -110,4 +112,30 @@ test('tool display modes persist, validate choices, and require server managemen
   f.setAdmin(false);
   await assert.rejects(f.registry.invoke(message, 'tool_display', {mode:'none'}, 'denied-display', 'command'), /Manage Server/);
   assert.equal(f.store.setting(server, 'tool_display'), 'full');
+});
+
+test('calibration persists partial changes and requires server management permission', async t => {
+  const f = setup(); t.after(() => f.store.close());
+  await f.registry.invoke(message, 'calibration', { action: 'set', addressed: 50, funny: 70 }, 'calibrate', 'command');
+  assert.equal(f.participation.options.thresholds?.addressed, 0.5);
+  assert.equal(f.participation.options.thresholds?.unsolicited, 0.9);
+  assert.equal((f.store.setting(server, 'participation_thresholds') as { funny: number }).funny, 0.7);
+  await assert.rejects(f.registry.invoke(message, 'calibration', { funny: 70 }, 'bad-calibration', 'command'), /action:set/);
+  f.setAdmin(false);
+  await assert.rejects(f.registry.invoke(message, 'calibration', { action: 'set', funny: 0 }, 'denied-calibration', 'command'), /Manage Server/);
+});
+
+test('why returns member-visible history with scores, cutoff snapshots and complex filters', async t => {
+  const f = setup(); t.after(() => f.store.close());
+  const gate = new ParticipationGate({ async classify() { return { respond: false, addressed: false, reason: 'scores', scores: { addressed: 0.591, respond: 0.822, funny: 0.772 } }; } }, { ...f.participation.options }, () => 0, f.store);
+  for (let n = 0; n < 12; n++) { const item = { ...message, id: String(n), text: `hi slopbot ${n}`, timestamp: Date.parse('2026-10-13T18:00:00Z') + n * 1000 }; await f.store.ingest(item); await gate.decide(item, []); }
+  f.setAdmin(false);
+  const text = await f.registry.invoke(message, 'why', {}, 'why-last10', 'command');
+  assert.match(text, /10 matching/); assert.match(text, /0.591 < 0.650/); assert.match(text, /0.822 < 0.900/);
+  const filtered = await f.registry.invoke(message, 'why', { count: 100, after: '2026-10-13T18:00:02Z', before: '2026-10-13T18:00:06Z', query: 'Slopbot', author: 'alice' }, 'why-range', 'command');
+  assert.match(filtered, /4 matching/);
+  const exact = await f.registry.invoke(message, 'why', { message_id: '11' }, 'why-exact', 'command'); assert.match(exact, /1 matching/);
+  await assert.rejects(f.registry.invoke(message, 'why', { after: 'yesterday' }, 'why-bad-date', 'command'), /ISO timestamps/);
+  await assert.rejects(f.registry.invoke(message, 'why', { after: '2026-10-13T18:00:00Z', since_minutes: 10 }, 'why-conflict', 'command'), /not both/);
+  await assert.rejects(f.registry.invoke(message, 'why', { channel: other }, 'why-denied', 'command'), /not configured/);
 });

@@ -1,6 +1,7 @@
 import { DEFAULT_MAX_TOOL_ROUNDS } from "./errors.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, modelTokenLimits } from "./context.js";
 import { parseFallbackPrice, parseModelPrices, type ModelPrice, type PriceTable } from "./usage-cost.js";
+import { defaultDecisionThresholds, type DecisionThresholds } from './participation-history.js';
 import { loadOperationsConfig, type OperationsConfig } from './operations-config.js';
 
 export interface Config {
@@ -26,6 +27,7 @@ export interface Config {
   searxngUrl?: string;
   searxngAccess?: { clientId: string; clientSecret: string };
   jevEnabled: boolean;
+  jevThresholds: DecisionThresholds;
   jevModel: string;
   jevContextMessages: number;
   jevCooldownSeconds: number;
@@ -77,6 +79,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (!["true", "false"].includes(env[key]!)) throw new Error(`${key} must be true or false`);
     return env[key] === "true";
   };
+  const threshold = (key: string, fallback: number): number => {
+    const value = env[key] === undefined ? fallback : Number(env[key]);
+    if (env[key]?.trim() === '' || !Number.isFinite(value) || value < 0 || value > 1) throw new Error(`${key} must be a number from 0 to 1`);
+    return value;
+  };
   const model = env.LLM_MODEL?.trim() || "nimbus";
   const limits = modelTokenLimits(model, baseUrl);
   const contextTokens = integer("CONTEXT_TOKENS", limits?.context ?? DEFAULT_CONTEXT_TOKENS, 1000000, 2048);
@@ -126,6 +133,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.DATABASE_SCHEMA ? { databaseSchema: env.DATABASE_SCHEMA } : {}),
     databasePath: env.DATABASE_PATH ?? "./data/slopbot.sqlite3",
     jevEnabled: enabled("JEV_ENABLED", true), jevModel: env.JEV_MODEL ?? "vane",
+    jevThresholds: {
+      addressed: threshold('JEV_ADDRESSED_THRESHOLD', defaultDecisionThresholds.addressed),
+      respond: threshold('JEV_RESPONSE_THRESHOLD', defaultDecisionThresholds.respond),
+      unsolicited: threshold('JEV_UNSOLICITED_THRESHOLD', defaultDecisionThresholds.unsolicited),
+      funny: threshold('JEV_FUNNY_THRESHOLD', defaultDecisionThresholds.funny),
+    },
     jevContextMessages: integer("JEV_CONTEXT_MESSAGES", 8, 100),
     jevCooldownSeconds: integer("JEV_COOLDOWN_SECONDS", 60, 3600),
     jevMaxRepliesPerHour: integer("JEV_MAX_REPLIES_PER_HOUR", 3, 1000),

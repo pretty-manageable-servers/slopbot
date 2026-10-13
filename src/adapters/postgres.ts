@@ -1,3 +1,4 @@
+import { readParticipationHistory, type ParticipationHistoryQuery } from '../participation-history.js';
 import { contextChangedError, legacyToolProgress, sourceFingerprint, type ContextChange } from "../source-context.js";
 import { logError } from "../errors.js";
 import { promptInventory, saveRunRuntime } from '../run-diagnostics.js';
@@ -35,6 +36,9 @@ function providerKeyRow(row: Record<string, any>): ProviderKeyRow {
     return { id: String(row.id), provider: String(row.provider) as KeyedProvider, owner: String(row.owner), label: String(row.label), last4: String(row.last4), secretEncrypted: String(row.secret_encrypted), createdAt: Number(row.created_at) };
 }
 export class PostgresStore {
+  async participationHistory(server: string, channel: string, query: ParticipationHistoryQuery) {
+    return readParticipationHistory(async (sql, values) => this.db.prepare(sql).all(...values), server, channel, query);
+  }
   async record(
     server: string,
     kind: string,

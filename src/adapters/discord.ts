@@ -53,6 +53,7 @@ import type { RuntimeStore } from "../runtime-store.js";
 import { LLMClassifier, ParticipationGate } from "../participation.js";
 import { HistoryImporter } from "../history.js";
 import { DecisionClassifier } from "./decisions.js";
+import { decisionThresholds } from '../participation-history.js';
 import { TaskWorker } from "../queue.js";
 import { UserLimiter, UserLimitError, limitReply, usageView } from "../user-limiter.js";
 import { createUsageMeter, type UsageMeter } from "../usage-meter.js";
@@ -119,11 +120,12 @@ export class DiscordServer implements ChatGateway {
     const savedMonitoring = store.setting(guildId, "monitoring");
     const participation = new ParticipationGate(new DecisionClassifier({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.jevModel, usage }, store, undefined, new LLMClassifier(llm, store, usage)), {
       enabled: (typeof savedMonitoring === "boolean" ? savedMonitoring : config.jevEnabled) && !config.mock,
+      thresholds: decisionThresholds(store.setting(guildId, 'participation_thresholds'), config.jevThresholds),
       reactionFrequency: savedLimit("reaction_frequency", store.setting(guildId, "reactions_enabled") === false ? 0 : 60, 100),
       contextMessages: savedLimit("classifier_context", config.jevContextMessages, 100),
       cooldownMs: savedLimit("cooldown_seconds", config.jevCooldownSeconds, 3600) * 1000,
       maxUnsolicitedPerHour: savedLimit("max_unsolicited_per_hour", config.jevMaxRepliesPerHour, 1000),
-    });
+    }, undefined, store);
     this.tools = new ToolRegistry(store, async message => {
       if (message.server !== guildId) return false;
       const guild = await this.client.guilds.fetch(guildId);
@@ -659,6 +661,7 @@ export class DiscordServer implements ChatGateway {
       mcp: admin ? this.mcp.snapshot() : null,
       settings: admin ? {
         monitoring: this.store.setting(guild.id, 'monitoring') ?? this.config.jevEnabled,
+        participation_thresholds: decisionThresholds(this.store.setting(guild.id, 'participation_thresholds'), this.config.jevThresholds),
         classifier_context: this.store.setting(guild.id, 'classifier_context') ?? this.config.jevContextMessages,
         reply_context: this.store.setting(guild.id, 'reply_context') ?? this.config.replyContextMessages,
         cooldown_seconds: this.store.setting(guild.id, 'cooldown_seconds') ?? this.config.jevCooldownSeconds,
