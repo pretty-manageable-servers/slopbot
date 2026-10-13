@@ -1,8 +1,8 @@
 import { describeError, errorSummary, logError } from "./errors.js";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { readFile, stat } from 'node:fs/promises';
+import { extname, resolve, sep } from 'node:path';
 import { ToolError, type ToolArgs } from './tools.js';
 import type { ChannelAccess } from './channel-access.js';
 import { AdminInputError, snowflake, type AdminPanel } from './admin-panel.js';
@@ -36,7 +36,8 @@ export interface ConsoleBackend {
   /** Posts a web reply as the signed-in user. Errors with a WebReplyError keep their status. */
   reply?(user: string, server: string | undefined, channel: string, text: string): Promise<unknown>;
 }
-export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string }
+/** siteDir is the landing page export. It defaults to site/out. */
+export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string; siteDir?: string }
 export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOptions | undefined {
   if (env.WEB_ENABLED !== 'true') return undefined;
   const origin = new URL(env.WEB_ORIGIN || 'http://localhost:3000');
@@ -78,13 +79,33 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
   }
   return undefined;
 }
-const staticAssets: Record<string, string> = { '/': 'index.html', '/app.js': 'app.js', '/conversations.js': 'conversations.js', '/style.css': 'style.css', '/assets/logo-light.svg': 'assets/logo-light.svg', '/assets/logo-dark.svg': 'assets/logo-dark.svg', '/shares.js': 'shares.js', '/shares.css': 'shares.css' };
+type StaticFile = { content: Buffer; type: string };
+const contentTypes: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webp': 'image/webp', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8', '.json': 'application/json' };
+const consoleCsp = "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' https://cdn.discordapp.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+// The Next static export uses inline scripts. Only the landing HTML gets this relaxation.
+const landingCsp = consoleCsp.replace("script-src 'self'", "script-src 'self' 'unsafe-inline'");
+/** Console file for a /console path, or undefined. Only these names are served. */
+const consoleFile = (path: string) => {
+  if (path === '/console' || path === '/console/') return 'index.html';
+  const name = path.startsWith('/console/') ? path.slice('/console/'.length) : '';
+  return /^(app\.js|conversations\.js|style\.css|shares\.js|shares\.css|assets\/(logo-(light|dark)\.svg|[a-z0-9-]+\.woff2))$/.test(name) ? name : undefined;
+};
+/** Landing file for a path: the home page, /_next/ files and top-level files such as /favicon.svg. */
+const landingFile = (path: string) => path === '/' ? 'index.html' : path.startsWith('/_next/') || /^\/[^/]+$/.test(path) ? path.slice(1) : undefined;
+/** Reads a file under root. Missing files, folders, unknown types and paths that leave root give undefined. */
+async function readInside(root: string, name: string): Promise<StaticFile | undefined> {
+  const base = resolve(root), file = resolve(base, name), type = contentTypes[extname(file)];
+  if (name.includes('..') || !file.startsWith(base + sep) || !type) return undefined;
+  const info = await stat(file).catch(() => undefined);
+  return info?.isFile() ? { content: await readFile(file), type } : undefined;
+}
 export function createConsole(options: ConsoleOptions, backend: ConsoleBackend): Server {
   const sessions = new Map<string, { user: string; csrf: string; expires: number }>();
   const states = new Map<string, number>();
   const cookie = (name: string, value: string, age: number) => `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${options.origin.startsWith('https:') ? '; Secure' : ''}`;
   const cookies = (req: IncomingMessage) => Object.fromEntries((req.headers.cookie || '').split(';').map(part => part.trim().split('=')));
   const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
+  const sendFile = (res: ServerResponse, file: StaticFile | undefined) => { if (!file) return send(res, 404, { error: 'Not found.' }); res.setHeader('Content-Type', file.type); res.end(file.content); };
   const admin = async (res: ServerResponse, user: string, method: string, path: string, query: URLSearchParams, body: unknown) => {
     if (!backend.admin) return send(res, 404, { error: 'Not found.' });
     const value = await adminRoute(backend.admin, user, method, path, query, body);
@@ -93,7 +114,7 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
   return createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' https://cdn.discordapp.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    res.setHeader('Content-Security-Policy', consoleCsp);
     try {
       const url = new URL(req.url || '/', options.origin);
       const routePath = url.pathname;
@@ -123,7 +144,7 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         await backend.snapshot(user.id);
         if (sessions.size >= 1000) return send(res, 429, { error: 'Try again later.' });
         const id = token(); sessions.set(id, { user: user.id, csrf: token(), expires: now + 3_600_000 });
-        res.writeHead(302, { Location: '/', 'Set-Cookie': [cookie('slopbot_session', id, 3600), cookie('slopbot_state', '', 0)] }); res.end(); return;
+        res.writeHead(302, { Location: '/console', 'Set-Cookie': [cookie('slopbot_session', id, 3600), cookie('slopbot_state', '', 0)] }); res.end(); return;
       }
       // Public share pages and snapshots. They never need a login and are never indexed.
       if (req.method === 'GET' && backend.shares && (/^\/s\/[A-Za-z0-9_-]{22}$/.test(routePath) || /^\/api\/shares\/[A-Za-z0-9_-]{22}$/.test(routePath))) {
@@ -202,11 +223,12 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         return send(res, 200, await backend.invoke(session.user, input.server, input.channel, input.name, input.args || {}));
       }
       if (req.method !== 'GET') return send(res, 405, { error: 'Method not allowed.' });
-      const file = staticAssets[routePath];
-      if (!file && !/^\/assets\/[a-z0-9-]+\.woff2$/.test(routePath)) return send(res, 404, { error: 'Not found.' });
-      let content = await readFile(resolve('web', file || routePath.slice(1)));
-      res.setHeader('Content-Type', routePath.endsWith('.js') ? 'text/javascript' : routePath.endsWith('.css') ? 'text/css' : routePath.endsWith('.svg') ? 'image/svg+xml' : routePath.endsWith('.woff2') ? 'font/woff2' : 'text/html');
-      res.end(content);
+      const consoleName = consoleFile(routePath);
+      if (consoleName) return sendFile(res, await readInside('web', consoleName));
+      const landingName = landingFile(routePath);
+      if (!landingName) return send(res, 404, { error: 'Not found.' });
+      if (routePath === '/') res.setHeader('Content-Security-Policy', landingCsp);
+      return sendFile(res, await readInside(options.siteDir ?? 'site/out', landingName));
     } catch (error) {
       if (error instanceof AdminInputError) return send(res, 400, { error: error.message });
       if (error instanceof ShareError) return send(res, error.status, { error: error.message });

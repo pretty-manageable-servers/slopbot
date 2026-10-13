@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const recall = key => { try { return localStorage.getItem(key); } catch { return null; } };
 const remember = (key, value) => { try { localStorage.setItem(key, value); } catch { } };
-function theme(light) { document.documentElement.classList.toggle('light', light); document.querySelectorAll('img[src*="logo-"]').forEach(img => img.src = `/assets/logo-${light ? 'dark' : 'light'}.svg`); $('theme').textContent = light ? 'Dark theme' : 'Light theme'; remember('slopbot-theme', light ? 'light' : 'dark'); }
+function theme(light) { document.documentElement.classList.toggle('light', light); document.querySelectorAll('img[src*="logo-"]').forEach(img => img.src = `/console/assets/logo-${light ? 'dark' : 'light'}.svg`); $('theme').textContent = light ? 'Dark theme' : 'Light theme'; remember('slopbot-theme', light ? 'light' : 'dark'); }
 theme(recall('slopbot-theme') === 'light');
 $('theme').onclick = () => theme(!document.documentElement.classList.contains('light'));
 function notice(text) { $('notice').textContent = text; }
