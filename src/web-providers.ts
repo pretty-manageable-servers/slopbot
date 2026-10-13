@@ -83,3 +83,8 @@ export interface ProviderKeyStore {
   exhaustProviderKey(id: string, month: string): Promise<void>;
   providerKeyUsage(month: string): Promise<ProviderKeyUsage[]>;
 }
+
+/** Global setting key. Value: Record<keyId, KeyError>, the last error of each team key. Diagnostics only. */
+export const KEY_ERRORS_SETTING = 'web_key_errors';
+/** Last error of one key. status is the HTTP status as text, or "network", "timeout", "bad_response". message never holds a secret. */
+export interface KeyError { at: number; status: string; message: string; exhausted: boolean }
