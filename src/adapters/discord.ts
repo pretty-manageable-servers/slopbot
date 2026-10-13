@@ -625,7 +625,7 @@ export class DiscordServer implements ChatGateway {
         tool_display: toolDisplayMode(this.store.setting(guild.id, 'tool_display')),
         default_effort: parseEffort(this.store.setting(guild.id, 'default_effort')) ?? 'default',
         timing_footer: this.store.setting(guild.id, 'timing_footer') ?? false,
-        model: this.config.model, mock: this.config.mock,
+        mock: this.config.mock,
       } : null };
   }
   async consoleInvoke(user: string, channel: string, name: string, args: import('../tools.js').ToolArgs): Promise<unknown> {
