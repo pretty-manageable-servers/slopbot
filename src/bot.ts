@@ -47,7 +47,7 @@ export class Bot {
     private readonly gateway: ChatGateway,
     private readonly server: string,
     private channels: readonly string[],
-    private readonly options: { knowledge?: Knowledge; participation?: ParticipationGate; worker?: TaskWorker; tools?: ToolRegistry; queueStore?: QueueStore; profiles?: ProfileStore; botReplyLimit?: () => BotReplyLimit } = {},
+    private readonly options: { knowledge?: Knowledge; participation?: ParticipationGate; worker?: TaskWorker; tools?: ToolRegistry; queueStore?: QueueStore; profiles?: ProfileStore; botReplyLimit?: () => BotReplyLimit; mutedUntil?: (user: string) => number | undefined } = {},
   ) {
     for (const task of registry.taskThreads(server)) {
       if (channels.includes(task.parent)) {
@@ -92,6 +92,13 @@ export class Bot {
     // A web reply arrives with addressed=true, so it always gets an answer and skips JEV. A private chat always does, even without that flag.
     let addressed = task && !message.botAuthor || privateChat || message.mentionsBot || message.repliesToBot || message.addressed === true;
     let ingested = alreadyIngested;
+    // The Slopbot team muted this user. The message is saved but gets no reply.
+    const muted = this.options.mutedUntil?.(message.author);
+    if (muted !== undefined && muted > Date.now()) {
+      if (!ingested) await this.store.ingest({ ...message, addressed: false });
+      requestTimings.finish(message);
+      return;
+    }
     // Another bot can mention or reply to Slopbot without end. Past the cap, its messages are saved but get no reply.
     if (addressed && message.botAuthor && !this.allowBotReply(message.channel)) {
       if (!ingested) await this.store.ingest({ ...message, addressed: false });
