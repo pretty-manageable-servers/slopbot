@@ -192,6 +192,7 @@ test('users route pages and searches, rejects bad page sizes', async t => {
     { user: userId(4), names: ['Member 4'], servers: [SERVER] },
     { user: userId(5), names: ['Member 5'], servers: [SERVER] },
     { user: userId(6), names: ['Member 6'], servers: [] },
+    { user: userId(7), names: [], servers: [] },
   ]);
   const directory = new MemberDirectory(fakeSource({ [userId(1)]: { username: 'ada', nickname: 'Ada L', serverAvatar: AVATAR, inServer: true, email: 'ada@example.com' } }));
   const panel = new AdminPanel(teamConfig, store, new UserLimiter(store, { fiveHourCostMicros: 100, weekCostMicros: 0, gracePercent: 10 }), directory);
@@ -201,10 +202,10 @@ test('users route pages and searches, rejects bad page sizes', async t => {
   const list = async (query: string): Promise<UsersPageView> => await (await get(`/api/admin/users?${query}`, developer)).json() as UsersPageView;
 
   const all = await list('');
-  assert.deepEqual([all.total, all.limit, all.offset, all.users.length], [6, 10, 0, 6]);
+  assert.deepEqual([all.total, all.limit, all.offset, all.users.length], [7, 10, 0, 7]);
   const first = await list('limit=5');
-  assert.deepEqual([first.total, first.limit, first.users.length], [6, 5, 5]);
-  assert.deepEqual((await list('limit=5&offset=5')).users.map(row => row.user.id), [userId(6)]);
+  assert.deepEqual([first.total, first.limit, first.users.length], [7, 5, 5]);
+  assert.deepEqual((await list('limit=5&offset=5')).users.map(row => row.user.id), [userId(6), userId(7)]);
 
   const ada = await list('q=%20ADA%20');
   assert.equal(ada.total, 1);
@@ -216,7 +217,11 @@ test('users route pages and searches, rejects bad page sizes', async t => {
 
   // A user with no server is named by its ID, and has no servers.
   const mia = await list('q=Mia');
-  assert.deepEqual(mia.users[0], { user: { id: userId(3), displayName: userId(3), username: null, avatarUrl: null }, servers: [], windows: mia.users[0]!.windows, override: null });
+  // The directory cannot resolve Mia, so the stored name is used. A user with no stored name is named by the ID.
+  assert.deepEqual(mia.users[0], { user: { id: userId(3), displayName: 'Mia', username: null, avatarUrl: null }, servers: [], windows: mia.users[0]!.windows, override: null });
+  assert.equal((await list(`q=${userId(7)}`)).users[0]!.user.displayName, userId(7));
+  const detailMia = await (await get(`/api/admin/users/one?user=${userId(3)}`, developer)).json() as UserDetailView;
+  assert.deepEqual(detailMia.user, { id: userId(3), displayName: 'Mia', username: null, avatarUrl: null });
   assert.equal((await list('q=nobody')).total, 0);
 
   // The page never shows email data, and a read-only member can read it.

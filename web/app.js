@@ -758,6 +758,15 @@ $('user-dialog').addEventListener('close', () => {
   setSettingsUrlId('');
   row?.focus();
 });
+// Escape closes only this dialog. After a refresh both dialogs are opened without a user click, so the browser groups their close watchers
+// and one native Escape would close the settings dialog too. A handled keydown stops the native close, so this dialog closes itself.
+document.addEventListener('keydown', event => {
+  const dialog = $('user-dialog');
+  if (event.key !== 'Escape' || !dialog.open || event.target.closest?.('.confirm-dialog')) return;
+  event.preventDefault();
+  event.stopPropagation();
+  dialog.close();
+}, true);
 $('user-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) event.currentTarget.close(); });
 $('user-close').onclick = () => $('user-dialog').close();
 function adminTranscripts(server, channels, off) {

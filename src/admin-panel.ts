@@ -4,7 +4,7 @@ import type { KnownUserRow, Store, TokenSums, UserTokenTotalRow } from "./ports.
 import { limitOverride, savedLimit, USER_LIMIT_OVERRIDES_SETTING, USER_LIMIT_SCOPE, type UserLimiter, type UserLimitOverride, type UserUsageWindow } from "./user-limiter.js";
 import { activePrices, GLOBAL_SETTINGS_SCOPE, type ModelPrice } from "./usage-cost.js";
 import { modelsInUse } from "./usage-meter.js";
-import type { MemberDirectory, MemberProfile } from "./member-directory.js";
+import { UNKNOWN_USER, type MemberDirectory, type MemberProfile } from "./member-directory.js";
 import { DEFAULT_INSTRUCTIONS, fullSystemText } from "./agent-runner.js";
 import type { PresentationPolicy } from "./presentation/policy.js";
 import { newProviderKeyRow, WebKeySecrets } from "./web-keys.js";
@@ -122,6 +122,12 @@ function modelName(value: unknown): string {
 /** The usage columns of one group of token totals. */
 function usageRow(sums: TokenSums): UsageRow {
   return { requests: sums.requests, cost_micros: sums.costMicros, total_tokens: sums.input + sums.cached + sums.output, input_tokens: sums.input, cached_tokens: sums.cached, output_tokens: sums.output };
+}
+
+/** The profile for a row. When the directory could not resolve the user, the first stored name is used, else the ID. */
+function named(profile: MemberProfile | undefined, row: KnownUserRow): MemberProfile {
+  if (profile && !(profile.displayName === UNKNOWN_USER && profile.username === null)) return profile;
+  return { id: row.user, displayName: row.names[0] || row.user, username: null, avatarUrl: null };
 }
 
 /** Limits, model prices and user usage for the team admin panel. Every change is validated before it is saved. */
@@ -305,7 +311,7 @@ export class AdminPanel {
     }));
     const saved = this.store.setting(USER_LIMIT_SCOPE, USER_LIMIT_OVERRIDES_SETTING);
     return Promise.all(rows.map(async (row): Promise<UserRowView> => ({
-      user: profiles.get(row.user) ?? { id: row.user, displayName: row.user, username: null, avatarUrl: null },
+      user: named(profiles.get(row.user), row),
       servers: row.servers.map(id => ({ id, name: info(id).name })),
       windows: await this.limiter.usage(row.user),
       override: limitOverride(saved, row.user),
