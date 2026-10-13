@@ -1,5 +1,7 @@
 let state, csrf, tab = 'server', viewAuto = false, viewReady = false;
 const $ = id => document.getElementById(id);
+// The browser tab title follows the view: "<name> · Slopbot".
+function setPageTitle(name) { document.title = `${name} · Slopbot`; }
 const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const recall = key => { try { return localStorage.getItem(key); } catch { return null; } };
 const remember = (key, value) => { try { localStorage.setItem(key, value); } catch { } };
@@ -279,7 +281,9 @@ async function pollChannels() {
 }
 function render() {
   document.querySelectorAll('[data-tab]').forEach(button => { button.classList.toggle('selected', button.dataset.tab === tab); button.setAttribute('aria-current', button.dataset.tab === tab ? 'page' : 'false'); button.onclick = () => { tab = button.dataset.tab; render(); }; });
-  setChatMode(tab === 'conversations' && !!state.server);
+  const onChat = tab === 'conversations' && !!state.server;
+  setChatMode(onChat);
+  if (!onChat) setPageTitle('Settings');
   if (tab === 'admin' && admin) { renderAdmin(); return; }
   if (tab !== 'conversations') closeConversation();
   if (!state.server) { $('breadcrumb').textContent = 'Settings'; $('title').textContent = 'No servers yet.'; $('description').textContent = ''; $('content').innerHTML = '<section class="card"><h2>Slopbot is not in any of your servers yet.</h2><p class="small">A server admin must invite Slopbot to a server you are in.</p></section>'; return; }
