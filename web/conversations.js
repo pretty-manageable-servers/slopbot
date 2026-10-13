@@ -428,7 +428,6 @@ function newChat() {
   openBlankChat();
 }
 
-<<<<<<< HEAD
 // The landing page Ask box links to /console#ask=<text>. boot() keeps the text in sessionStorage, so it survives the Discord login.
 // Longest text the chat API takes. It matches PRIVATE_CHAT_MAX_CHARS in src/private-chat.ts.
 const ASK_MAX_CHARS = 8000;
@@ -465,7 +464,6 @@ async function resumeAsk() {
   }
 }
 
-=======
 function focusComposer() { document.querySelector('.chat-form textarea')?.focus(); }
 
 // Opens the blank chat. Its id comes with the first send (see chatComposer).
@@ -492,7 +490,6 @@ function openBlankChat() {
 // Removes a chat that was made for a send that failed before anything was saved. The error is not shown.
 function discardChat(id) { sendJson('DELETE', `/api/chats/${enc(id)}`).catch(() => {}); }
 
->>>>>>> 173668c (Web: page title follows the view, lazy New chat)
 // A JSON request with any method. Errors keep their status, as in request().
 async function sendJson(method, path, body) {
   const response = await fetch(path, { method, headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: body === undefined ? undefined : JSON.stringify(body) });
