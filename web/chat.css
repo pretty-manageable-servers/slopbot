@@ -207,3 +207,4 @@ main.chat-mode{padding:0;max-width:none;min-width:0}
 .chat .chat-readonly{margin:0;padding:12px 24px 16px;text-align:center;font-size:12px;color:var(--muted)}
 .chat .chat-usage-reset{display:block;width:100%;margin:8px 0 0;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:none;color:var(--strong);font-size:13px;text-align:center}
 .chat .chat-usage-reset:hover:not(:disabled){background:var(--pill)}
+.chat-link-warning{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:13px;color:var(--muted);background:var(--surface)}.chat-link-warning strong{color:var(--strong)}

@@ -1,4 +1,4 @@
-// Share links for the web console. Load with <script src="/shares.js" defer>.
+// Share links for the web console. Load with <script src="/console/shares.js" defer>.
 // Exposes window.SlopbotShares.renderShareButton, renderShareList and renderChatShare.
 // Text is always set with textContent or text nodes, never innerHTML.
 (() => {
