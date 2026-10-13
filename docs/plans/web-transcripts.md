@@ -47,7 +47,10 @@ The web shows a conversation as a list of messages. A Slopbot message has a "sho
 
 There is no per-user limit today. Explicit requests skip the unsolicited cooldowns (`src/participation.ts`, `/status`). This plan adds one limit for everything.
 
-1. **One gate.** Add `UserLimiter` and call it in `TaskWorker.enqueue` (`src/queue.ts`) before `enqueueJob`. Every run goes through this path: Discord messages, slash commands and web replies.
+1. **One gate, every entry point.** Add `UserLimiter.consume(server, user)`. Call it in each place where user input starts work:
+   - `TaskWorker.enqueue` (`src/queue.ts`) before `enqueueJob`: Discord messages and web replies.
+   - The slash command handler (`src/adapters/discord.ts`) before `tools.invokeResult`. Slash commands call tools directly and do not use the queue.
+   - Any new entry point must call it too. A test lists the entry points and fails if one does not call it.
 2. **Key** by server ID and Discord user ID. Store the counters in Postgres so that restarts and more workers share them.
 3. **Limits by plan** (Seed, Bloom, Garden). Start with one setting for each server, and link it to the plan later.
 4. **Check before posting.** The web reply endpoint calls `UserLimiter.check` before it posts the webhook message. If the user is over the limit, nothing is posted, and the web shows "Limit reached" with the reset time. The queue gate checks again, so a race cannot get past it.
@@ -58,12 +61,16 @@ There is no per-user limit today. Explicit requests skip the unsolicited cooldow
 - Slopbot makes one webhook for each turned-on channel (for a thread, the webhook of the parent channel with `thread_id`). It keeps the webhook token secret, encrypted at rest.
 - Post flow:
   1. Check the permission, the limit and the size (Discord limit: 2000 characters).
-  2. Make a row in `web_replies` (id, server, channel, user ID, text hash, status `pending`).
+  2. Make a row in `web_replies` (id, server, channel, user ID, status `pending`).
   3. Post with `username` = the server display name, `avatar_url` = the user's avatar, `allowed_mentions` = none by default, and `wait=true` to get the message ID.
-  4. Save the message ID in the row.
+  4. Save the exact message ID that Discord returns in the row, and set status `posted`.
+- Identity uses **only the exact message ID** that the webhook post returns. Do not match by text, hash, author name or time. If the webhook token leaks, someone can post the same text, but they cannot get the message ID that Slopbot's own post returns.
 - In `src/adapters/discord.ts`, when a message has `webhookId`:
-  - If the webhook is Slopbot's and the message ID (or the pending row, if the message comes first) matches a `web_replies` row, change the message: `author` = the real user ID, `isBot` = false, `addressed` = true, and mark `source: "web"`.
-  - In all other cases, keep the message as `isBot` as it is now. A leaked webhook URL or another bot's webhook cannot act as a user.
+  - If the webhook is Slopbot's and a web reply post is in progress for that channel, keep the event in a buffer (max 10 s). Discord can send `messageCreate` before the post returns.
+  - When the post returns, take the buffered event with that exact ID and change it: `author` = the real user ID, `isBot` = false, `addressed` = true, `source: "web"`. Handle all other buffered events as bot messages.
+  - If the post fails or the time ends, handle the buffered events as bot messages and mark the row `failed`.
+  - In all other cases, keep the message as `isBot` as it is now.
+- If a webhook token leaks, delete and make the webhook again.
 - The changed message then goes through the normal path. It gets the user's permissions, file storage scope, admin status and rate limit.
 - Discord shows a "BOT" or "APP" tag on webhook messages. This is a Discord limit and cannot be changed.
 
@@ -74,7 +81,8 @@ There is no per-user limit today. Explicit requests skip the unsolicited cooldow
   - `run.start`, `run.delta` (text and thinking tokens), `run.tool` (tool name, status and arguments in short form), `run.end`.
 - Source: add a small in-process publisher next to `EventJournal.append`. It sends each event to subscribers at the same time as it saves it. Do not change how the journal saves events.
 - Smooth display: the browser puts deltas in a buffer and shows them in small steps with `requestAnimationFrame`. It goes faster when the buffer grows, so it does not fall behind.
-- Reconnect: SSE `Last-Event-ID` = journal sequence. On reconnect, send the events after that ID from the store.
+- Cursor: journal sequence numbers start at 0 for each run, so they cannot be the cursor. Give each event sent on a conversation stream a `stream_id` that only goes up for each channel (a Postgres sequence in a `conversation_events` table that points to the message or to the run event). SSE `Last-Event-ID` = `stream_id`.
+- Reconnect: send all events with a `stream_id` after the cursor, across runs and Discord messages, then continue live.
 - More than one bot process: start with one process. If we add more, use Postgres `LISTEN/NOTIFY` for the publisher.
 
 ## History and search
@@ -105,7 +113,7 @@ Other AI apps (ChatGPT, Claude.ai, Gemini) all use frozen snapshots that can be 
 | Permissions | `src/channel-access.ts` (new) |
 | API routes | `src/web-console.ts`, with new handlers in `src/web-transcripts.ts` |
 | Web UI | `web/` (transcript view, run panel, reply box) |
-| Tables | `web_replies`, `shares`, `user_limit_counters`, channel setting `web_transcripts` |
+| Tables | `web_replies`, `shares`, `user_limit_counters`, `conversation_events`, channel setting `web_transcripts` |
 
 ## Steps (one PR each)
 
@@ -121,6 +129,10 @@ Other AI apps (ChatGPT, Claude.ai, Gemini) all use frozen snapshots that can be 
 - A user over the limit: Discord messages, web replies and slash commands are all refused.
 - A web reply when over the limit: the webhook message is not posted.
 - A message from another webhook or a leaked webhook URL: treated as a bot, no run.
+- A leaked token posts the same text before the real post returns: only the message with the returned ID gets the user identity.
+- `messageCreate` comes before the webhook post returns: the event is kept in the buffer and then matched.
+- Slash commands over the limit: refused before the tool runs.
+- SSE reconnect across two runs and Discord messages: no event is lost or sent twice.
 - Channel permission removed: the next read returns 403, and the stream closes.
 - Channel turned off: no list entry, no stream, no reply.
 - A snapshot does not contain tool results, cost, user IDs or later messages.
