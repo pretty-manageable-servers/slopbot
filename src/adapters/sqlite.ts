@@ -818,6 +818,9 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   jobs(server: string, channel: string): Job[] {
     return this.db.prepare("SELECT * FROM jobs WHERE server=? AND channel=? ORDER BY sequence DESC LIMIT 20").all(server, channel).map(row => this.job(row));
   }
+  resumeJob(id: string): boolean {
+    return this.db.prepare("UPDATE jobs SET status=CASE WHEN reply IS NULL THEN 'pending' ELSE 'ready' END,error=NULL,available_at=0 WHERE id=? AND status='cancelled'").run(id).changes === 1;
+  }
   cancelJob(id: string): boolean {
     return this.db.prepare("UPDATE jobs SET status='cancelled',error='Stopped' WHERE id=? AND status IN ('pending','ready','running','sending')").run(id).changes === 1;
   }

@@ -38,7 +38,7 @@ export interface PrivateChatHandle {
   /** Hands a message that is already saved to the bot. The limit is checked by the service first. */
   receiveChat(message: Message): Promise<void>;
   /** Stops the responses in a channel that this user may stop. Returns how many stopped. */
-  stopResponses(channel: string, user: string, manager: boolean): Promise<number>;
+  stopResponses(channel: string, user: string, manager: boolean): Promise<string[]>;
 }
 
 export interface ChatHost {
@@ -328,7 +328,7 @@ export class WebChatService {
   async stop(user: string, id: string): Promise<{ stopped: number }> {
     const chat = await this.owned(user, id);
     const handle = await this.handle(chat.server);
-    return { stopped: await handle.stopResponses(privateChannel(chat.id), user, false) };
+    return { stopped: (await handle.stopResponses(privateChannel(chat.id), user, false)).length };
   }
 
   private async owned(user: string, id: string): Promise<WebChatRow> {

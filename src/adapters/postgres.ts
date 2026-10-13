@@ -680,6 +680,9 @@ export class PostgresStore {
     async jobs(server: string, channel: string): Promise<Job[]> {
         return (await this.db.prepare("SELECT * FROM jobs WHERE server=? AND channel=? ORDER BY sequence DESC LIMIT 20").all(server, channel)).map(row => this.job(row));
     }
+    async resumeJob(id: string): Promise<boolean> {
+        return (await this.db.prepare("UPDATE jobs SET status=CASE WHEN reply IS NULL THEN 'pending' ELSE 'ready' END,error=NULL,available_at=0 WHERE id=? AND status='cancelled'").run(id)).changes === 1;
+    }
     async cancelJob(id: string): Promise<boolean> {
         return (await this.db.prepare("UPDATE jobs SET status='cancelled',error='Stopped' WHERE id=? AND status IN ('pending','ready','running','sending')").run(id)).changes === 1;
     }
