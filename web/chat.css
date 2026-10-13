@@ -115,6 +115,8 @@ main.chat-mode{padding:0;max-width:none;min-width:0}
 .chat .chat-form{width:min(760px,100%)}
 .chat .chat-status-line{margin:0 0 6px 4px;font-size:12px;color:var(--muted)}
 .chat .chat-status-line:empty{display:none}
+.chat .chat-status-line{transition:opacity .6s ease}
+.chat .chat-status-line.fading{opacity:0}
 .chat .chat-input{display:flex;align-items:flex-end;gap:8px;padding:10px 10px 10px 16px;border:1px solid var(--line);border-radius:16px;background:var(--surface)}
 .chat .chat-input:focus-within{border-color:var(--muted)}
 .chat .chat-input textarea{flex:1;min-width:0;max-height:12em;margin:0;padding:4px 0;border:0;outline:0;resize:none;overflow-y:auto;background:transparent;color:var(--strong);font:inherit;font-size:15px;line-height:1.5;box-sizing:border-box}

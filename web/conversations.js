@@ -1,6 +1,6 @@
 // Conversations tab: a chat view of channel and thread transcripts, Slopbot runs, the live stream and the reply box.
 // Uses globals from app.js: $, request, busy, fail, notice, state, csrf, showScreen.
-const conv = { server: '', list: [], channel: null, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0 };
+const conv = { server: '', list: [], channel: null, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, composer: null, noted: new Set() };
 const enc = encodeURIComponent;
 const GROUP_MS = 5 * 60 * 1000;
 const DONE_STATUS = /^(completed|delegated|done|ok)$/;
@@ -136,6 +136,7 @@ function setHeading(text) { $('chat-title').textContent = text; }
 function setComposer(node) {
   const slot = $('conv-reply');
   if (!slot) return;
+  if (!node) conv.composer = null;
   slot.hidden = !node;
   slot.replaceChildren(...(node ? [node] : []));
 }
@@ -501,6 +502,7 @@ function nearBottom(log) { return log.scrollHeight - log.scrollTop - log.clientH
 function upsertMessage(m) {
   const log = $('conv-log');
   if (!log || m.channel !== conv.channel) return;
+  conv.composer?.onMessage(m);
   const stick = nearBottom(log);
   const node = messageNode(m), old = log.querySelector(`[data-id="${m.id}"]`);
   if (old) old.replaceWith(node); else insertInOrder(log, node);
@@ -710,7 +712,22 @@ function chatComposer(server, channel, placeholder) {
   form.append(status, note, box, textNode('p', 'Slopbot is AI and can make mistakes.', 'chat-foot'));
   const sync = () => { box.classList.toggle('has-text', field.value.trim() !== ''); fitField(field); };
   let sending = false;
-  field.addEventListener('input', sync);
+  // The status line is empty when it has nothing to say, so it takes no space.
+  // A sent notice clears when the sent message arrives on the stream, or after 4 s. Errors stay until the next input or send.
+  let sentText = '', statusTimer = 0, noteTimer = 0;
+  const clearStatus = () => { clearTimeout(statusTimer); statusTimer = 0; sentText = ''; status.textContent = ''; };
+  const sentNotice = text => { clearStatus(); status.textContent = 'Sent. Slopbot will answer in the channel.'; sentText = text; statusTimer = setTimeout(clearStatus, 4000); };
+  // The Manage Webhooks note shows once per channel per page load and fades out after 6 s.
+  const showNote = () => {
+    if (conv.noted.has(channel)) return;
+    conv.noted.add(channel);
+    clearTimeout(noteTimer);
+    note.classList.remove('fading');
+    note.hidden = false;
+    noteTimer = setTimeout(() => { note.classList.add('fading'); noteTimer = setTimeout(() => { note.hidden = true; note.classList.remove('fading'); }, 600); }, 6000);
+  };
+  conv.composer = { onMessage(m) { if (sentText && m.channel === channel && (m.author === state.user || String(m.text ?? '').trim() === sentText)) clearStatus(); } };
+  field.addEventListener('input', () => { sync(); clearStatus(); });
   field.addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); }
   });
@@ -718,7 +735,7 @@ function chatComposer(server, channel, placeholder) {
     event.preventDefault();
     const text = field.value.trim();
     if (!text || sending) return;
-    sending = true; send.disabled = true; status.textContent = 'Sending…'; note.hidden = true;
+    sending = true; send.disabled = true; clearStatus(); status.textContent = 'Sending…';
     try {
       const response = await fetch(`/api/conversations/${enc(channel)}/reply`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ server, text }) });
       const data = await response.json().catch(() => ({}));
@@ -727,9 +744,10 @@ function chatComposer(server, channel, placeholder) {
       if (!response.ok) throw new Error(data.error || 'Reply failed.');
       field.value = '';
       sync();
-      status.textContent = data.status === 'posted' ? 'Sent. Slopbot will answer in the channel.' : 'Sent to Discord, but Slopbot did not pick it up in time, so it will not answer.';
-      note.hidden = data.via !== 'bot';
-    } catch (error) { status.textContent = error.message; }
+      if (data.status === 'posted') sentNotice(text);
+      else status.textContent = 'Sent to Discord, but Slopbot did not pick it up in time, so it will not answer.';
+      if (data.via === 'bot') showNote();
+    } catch (error) { clearStatus(); status.textContent = error.message; }
     finally { sending = false; send.disabled = false; }
   });
   return form;
