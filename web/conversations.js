@@ -1858,7 +1858,8 @@ function chatComposer(id) {
         failPending(pending, text, shown, response.status === 429 ? `Limit reached, resets ${new Date(data.resetAt).toLocaleString()}.` : (data.error || 'Message failed.'));
         return;
       }
-      made = null;
+      // The chat has a saved message now, so it is this composer's chat. Later sends use it and do not make a new chat.
+      if (!id) { id = chatId; made = null; }
       // The stream may have shown the saved message already. Otherwise the pending bubble takes the saved id.
       if (pending.isConnected) { pending.classList.remove('pending'); pending.dataset.id = data.id; delete pending.dataset.pending; }
       if (conv.ask && conv.ask.chat === chatId) conv.ask = null;
