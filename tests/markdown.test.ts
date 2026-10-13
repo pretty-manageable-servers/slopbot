@@ -169,3 +169,9 @@ test("empty input gives empty output", () => {
   assert.equal(render(""), "");
   assert.equal(render("\n\n"), "");
 });
+
+test("Discord backslash escapes show the plain character", () => {
+  assert.equal(render('word \\"ok\\" and \\*not italic\\* and \\_x\\_'), '<p>word &quot;ok&quot; and *not italic* and _x_</p>');
+  assert.equal(render('`\\*kept*`'), '<p><code>\\*kept*</code></p>');
+  assert.equal(render('a \\\\ b \\n'), '<p>a \\ b \\n</p>');
+});

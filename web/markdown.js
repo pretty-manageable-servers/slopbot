@@ -45,6 +45,8 @@
     let s = esc(raw);
 
     s = s.replace(/`([^`]+)`/g, (_, code) => hold(`<code>${code}</code>`));
+    // Discord escapes: a backslash before punctuation shows the punctuation as plain text.
+    s = s.replace(/\\(&(?:amp|lt|gt|quot|#39);|[!-\/:-@\[-`{-~])/g, (_, ch) => hold(ch));
     s = s.replace(/\[([^\]\u0001\u0002]+)\]\(((?:[^\s()\u0001\u0002]|\([^\s()\u0001\u0002]*\))+)\)/g, (match, label, url) => {
       const href = safeHref(unesc(url));
       return href ? hold(anchor(href, label)) : match;
