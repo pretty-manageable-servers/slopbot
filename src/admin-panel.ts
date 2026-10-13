@@ -4,6 +4,7 @@ import type { Store } from "./ports.js";
 import { savedLimit, type UserLimiter } from "./user-limiter.js";
 import { activePrices, GLOBAL_SETTINGS_SCOPE, type ModelPrice } from "./usage-cost.js";
 import { modelsInUse } from "./usage-meter.js";
+import type { MemberDirectory, MemberProfile } from "./member-directory.js";
 
 /** A bad value sent by a team admin. The console answers 400 with the message. */
 export class AdminInputError extends Error { override name = "AdminInputError"; }
@@ -15,6 +16,8 @@ const MAX_PRICE_MICROS = 1000000000;
 const MAX_GRACE_PERCENT = 1000;
 const MAX_GRANT = 100;
 const USAGE_LIST_LIMIT = 200;
+const MEMBER_SEARCH_LIMIT = 10;
+const MAX_SEARCH_CHARS = 100;
 const LIMIT_KEYS = { five: "user_limit_5h_cost_micros", week: "user_limit_week_cost_micros", grace: "user_limit_grace_percent" } as const;
 
 export type AdminConfig = Pick<Config, "model" | "jevModel" | "embeddingModel" | "baseUrl" | "modelPrices" | "fallbackPrice" | "userLimit5hCostMicros" | "userLimitWeekCostMicros" | "userLimitGracePercent">;
@@ -52,7 +55,7 @@ function modelName(value: unknown): string {
 
 /** Limits, model prices and user usage for the team admin panel. Every change is validated before it is saved. */
 export class AdminPanel {
-  constructor(private readonly config: AdminConfig, private readonly store: AdminStore, private readonly limiter: UserLimiter) {}
+  constructor(private readonly config: AdminConfig, private readonly store: AdminStore, private readonly limiter: UserLimiter, private readonly directory: Pick<MemberDirectory, "profiles" | "search">) {}
 
   limits(server: unknown): LimitsView {
     return this.limitsView(snowflake(server, "server"));
@@ -110,15 +113,26 @@ export class AdminPanel {
     return saved && typeof saved === "object" && !Array.isArray(saved) ? { ...saved } as Record<string, Json> : {};
   }
 
-  /** Every user with counters in the server, or one user when user is given. */
+  /** Every user with counters in the server, or one user when user is given. Each user has an id and a profile. */
   async usage(server: unknown, user?: unknown): Promise<unknown> {
     const id = snowflake(server, "server");
     if (user === undefined) {
       const rows = await this.store.listUserUsage(id, USAGE_LIST_LIMIT);
-      return { server: id, users: rows.map(row => ({ user: row.user, windows: this.limiter.summarize(id, row) })) };
+      const profiles = await this.directory.profiles(id, rows.map(row => row.user));
+      return { server: id, users: rows.map(row => ({ user: profiles.get(row.user)!, windows: this.limiter.summarize(id, row) })) };
     }
     const member = snowflake(user, "user");
-    return { server: id, user: member, windows: await this.limiter.usage(id, member) };
+    const profile = (await this.directory.profiles(id, [member])).get(member)!;
+    return { server: id, user: profile, windows: await this.limiter.usage(id, member) };
+  }
+
+  /** Server members whose name starts with the query, for the user picker. An empty query finds nobody. */
+  async members(server: unknown, query: unknown): Promise<{ server: string; members: MemberProfile[] }> {
+    const id = snowflake(server, "server");
+    if (typeof query !== "string") throw new AdminInputError("Search needs text.");
+    const text = query.trim();
+    if (text.length > MAX_SEARCH_CHARS) throw new AdminInputError("Search for 100 characters or fewer.");
+    return { server: id, members: await this.directory.search(id, text, MEMBER_SEARCH_LIMIT) };
   }
 
   /** Clears one window, or both when kind is not given. Banked resets are not used. */

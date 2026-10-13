@@ -4,7 +4,8 @@ import type { Json, Message, ModelEvent } from "./domain.js";
 import type { ChannelAccess, ChannelAccessResult } from "./channel-access.js";
 import { parseToolCalls, toolResult, type ToolCall, type ToolOutput } from "./tools.js";
 import type { HistoryPage, HistoryQuery } from "./search/history-search.js";
-import { reasoningText, runEvents, shortArgs, slopbotId, transcriptMessage, type ConversationEvent, type ConversationEventStore, type RunEvents, type TranscriptMessage } from "./run-events.js";
+import { reasoningText, runEvents, shortArgs, showsProfile, slopbotId, transcriptMessage, type ConversationEvent, type ConversationEventStore, type RunEvents, type TranscriptMessage } from "./run-events.js";
+import type { MemberDirectory } from "./member-directory.js";
 import { transcriptSwitchOn } from "./server-tools.js";
 import { canCreateShare, type ShareRule } from "./shares.js";
 
@@ -33,6 +34,8 @@ export interface TranscriptHost {
   channelName(server: string, channel: string): Promise<string | undefined>;
   /** Who may share the channel. Without it, canShare is always false. */
   shareRule?: ShareRule;
+  /** Names and avatars of human authors. Without it, messages have no username or avatarUrl. */
+  members?: Pick<MemberDirectory, "profiles">;
 }
 
 export interface TranscriptRoutes {
@@ -237,7 +240,10 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
   };
   const views = async (server: string, messages: readonly Message[]): Promise<TranscriptMessage[]> => {
     const slopbot = slopbotId(store, server);
-    return Promise.all(messages.map(async message => transcriptMessage(message, slopbot, message.author === slopbot ? await store.replyRunIds(server, message.id) : [])));
+    // One directory call per page. The directory caches each user for 10 minutes.
+    const authors = [...new Set(messages.filter(message => showsProfile(message, slopbot)).map(message => message.author))];
+    const profiles = host.members && authors.length ? await host.members.profiles(server, authors) : new Map();
+    return Promise.all(messages.map(async message => transcriptMessage(message, slopbot, message.author === slopbot ? await store.replyRunIds(server, message.id) : [], profiles.get(message.author))));
   };
   const parentOf = async (server: string, channel: string): Promise<string | null> =>
     store.taskThreads(server).find(task => task.thread === channel)?.parent ?? null;

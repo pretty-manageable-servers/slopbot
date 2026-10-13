@@ -60,6 +60,7 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
     if (path === '/api/admin/limits') return panel.limits(query.get('server'));
     if (path === '/api/admin/prices') return panel.prices();
     if (path === '/api/admin/usage') return panel.usage(query.get('server'), query.get('user') ?? undefined);
+    if (path === '/api/admin/members') return panel.members(query.get('server'), query.get('q') ?? '');
     if (path === '/api/admin/servers') return admin.servers();
     return undefined;
   }
