@@ -115,6 +115,18 @@ test("a banked reset clears its window once and leaves the other window alone", 
   store.close();
 });
 
+test("a banked week reset is a full reset: it clears the 5-hour and weekly windows", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 100, 1000);
+  await store.grantResets("s", "u", "week", 1);
+  await limits.record("s", "u", 100, 0);
+  assert.equal(await limits.useReset("s", "u", "week"), true);
+  assert.deepEqual(await limits.usage("s", "u", 1), [
+    { kind: "5h", spent: 0, limit: 100, resetAt: null, banked: 0 },
+    { kind: "week", spent: 0, limit: 1000, resetAt: null, banked: 0 },
+  ]);
+  store.close();
+});
+
 test("two concurrent resets of one banked reset cannot both succeed", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 0);
   await store.grantResets("s", "u", "5h", 1);
