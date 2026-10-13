@@ -834,7 +834,7 @@ function openStream(id) {
   on('run.start', data => startLive(data.ref, data.requestId));
   on('run.delta', data => delta(data.ref, data.part, data.text));
   on('run.tool', data => tool(data));
-  on('run.end', data => { endLive(data.ref); refreshUsage(); refreshUsed(id); if (kind === 'chat') refreshChats(); });
+  on('run.end', data => { endLive(data.ref); refreshUsage(); if (kind === 'chat') refreshChats(); else refreshUsed(id); });
   // The server pruned events after this stream's position. Reload the messages from the newest page.
   es.addEventListener('reset', () => {
     if (conv.source !== es) return;
