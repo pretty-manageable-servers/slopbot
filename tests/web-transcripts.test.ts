@@ -9,6 +9,8 @@ import { webTranscriptKey, transcriptSwitchOn } from "../src/server-tools.js";
 import { createTranscripts, openStream, runSteps, type TranscriptHost } from "../src/web-transcripts.js";
 import { createConsole } from "../src/web-console.js";
 import type { Message, ModelEvent } from "../src/domain.js";
+import { MemberDirectory } from "../src/member-directory.js";
+import { fakeSource } from "./member-fakes.js";
 
 const SERVER = "1528063444874432734", CHANNEL = "1528063444874432735", THREAD = "1528063444874432736", OTHER = "1528063444874432737";
 const USER = "1514413259522838529", STRANGER = "1514413259522838530", BOT = "1528063444874432799", VIEWER = "1514413259522838531";
@@ -24,7 +26,7 @@ interface Fixture {
 }
 
 /** A store with a channel, a thread, a switched-off channel and some runs. Discord facts are fake. */
-async function fixture(t: { after(fn: () => unknown): void }): Promise<Fixture> {
+async function fixture(t: { after(fn: () => unknown): void }, members?: MemberDirectory): Promise<Fixture> {
   const store = new SQLiteStore(":memory:");
   const hidden = new Set<string>();
   const source = {
@@ -35,7 +37,7 @@ async function fixture(t: { after(fn: () => unknown): void }): Promise<Fixture> 
   };
   const access = new ChannelAccess(source);
   const names: Record<string, string> = { [CHANNEL]: "general", [OTHER]: "secret", [THREAD]: "task-1" };
-  const host: TranscriptHost = { store, access, configured: () => [CHANNEL, OTHER], channelName: async (_server, channel) => names[channel], shareRule: { manager: async () => false, teamAdmin: async user => user === USER } };
+  const host: TranscriptHost = { store, access, configured: () => [CHANNEL, OTHER], channelName: async (_server, channel) => names[channel], shareRule: { manager: async () => false, teamAdmin: async user => user === USER }, ...(members ? { members } : {}) };
   const routes = createTranscripts(host);
   const http = createServer((req, res) => {
     const user = req.headers["x-user"] ? String(req.headers["x-user"]) : undefined;
@@ -184,6 +186,22 @@ test("a thread uses its parent channel's switch", async t => {
   assert.deepEqual(list.body.conversations, []);
   f.store.setSetting(SERVER, webTranscriptKey(CHANNEL), true);
   assert.equal((await get(f, `/api/conversations/${THREAD}/messages?server=${SERVER}`)).status, 200);
+});
+
+test("messages show the member's name, @username and avatar, and Slopbot's own avatar", async t => {
+  const people = fakeSource({
+    [USER]: { username: "ada", nickname: "Ada L", serverAvatar: "https://cdn.discordapp.com/guilds/1/users/ada.png", inServer: true, email: "ada@example.com" },
+    [BOT]: { username: "slopbot", avatar: "https://cdn.discordapp.com/avatars/slop.png", inServer: true },
+  });
+  const f = await fixture(t, new MemberDirectory(people));
+  const page = await get(f, `/api/conversations/${CHANNEL}/messages?server=${SERVER}&limit=2`);
+  const [bot, human] = page.body.messages as { id: string; authorName: string; username: string | null; avatarUrl: string | null }[];
+  assert.deepEqual([bot!.id, bot!.username, bot!.avatarUrl], ["bot-1", "slopbot", "https://cdn.discordapp.com/avatars/slop.png"]);
+  assert.deepEqual([human!.id, human!.authorName, human!.username, human!.avatarUrl], ["m4", "Ada L", "ada", "https://cdn.discordapp.com/guilds/1/users/ada.png"]);
+  assert.doesNotMatch(JSON.stringify(page.body), /example\.com|"email"/);
+  // Without a directory the fields are null, as before.
+  const plain = await get(await fixture(t), `/api/conversations/${CHANNEL}/messages?server=${SERVER}&limit=2`);
+  assert.deepEqual(plain.body.messages.map((item: { username: unknown; avatarUrl: unknown }) => [item.username, item.avatarUrl]), [[null, null], [null, null]]);
 });
 
 test("messages page backwards in chronological order, with Slopbot run IDs", async t => {

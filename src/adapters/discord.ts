@@ -53,6 +53,7 @@ import { ShareService, type ShareRule } from "../shares.js";
 import { discordChannelAccessSource, wireChannelAccessEvents } from "./discord-channel-access.js";
 import { displayToolResult, ToolError, ToolRegistry, UncertainActionError, stableOperationId } from "../tools.js";
 import { WebReplies, asWebUser, webReplyKey } from "../web-replies.js";
+import { MemberDirectory, discordMemberSource } from "../member-directory.js";
 import { discordWebReplies } from "./discord-web-replies.js";
 
 /** Slopbot state and services for one Discord server. All servers share one client. */
@@ -75,7 +76,7 @@ export class DiscordServer implements ChatGateway {
   private channels: string[];
   private historyTimer: ReturnType<typeof setInterval> | undefined;
 
-  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client))) {
+  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">) {
     this.client = client;
     this.renderer = new ReplyRenderer(store, discordPresentation);
     this.channels = configuredChannels(config, store, guildId);
@@ -276,7 +277,7 @@ export class DiscordServer implements ChatGateway {
       const message = updated.partial ? await updated.fetch() : updated;
       const normalized = this.normalize(message);
       await this.store.revise(normalized);
-      if (!normalized.transient) await publishMessage(this.store, normalized).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
+      if (!normalized.transient) await publishMessage(this.store, normalized, undefined, this.members).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
     })().catch(error => logError("Could not update edited message context.", error));
   }
   messageDelete(message: { guildId: string | null; channelId: string; id: string }): void {
@@ -393,7 +394,7 @@ export class DiscordServer implements ChatGateway {
     if (!message.guildId || !this.bot.accepts(message.guildId, message.channelId)) return;
     if (message.author.id === this.client.user?.id) return this.receiveOwn(message);
     const live = this.normalize(message);
-    if (!live.transient) await publishMessage(this.store, live).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
+    if (!live.transient) await publishMessage(this.store, live, undefined, this.members).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
     const timingScope = { server: message.guildId, channel: message.channelId, id: message.id };
     requestTimings.begin(timingScope); requestTimings.start(timingScope, "references");
     await requestTimings.withScope(timingScope, () => this.receiveScoped(message, timingScope));
@@ -490,7 +491,7 @@ export class DiscordServer implements ChatGateway {
     await requestTimings.wait("Discord status cleanup", () => this.toolProgress.finish(JSON.stringify([message.server,message.channel,message.id])));
     // Web transcripts: the reply's runs are already saved, so their IDs are known now.
     const runIds = await this.store.requestRunIds(message.server, message.id);
-    for (const output of outputs) await publishMessage(this.store, output, runIds).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
+    for (const output of outputs) await publishMessage(this.store, output, runIds, this.members).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
     delivered = true;
     return outputs;
     } finally {
@@ -625,10 +626,13 @@ export class DiscordAdapter {
   readonly shareRule: ShareRule;
   /** Share links for the web console. */
   readonly shares: ShareService;
+  /** Discord names and avatars for the console and transcripts. One cache for every server. */
+  readonly members: MemberDirectory;
 
   constructor(private readonly config: Config, private readonly store: RuntimeStore, private readonly llm: LLM, client?: Client) {
     this.usage = createUsageMeter(config, store);
     this.client = client ?? new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent], partials: [Partials.Message, Partials.Channel] });
+    this.members = new MemberDirectory(discordMemberSource(this.client));
     this.team = new TeamAdmins(discordTeamSource(this.client));
     this.access = new ChannelAccess(discordChannelAccessSource(this.client));
     wireChannelAccessEvents(this.client, this.access);
@@ -657,7 +661,7 @@ export class DiscordAdapter {
     if (existing) return existing;
     if (!this.allowed(guildId)) return Promise.reject(new ToolError("Slopbot is not enabled for this server."));
     const opening = (async () => {
-      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage, this.access);
+      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage, this.access, this.members);
       await server.start();
       await server.ready(this.botUser!);
       return server;

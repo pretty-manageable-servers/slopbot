@@ -8,6 +8,8 @@ import { AdminPanel } from '../src/admin-panel.js';
 import { TeamAdmins, type TeamSnapshot } from '../src/team-admins.js';
 import { UserLimiter } from '../src/user-limiter.js';
 import type { ConsoleAdmin } from '../src/web-console.js';
+import { MemberDirectory } from '../src/member-directory.js';
+import { fakeSource } from './member-fakes.js';
 
 test('web console is opt-in and rejects insecure public origins', () => {
   assert.equal(consoleOptions({}), undefined);
@@ -86,7 +88,9 @@ test('team admin routes need team membership, and only editors can change settin
   let members: TeamSnapshot['members'] = [{ id: DEVELOPER, role: 'developer', accepted: true }, { id: READER, role: 'read_only', accepted: true }];
   const teams = new TeamAdmins({ async load() { return { ownerId: OWNER, members: [...members] }; } });
   const limiter = new UserLimiter(store, { fiveHourCostMicros: 100, weekCostMicros: 0, gracePercent: 10 });
-  const panel = new AdminPanel({ model: 'nimbus', jevModel: 'cirrus', embeddingModel: 'embed', baseUrl: 'https://models.example.com/v1', modelPrices: {}, fallbackPrice: { input: 1, cached_input: 1, output: 1 }, userLimit5hCostMicros: 100, userLimitWeekCostMicros: 0, userLimitGracePercent: 10 }, store, limiter);
+  const AVATAR = 'https://cdn.discordapp.com/guilds/1/users/7/avatar.png';
+  const directory = new MemberDirectory(fakeSource({ [DEVELOPER]: { username: 'dev', inServer: true }, [READER]: { username: 'reader', inServer: true }, [USER]: { username: 'ada', nickname: 'Ada L', serverAvatar: AVATAR, inServer: true, email: 'ada@example.com' } }));
+  const panel = new AdminPanel({ model: 'nimbus', jevModel: 'cirrus', embeddingModel: 'embed', baseUrl: 'https://models.example.com/v1', modelPrices: {}, fallbackPrice: { input: 1, cached_input: 1, output: 1 }, userLimit5hCostMicros: 100, userLimitWeekCostMicros: 0, userLimitGracePercent: 10 }, store, limiter, directory);
   const rotated: string[] = [];
   const admin: ConsoleAdmin = { role: id => teams.role(id), canEdit: id => teams.canEdit(id), servers: async () => ({ servers: [{ id: SERVER, name: 'Test server', channels: [] }] }), setTranscript: async (server, channel, enabled) => ({ server, channel, enabled }), rotateWebhook: async (_server, channel) => { rotated.push(channel); return { webhookId: 'hook-2' }; }, panel };
   const server = createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'}, {
@@ -115,7 +119,7 @@ test('team admin routes need team membership, and only editors can change settin
   const get = (path: string, session: Record<string, string>) => originalFetch(base + path, { headers: session });
   const post = (path: string, body: unknown, session: Record<string, string>) => originalFetch(base + path, { method: 'POST', headers: { ...session, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const outsider = await login(OUTSIDER), reader = await login(READER), developer = await login(DEVELOPER);
-  const reads = ['/api/admin/me', `/api/admin/limits?server=${SERVER}`, '/api/admin/prices', `/api/admin/usage?server=${SERVER}`, '/api/admin/servers'];
+  const reads = ['/api/admin/me', `/api/admin/limits?server=${SERVER}`, '/api/admin/prices', `/api/admin/usage?server=${SERVER}`, `/api/admin/members?server=${SERVER}&q=ad`, '/api/admin/servers'];
   const writes: [string, unknown][] = [
     ['/api/admin/limits', { server: SERVER, five_hour_cost_micros: 5000000, week_cost_micros: 20000000, grace_percent: 15 }],
     ['/api/admin/prices', { model: 'stratus', input: 1000000, cached_input: 100000, output: 4000000 }],
@@ -173,10 +177,20 @@ test('team admin routes need team membership, and only editors can change settin
   // Usage: list, one user, grant, reset. Banked resets survive a window reset.
   await limiter.record(SERVER, USER, 60, Date.now());
   await store.grantResets(SERVER, USER, '5h', 1);
-  const listed = await (await get(`/api/admin/usage?server=${SERVER}`, developer)).json() as { users: { user: string; windows: { kind: string; spent: number; banked: number }[] }[] };
-  assert.equal(listed.users[0]!.user, USER);
+  const listed = await (await get(`/api/admin/usage?server=${SERVER}`, developer)).json() as { users: { user: { id: string; displayName: string; username: string | null; avatarUrl: string | null }; windows: { kind: string; spent: number; banked: number }[] }[] };
+  assert.deepEqual(listed.users[0]!.user, { id: USER, displayName: 'Ada L', username: 'ada', avatarUrl: AVATAR });
   assert.deepEqual(listed.users[0]!.windows.map(window => [window.kind, window.spent, window.banked]), [['5h', 60, 1], ['week', 60, 0]]);
   assert.equal((await get(`/api/admin/usage?server=${SERVER}&user=bad`, developer)).status, 400);
+  const one = await (await get(`/api/admin/usage?server=${SERVER}&user=${USER}`, developer)).json() as { user: unknown; windows: { kind: string; spent: number; banked: number }[] };
+  assert.deepEqual(one.user, { id: USER, displayName: 'Ada L', username: 'ada', avatarUrl: AVATAR });
+  assert.deepEqual(one.windows.map(window => [window.kind, window.spent, window.banked]), [['5h', 60, 1], ['week', 60, 0]]);
+
+  // Member search: a name finds the member and the answer has no email or raw email data. An empty query finds nobody.
+  assert.deepEqual(await (await get(`/api/admin/members?server=${SERVER}&q=%20Ad%20`, developer)).json(), { server: SERVER, members: [{ id: USER, displayName: 'Ada L', username: 'ada', avatarUrl: AVATAR }] });
+  assert.deepEqual(await (await get(`/api/admin/members?server=${SERVER}&q=%20%20`, developer)).json(), { server: SERVER, members: [] });
+  assert.equal((await get(`/api/admin/members?server=${SERVER}&q=${'a'.repeat(101)}`, developer)).status, 400);
+  assert.equal((await get('/api/admin/members?server=bad&q=a', developer)).status, 400);
+  assert.doesNotMatch(await (await get(`/api/admin/members?server=${SERVER}&q=ad`, developer)).text(), /email|@example/);
   assert.equal((await get('/api/admin/usage?server=bad', developer)).status, 400);
   const granted = await post('/api/admin/usage/grant', { server: SERVER, user: USER, kind: 'week', count: 2 }, developer);
   assert.equal(granted.status, 200);

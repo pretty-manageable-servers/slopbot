@@ -154,14 +154,54 @@ function adminPrices(prices, names, edit) {
   const row = model => { const price = prices.prices[model], saved = prices.saved_models.includes(model); return `<tr><td><code>${esc(model)}</code></td>${price ? `<td>$${priceText(price.input)}</td><td>$${priceText(price.cached_input)}</td><td>$${priceText(price.output)}</td>` : '<td colspan="3" class="small">Fallback price</td>'}<td>${edit ? `<div class="chan-actions"><button type="button" data-price="edit" data-model="${esc(model)}">Edit</button>${saved ? `<button type="button" data-price="remove" data-model="${esc(model)}">Remove</button>` : ''}</div>` : ''}</td></tr>`; };
   return `<section class="card"><h2>Model prices</h2><p class="scope">Dollars per 1 million tokens, for all servers. A model without a price uses the fallback: $${priceText(prices.fallback.input)} input, $${priceText(prices.fallback.cached_input)} cached input, $${priceText(prices.fallback.output)} output.</p><div class="table-wrap"><table><thead><tr><th>Model</th><th>Input</th><th>Cached input</th><th>Output</th><th></th></tr></thead><tbody>${names.map(row).join('')}</tbody></table></div>${edit ? '<form id="admin-price" class="price-form"><label>Model<input name="model" maxlength="200" required></label><div class="row"><label>Input ($ per 1M)<input name="input" type="number" min="0" max="1000" step="0.000001" required></label><label>Cached input ($ per 1M)<input name="cached" type="number" min="0" max="1000" step="0.000001" required></label></div><label>Output ($ per 1M)<input name="output" type="number" min="0" max="1000" step="0.000001" required></label><button class="primary">Save price</button></form>' : ''}</section>`;
 }
+// Avatars come only from Discord's CDN. Any other URL is dropped, and the first letter shows instead.
+const ADMIN_AVATAR_HOST = 'https://cdn.discordapp.com/';
+function adminPerson(profile) {
+  const src = typeof profile.avatarUrl === 'string' && profile.avatarUrl.startsWith(ADMIN_AVATAR_HOST) ? esc(profile.avatarUrl) : '';
+  const letter = esc(String(profile.displayName || '?').trim().charAt(0).toUpperCase() || '?');
+  const avatar = src ? `<img class="admin-avatar" src="${src}" alt="" width="24" height="24" loading="lazy">` : `<span class="admin-avatar admin-avatar-blank" aria-hidden="true">${letter}</span>`;
+  return `<span class="admin-person" title="ID ${esc(profile.id)}">${avatar}<span class="admin-name">${esc(profile.displayName)}</span>${profile.username ? `<span class="admin-handle">@${esc(profile.username)}</span>` : ''}</span>`;
+}
 function adminUsage(users, name, off) {
   const row = item => {
     const pick = kind => item.windows.find(window => window.kind === kind) ?? { spent: 0, limit: 0, resetAt: null, banked: 0 };
     const line = (label, stat) => `<p class="small">${label}: ${money(stat.spent)} of ${stat.limit ? money(stat.limit) : 'no limit'}. ${stat.resetAt ? `Resets ${esc(when(stat.resetAt))}` : 'No window running'}. Banked resets: ${stat.banked}.</p>`;
-    const button = (action, kind, text) => `<button type="button" data-action="${action}" data-user="${esc(item.user)}" data-kind="${kind}"${off}>${text}</button>`;
-    return `<div class="admin-user"><strong>User ${esc(item.user)}</strong>${line('5 hours', pick('5h'))}${line('Week', pick('week'))}<div class="chan-actions">${button('reset', '5h', 'Reset 5h')}${button('reset', 'week', 'Reset week')}${button('grant', '5h', 'Grant 5h reset')}${button('grant', 'week', 'Grant week reset')}</div></div>`;
+    const button = (action, kind, text) => `<button type="button" data-action="${action}" data-user="${esc(item.user.id)}" data-kind="${kind}"${off}>${text}</button>`;
+    return `<div class="admin-user"><div class="admin-head">${adminPerson(item.user)}</div>${line('5 hours', pick('5h'))}${line('Week', pick('week'))}<div class="chan-actions">${button('reset', '5h', 'Reset 5h')}${button('reset', 'week', 'Reset week')}${button('grant', '5h', 'Grant 5h reset')}${button('grant', 'week', 'Grant week reset')}</div></div>`;
   };
-  return `<section class="card"><h2>Usage</h2><p class="scope">${adminUser ? 'One user.' : `The ${users.length} users with the highest 5-hour spend in ${esc(name)}.`}</p><form id="admin-find" class="chan-window"><label>Discord user ID<input name="user" inputmode="numeric" maxlength="20" placeholder="123456789012345678"></label><button>Find user</button>${adminUser ? '<button type="button" id="admin-all">Show all users</button>' : ''}</form><div id="admin-users">${users.map(row).join('') || '<p class="small">No users have spend or banked resets in this server yet.</p>'}</div></section>`;
+  return `<section class="card"><h2>Usage</h2><p class="scope">${adminUser ? 'One user.' : `The ${users.length} users with the highest 5-hour spend in ${esc(name)}.`}</p><div class="admin-search"><label>Find a member<input id="admin-search-input" type="search" maxlength="100" autocomplete="off" placeholder="Name or @username"></label>${adminUser ? '<button type="button" id="admin-all">Show all users</button>' : ''}<div id="admin-matches" class="admin-matches" hidden></div></div><div id="admin-users">${users.map(row).join('') || '<p class="small">No users have spend or banked resets in this server yet.</p>'}</div></section>`;
+}
+// Member picker: typing (250 ms pause) lists matching members. Choosing one loads that user's usage by ID.
+function wireAdminSearch(server) {
+  const input = $('admin-search-input'), list = $('admin-matches');
+  let timer = 0, latest = 0;
+  const hide = () => { latest++; list.hidden = true; list.replaceChildren(); };
+  const search = async query => {
+    const mine = ++latest;
+    try {
+      const result = await request(`/api/admin/members?server=${encodeURIComponent(server)}&q=${encodeURIComponent(query)}`);
+      if (mine !== latest || server !== adminServer) return;
+      list.innerHTML = result.members.map(item => `<button type="button" class="admin-match" data-user="${esc(item.id)}">${adminPerson(item)}</button>`).join('') || '<p class="small admin-none">No member matches.</p>';
+      list.hidden = false;
+    } catch (error) {
+      if (mine !== latest) return;
+      list.innerHTML = `<p class="small admin-none">${esc(error.message)}</p>`;
+      list.hidden = false;
+    }
+  };
+  input.oninput = () => {
+    clearTimeout(timer);
+    const query = input.value.trim();
+    if (!query) return hide();
+    timer = setTimeout(() => search(query), 250);
+  };
+  input.onkeydown = event => { if (event.key === 'Escape') { clearTimeout(timer); input.value = ''; hide(); } };
+  list.onclick = event => {
+    const button = event.target.closest('button[data-user]');
+    if (!button) return;
+    adminUser = button.dataset.user;
+    renderAdmin();
+  };
 }
 function adminTranscripts(servers, off) {
   return `<section class="card"><h2>Web transcripts</h2><p class="scope">Per channel, for every server. Off by default. Discord permissions still decide who can see a transcript.</p><div id="admin-transcripts">${servers.map(server => `<p class="eyebrow">${esc(server.name)}</p><ul class="chan-list">${server.channels.map(channel => `<li class="chan"><div class="chan-info"><strong>#${esc(channel.name)}</strong></div><div class="chan-actions"><label class="switch"><input type="checkbox" data-server="${esc(server.id)}" data-channel="${esc(channel.id)}"${channel.enabled ? ' checked' : ''}${off}><span>${channel.enabled ? 'On' : 'Off'}</span></label><button type="button" data-action="rotate" data-server="${esc(server.id)}" data-channel="${esc(channel.id)}" data-name="${esc(channel.name)}"${off}>Rotate webhook</button></div></li>`).join('') || '<li class="small">Slopbot serves no channels in this server yet.</li>'}</ul>`).join('') || '<p class="small">Slopbot is not running in any server yet.</p>'}</div></section>`;
@@ -216,12 +256,7 @@ async function renderAdmin() {
       }; });
     }
     if (adminServer) {
-      $('admin-find').onsubmit = event => {
-        event.preventDefault();
-        const user = new FormData(event.target).get('user').trim();
-        if (!/^\d{17,20}$/.test(user)) return notice('Enter a Discord user ID of 17 to 20 digits.');
-        adminUser = user; renderAdmin();
-      };
+      wireAdminSearch(adminServer);
       if ($('admin-all')) $('admin-all').onclick = () => { adminUser = ''; renderAdmin(); };
       $('admin-users').onclick = event => {
         const button = event.target.closest('button[data-action]');
