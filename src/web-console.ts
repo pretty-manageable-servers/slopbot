@@ -144,7 +144,8 @@ const consoleFile = (path: string) => {
   return /^(app\.js|palette\.js|conversations\.js|markdown\.js|highlight\.min\.js|style\.css|chat\.css|console\.css|shares\.js|shares\.css|assets\/(logo-(light|dark)\.svg|favicon\.svg|[a-z0-9-]+\.woff2))$/.test(name) ? name : undefined;
 };
 /** Landing file for a path: the home page, /_next/ files and top-level files such as /favicon.svg. */
-const landingFile = (path: string) => path === '/' ? 'index.html' : path.startsWith('/_next/') || /^\/[^/]+$/.test(path) ? path.slice(1) : undefined;
+// A path with no extension is a page of the export, for example /terms gives terms.html.
+const landingFile = (path: string) => path === '/' ? 'index.html' : /^\/[a-z-]+$/.test(path) ? `${path.slice(1)}.html` : path.startsWith('/_next/') || /^\/[^/]+$/.test(path) ? path.slice(1) : undefined;
 /** Reads a file under root. Missing files, folders, unknown types and paths that leave root give undefined. */
 async function readInside(root: string, name: string): Promise<StaticFile | undefined> {
   const base = resolve(root), file = resolve(base, name), type = contentTypes[extname(file)];
@@ -362,7 +363,7 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
       if (consoleName) return sendFile(res, await readInside('web', consoleName));
       const landingName = landingFile(routePath);
       if (!landingName) return send(res, 404, { error: 'Not found.' });
-      if (routePath === '/') res.setHeader('Content-Security-Policy', landingCsp);
+      if (landingName.endsWith('.html')) res.setHeader('Content-Security-Policy', landingCsp);
       return sendFile(res, await readInside(options.siteDir ?? 'site/out', landingName));
     } catch (error) {
       if (error instanceof AdminInputError) return send(res, 400, { error: error.message });

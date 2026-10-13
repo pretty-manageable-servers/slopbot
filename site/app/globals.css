@@ -119,3 +119,11 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
 @media (max-width: 560px) {
   .topbar .nav-add, .theme-switch { display: none; }
 }
+
+/* Terms and privacy pages */
+.legal { max-width: 760px; padding-top: 56px; padding-bottom: 80px; }
+.legal .updated { color: var(--muted); font-size: 14px; }
+.legal h2 { font: 500 24px var(--serif); color: var(--strong); margin: 40px 0 10px; }
+.legal p, .legal ul { margin-top: 10px; }
+.legal ul { padding-left: 22px; }
+.legal li { margin-top: 4px; }

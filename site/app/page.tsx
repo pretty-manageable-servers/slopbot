@@ -100,7 +100,8 @@ export default function Home() {
           <span>© 2026 PMServers</span>
           <span>
             <a href={links.pmservers}>pmservers.org</a> · <a href={links.docs}>Docs</a> ·{' '}
-            <a href={links.console}>Console</a>
+            <a href={links.console}>Console</a> ·{' '}
+            <a href={links.terms}>Terms</a> · <a href={links.privacy}>Privacy</a>
           </span>
         </div>
       </footer>
