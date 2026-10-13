@@ -81,7 +81,7 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
   }
   return undefined;
 }
-const staticAssets: Record<string, string> = { '/': 'index.html', '/app.js': 'app.js', '/conversations.js': 'conversations.js', '/style.css': 'style.css', '/assets/logo-light.svg': 'assets/logo-light.svg', '/assets/logo-dark.svg': 'assets/logo-dark.svg', '/shares.js': 'shares.js', '/shares.css': 'shares.css', '/chat.css': 'chat.css', '/markdown.js': 'markdown.js' };
+const staticAssets: Record<string, string> = { '/': 'index.html', '/app.js': 'app.js', '/conversations.js': 'conversations.js', '/style.css': 'style.css', '/assets/logo-light.svg': 'assets/logo-light.svg', '/assets/logo-dark.svg': 'assets/logo-dark.svg', '/shares.js': 'shares.js', '/shares.css': 'shares.css', '/chat.css': 'chat.css', '/console.css': 'console.css', '/markdown.js': 'markdown.js' };
 export function createConsole(options: ConsoleOptions, backend: ConsoleBackend): Server {
   const sessions = new Map<string, { user: string; csrf: string; expires: number }>();
   const states = new Map<string, number>();

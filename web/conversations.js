@@ -83,7 +83,9 @@ async function loadConversations() {
   conv.list = result.conversations;
   drawList();
   if (conv.channel && conv.list.some(c => c.id === conv.channel)) return openConversation(conv.channel);
-  if (conv.list.length) return openConversation(conv.list[0].id);
+  // Opens the newest channel that is on. A channel that is off is opened only when nothing else is listed.
+  const first = conv.list.find(c => c.enabled !== false) || conv.list[0];
+  if (first) return openConversation(first.id);
   // With no conversation to view, the default view falls back to Settings.
   if (viewAuto) return fallbackToSettings();
   showView(emptyNote('No conversations yet.', 'Turn on web transcripts for a channel in Server settings → Web transcripts.'));
@@ -112,7 +114,10 @@ function convItem(c) {
   button.className = 'chat-item';
   button.dataset.id = c.id;
   button.setAttribute('aria-current', c.id === conv.channel ? 'true' : 'false');
-  button.append(textNode('span', c.kind === 'thread' ? c.name : '#' + c.name, 'chat-item-name'), textNode('span', relTime(c.newest), 'chat-item-time'));
+  // A channel with web transcripts off is muted and shows an "off" note instead of the time.
+  if (c.enabled === false) button.classList.add('off');
+  button.append(textNode('span', c.kind === 'thread' ? c.name : '#' + c.name, 'chat-item-name'),
+    c.enabled === false ? textNode('span', 'off', 'chat-item-time chat-item-off') : textNode('span', relTime(c.newest), 'chat-item-time'));
   button.onclick = () => openConversation(c.id);
   return button;
 }
@@ -146,6 +151,9 @@ async function openConversation(id) {
   drawList();
   $('chat-root')?.classList.remove('drawer-open');
   $('chat-drawer')?.setAttribute('aria-expanded', 'false');
+  // A channel with web transcripts off has no messages to load. The server does not send them either.
+  const listed = conv.list.find(c => c.id === id);
+  if (listed && listed.enabled === false) return showOff(id, listed);
   $('conv-status').hidden = false;
   setStatus('Connecting…');
   setHeading('');
@@ -171,6 +179,38 @@ async function openConversation(id) {
     openStream(id);
   } catch (error) {
     if (conv.channel === id) showView(textNode('p', error.message, 'small chat-none'));
+    fail(error);
+  }
+}
+
+// The empty state for a channel with web transcripts off. Only a user who can manage the server sees the button.
+function showOff(id, info) {
+  $('conv-status').hidden = true;
+  setHeading(label(info));
+  $('conv-share').hidden = true;
+  $('conv-share').replaceChildren();
+  setComposer(null);
+  const box = document.createElement('div');
+  box.className = 'chat-empty';
+  box.append(textNode('h2', 'Web transcripts are off for this channel.', 'chat-empty-title'));
+  if (state.admin) {
+    const button = textNode('button', 'Turn on', 'chat-off-on');
+    button.type = 'button';
+    button.onclick = () => turnOn(button, id);
+    box.append(button);
+  }
+  showView(box);
+}
+
+// Turns the switch on with the same route as the Settings switch, then reloads the list and opens the channel.
+async function turnOn(button, id) {
+  button.disabled = true;
+  try {
+    await request('/api/web-transcripts/channels', { server: state.server.id, channel: id, enabled: true });
+    notice('Web transcripts on for this channel.');
+    await loadConversations();
+  } catch (error) {
+    button.disabled = false;
     fail(error);
   }
 }
