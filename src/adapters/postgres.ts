@@ -23,6 +23,8 @@ const CONVERSATION_PRUNE_BATCH = 10000;
 import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
 import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, revokeShare, revokeAllShares } from '../share-store.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
+import { getWebSession, saveWebSession, deleteWebSession, deleteExpiredWebSessions } from '../web-session-store.js';
+import type { WebSessionRow } from '../web-session-store.js';
 export class PostgresStore {
   async record(
     server: string,
@@ -409,6 +411,10 @@ export class PostgresStore {
     async listShares(server: string, limit: number) { return listShares(this.db, server, limit); }
     async revokeShare(server: string, id: string, at: number): Promise<boolean> { return revokeShare(this.db, server, id, at); }
     async revokeAllShares(server: string, at: number): Promise<number> { return revokeAllShares(this.db, server, at); }
+    async getSession(idHash: string): Promise<WebSessionRow | undefined> { return getWebSession(this.db, idHash); }
+    async saveSession(row: WebSessionRow): Promise<void> { return saveWebSession(this.db, row); }
+    async deleteSession(idHash: string): Promise<void> { return deleteWebSession(this.db, idHash); }
+    async deleteExpiredSessions(now: number): Promise<number> { return deleteExpiredWebSessions(this.db, now); }
     async startRun(runId: string, message: Message, prompt: Prompt): Promise<void> {
         (await this.db.prepare("INSERT INTO runs(id,message,prompt,status,result,context_version) VALUES(?,?,?,?,NULL,?)")
             .run(runId, JSON.stringify(message), JSON.stringify(prompt), "running", await (await this.contextVersion(message.server, message.channel))));
