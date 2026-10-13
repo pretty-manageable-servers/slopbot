@@ -1,3 +1,4 @@
+import { LocalDiskStorage } from "../web-chat-images.js";
 import { objectStorageTool, UserFileStorage, MAX_STORED_FILE_BYTES, fileStorageScope } from '../object-storage.js';
 import { sendStoredFile } from './discord-storage.js';
 import { S3StorageProvider } from './s3-storage.js';
@@ -35,7 +36,7 @@ import { registerProfileTools } from "../profiles.js";
 import { Application } from "../application.js";
 import { Bot, splitReply, type ChatGateway, type Incoming } from "../bot.js";
 import type { Config } from "../config.js";
-import type { Message } from "../domain.js";
+import { parseEffort, type Message } from "../domain.js";
 import type { LLM } from "../ports.js";
 import type { RuntimeStore } from "../runtime-store.js";
 import { LLMClassifier, ParticipationGate } from "../participation.js";
@@ -570,16 +571,16 @@ export class DiscordServer implements ChatGateway {
     const timer = setInterval(send, 8000); timer.unref(); return () => clearInterval(timer);
   }
   async consoleSnapshot(user: string): Promise<unknown> {
-    const guild = await this.client.guilds.fetch(this.guildId);
-    const member = await guild.members.fetch({ user, force: true });
+    const guild = this.client.guilds.cache.get(this.guildId) ?? await this.client.guilds.fetch(this.guildId);
+    // One member fetch and one bot fetch for the whole list. Each channel is then checked from the cache, with no REST call.
+    const [member, bot, all] = await Promise.all([guild.members.fetch({ user, force: true }), guild.members.fetchMe(), guild.channels.fetch()]);
     const admin = member.permissions.has(PermissionFlagsBits.ManageGuild);
     const channels = [];
-    for (const channel of (await guild.channels.fetch()).values()) {
+    const permission = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory];
+    for (const channel of all.values()) {
       if (channel?.type !== ChannelType.GuildText) continue;
-      try {
-        await this.validateChannel({ server: guild.id, channel: channel.id, author: user, id: 'command:web', text: '' }, channel.id, true);
-        channels.push({ id: channel.id, name: channel.name, monitored: this.channels.includes(channel.id), ...(admin ? { history: this.history.state(channel.id) } : {}) });
-      } catch (error) { if (!(error instanceof ToolError)) throw error; }
+      if (!channel.permissionsFor(member)?.has(permission) || !channel.permissionsFor(bot)?.has(permission)) continue;
+      channels.push({ id: channel.id, name: channel.name, monitored: this.channels.includes(channel.id), ...(admin ? { history: this.history.state(channel.id) } : {}) });
     }
     // The signed-in user's name and avatar for the account menu. The member directory gives the same avatar the chat shows.
     const known = (await this.members?.profiles(guild.id, [user]))?.get(user);
@@ -594,6 +595,7 @@ export class DiscordServer implements ChatGateway {
         cooldown_seconds: this.store.setting(guild.id, 'cooldown_seconds') ?? this.config.jevCooldownSeconds,
         max_unsolicited_per_hour: this.store.setting(guild.id, 'max_unsolicited_per_hour') ?? this.config.jevMaxRepliesPerHour,
         tool_display: toolDisplayMode(this.store.setting(guild.id, 'tool_display')),
+        default_effort: parseEffort(this.store.setting(guild.id, 'default_effort')) ?? 'default',
         timing_footer: this.store.setting(guild.id, 'timing_footer') ?? false,
         model: this.config.model, mock: this.config.mock,
       } : null };
@@ -661,7 +663,13 @@ export class DiscordServer implements ChatGateway {
 }
 
 /** Owns the Discord client and runs one DiscordServer for each server that Slopbot is in. */
+/** How long the console remembers which servers a user shares with Slopbot. */
+const MEMBER_TTL_MS = 60_000;
+
 export class DiscordAdapter {
+  /** Users known to be members of a server, kept for MEMBER_TTL_MS. Only "yes" is kept, so a Discord error or a "no" is always checked again. */
+  private readonly signInCache = new Map<string, number>();
+  private readonly memberCache = new Map<string, { at: number; servers: { id: string; name: string; icon: string | null; admin: boolean }[] }>();
   private readonly client: Client;
   private readonly servers = new Map<string, Promise<DiscordServer>>();
   private readonly objectStorageProvider: S3StorageProvider | undefined;
@@ -688,15 +696,18 @@ export class DiscordAdapter {
     wireChannelAccessEvents(this.client, this.access);
     runEvents.attach(store);
     this.shareRule = { manager: (user, server) => this.hasManageServer(user, server), teamAdmin: user => this.team.canEdit(user) };
-    this.shares = new ShareService({ store, access: this.access, rule: this.shareRule, member: (user, server) => this.isServerMember(user, server) });
     this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;
+    this.shares = new ShareService({ store, access: this.access, rule: this.shareRule, member: (user, server) => this.isServerMember(user, server), images: this.objectStorageProvider ?? new LocalDiskStorage() });
     this.client.once(Events.ClientReady, async client => {
       this.botUser = client.user.id;
       console.log(`Slopbot connected as ${client.user.tag}. LLM mode: ${config.mock ? "mock" : "provider"}. Servers: ${client.guilds.cache.size}`);
       for (const guild of client.guilds.cache.values()) void this.open(guild.id).catch(error => logError("server_start_failed", error, { server: guild.id }));
     });
-    this.client.on(Events.GuildCreate, guild => { if (this.botUser) void this.open(guild.id).catch(error => logError("server_start_failed", error, { server: guild.id })); });
-    this.client.on(Events.GuildDelete, guild => { void this.close(guild.id).catch(error => logError("server_stop_failed", error, { server: guild.id })); });
+    // A server or member change drops the remembered membership at once.
+    const forget = () => { this.memberCache.clear(); this.signInCache.clear(); };
+    this.client.on(Events.GuildMemberRemove, forget); this.client.on(Events.GuildMemberUpdate, forget);
+    this.client.on(Events.GuildCreate, guild => { forget(); if (this.botUser) void this.open(guild.id).catch(error => logError("server_start_failed", error, { server: guild.id })); });
+    this.client.on(Events.GuildDelete, guild => { forget(); void this.close(guild.id).catch(error => logError("server_stop_failed", error, { server: guild.id })); });
     this.client.on(Events.InteractionCreate, interaction => { if (interaction.guildId) void this.route(interaction.guildId, server => server.interaction(interaction)); });
     this.client.on(Events.Error, error => logError("discord_client_failed", error));
     this.client.on(Events.MessageCreate, message => { if (message.guildId) void this.route(message.guildId, server => server.messageCreate(message)); });
@@ -739,6 +750,7 @@ export class DiscordAdapter {
       limiter: this.usage.limiter,
       access: this.access,
       members: this.members,
+      ...(this.objectStorageProvider ? { images: this.objectStorageProvider } : {}),
     };
   }
   /**
@@ -760,23 +772,39 @@ export class DiscordAdapter {
   }
   /** True when the user is in at least one server with Slopbot. Throws when Discord fails and no server matched. */
   async canSignIn(user: string): Promise<boolean> {
+    const now = Date.now();
+    const listed = this.memberCache.get(user);
+    if (listed && listed.at > now - MEMBER_TTL_MS && listed.servers.length) return true;
+    const seen = this.signInCache.get(user);
+    if (seen !== undefined && seen > now - MEMBER_TTL_MS) return true;
     let failure: unknown;
     for (const id of this.servers.keys()) {
-      try { if (await this.isServerMember(user, id)) return true; } catch (error) { failure = error; }
+      try {
+        if (await this.isServerMember(user, id)) {
+          this.signInCache.set(user, Date.now());
+          if (this.signInCache.size > 500) for (const [key, at] of this.signInCache) if (at < Date.now() - MEMBER_TTL_MS) this.signInCache.delete(key);
+          return true;
+        }
+      } catch (error) { failure = error; }
     }
     if (failure) throw failure;
     return false;
   }
   /** Servers that both Slopbot and the user are in. */
   async consoleServers(user: string): Promise<{ id: string; name: string; icon: string | null; admin: boolean }[]> {
-    const found = [];
-    for (const id of this.servers.keys()) {
+    const cached = this.memberCache.get(user);
+    if (cached && cached.at > Date.now() - MEMBER_TTL_MS) return cached.servers;
+    const found = (await Promise.all([...this.servers.keys()].map(async id => {
       const guild = this.client.guilds.cache.get(id);
-      if (!guild) continue;
+      if (!guild) return undefined;
       const member = await guild.members.fetch({ user, force: true }).catch(() => undefined);
-      if (member) found.push({ id, name: guild.name, icon: guild.iconURL({ size: 64 }), admin: member.permissions.has(PermissionFlagsBits.ManageGuild) });
-    }
-    return found.sort((a, b) => a.name.localeCompare(b.name));
+      return member ? { id, name: guild.name, icon: guild.iconURL({ size: 64 }), admin: member.permissions.has(PermissionFlagsBits.ManageGuild) } : undefined;
+    }))).filter(item => item !== undefined);
+    found.sort((a, b) => a.name.localeCompare(b.name));
+    // A member who left is dropped within the TTL. Write checks (assertManager, consoleMcp) still fetch the member fresh.
+    this.memberCache.set(user, { at: Date.now(), servers: found });
+    if (this.memberCache.size > 500) for (const [key, value] of this.memberCache) if (value.at < Date.now() - MEMBER_TTL_MS) this.memberCache.delete(key);
+    return found;
   }
   private async server(user: string, guildId: string | undefined): Promise<DiscordServer> {
     const servers = await this.consoleServers(user);

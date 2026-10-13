@@ -1,7 +1,9 @@
 import { randomBytes } from "node:crypto";
 import type { Json, Message } from "./domain.js";
 import { webTranscriptsEnabled } from "./server-tools.js";
-import { isPrivateChannel, privateChannel } from "./private-chat.js";
+import { PRIVATE_CHANNEL_PREFIX, isPrivateChannel, privateChannel } from "./private-chat.js";
+import { CHAT_IMAGE_ID, CHAT_IMAGE_MAX_BYTES, chatImageContentType, chatImageKey, imageAttachments } from "./web-chat-images.js";
+import type { ObjectStorageProvider } from "./object-storage.js";
 
 /** One share link. The body is a frozen snapshot, stored as JSON text. */
 export interface ShareRow { id: string; server: string; channel: string; created_by: string; created_at: number; revoked_at: number | null; body: string }
@@ -29,6 +31,8 @@ export interface ShareStore {
 export interface ShareToolLine { name: string; status: string }
 export interface ShareMessage {
   author: string; bot: boolean; at?: number; text: string; attachments: number;
+  /** Web chat images in this frozen copy. Only these IDs are served on the share's image route. */
+  images?: { imageId: string; name: string }[];
   tools: ShareToolLine[]; thinking?: string;
 }
 /** Chat shares do not show thinking or avatars. Owners share the answer text and tool labels. */
@@ -132,6 +136,7 @@ export function buildMessages(messages: readonly Message[], events: readonly { r
       ...(message.timestamp !== undefined ? { at: message.timestamp } : {}),
       text: scrubText(message.text),
       attachments: message.attachments?.length ?? 0,
+      ...(imageAttachments(message.attachments).length ? { images: imageAttachments(message.attachments).map(({ imageId, name }) => ({ imageId, name: scrubText(name) })) } : {}),
       tools: [],
     };
     const request = message.isBot ? message.replyTo : undefined;
@@ -162,6 +167,8 @@ export interface ShareDeps {
   access: { check(server: string, channel: string, user: string): Promise<{ view: boolean }> };
   rule: ShareRule;
   now?: () => number;
+  /** Private storage of chat images. Without it, share pages show no images. */
+  images?: Pick<ObjectStorageProvider, "get">;
 }
 
 /** Operations for the console. Errors carry an HTTP status. */
@@ -223,6 +230,17 @@ export class ShareService {
     // A private chat link works only while its owner is still in the home server. Otherwise it is not found.
     if (isPrivateChannel(row.channel) && !(await this.ownerIsMember(row.created_by, row.server))) return undefined;
     return { id: row.id, ...JSON.parse(row.body) as Omit<ShareSnapshot, "id"> };
+  }
+
+  /** Public. One image of a live chat link, only when the frozen copy lists it. Same checks as the page; anything else is undefined. */
+  async image(id: string, imageId: string): Promise<{ bytes: Uint8Array; contentType: string } | undefined> {
+    const snapshot = await this.snapshot(id);
+    if (!snapshot || !this.deps.images || !CHAT_IMAGE_ID.test(imageId)) return undefined;
+    if (!snapshot.messages.some(message => message.images?.some(image => image.imageId === imageId))) return undefined;
+    const row = await this.deps.store.getShare(id);
+    if (!row || !isPrivateChannel(row.channel)) return undefined;
+    const bytes = await this.deps.images.get(chatImageKey(row.server, row.channel.slice(PRIVATE_CHANNEL_PREFIX.length), imageId), CHAT_IMAGE_MAX_BYTES).catch(() => undefined);
+    return bytes ? { bytes, contentType: chatImageContentType(imageId) } : undefined;
   }
 
   /** Public HTML page for a live link, or undefined. */
@@ -303,7 +321,10 @@ const block = (text: string): string => escapeHtml(text).replace(/\r?\n/g, "<br>
 export function renderSharePage(snapshot: ShareSnapshot): string {
   const messages = snapshot.messages.map(message => {
     const time = message.at === undefined ? "" : `<time datetime="${escapeHtml(new Date(message.at).toISOString())}">${escapeHtml(new Date(message.at).toISOString().slice(0, 16).replace("T", " "))} UTC</time>`;
-    const attachments = message.attachments ? `<p class="share-att">${"[attachment] ".repeat(message.attachments).trim()}</p>` : "";
+    const pictures = new Set((message.images ?? []).map(image => image.imageId));
+    const shown = (message.images ?? []).map(image => `<img class="share-img" src="/s/${escapeHtml(snapshot.id)}/images/${escapeHtml(image.imageId)}" alt="${escapeHtml(image.name)}" loading="lazy">`).join("");
+    const other = Math.max(0, (message.attachments ?? 0) - pictures.size);
+    const attachments = (shown ? `<div class="share-imgs">${shown}</div>` : "") + (other ? `<p class="share-att">${"[attachment] ".repeat(other).trim()}</p>` : "");
     const tools = message.tools.length ? `<ul class="share-tools">${message.tools.map(tool => `<li>${escapeHtml(tool.status)}</li>`).join("")}</ul>` : "";
     const thinking = message.thinking ? `<details class="share-thinking"><summary>Thinking</summary><div>${block(message.thinking)}</div></details>` : "";
     return `<article class="share-msg${message.bot ? " bot" : ""}"><header><strong>${escapeHtml(message.author)}</strong>${message.bot ? '<span class="tag">Slopbot</span>' : ""}${time}</header><div class="share-text">${block(message.text)}</div>${attachments}${tools}${thinking}</article>`;

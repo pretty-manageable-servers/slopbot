@@ -28,15 +28,15 @@ export class S3StorageProvider implements ObjectStorageProvider {
     try { await this.client.send(new PutObjectCommand({ Bucket: this.options.bucket, Key: key, Body: bytes, ContentType: contentType }), { abortSignal: AbortSignal.timeout(30000) }); }
     catch (error) { this.mutationFailure(error, 'upload'); }
   }
-  async get(key: string): Promise<Uint8Array> {
+  async get(key: string, maxBytes = MAX_STORED_FILE_BYTES): Promise<Uint8Array> {
     return this.read(async () => {
       const result = await this.client.send(new GetObjectCommand({ Bucket: this.options.bucket, Key: key }), { abortSignal: AbortSignal.timeout(30000) });
       if (!result.Body) throw new ToolError('Stored object has no readable body.', 'failed');
       const stream = result.Body as AsyncIterable<Uint8Array> & { destroy(): void };
       const chunks: Uint8Array[] = []; let size = 0;
       try {
-        if ((result.ContentLength ?? 0) > MAX_STORED_FILE_BYTES) throw new ToolError('Stored files are limited to 10 MiB.');
-        for await (const chunk of stream) { size += chunk.length; if (size > MAX_STORED_FILE_BYTES) throw new ToolError('Stored files are limited to 10 MiB.'); chunks.push(chunk); }
+        if ((result.ContentLength ?? 0) > maxBytes) throw new ToolError('Stored files are limited to 10 MiB.');
+        for await (const chunk of stream) { size += chunk.length; if (size > maxBytes) throw new ToolError('Stored files are limited to 10 MiB.'); chunks.push(chunk); }
         return Buffer.concat(chunks);
       } finally { stream.destroy(); }
     });

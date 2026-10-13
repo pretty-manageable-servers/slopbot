@@ -11,7 +11,7 @@ import { HarnessMachine, HarnessInterrupted, type HarnessJournal, type HarnessEv
 import { ContextBuilder } from "./context-builder.js";
 import { ReplyRenderer } from "./reply-renderer.js";
 import { randomUUID } from "node:crypto";
-import { type Message, type Prompt, type PromptItem, type Reply } from "./domain.js";
+import { parseEffort, type Effort, type Message, type Prompt, type PromptItem, type Reply } from "./domain.js";
 import type { AgentTurn, LLM, Store } from "./ports.js";
 import type { Recall } from "./memory.js";
 import { attribution, streamMetered, type UsageMeter } from "./usage-meter.js";
@@ -63,6 +63,11 @@ export class AgentRunner {
       if (!Number.isSafeInteger(value) || value < 0) throw new TypeError("Context limits must be nonnegative integers");
     }
     if (this.counter.count(this.prefix) + 128 >= this.inputLimit) throw new Error("Context budget is too small for fixed instructions and tools");
+  }
+  /** The effort of a request: the one on the message, else the server default. No default means the provider decides. */
+  private effortFor(message: Message): { effort?: Effort } {
+    const effort = message.effort ?? parseEffort((this.store as { setting?(server: string, key: string): unknown }).setting?.(message.server, "default_effort"));
+    return effort ? { effort } : {};
   }
   setRecentMessages(count: number): void { if (!Number.isSafeInteger(count) || count < 0 || count > 100) throw new Error("Invalid reply context limit"); this.recentMessages = count; }
   allowChannel(server: string, channel: string): void { this.allowedChannels.add(JSON.stringify([server, channel])); }
@@ -292,7 +297,7 @@ export class AgentRunner {
       // Read at each round, so a run cannot start new tools after the user passes the grace limit.
       const toolsStopped = retriesExhausted || (await this.services.usage?.overGrace(attribution(message))) === true;
       const retryLimitInput: PromptItem[] = toolsStopped ? [{ role: "user", contextOnly: true, content: retriesExhausted ? "Tool recovery stopped after three consecutive failed tool rounds. No further tools can run in this request. Explain the remaining failure and what the requester can do, using the recorded results. Do not claim success or request more tools." : "The usage limit for this requester was reached during this request. No further tools can run. Give the final answer from the recorded results. Do not claim success or request more tools." }] : [];
-      const prompt: Prompt = { cacheScope: taskKey??JSON.stringify([message.server,message.channel,message.id]), prefixVersion: (this.policy.prefixVersion ?? "v3") + ":" + stableOperationId(JSON.stringify({ prefix, tools: modelTools ?? [] })), prefix, history, inputs: [...inputs, ...trace, ...retryLimitInput], ...(modelTools ? { tools: toolsStopped ? [] : modelTools } : {}), maxOutputTokens: this.outputLimit, purpose: "reply" };
+      const prompt: Prompt = { cacheScope: taskKey??JSON.stringify([message.server,message.channel,message.id]), prefixVersion: (this.policy.prefixVersion ?? "v3") + ":" + stableOperationId(JSON.stringify({ prefix, tools: modelTools ?? [] })), prefix, history, inputs: [...inputs, ...trace, ...retryLimitInput], ...(modelTools ? { tools: toolsStopped ? [] : modelTools } : {}), maxOutputTokens: this.outputLimit, purpose: "reply", ...this.effortFor(message) };
       let text: string;
       let generatedCalls: ToolCall[] | undefined;
       const fixedAnswer = quoteAnswer ?? clarificationAnswer ?? directAnswer;

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { logError } from "./errors.js";
 import type { ChatGateway } from "./bot.js";
-import type { Message } from "./domain.js";
+import { parseEffort, type Effort, type Message } from "./domain.js";
 import type { ToolActivity } from "./tool-activity.js";
 import type { UiDocument } from "./ui/schema.js";
 import type { ChannelAccess } from "./channel-access.js";
@@ -14,6 +14,8 @@ import { PRIVATE_CHANNEL_PREFIX, PRIVATE_CHAT_MAX_CHARS, PRIVATE_CHAT_TITLE_CHAR
 import { publishMessage, runEvents, slopbotId, type ConversationEventStore, type RunEvents } from "./run-events.js";
 import { messageViews, openStream, type TranscriptStore } from "./web-transcripts.js";
 import type { WebChatRow } from "./web-chat-store.js";
+import { CHAT_IMAGE_ID, CHAT_IMAGE_MAX_BYTES, CHAT_IMAGE_MAX_COUNT, CHAT_IMAGE_SCHEME, LocalDiskStorage, chatImageContentType, chatImageKey, imageAttachments, imageName, newChatImageId, sniffImage } from "./web-chat-images.js";
+import type { ObjectStorageProvider } from "./object-storage.js";
 import { ChatShareService, ShareError, type ShareStore } from "./shares.js";
 
 /** Store calls for private chats. SQLite and Postgres implement them. */
@@ -23,6 +25,7 @@ export interface ChatStore extends TranscriptStore, ConversationEventStore, Shar
   webChat(id: string): Promise<WebChatRow | undefined>;
   webChats(server: string, owner: string): Promise<WebChatRow[]>;
   renameWebChat(id: string, title: string, updated: number): Promise<void>;
+  setWebChatEffort(id: string, effort: Effort | null): Promise<void>;
   touchWebChat(id: string, updated: number): Promise<void>;
   deleteWebChat(id: string, server: string, channel: string, at: number): Promise<void>;
   setting(server: string, key: string): unknown;
@@ -43,6 +46,8 @@ export interface ChatHost {
   limiter: Pick<UserLimiter, "check">;
   access: ChannelAccess;
   members?: Pick<MemberDirectory, "profiles">;
+  /** Private storage for chat images. Without it, a local disk folder is used (development only). */
+  images?: ObjectStorageProvider;
 }
 
 /** An error with the HTTP status the route sends. resetAt is set for a usage limit. */
@@ -53,6 +58,9 @@ export class ChatError extends Error {
 
 const CHAT_ID = /^[0-9a-f]{32}$/;
 const SNOWFLAKE = /^\d{17,20}$/;
+/** The model reads an image soon after the send. */
+const MODEL_LINK_SECONDS = 900;
+const PENDING_IMAGE_MS = 60 * 60 * 1000;
 const MESSAGE_ID = /^[\w:.-]{1,64}$/;
 
 /** Replies that Slopbot posts in a private chat. They are saved and published, never sent to Discord. */
@@ -83,13 +91,30 @@ export class WebChatGateway implements ChatGateway {
 /** The private chat API: list, create, rename, delete, messages, live stream and send. Every call checks the owner and the server membership. */
 export class WebChatService {
   private readonly shares: ChatShareService;
+  private readonly storage: ObjectStorageProvider;
+  /** Images that are uploaded but not sent yet. A restart forgets them; their objects stay until the chat is deleted. */
+  private readonly pending = new Map<string, { chat: string; user: string; name: string; contentType: string; size: number; at: number }>();
   constructor(private readonly store: ChatStore, private readonly host: ChatHost, private readonly bus: RunEvents = runEvents, private readonly now: () => number = Date.now) {
     this.shares = new ChatShareService(store, now);
+    this.storage = host.images ?? new LocalDiskStorage();
   }
 
-  async list(user: string, server: string): Promise<{ id: string; title: string; updated: number }[]> {
+  async list(user: string, server: string): Promise<{ id: string; title: string; updated: number; effort: Effort }[]> {
     await this.requireMember(user, server);
-    return (await this.store.webChats(server, user)).map(chat => ({ id: chat.id, title: chat.title, updated: chat.updated }));
+    return (await this.store.webChats(server, user)).map(chat => ({ id: chat.id, title: chat.title, updated: chat.updated, effort: this.effortOf(chat) }));
+  }
+
+  /** The chat's own effort, else the server default, else medium. */
+  private effortOf(chat: WebChatRow): Effort {
+    return chat.effort ?? parseEffort(this.store.setting(chat.server, "default_effort")) ?? "medium";
+  }
+
+  /** Saves the chat's effort. null returns the chat to the server default. */
+  async setEffort(user: string, id: string, raw: unknown): Promise<void> {
+    const chat = await this.owned(user, id);
+    const effort = raw === null ? null : parseEffort(raw);
+    if (effort === undefined) throw new ChatError(400, "Choose low, medium or xhigh.");
+    await this.store.setWebChatEffort(chat.id, effort);
   }
 
   async create(user: string, server: string): Promise<{ id: string }> {
@@ -111,7 +136,10 @@ export class WebChatService {
   async remove(user: string, id: string): Promise<void> {
     const chat = await this.owned(user, id);
     const channel = privateChannel(chat.id);
-    (await this.handle(chat.server)).closeChat(channel);
+    const handle = await this.handle(chat.server);
+    // The chat's images go first. If this fails, the chat stays and the user can try again.
+    await this.removeImages(chat);
+    handle.closeChat(channel);
     // The chat's share links stop working and their frozen copies go with the chat.
     await this.shares.removeChat(chat);
     await this.store.deleteWebChat(chat.id, chat.server, channel, this.now());
@@ -154,22 +182,86 @@ export class WebChatService {
   }
 
   /** Saves the user message, publishes it, then lets the bot answer. The usage limit is checked before anything is saved. */
-  async send(user: string, id: string, raw: unknown): Promise<{ id: string }> {
+  async send(user: string, id: string, raw: unknown, rawImages: unknown = undefined): Promise<{ id: string }> {
     const chat = await this.owned(user, id);
+    const ids = rawImages === undefined ? [] : rawImages;
+    if (!Array.isArray(ids) || ids.length > CHAT_IMAGE_MAX_COUNT || new Set(ids).size !== ids.length) throw new ChatError(400, `Send ${CHAT_IMAGE_MAX_COUNT} images or fewer.`);
+    const images = ids.map(imageId => {
+      const found = typeof imageId === "string" ? this.pending.get(imageId) : undefined;
+      if (!found || found.chat !== chat.id || found.user !== user) throw new ChatError(400, "An image was not found. Attach it again.");
+      return { imageId: imageId as string, ...found };
+    });
     const text = typeof raw === "string" ? raw.trim() : "";
-    if (!text) throw new ChatError(400, "Write a message.");
-    if ([...text].length > PRIVATE_CHAT_MAX_CHARS) throw new ChatError(400, `Write ${PRIVATE_CHAT_MAX_CHARS} characters or fewer.`);
+    if (!text && !images.length) throw new ChatError(400, "Write a message.");
+    const body = text || "Please look at the attached image" + (images.length > 1 ? "s." : ".");
+    if ([...body].length > PRIVATE_CHAT_MAX_CHARS) throw new ChatError(400, `Write ${PRIVATE_CHAT_MAX_CHARS} characters or fewer.`);
     const limit = await this.host.limiter.check(chat.server, user);
     if (!limit.allowed) throw new ChatError(429, "Usage limit reached.", limit.resetAt);
     const handle = await this.handle(chat.server);
     const channel = privateChannel(chat.id), at = this.now();
     const name = (await this.host.members?.profiles(chat.server, [user]))?.get(user)?.displayName ?? user;
-    const message: Message = { id: `chat-${randomUUID()}`, server: chat.server, channel, author: user, authorName: name, text, timestamp: at, addressed: true, source: "web" };
+    // The saved row keeps a placeholder per image (name, type, size, ID), never image bytes.
+    const attachments = images.map(item => ({ name: item.name, url: CHAT_IMAGE_SCHEME + item.imageId, contentType: item.contentType, size: item.size }));
+    const message: Message = { id: `chat-${randomUUID()}`, server: chat.server, channel, author: user, authorName: name, text: body, timestamp: at, addressed: true, source: "web", effort: this.effortOf(chat), ...(attachments.length ? { attachments } : {}) };
+    // The model gets short-lived signed links, only in memory.
+    const modelImages = await Promise.all(images.map(async item => ({ url: await this.storage.link(chatImageKey(chat.server, chat.id, item.imageId), item.name, MODEL_LINK_SECONDS), label: item.name })));
     await this.store.ingest(message);
-    if (chat.title) await this.store.touchWebChat(chat.id, at); else await this.store.renameWebChat(chat.id, privateChatTitle(text), at);
+    for (const item of images) this.pending.delete(item.imageId);
+    if (chat.title) await this.store.touchWebChat(chat.id, at); else await this.store.renameWebChat(chat.id, privateChatTitle(text || images[0]!.name), at);
     await publishMessage(this.store, message, undefined, this.host.members);
-    void handle.receiveChat(message).catch(error => logError("web_chat_receive_failed", error, { server: chat.server, channel, messageId: message.id }));
+    void handle.receiveChat(modelImages.length ? { ...message, modelImages } : message).catch(error => logError("web_chat_receive_failed", error, { server: chat.server, channel, messageId: message.id }));
     return { id: message.id };
+  }
+
+  /** Stores one uploaded image in private storage and returns its ID. The usage limit is checked first. The type comes from the bytes. */
+  async uploadImage(user: string, id: string, bytes: Uint8Array, rawName: string | null): Promise<{ imageId: string; name: string; contentType: string; size: number }> {
+    const chat = await this.owned(user, id);
+    if (!bytes.length) throw new ChatError(400, "The image is empty.");
+    if (bytes.length > CHAT_IMAGE_MAX_BYTES) throw new ChatError(413, "Images can be 25 MB or smaller.");
+    const kind = sniffImage(bytes);
+    if (!kind) throw new ChatError(415, "Use a PNG, JPEG, GIF or WebP image.");
+    const at = this.now();
+    for (const [key, item] of this.pending) if (at - item.at > PENDING_IMAGE_MS) { this.pending.delete(key); void this.storage.delete(chatImageKey(chat.server, item.chat, key)).catch(error => logError("web_chat_image_sweep_failed", error, { server: chat.server }, true)); }
+    if ([...this.pending.values()].filter(item => item.chat === chat.id && item.user === user).length >= CHAT_IMAGE_MAX_COUNT) throw new ChatError(400, `Attach ${CHAT_IMAGE_MAX_COUNT} images or fewer.`);
+    const limit = await this.host.limiter.check(chat.server, user);
+    if (!limit.allowed) throw new ChatError(429, "Usage limit reached.", limit.resetAt);
+    const imageId = newChatImageId(kind.extension), name = imageName(rawName, kind.extension);
+    await this.storage.put(chatImageKey(chat.server, chat.id, imageId), bytes, kind.contentType);
+    this.pending.set(imageId, { chat: chat.id, user, name, contentType: kind.contentType, size: bytes.length, at });
+    return { imageId, name, contentType: kind.contentType, size: bytes.length };
+  }
+
+  /** Removes an image that is uploaded but not sent. A sent image goes only with its chat. */
+  async discardImage(user: string, id: string, imageId: string): Promise<void> {
+    const chat = await this.owned(user, id);
+    const found = this.pending.get(imageId);
+    if (!found || found.chat !== chat.id || found.user !== user) throw new ChatError(404, "Not found.");
+    this.pending.delete(imageId);
+    await this.storage.delete(chatImageKey(chat.server, chat.id, imageId));
+  }
+
+  /** The bytes of one image of an owned chat. The key has the chat in it, so another chat's image is never reached. */
+  async readImage(user: string, id: string, imageId: string): Promise<{ bytes: Uint8Array; contentType: string }> {
+    const chat = await this.owned(user, id);
+    if (!CHAT_IMAGE_ID.test(imageId)) throw new ChatError(404, "Not found.");
+    const bytes = await this.storage.get(chatImageKey(chat.server, chat.id, imageId), CHAT_IMAGE_MAX_BYTES).catch(() => undefined);
+    if (!bytes) throw new ChatError(404, "Not found.");
+    return { bytes, contentType: chatImageContentType(imageId) };
+  }
+
+  /** Deletes every stored image of a chat: the sent ones (from the message rows) and the pending ones. */
+  private async removeImages(chat: WebChatRow): Promise<void> {
+    const channel = privateChannel(chat.id), ids = new Set<string>();
+    for (const [imageId, item] of this.pending) if (item.chat === chat.id) ids.add(imageId);
+    let cursor: { time: number; id: string } | undefined;
+    for (;;) {
+      const rows = await this.store.conversationMessages(chat.server, channel, cursor, 100);
+      for (const row of rows) for (const item of imageAttachments(row.attachments)) ids.add(item.imageId);
+      const last = rows.at(-1);
+      if (rows.length < 100 || !last) break;
+      cursor = { time: last.timestamp ?? 0, id: last.id };
+    }
+    for (const imageId of ids) { await this.storage.delete(chatImageKey(chat.server, chat.id, imageId)); this.pending.delete(imageId); }
   }
 
   /** Opens the live stream of one chat. Throws ChatError before the stream starts, so the route can still send an error. */
@@ -238,8 +330,21 @@ export function createChatRoutes(service: WebChatService): ChatRoutes {
           if (req.method === "POST") return json(res, 201, await service.create(user, String(input.server ?? "")));
         }
         const id = parts[1] ?? "";
+        if (parts[2] === "images") {
+          if (parts.length === 3 && req.method === "POST" && Buffer.isBuffer(body)) return json(res, 201, await service.uploadImage(user, id, body, url.searchParams.get("name")));
+          if (parts.length === 4 && req.method === "DELETE") { await service.discardImage(user, id, parts[3] ?? ""); return json(res, 200, { ok: true }); }
+          if (parts.length === 4 && req.method === "GET") {
+            const image = await service.readImage(user, id, parts[3] ?? "");
+            res.writeHead(200, { "Content-Type": image.contentType, "Content-Length": image.bytes.length, "Cache-Control": "private, max-age=600", "X-Content-Type-Options": "nosniff" });
+            return void res.end(image.bytes);
+          }
+        }
         if (parts.length === 2) {
-          if (req.method === "PATCH") { await service.rename(user, id, input.title); return json(res, 200, { ok: true }); }
+          if (req.method === "PATCH") {
+            if ("effort" in input) await service.setEffort(user, id, input.effort);
+            if ("title" in input || !("effort" in input)) await service.rename(user, id, input.title);
+            return json(res, 200, { ok: true });
+          }
           if (req.method === "DELETE") { await service.remove(user, id); return json(res, 200, { ok: true }); }
         }
         if (parts.length === 3 && parts[2] === "messages") {
@@ -249,7 +354,7 @@ export function createChatRoutes(service: WebChatService): ChatRoutes {
             if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new ChatError(400, "Invalid limit.");
             return json(res, 200, await service.messages(user, id, limit, url.searchParams.get("before") || null));
           }
-          if (req.method === "POST") return json(res, 201, await service.send(user, id, input.text));
+          if (req.method === "POST") return json(res, 201, await service.send(user, id, input.text, input.images));
         }
         if (parts.length === 3 && parts[2] === "stream" && req.method === "GET") return await service.openStream(req, res, user, id);
         if (parts[2] === "shares") {

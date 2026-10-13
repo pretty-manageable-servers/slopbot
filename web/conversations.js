@@ -1,6 +1,6 @@
 // Conversations tab: a chat view of channel and thread transcripts (read-only), private chats with a composer, Slopbot runs and the live stream.
 // Uses globals from app.js: $, request, busy, fail, notice, state, csrf, showScreen.
-const conv = { server: '', list: [], chats: [], chatNote: '', kind: 'channel', channel: null, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, folded: new Set(), renaming: null };
+const conv = { server: '', list: [], chats: [], chatNote: '', kind: 'channel', channel: null, blank: false, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, folded: new Set(), renaming: null };
 const NEW_CHAT = 'New chat';
 const chatTitle = c => c.title || NEW_CHAT;
 // Times may be a number or a date string. A missing time counts as 0.
@@ -47,7 +47,7 @@ function setChatMode(on) {
 
 // The top bar tab for the current view is highlighted. Chat is the Conversations tab.
 function markTopTabs() {
-  const view = tab === 'conversations' ? 'chat' : 'settings';
+  const view = tab === 'conversations' && state.server ? 'chat' : 'settings';
   for (const button of document.querySelectorAll('[data-view]')) {
     const on = button.dataset.view === view;
     button.classList.toggle('selected', on);
@@ -67,6 +67,8 @@ function renderChatServers() {
 function renderConversations() {
   if (conv.server !== state.server.id) { closeConversation(); conv.server = state.server.id; conv.channel = null; conv.list = []; conv.chats = []; conv.chatNote = ''; conv.renaming = null; }
   setChatMode(true);
+  conv.blank = false;
+  setPageTitle('Chat');
   $('content').innerHTML = '<div id="chat-root" class="chat"><aside id="chat-side" class="chat-side"><div id="chat-server" class="chat-server" hidden></div><input id="conv-search" class="chat-search" type="search" placeholder="Search messages" aria-label="Search messages"><div id="conv-list" class="chat-list"></div></aside><section id="conv-main" class="chat-pane"><header class="chat-head"><button id="chat-drawer" class="chat-drawer" type="button" aria-expanded="false" aria-controls="chat-side">Conversations</button><h2 id="chat-title" class="chat-title"></h2><div class="chat-tools"><span id="chat-private" class="chat-private" hidden>' + LOCK_ICON + '<span>Private</span></span><span id="conv-status" class="chat-status"></span><div id="conv-share" class="chat-share" hidden></div></div></header><div id="conv-view" class="chat-view"></div><div id="conv-reply" class="chat-composer" hidden></div></section></div>';
   $('conv-search').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); searchConversations($('conv-search').value); } };
   $('chat-drawer').onclick = toggleDrawer;
@@ -89,28 +91,43 @@ async function fetchChats(id) {
 
 async function loadConversations() {
   const id = state.server.id;
-  // A failed chat list (for example a 404 before the server routes exist) leaves the Private chats group empty. The channels still load.
-  const chats = fetchChats(id).catch(error => { if (error.status === 401) throw error; return []; });
   const run = conv.loadRun = (conv.loadRun || 0) + 1;
-  const [result, privateChats] = await Promise.all([request(`/api/conversations?server=${enc(id)}`), chats]);
-  // A newer load has started, so only that one may choose the view.
-  if (run !== conv.loadRun || conv.server !== id || !$('conv-list')) return;
-  conv.list = result.conversations;
+  const stale = () => run !== conv.loadRun || conv.server !== id || !$('conv-list');
+  // Private chats show first. The channel and thread list loads beside them and fills in later.
+  conv.listLoading = true;
+  const channels = request(`/api/conversations?server=${enc(id)}`);
+  channels.catch(() => {});
+  // A failed chat list (for example a 404 before the server routes exist) leaves the Private chats group empty. The channels still load.
+  const privateChats = await fetchChats(id).catch(error => { if (error.status === 401) throw error; return []; });
+  if (stale()) return;
   conv.chats = conv.ask && conv.ask.server === id && !privateChats.some(c => c.id === conv.ask.chat) ? [{ id: conv.ask.chat, title: '', updated: Date.now() }, ...privateChats] : privateChats;
   drawList();
   // A chat or channel named in the URL opens first. An id that is not listed falls back to the default view.
   const item = takeHashItem();
-  const named = item && (item.kind === 'chat' ? conv.chats : conv.list).find(c => c.id === item.id);
-  if (named) return openConversation(named.id, item.kind, true);
+  const openChat = chatId => openConversation(chatId, 'chat', true).catch(fail);
+  const wantsChannel = (item && item.kind === 'channel') || (conv.channel && conv.kind !== 'chat');
+  if (item && item.kind === 'chat' && conv.chats.some(c => c.id === item.id)) openChat(item.id);
+  else if (!item && conv.channel && conv.kind === 'chat' && conv.chats.some(c => c.id === conv.channel)) openChat(conv.channel);
+  else if (!wantsChannel) {
+    if (item) history.replaceState(null, '', '#chat');
+    else if (!location.hash) history.replaceState(null, '', '#chat');
+    openBlankChat();
+  }
+  const before = { channel: conv.channel, blank: conv.blank };
+  let result;
+  try { result = await channels; } catch (error) { if (!stale()) { conv.listLoading = false; drawList(); } throw error; }
+  if (stale()) return;
+  conv.list = result.conversations;
+  conv.listLoading = false;
+  drawList();
+  if (!wantsChannel) return;
+  // The user chose something else while the channels loaded, so the view stays.
+  if (conv.channel !== before.channel || conv.blank !== before.blank) return;
+  const named = item && item.kind === 'channel' && conv.list.find(c => c.id === item.id);
+  if (named) return openConversation(named.id, 'channel', true);
   if (item) history.replaceState(null, '', '#chat');
-  if (conv.channel && conv.kind === 'chat' && conv.chats.some(c => c.id === conv.channel)) return openConversation(conv.channel, 'chat', true);
   if (conv.channel && conv.kind !== 'chat' && conv.list.some(c => c.id === conv.channel)) return openConversation(conv.channel, 'channel', true);
-  // Opens the newest channel that is on. A channel that is off is opened only when nothing else is listed.
-  const first = conv.list.find(c => c.enabled !== false) || conv.list[0];
-  if (first) return openConversation(first.id, 'channel', true);
-  // With no conversation to view, the default view falls back to Settings.
-  if (viewAuto) return fallbackToSettings();
-  showView(emptyNote('No conversations yet.', 'Turn on web transcripts for a channel in Server settings → Web transcripts.'));
+  openBlankChat();
 }
 
 // The list starts with New chat. Then come Private chats, Channels and Threads.
@@ -125,6 +142,7 @@ function drawList() {
     const items = conv.list.filter(c => (c.kind === 'thread' ? 'thread' : 'channel') === kind);
     if (items.length) groups.push([title, items.map(convItem)]);
   }
+  if (conv.listLoading && !conv.list.length) groups.push(['Channels', [1, 2, 3].map(() => textNode('div', '', 'chat-skel'))]);
   if (!groups.length) { list.append(textNode('p', 'Nothing to show yet.', 'small chat-none')); return; }
   for (const [title, nodes] of groups) {
     const group = document.createElement('section');
@@ -139,7 +157,7 @@ function newChatButton() {
   button.type = 'button';
   button.className = 'chat-new';
   button.innerHTML = PENCIL_ICON + '<span>New chat</span>';
-  button.onclick = () => newChat(button);
+  button.onclick = () => newChat();
   return button;
 }
 
@@ -312,7 +330,8 @@ function emptyNote(title, hint) {
   return box;
 }
 
-function setHeading(text) { $('chat-title').textContent = text; }
+// The heading and the browser tab title show the open chat or channel. An empty heading means the plain Chat view.
+function setHeading(text) { $('chat-title').textContent = text; setPageTitle(text || 'Chat'); }
 
 function setComposer(node) {
   if (!node) conv.meter = null;
@@ -325,7 +344,7 @@ function setComposer(node) {
 // Opens a channel or thread (read-only), or a private chat (with a composer). The kind is 'channel' or 'chat'. Replace keeps the history entry.
 async function openConversation(id, kind = 'channel', replace = false) {
   closeStream();
-  conv.channel = id; conv.kind = kind; dropLive();
+  conv.channel = id; conv.kind = kind; conv.blank = false; dropLive();
   setItemHash(kind, id, replace);
   const chat = kind === 'chat';
   drawList();
@@ -418,18 +437,11 @@ function hideSlot() {
   slot.hidden = true;
 }
 
-// Creates a private chat on the server, then opens it with the greeting.
-async function newChat(button) {
-  button.disabled = true;
-  conv.chatNote = '';
-  try {
-    const result = await sendJson('POST', '/api/chats', { server: state.server.id });
-    conv.chats = [{ id: result.id, title: '', updated: Date.now() }, ...conv.chats];
-    await openConversation(result.id, 'chat');
-  } catch (error) {
-    if (error.status === 404) { conv.chatNote = 'Private chats are not available right now.'; drawList(); }
-    else fail(error);
-  } finally { button.disabled = false; }
+// New chat shows a blank chat with the composer. Nothing is saved on the server until the first message is sent.
+// On a blank chat already, the button only focuses the composer.
+function newChat() {
+  if (conv.blank) return focusComposer();
+  openBlankChat();
 }
 
 // The landing page Ask box links to /console#ask=<text>. boot() keeps the text in sessionStorage, so it survives the Discord login.
@@ -467,6 +479,32 @@ async function resumeAsk() {
     notice(error.status === 404 ? 'Private chats are not available right now.' : error.message, true);
   }
 }
+
+function focusComposer() { document.querySelector('.chat-form textarea')?.focus(); }
+
+// Opens the blank chat. Its id comes with the first send (see chatComposer).
+function openBlankChat() {
+  closeConversation();
+  conv.blank = true; conv.kind = 'chat'; conv.channel = null;
+  conv.chatNote = '';
+  if (location.hash !== '#chat') history.pushState(null, '', '#chat');
+  drawList();
+  $('chat-root')?.classList.remove('drawer-open');
+  $('chat-drawer')?.setAttribute('aria-expanded', 'false');
+  $('chat-private').hidden = false;
+  $('conv-status').hidden = true;
+  $('conv-share').hidden = true;
+  $('conv-share').replaceChildren();
+  setHeading(NEW_CHAT);
+  const composer = chatComposer(null);
+  showView(transcriptView(null, { messages: [], hasMore: false }, heroNode(composer)));
+  hideSlot();
+  refreshUsage();
+  focusComposer();
+}
+
+// Removes a chat that was made for a send that failed before anything was saved. The error is not shown.
+function discardChat(id) { sendJson('DELETE', `/api/chats/${enc(id)}`).catch(() => {}); }
 
 // A JSON request with any method. Errors keep their status, as in request().
 async function sendJson(method, path, body) {
@@ -578,6 +616,7 @@ function messageNode(m) {
     const bubble = textNode('div', '', 'chat-text');
     if (m.timestamp) bubble.title = timeLabel(m.timestamp);
     renderText(bubble, m.text);
+    if (m.images && m.images.length) article.append(imageStrip(m));
     article.append(bubble);
     if (m.editedAt) article.append(textNode('span', 'edited', 'chat-edited'));
     return article;
@@ -739,8 +778,8 @@ function runBlock(runIds) {
     view.box.replaceChildren(busy('sm', 'Loading run…'));
     try {
       const runs = await Promise.all(runIds.map(id => request(`/api/runs/${enc(id)}`)));
-      view.box.replaceChildren(...runs.flatMap((run, index) => storedRunRows(run, runIds.length > 1 ? index + 1 : 0)));
-      view.text.textContent = summarize(runs.flatMap(run => run.steps)) || 'Run details';
+      view.box.replaceChildren(...runs.flatMap(run => storedRunRows(run)));
+      view.text.textContent = summarize(runs.flatMap(run => run.steps.filter(isShownStep))) || 'Run details';
     } catch (error) {
       view.wrap.dataset.loaded = '';
       view.box.replaceChildren(textNode('p', error.message, 'chat-run-error'));
@@ -749,53 +788,110 @@ function runBlock(runIds) {
   }).wrap;
 }
 
-function storedRunRows(run, number) {
+// All steps of all rounds form one flat list. A text or thinking step with only spaces gets no row.
+function storedRunRows(run) {
   const rows = [];
-  if (number) rows.push(textNode('p', `Round ${number}`, 'chat-round'));
-  for (const step of run.steps) {
+  for (const step of run.steps.filter(isShownStep)) {
     if (step.type === 'text') rows.push(textNode('div', step.text, 'chat-run-prose'));
     else if (step.type === 'thinking') rows.push(thinkRow(step.text));
     else rows.push(toolRow(step.name, step.status, step.args, step.result, 'Result', false));
   }
-  if (run.error) rows.push(textNode('p', run.error, 'chat-run-error'));
-  if (!run.steps.length) rows.push(textNode('p', 'No stored events for this run.', 'small chat-none'));
+  if (run.error && run.error.trim()) rows.push(textNode('p', run.error, 'chat-run-error'));
+  if (!rows.length) rows.push(textNode('p', 'No stored events for this run.', 'small chat-none'));
   return rows;
 }
 
-// Thinking is clamped to 3 lines. A click shows all of it.
-function thinkRow(text) {
+// A saved step with text shows only when the text is not blank. Tool steps always show.
+function isShownStep(step) {
+  return step.type === 'tool' || Boolean(step.text && step.text.trim());
+}
+
+// The thinking label is the duration when it is known: "Thought for 12s", "Thought for 1m 5s", or "Thought".
+// While a live thinking step is open it reads "Thinking…".
+function thinkLabel(ms, open) {
+  if (open) return 'Thinking…';
+  if (ms === undefined) return 'Thought';
+  return `Thought for ${formatDuration(ms)}`;
+}
+
+// Durations read as "12s" or "1m 5s". Under a second counts as 1s.
+function formatDuration(ms) {
+  const seconds = Math.max(1, Math.round(ms / 1000));
+  const minutes = Math.floor(seconds / 60);
+  return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
+}
+
+// Thinking text is clamped to 2 lines. A click shows all of it.
+function thinkRow(text, ms, open) {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'chat-think';
-  button.append(textNode('span', 'Thinking', 'chat-think-label'), textNode('span', text, 'chat-think-text'));
+  button.append(textNode('span', thinkLabel(ms, open), 'chat-think-label'), textNode('span', text, 'chat-think-text'));
   button.onclick = () => button.classList.toggle('open');
   return button;
 }
 
-// Tool names are shown as plain words. Known kinds get a short phrase.
-// doing is the status verb shown while the tool runs.
-const TOOL_KINDS = [
-  { match: /search/i, key: 'search', label: 'Searched the web', one: 'searched the web', many: n => `searched the web ${n} times`, doing: 'Searching the web…' },
-  { match: /fetch|browse|page|url|open/i, key: 'page', label: 'Read a web page', one: 'read a web page', many: n => `read ${n} web pages`, doing: 'Reading web pages…' },
-  { match: /read|file|load/i, key: 'file', label: 'Read a file', one: 'read a file', many: n => `read ${n} files`, doing: 'Reading files…' },
-  { match: /code|exec|python|shell|bash|sandbox|eval|script/i, key: 'code', label: 'Ran code', one: 'ran code', many: n => `ran code ${n} times`, doing: 'Running code…' },
-];
+// One entry per tool name registered in src. Names match exactly, never by pattern.
+// label is the row text, one and many build the summary line, doing is the status verb while the tool runs.
+const times = phrase => n => `${phrase} ${n} times`;
+const TOOL_KINDS = {
+  web_search: { label: 'Searched the web', one: 'searched the web', many: times('searched the web'), doing: 'Searching the web…' },
+  history_search: { label: 'Searched chat history', one: 'searched chat history', many: times('searched chat history'), doing: 'Searching chat history…' },
+  history_read: { label: 'Read chat history', one: 'read chat history', many: times('read chat history'), doing: 'Reading chat history…' },
+  file_read: { label: 'Read a file', one: 'read a file', many: n => `read ${n} files`, doing: 'Reading files…' },
+  file_store: { label: 'Stored a file', one: 'stored a file', many: n => `stored ${n} files`, doing: 'Storing files…' },
+  sandbox: { label: 'Used the sandbox', one: 'used the sandbox', many: times('used the sandbox'), doing: 'Using the sandbox…' },
+  memory: { label: 'Listed memories', one: 'listed memories', many: times('listed memories'), doing: 'Listing memories…' },
+  memory_remember: { label: 'Saved a memory', one: 'saved a memory', many: n => `saved ${n} memories`, doing: 'Saving a memory…' },
+  memory_forget: { label: 'Forgot a memory', one: 'forgot a memory', many: n => `forgot ${n} memories`, doing: 'Forgetting a memory…' },
+  profile: { label: 'Checked a profile', one: 'checked a profile', many: n => `checked ${n} profiles`, doing: 'Checking profiles…' },
+  decision_lookup: { label: 'Looked up a decision', one: 'looked up a decision', many: times('looked up decisions'), doing: 'Looking up a decision…' },
+  conversation_summary: { label: 'Summarized a conversation', one: 'summarized a conversation', many: n => `summarized ${n} conversations`, doing: 'Summarizing the conversation…' },
+  why: { label: 'Checked a decision', one: 'checked a decision', many: n => `checked ${n} decisions`, doing: 'Checking a decision…' },
+  channel_find: { label: 'Searched channels', one: 'searched channels', many: times('searched channels'), doing: 'Searching channels…' },
+  channels: { label: 'Managed channels', one: 'managed channels', many: times('managed channels'), doing: 'Managing channels…' },
+  index: { label: 'Managed history index', one: 'managed history index', many: times('managed history index'), doing: 'Managing history index…' },
+  status: { label: 'Checked status', one: 'checked status', many: times('checked status'), doing: 'Checking status…' },
+  bot_info: { label: 'Checked bot info', one: 'checked bot info', many: times('checked bot info'), doing: 'Checking bot info…' },
+  usage: { label: 'Checked usage', one: 'checked usage', many: times('checked usage'), doing: 'Checking usage…' },
+  timing: { label: 'Set timing', one: 'set timing', many: times('set timing'), doing: 'Setting timing…' },
+  timing_active: { label: 'Checked timing', one: 'checked timing', many: times('checked timing'), doing: 'Checking timing…' },
+  timing_inspect: { label: 'Inspected timing', one: 'inspected timing', many: times('inspected timing'), doing: 'Inspecting timing…' },
+  tool_display: { label: 'Set tool display', one: 'set tool display', many: times('set tool display'), doing: 'Setting tool display…' },
+  monitoring: { label: 'Set monitoring', one: 'set monitoring', many: times('set monitoring'), doing: 'Setting monitoring…' },
+  reactions: { label: 'Set reactions', one: 'set reactions', many: times('set reactions'), doing: 'Setting reactions…' },
+  context: { label: 'Set context', one: 'set context', many: times('set context'), doing: 'Setting context…' },
+  cooldown: { label: 'Set reply limits', one: 'set reply limits', many: times('set reply limits'), doing: 'Setting reply limits…' },
+  task_start: { label: 'Started a task', one: 'started a task', many: times('started tasks'), doing: 'Starting a task…' },
+  task_status: { label: 'Checked task status', one: 'checked task status', many: times('checked task status'), doing: 'Checking tasks…' },
+  task_retry: { label: 'Retried a task', one: 'retried a task', many: times('retried tasks'), doing: 'Retrying a task…' },
+  task_manage: { label: 'Managed tasks', one: 'managed tasks', many: times('managed tasks'), doing: 'Managing tasks…' },
+  reminder: { label: 'Managed reminders', one: 'managed reminders', many: times('managed reminders'), doing: 'Managing reminders…' },
+  poll_create: { label: 'Created a poll', one: 'created a poll', many: n => `created ${n} polls`, doing: 'Creating a poll…' },
+  ui_publish: { label: 'Published a view', one: 'published a view', many: n => `published ${n} views`, doing: 'Publishing a view…' },
+};
 
 // Garden words for the live status line, from the brand line "Where ideas bloom".
 const GARDEN_WORDS = ['Blooming', 'Sprouting', 'Unfurling', 'Budding', 'Germinating', 'Photosynthesizing', 'Pollinating', 'Rooting', 'Blossoming', 'Cultivating', 'Pruning', 'Composting', 'Seeding', 'Flowering', 'Ripening'];
 
+// An unknown name gets its words, so a new tool still reads as a phrase.
 function toolKind(name) {
   const text = String(name || 'tool');
-  const found = TOOL_KINDS.find(kind => kind.match.test(text));
-  if (found) return found;
+  if (Object.hasOwn(TOOL_KINDS, text)) return { key: text, ...TOOL_KINDS[text] };
   const words = text.replace(/[_-]+/g, ' ').trim() || 'tool';
-  return { key: `tool:${text}`, label: words, one: `used ${words}`, many: n => `used ${words} ${n} times`, doing: `Using ${words}…` };
+  return { key: `tool:${text}`, label: `Used ${words}`, one: `used ${words}`, many: n => `used ${words} ${n} times`, doing: `Using ${words}…` };
 }
 
-// Builds one line such as "Thought, searched the web, read 2 files".
+// Builds one line such as "Thought for 8s, searched the web 2 times, searched chat history".
+// Thinking steps may carry ms (live duration). Without it the line says only "Thought".
 function summarize(steps) {
   const parts = [];
-  if (steps.some(step => step.type === 'thinking')) parts.push('Thought');
+  const thinking = steps.filter(step => step.type === 'thinking');
+  if (thinking.length) {
+    const timed = thinking.filter(step => step.ms !== undefined);
+    const total = timed.reduce((sum, step) => sum + step.ms, 0);
+    parts.push(timed.length ? `thought for ${formatDuration(total)}` : 'thought');
+  }
   const groups = new Map();
   for (const step of steps) {
     if (step.type !== 'tool') continue;
@@ -821,16 +917,42 @@ function detailText(args, extra, extraLabel) {
   return parts.join('\n\n');
 }
 
-// One tool row: status, a phrase, short arguments and a chevron. A click shows the details.
+const MAIN_ARGS = ['query', 'q', 'url', 'channel', 'name', 'text', 'goal', 'topic', 'title', 'id', 'action'];
+
+// The main argument of a tool call, shown next to its label. args is the JSON text saved with the event, and it may be cut short.
+// Without a known key the compact JSON is shown.
+function mainArg(args) {
+  const text = String(args || '').trim();
+  if (!text || text === '{}') return '';
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { parsed = undefined; }
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    for (const key of MAIN_ARGS) {
+      const value = parsed[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+      if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    }
+    return text.slice(0, 160);
+  }
+  // A cut-off JSON text does not parse. Its first known string key is still read.
+  for (const key of MAIN_ARGS) {
+    const match = text.match(new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)`));
+    if (match) {
+      try { return JSON.parse(`"${match[1]}"`).trim() || text.slice(0, 160); } catch { return match[1]; }
+    }
+  }
+  return text.slice(0, 160);
+}
+
+// One tool row: status, a muted action label, the main argument and a chevron. A click shows the details.
 function toolRow(name, status, args, extra, extraLabel, open) {
-  const kind = toolKind(name);
   const row = textNode('div', '', 'chat-tool');
   const line = document.createElement('button');
   line.type = 'button';
   line.className = 'chat-tool-line';
   const mark = textNode('span', statusMark(status), 'chat-tool-status');
   mark.title = status || '';
-  line.append(mark, textNode('span', kind.label, 'chat-tool-name'), textNode('span', String(args || '').slice(0, 160), 'chat-tool-args'), textNode('span', '›', 'chat-chev'));
+  line.append(mark, textNode('span', toolKind(name).label, 'chat-tool-name'), textNode('span', mainArg(args), 'chat-tool-args'), textNode('span', '›', 'chat-chev'));
   const detail = textNode('pre', detailText(args, extra, extraLabel || 'Result'), 'chat-tool-detail');
   const setOpen = on => { detail.hidden = !on; row.dataset.open = String(on); line.setAttribute('aria-expanded', String(on)); };
   line.onclick = () => setOpen(detail.hidden);
@@ -844,7 +966,7 @@ function updateToolRow(row, name, status, args, extra, extraLabel) {
   if (mark.textContent !== text) mark.textContent = text;
   mark.title = status || '';
   row.querySelector('.chat-tool-name').textContent = toolKind(name).label;
-  row.querySelector('.chat-tool-args').textContent = String(args || '').slice(0, 160);
+  row.querySelector('.chat-tool-args').textContent = mainArg(args);
   row.querySelector('.chat-tool-detail').textContent = detailText(args, extra, extraLabel || 'Result');
 }
 
@@ -891,6 +1013,7 @@ function closeConversation() {
   closeStream();
   dropLive();
   conv.channel = null;
+  conv.blank = false;
 }
 
 // The header shows a green dot and "Live" while the stream is open. Otherwise it shows a grey "Offline".
@@ -917,7 +1040,10 @@ function upsertMessage(m) {
   if (!log || (conv.kind !== 'chat' && m.channel !== conv.channel)) return;
   leaveEmpty();
   const stick = nearBottom(log);
-  const node = messageNode(m), old = log.querySelector(`[data-id="${m.id}"]`);
+  const node = messageNode(m);
+  let old = log.querySelector(`[data-id="${m.id}"]`);
+  // The saved copy of a message that was shown before it was saved takes its place.
+  if (!old && node.dataset.kind === 'mine') old = [...log.querySelectorAll('[data-pending]')].find(item => item.dataset.pending === m.text);
   if (old) old.replaceWith(node); else insertInOrder(log, node);
   for (const runId of m.runIds) finishLiveRun(runId);
   regroup(log);
@@ -937,7 +1063,10 @@ function removeMessage(id) {
 // The status line on top has the pulsing mark, a verb, and the elapsed time and output tokens.
 function liveFor(requestId) {
   let card = [...conv.live.values()].find(item => item.requestId === requestId);
-  if (card) return card;
+  if (card) { if (requestId !== PENDING_CARD) dropPendingCard(); return card; }
+  // A card shown before the run started takes the first real request id.
+  const early = requestId !== PENDING_CARD && conv.live.get(PENDING_CARD);
+  if (early) { conv.live.delete(PENDING_CARD); early.requestId = requestId; conv.live.set(requestId, early); unadopted = Math.max(0, unadopted - 1); return early; }
   const log = $('conv-log');
   if (!log) return undefined;
   const stick = nearBottom(log);
@@ -956,14 +1085,12 @@ function liveFor(requestId) {
   const mark = slopMark(true);
   view.button.prepend(mark);
   const text = textNode('div', '', 'chat-text live-text');
-  const think = thinkRow('');
-  think.hidden = true;
-  view.box.append(think);
   node.append(head, view.wrap, text);
   log.append(node);
+  // Thinking steps are rows in the run box, in order. seg is the open one. segs keeps every step of this card.
   card = {
-    requestId, node, view, meta, mark, text, think, thinkBody: think.querySelector('.chat-think-text'),
-    runs: new Set(), active: new Set(), buffers: { text: '', thinking: '' }, shown: { text: 0, thinking: 0 },
+    requestId, node, view, meta, mark, text,
+    runs: new Set(), active: new Set(), buffers: { text: '', thinking: '' }, shown: { text: 0 }, seg: null, segs: [],
     toolState: new Map(), rows: new Map(), started: Date.now(), ticks: 0, timer: 0, tokens: 0, verb: '', verbAt: 0, verbTimer: 0,
     word: Math.floor(Math.random() * GARDEN_WORDS.length),
   };
@@ -1026,16 +1153,50 @@ function startLive(runId, requestId) {
 function delta(runId, part, text) {
   const card = findRunCard(runId);
   if (!card || !text) return;
-  if (part === 'thinking') card.think.hidden = false;
-  card.buffers[part] += text;
-  if (reduceMotion()) reveal(card, part, card.buffers[part].length);
+  if (part === 'thinking') {
+    const seg = thinkDelta(card, text);
+    if (reduceMotion()) revealSeg(seg, seg.buffer.length);
+  } else {
+    closeThink(card);
+    card.buffers.text += text;
+    if (reduceMotion()) revealText(card, card.buffers.text.length);
+  }
   setLiveSummary(card);
   schedule();
+}
+
+// A thinking delta joins the open thinking step, or opens one. The step's row is added when it has visible text.
+function thinkDelta(card, text) {
+  if (!card.seg) {
+    card.seg = { row: null, label: null, body: null, buffer: '', shown: 0, start: Date.now(), end: 0 };
+    card.segs.push(card.seg);
+  }
+  const seg = card.seg;
+  seg.buffer += text;
+  card.buffers.thinking += text;
+  if (!seg.row && seg.buffer.trim()) {
+    seg.row = thinkRow('', undefined, true);
+    seg.label = seg.row.querySelector('.chat-think-label');
+    seg.body = seg.row.querySelector('.chat-think-text');
+    seg.body.textContent = seg.buffer.slice(0, seg.shown);
+    card.view.box.append(seg.row);
+  }
+  return seg;
+}
+
+// Thinking ends at the next text delta or tool call. Its duration is kept for the label and the summary.
+function closeThink(card) {
+  const seg = card.seg;
+  if (!seg) return;
+  card.seg = null;
+  seg.end = Date.now();
+  if (seg.label) seg.label.textContent = thinkLabel(seg.end - seg.start, false);
 }
 
 function tool(data) {
   const card = liveFor(data.requestId);
   if (!card) return;
+  closeThink(card);
   const old = card.rows.get(data.id);
   // An update changes the row in place. Replacing it made fast tool calls flicker.
   if (old) updateToolRow(old, data.name, data.status, data.args, data.reason, 'Reason');
@@ -1050,8 +1211,10 @@ function tool(data) {
   setLiveSummary(card);
 }
 
+// The steps of the live card, for the summary line. A thinking step has ms once it is closed.
 function liveSteps(card) {
-  return [...(card.buffers.thinking ? [{ type: 'thinking' }] : []), ...[...card.toolState.values()].map(item => ({ type: 'tool', name: item.name }))];
+  const thinking = card.segs.filter(seg => seg.row).map(seg => ({ type: 'thinking', ms: seg.end ? seg.end - seg.start : undefined }));
+  return [...thinking, ...[...card.toolState.values()].map(item => ({ type: 'tool', name: item.name }))];
 }
 
 // The verb is the running tool's activity. Without a tool it is a garden word, or "Working…" with reduced motion.
@@ -1087,6 +1250,7 @@ function endLive(runId) {
   card.timer = 0; card.verbTimer = 0;
   card.node.classList.add('done');
   card.mark.classList.add('still');
+  closeThink(card);
   card.view.text.classList.remove('chat-verb');
   card.view.text.textContent = summarize(liveSteps(card)) || 'Run details';
   card.meta.textContent = `· ${elapsedSeconds(card)}s`;
@@ -1100,13 +1264,18 @@ function finishLiveRun(runId) {
 
 function dropLive() {
   for (const card of conv.live.values()) { clearInterval(card.timer); clearTimeout(card.verbTimer); }
-  conv.live.clear();
+  conv.live.clear(); unadopted = 0;
 }
 
-function reveal(card, part, to) {
-  card.shown[part] = to;
-  const node = part === 'text' ? card.text : card.thinkBody;
-  node.textContent = card.buffers[part].slice(0, to);
+function revealText(card, to) {
+  card.shown.text = to;
+  card.text.textContent = card.buffers.text.slice(0, to);
+}
+
+// A thinking step shows its first `shown` characters. Its row may not exist yet. Then the text is set when the row is made.
+function revealSeg(seg, to) {
+  seg.shown = to;
+  if (seg.body) seg.body.textContent = seg.buffer.slice(0, to);
 }
 
 function schedule() { if (!conv.frame) conv.frame = requestAnimationFrame(tick); }
@@ -1118,13 +1287,19 @@ function tick() {
   const log = $('conv-log');
   const stick = log ? nearBottom(log) : false;
   let more = false;
+  const step = backlog => Math.min(backlog, Math.max(1, Math.ceil(backlog / 12)));
   for (const card of conv.live.values()) {
     if (stepTokens(card)) more = true;
-    for (const part of ['text', 'thinking']) {
-      const backlog = card.buffers[part].length - card.shown[part];
+    const textBacklog = card.buffers.text.length - card.shown.text;
+    if (textBacklog > 0) {
+      revealText(card, card.shown.text + step(textBacklog));
+      if (card.shown.text < card.buffers.text.length) more = true;
+    }
+    for (const seg of card.segs) {
+      const backlog = seg.buffer.length - seg.shown;
       if (backlog <= 0) continue;
-      reveal(card, part, card.shown[part] + Math.min(backlog, Math.max(1, Math.ceil(backlog / 12))));
-      if (card.shown[part] < card.buffers[part].length) more = true;
+      revealSeg(seg, seg.shown + step(backlog));
+      if (seg.shown < seg.buffer.length) more = true;
     }
   }
   if (stick && log) log.scrollTop = log.scrollHeight;
@@ -1139,7 +1314,62 @@ function spoilerClick(event) {
 }
 
 // The message box for a private chat. It posts to the chat's messages route. Slopbot's reply arrives on the chat stream.
+// The composer of a chat. With id null it is the blank chat: the chat is made on the first send, then opened.
+// A message that is not saved yet. The saved message from the stream replaces it (see upsertMessage).
+let pendingSeq = 0;
+function pendingBubble(text, images = [], chatId = '') {
+  const log = $('conv-log');
+  const node = messageNode({ id: `pending-${++pendingSeq}`, author: state.user, text, timestamp: Date.now(), ...(images.length ? { images, channel: 'web:' + chatId } : {}) });
+  node.dataset.pending = text;
+  log.append(node);
+  regroup(log);
+  log.scrollTop = log.scrollHeight;
+  syncJump();
+  return node;
+}
+
+// The thinking card shows before the run starts. startLive gives it the real request id.
+const PENDING_CARD = 'pending';
+let unadopted = 0; // Sends whose run has not started yet.
+function addPendingCard() {
+  unadopted++;
+  if (!conv.live.has(PENDING_CARD)) liveFor(PENDING_CARD);
+}
+// Removes the placeholder when no send waits for it. force counts one send as ended.
+function dropPendingCard(force) {
+  if (force) unadopted = Math.max(0, unadopted - 1);
+  if (unadopted > 0) return;
+  const card = conv.live.get(PENDING_CARD);
+  if (!card) return;
+  clearInterval(card.timer); clearTimeout(card.verbTimer); card.node.remove(); conv.live.delete(PENDING_CARD);
+}
+
+// The blank chat has its id now. The address changes without a new render and the stream starts from the first event.
+function attachNewChat(chatId) {
+  conv.channel = chatId; conv.kind = 'chat'; conv.blank = false;
+  conv.lastStream = 0; conv.seen = 0;
+  history.replaceState(null, '', '#chat/' + enc(chatId));
+  conv.chats = [{ id: chatId, title: '', updated: Date.now() }, ...conv.chats];
+  drawList();
+  if (window.SlopbotShares) { $('conv-share').hidden = false; window.SlopbotShares.renderChatShare($('conv-share'), chatId); }
+  $('conv-status').hidden = false;
+  openStream(chatId);
+}
+
+// The chat made for a send that failed is gone, so the view is a blank chat again.
+function detachNewChat(chatId) {
+  closeStream();
+  conv.chats = conv.chats.filter(c => c.id !== chatId);
+  conv.channel = null; conv.blank = true;
+  history.replaceState(null, '', '#chat');
+  $('conv-status').hidden = true;
+  $('conv-share').hidden = true; $('conv-share').replaceChildren();
+  drawList();
+}
+
 function chatComposer(id) {
+  // The id of a chat made for this blank composer (by the first send or the first attached image). It is kept when a send fails without a clear reason, so a retry reuses it.
+  let made = null;
   const form = document.createElement('form');
   form.className = 'chat-form';
   const status = textNode('p', '', 'chat-status-line');
@@ -1156,7 +1386,8 @@ function chatComposer(id) {
   send.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const meter = usageMeter();
   conv.meter = meter;
-  box.append(field, meter.wrap, send);
+  const effort = effortPicker(id, () => id || made);
+  box.append(field, meter.wrap, effort, send);
   const linked = conv.ask && conv.ask.chat === id ? conv.ask.text : '';
   if (linked) {
     field.value = linked;
@@ -1170,31 +1401,78 @@ function chatComposer(id) {
     form.addEventListener('submit', () => { if (field.value.trim()) { banner.remove(); conv.ask = null; } });
     requestAnimationFrame(() => { fitField(field); box.classList.add('has-text'); field.focus(); });
   }
-  form.append(status, box, textNode('p', 'Slopbot is AI and can make mistakes.', 'chat-foot'));
+  const pics = imageTray(form, box, field, status, ensureChat);
+  form.append(status, pics.tray, box, textNode('p', 'Slopbot is AI and can make mistakes.', 'chat-foot'));
   const sync = () => { box.classList.toggle('has-text', field.value.trim() !== ''); fitField(field); };
   let sending = false;
+  // The id of a chat made for this blank composer. It is kept when a send fails without a clear reason, so a retry reuses it.
   field.addEventListener('input', () => { sync(); status.textContent = ''; });
   field.addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); }
   });
-  form.addEventListener('submit', async event => {
+  form.addEventListener('submit', event => {
     event.preventDefault();
     const text = field.value.trim();
-    if (!text || sending) return;
-    sending = true; send.disabled = true; status.textContent = 'Sending…';
-    try {
-      const response = await fetch(`/api/chats/${enc(id)}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ text }) });
-      const data = await response.json().catch(() => ({}));
-      if (response.status === 401) { status.textContent = ''; showScreen('login'); return; }
-      if (response.status === 429) { status.textContent = `Limit reached, resets ${new Date(data.resetAt).toLocaleString()}.`; return; }
-      if (!response.ok) throw new Error(data.error || 'Message failed.');
-      field.value = ''; sync(); status.textContent = '';
-      // The first message moves the composer to the bottom. The list is reloaded for the new order and title.
-      leaveEmpty(form.closest('.chat-hero'));
-      refreshChats();
-    } catch (error) { status.textContent = error.message; }
-    finally { sending = false; send.disabled = false; }
+    if ((!text && !pics.ids().length) || sending) return;
+    if (pics.uploading()) { status.textContent = 'Wait for the images to finish uploading.'; return; }
+    const shown = pics.take();
+    field.value = ''; sync(); status.textContent = '';
+    deliver(text, shown);
   });
+  // Makes the chat of a blank composer once, from the first attached image or the first send.
+  let making = null;
+  function ensureChat() {
+    if (id || made) return Promise.resolve(id || made);
+    if (!making) making = sendJson('POST', '/api/chats', { server: state.server.id }).then(chat => { made = chat.id; if (conv.blank) attachNewChat(chat.id); return chat.id; }).finally(() => { making = null; });
+    return making;
+  }
+  // Shows the message and the thinking card at once, then saves and sends in the background.
+  async function deliver(text, shown, again) {
+    sending = true;
+    // The first message moves the composer to the bottom.
+    leaveEmpty(form.closest('.chat-hero'));
+    const pending = again || pendingBubble(text, shown, id || made || '');
+    pending.classList.remove('failed'); pending.classList.add('pending');
+    pending.querySelector('.chat-retry')?.remove();
+    addPendingCard();
+    let chatId = id || made, fresh = false;
+    try {
+      if (!chatId) {
+        chatId = await ensureChat(); fresh = true;
+      }
+      if (!id && effort.chosen) await sendJson('PATCH', `/api/chats/${enc(chatId)}`, { effort: effort.chosen }).catch(() => {});
+      const response = await fetch(`/api/chats/${enc(chatId)}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ text, images: shown.map(item => item.imageId) }) });
+      const data = await response.json().catch(() => ({}));
+      if (response.status === 401) { dropPendingCard(true); showScreen('login'); return; }
+      if (!response.ok) {
+        // A 4xx answer means nothing was saved, so a chat made just for this send is removed. A 5xx may have saved the message, so that chat is kept for a retry.
+        if (!id && response.status < 500) { made = null; discardChat(chatId); if (conv.channel === chatId) detachNewChat(chatId); }
+        failPending(pending, text, shown, response.status === 429 ? `Limit reached, resets ${new Date(data.resetAt).toLocaleString()}.` : (data.error || 'Message failed.'));
+        return;
+      }
+      made = null;
+      // The stream may have shown the saved message already. Otherwise the pending bubble takes the saved id.
+      if (pending.isConnected) { pending.classList.remove('pending'); pending.dataset.id = data.id; delete pending.dataset.pending; }
+      if (conv.ask && conv.ask.chat === chatId) conv.ask = null;
+      refreshChats();
+    } catch (error) {
+      if (error.status === 401) { dropPendingCard(true); return showScreen('login'); }
+      if (!id && !made && conv.channel === chatId) detachNewChat(chatId);
+      failPending(pending, text, shown, error.message);
+    }
+    finally { sending = false; }
+  }
+  // The failed bubble keeps a Retry button. The text is back in the field when it is empty.
+  function failPending(pending, text, shown, message) {
+    dropPendingCard(true);
+    pending.classList.remove('pending'); pending.classList.add('failed');
+    const retry = textNode('button', 'Retry', 'chat-retry');
+    retry.type = 'button';
+    retry.onclick = () => { if (!sending) { if (field.value.trim() === text) { field.value = ''; sync(); } deliver(text, shown, pending); } };
+    pending.append(retry);
+    status.textContent = message;
+    if (!field.value) { field.value = text; sync(); field.focus(); }
+  }
   return form;
 }
 
@@ -1208,7 +1486,7 @@ async function searchConversations(text) {
   const q = text.trim();
   if (q.length < 2) { notice('Search needs at least 2 characters.'); return; }
   closeStream();
-  conv.channel = null; drawList();
+  conv.channel = null; conv.blank = false; drawList();
   $('chat-root')?.classList.remove('drawer-open');
   $('conv-status').hidden = true;
   $('chat-private').hidden = true;
@@ -1354,4 +1632,152 @@ function textNode(tag, text, className = '') {
   if (className) node.className = className;
   node.textContent = text;
   return node;
+}
+
+// Reasoning effort of one chat. A small menu button next to Send. The choice is saved on the chat.
+const EFFORT_LEVELS = [['low', 'Low'], ['medium', 'Medium'], ['xhigh', 'Extra high']];
+function effortPicker(id, current_id = () => id) {
+  const chat = () => conv.chats.find(c => c.id === id);
+  const wrap = textNode('div', '', 'effort-pick');
+  wrap.chosen = null;
+  const button = document.createElement('button');
+  button.type = 'button'; button.className = 'effort-button';
+  button.setAttribute('aria-haspopup', 'menu'); button.setAttribute('aria-expanded', 'false');
+  const menu = document.createElement('div');
+  menu.className = 'effort-menu'; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', 'Reasoning effort'); menu.hidden = true;
+  let current = (chat() && chat().effort) || 'medium';
+  const label = value => EFFORT_LEVELS.find(item => item[0] === value)[1];
+  const items = EFFORT_LEVELS.map(([value, name]) => {
+    const item = textNode('button', name, 'effort-item');
+    item.type = 'button'; item.setAttribute('role', 'menuitemradio');
+    item.onclick = async () => {
+      close(true);
+      const before = current;
+      current = value; paint(); wrap.chosen = value;
+      // A blank chat has no id yet. The send saves the choice after it makes the chat.
+      const target = current_id();
+      if (!target) return;
+      try {
+        await sendJson('PATCH', `/api/chats/${enc(target)}`, { effort: value });
+        if (conv.chats.find(c => c.id === target)) conv.chats.find(c => c.id === target).effort = value;
+      } catch (error) { current = before; paint(); fail(error); }
+    };
+    return item;
+  });
+  menu.append(...items);
+  function paint() {
+    button.textContent = label(current);
+    button.setAttribute('aria-label', `Reasoning effort: ${label(current)}`);
+    items.forEach((item, index) => item.setAttribute('aria-checked', String(EFFORT_LEVELS[index][0] === current)));
+  }
+  function close(focus) { menu.hidden = true; button.setAttribute('aria-expanded', 'false'); document.removeEventListener('click', outside, true); if (focus) button.focus(); }
+  function outside(event) { if (!wrap.contains(event.target)) close(false); }
+  function open() {
+    menu.hidden = false; button.setAttribute('aria-expanded', 'true');
+    document.addEventListener('click', outside, true);
+    (items.find(item => item.getAttribute('aria-checked') === 'true') || items[0]).focus();
+  }
+  button.onclick = () => menu.hidden ? open() : close(true);
+  wrap.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !menu.hidden) { event.preventDefault(); event.stopPropagation(); close(true); return; }
+    if (menu.hidden || !['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+    event.preventDefault();
+    const at = items.indexOf(document.activeElement), step = event.key === 'ArrowDown' ? 1 : -1;
+    items[(at + step + items.length) % items.length].focus();
+  });
+  paint();
+  wrap.append(button, menu);
+  return wrap;
+}
+
+// Chat images. The server stores them privately and sends them to the model. The page loads them from the chat's image route.
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
+const IMAGE_MAX_COUNT = 10;
+const imageUrl = (chat, imageId) => `/api/chats/${enc(chat)}/images/${enc(imageId)}`;
+const sizeLabel = bytes => bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+
+// Thumbnails of a sent message. After a reload they come from the stored image.
+function imageStrip(m) {
+  const strip = textNode('div', '', 'chat-images');
+  const chat = String(m.channel || '').replace(/^web:/, '');
+  for (const image of m.images) {
+    const img = document.createElement('img');
+    img.src = imageUrl(chat, image.imageId); img.alt = image.name; img.loading = 'lazy';
+    img.title = `${image.name} (${sizeLabel(image.size)})`;
+    img.addEventListener('error', () => img.replaceWith(textNode('span', `${image.name} (${sizeLabel(image.size)})`, 'chat-image-chip')));
+    strip.append(img);
+  }
+  return strip;
+}
+
+// Paste, drop and attach for the composer. Each image uploads at once; the message sends only the image IDs.
+function imageTray(form, box, field, status, ensure) {
+  const tray = textNode('div', '', 'chat-tray');
+  tray.hidden = true;
+  const items = [];
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'image/*'; input.multiple = true; input.hidden = true;
+  const attach = document.createElement('button');
+  attach.type = 'button'; attach.className = 'chat-attach'; attach.textContent = '+';
+  attach.setAttribute('aria-label', 'Attach images'); attach.title = 'Attach images';
+  box.prepend(attach);
+  form.append(input);
+  const show = () => { tray.hidden = items.length === 0; };
+  const remove = item => {
+    items.splice(items.indexOf(item), 1); item.node.remove(); show();
+    if (item.id) fetch(imageUrl(item.chat, item.id), { method: 'DELETE', headers: { 'X-CSRF-Token': csrf } }).catch(() => {});
+  };
+  const add = async file => {
+    if (!IMAGE_TYPES.includes(file.type)) { status.textContent = `${file.name || 'This file'} is not a PNG, JPEG, GIF or WebP image.`; return; }
+    if (file.size > IMAGE_MAX_BYTES) { status.textContent = `${file.name || 'This image'} is larger than 25 MB.`; return; }
+    if (items.length >= IMAGE_MAX_COUNT) { status.textContent = `Attach ${IMAGE_MAX_COUNT} images or fewer.`; return; }
+    const item = { id: null, chat: null, node: textNode('div', '', 'chat-thumb') };
+    const label = textNode('span', `${file.name || 'image'} (uploading…)`, 'chat-image-chip');
+    const close = document.createElement('button');
+    close.type = 'button'; close.textContent = '\u00d7'; close.setAttribute('aria-label', `Remove ${file.name || 'image'}`);
+    close.addEventListener('click', () => remove(item));
+    item.node.append(label, close); items.push(item); tray.append(item.node); show();
+    item.upload = (async () => {
+      try {
+        item.chat = await ensure();
+        const chat = item.chat;
+        const response = await fetch(`/api/chats/${enc(chat)}/images?name=${enc(file.name || '')}`, { method: 'POST', headers: { 'Content-Type': file.type, 'X-CSRF-Token': csrf }, body: file });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(response.status === 429 ? 'Limit reached.' : data.error || 'Upload failed.');
+        item.id = data.imageId; item.name = data.name; item.size = data.size;
+        if (!items.includes(item)) { fetch(imageUrl(chat, item.id), { method: 'DELETE', headers: { 'X-CSRF-Token': csrf } }).catch(() => {}); return; }
+        const img = document.createElement('img');
+        img.src = imageUrl(chat, item.id); img.alt = data.name; img.title = `${data.name} (${sizeLabel(data.size)})`;
+        label.replaceWith(img);
+      } catch (error) {
+        status.textContent = error.message;
+        if (items.includes(item)) { items.splice(items.indexOf(item), 1); item.node.remove(); show(); }
+      } finally { item.done = true; }
+    })();
+  };
+  const addAll = files => { for (const file of files) void add(file); };
+  attach.addEventListener('click', () => input.click());
+  input.addEventListener('change', () => { addAll([...input.files]); input.value = ''; });
+  field.addEventListener('paste', event => {
+    const files = [...(event.clipboardData ? event.clipboardData.files : [])].filter(file => file.type.startsWith('image/'));
+    if (files.length) { event.preventDefault(); addAll(files); }
+  });
+  const hasFiles = event => event.dataTransfer && [...event.dataTransfer.types].includes('Files');
+  const over = event => { if (!form.isConnected) return document.removeEventListener('dragover', over); if (hasFiles(event)) { event.preventDefault(); form.classList.add('dragging'); } };
+  const drop = event => {
+    if (!form.isConnected) return document.removeEventListener('drop', drop);
+    form.classList.remove('dragging');
+    if (!hasFiles(event)) return;
+    event.preventDefault(); addAll([...event.dataTransfer.files]);
+  };
+  document.addEventListener('dragover', over); document.addEventListener('drop', drop);
+  document.addEventListener('dragleave', event => { if (!event.relatedTarget) form.classList.remove('dragging'); });
+  return {
+    tray,
+    ids: () => items.filter(item => item.id).map(item => item.id),
+    uploading: () => items.some(item => !item.done),
+    // The images of a send. The tray empties at once; the server keeps the uploads for the send.
+    take: () => { const taken = items.filter(item => item.id).map(item => ({ imageId: item.id, name: item.name, size: item.size })); items.splice(0); tray.replaceChildren(); show(); return taken; },
+  };
 }

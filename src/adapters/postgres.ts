@@ -5,8 +5,8 @@ import type { HarnessState, HarnessEvent } from "../harness-state.js";
 import type { ToolOutput } from "../tools.js";
 import { PostgresDatabase, serializeStore } from "./postgres-database.js";
 import { randomUUID } from "node:crypto";
-import { parseMessage, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
-import type { AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow } from "../ports.js";
+import { parseMessage, type Effort, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
+import type { AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow, TokenTotals, UserTokenTotalRow } from "../ports.js";
 import { cosine, searchTerms, type Embeddings, type Evidence, type MemoryRecord } from "../memory.js";
 import { attribution, type Attribution } from "../usage-meter.js";
 import { ToolError } from "../tools.js";
@@ -22,7 +22,7 @@ const CONVERSATION_PRUNE_BATCH = 10000;
 
 import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
 import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, listChatShares, revokeShare, revokeAllShares, deleteChatShares } from '../share-store.js';
-import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../web-chat-store.js';
+import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatEffort, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../web-chat-store.js';
 import { isPrivateChannel } from '../private-chat.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
 import { getWebSession, saveWebSession, deleteWebSession, deleteExpiredWebSessions } from '../web-session-store.js';
@@ -421,6 +421,7 @@ export class PostgresStore {
     async webChats(server: string, owner: string): Promise<WebChatRow[]> { return listWebChats(this.db, server, owner); }
     async liveWebChatChannels(server: string): Promise<string[]> { return liveWebChatChannels(this.db, server); }
     async renameWebChat(id: string, title: string, updated: number): Promise<void> { return renameWebChat(this.db, id, title, updated); }
+    async setWebChatEffort(id: string, effort: Effort | null): Promise<void> { return setWebChatEffort(this.db, id, effort); }
     async touchWebChat(id: string, updated: number): Promise<void> { return touchWebChat(this.db, id, updated); }
     /** Deletes a private chat: its runs, events and queue rows, then its messages. The row stays, marked deleted. */
     async deleteWebChat(id: string, server: string, channel: string, at: number): Promise<void> {
@@ -721,6 +722,16 @@ export class PostgresStore {
     async grantResets(server: string, user: string, kind: string, count: number): Promise<void> {
         if (!Number.isSafeInteger(count) || count < 1) throw new Error("Reset count must be a positive integer");
         (await this.db.prepare("INSERT INTO user_limit_resets VALUES(?,?,?,?) ON CONFLICT(server,user_id,kind) DO UPDATE SET count=user_limit_resets.count+excluded.count").run(server, user, kind, count));
+    }
+    // Never deleted by chat delete, purge, retention or purgeUnconfigured (see tests/token-totals.test.ts).
+    async addTokenTotals(server: string, user: string, model: string, totals: TokenTotals, at: number): Promise<void> {
+        (await this.db.prepare(`INSERT INTO user_token_totals VALUES(?,?,?,1,?,?,?,?,?,?)
+            ON CONFLICT(server,user_id,model) DO UPDATE SET requests=user_token_totals.requests+1, input_tokens=user_token_totals.input_tokens+excluded.input_tokens, output_tokens=user_token_totals.output_tokens+excluded.output_tokens, cached_tokens=user_token_totals.cached_tokens+excluded.cached_tokens, cost_micros=user_token_totals.cost_micros+excluded.cost_micros, last_at=CASE WHEN excluded.last_at>user_token_totals.last_at THEN excluded.last_at ELSE user_token_totals.last_at END`)
+            .run(server, user, model, totals.input, totals.output, totals.cached, totals.costMicros, at, at));
+    }
+    async userTokenTotals(server: string, user: string): Promise<UserTokenTotalRow[]> {
+        return (await this.db.prepare("SELECT model,requests,input_tokens,output_tokens,cached_tokens,cost_micros,first_at,last_at FROM user_token_totals WHERE server=? AND user_id=? ORDER BY model").all(server, user))
+            .map(row => ({ model: String(row.model), requests: Number(row.requests), input: Number(row.input_tokens), output: Number(row.output_tokens), cached: Number(row.cached_tokens), costMicros: Number(row.cost_micros), firstAt: Number(row.first_at), lastAt: Number(row.last_at) }));
     }
     async useReset(server: string, user: string, kind: string): Promise<boolean> {
         (await this.db.exec("BEGIN IMMEDIATE"));

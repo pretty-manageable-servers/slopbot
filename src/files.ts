@@ -56,7 +56,7 @@ export function registerFileTool(registry: ToolRegistry, options: {
       const question = message.text.replace(/\[Attachment[^\n]*\]/g, '').trim().slice(0, 2000);
       // File actions need the agent loop, including requests combining inspection with a write.
       const actionRequest = /\b(save|store|keep|upload|publish|unpublish|delete|remove|send|import|export|copy|move|run)\b/i.test(question);
-      return message.attachments?.length && !actionRequest ? { question: question || 'Describe this file and explain its likely meaning.' } : undefined;
+      return message.attachments?.length && !message.modelImages?.length && !actionRequest ? { question: question || 'Describe this file and explain its likely meaning.' } : undefined;
     },
     execute: async (context, args) => {
       const source = await options.resolve(context.message, typeof args.message_id === 'string' ? args.message_id : undefined);
