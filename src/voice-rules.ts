@@ -6,5 +6,11 @@ export const VOICE_TURN_TIMEOUT_MS = 120_000;
 
 /** Text for TTS: cut at the last . ! ? at or before max characters, else a hard cut. Trims. */
 export function spokenText(text: string, max = VOICE_SPOKEN_MAX): string {
-  return text.trim().slice(0, max); // WP2 replaces this stub.
+  const chars = Array.from(text.trim());
+  if (chars.length <= max) return chars.join("");
+  const head = chars.slice(0, max);
+  for (let i = head.length - 1; i >= 0; i--) {
+    if (".!?".includes(head[i]!)) return head.slice(0, i + 1).join("").trim();
+  }
+  return head.join("").trim();
 }
