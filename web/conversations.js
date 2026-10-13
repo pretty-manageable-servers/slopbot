@@ -100,11 +100,16 @@ async function loadConversations() {
   conv.list = result.conversations;
   conv.chats = privateChats;
   drawList();
-  if (conv.channel && conv.kind === 'chat' && conv.chats.some(c => c.id === conv.channel)) return openConversation(conv.channel, 'chat');
-  if (conv.channel && conv.kind !== 'chat' && conv.list.some(c => c.id === conv.channel)) return openConversation(conv.channel);
+  // A chat or channel named in the URL opens first. An id that is not listed falls back to the default view.
+  const item = takeHashItem();
+  const named = item && (item.kind === 'chat' ? conv.chats : conv.list).find(c => c.id === item.id);
+  if (named) return openConversation(named.id, item.kind, true);
+  if (item) history.replaceState(null, '', '#chat');
+  if (conv.channel && conv.kind === 'chat' && conv.chats.some(c => c.id === conv.channel)) return openConversation(conv.channel, 'chat', true);
+  if (conv.channel && conv.kind !== 'chat' && conv.list.some(c => c.id === conv.channel)) return openConversation(conv.channel, 'channel', true);
   // Opens the newest channel that is on. A channel that is off is opened only when nothing else is listed.
   const first = conv.list.find(c => c.enabled !== false) || conv.list[0];
-  if (first) return openConversation(first.id);
+  if (first) return openConversation(first.id, 'channel', true);
   // With no conversation to view, the default view falls back to Settings.
   if (viewAuto) return fallbackToSettings();
   showView(emptyNote('No conversations yet.', 'Turn on web transcripts for a channel in Server settings → Web transcripts.'));
@@ -264,6 +269,7 @@ async function deleteChat(c) {
   conv.chats = conv.chats.filter(item => item.id !== c.id);
   if (conv.kind === 'chat' && conv.channel === c.id) {
     closeConversation();
+    history.replaceState(null, '', '#chat');
     setHeading('');
     $('chat-private').hidden = true;
     $('conv-status').hidden = true;
@@ -271,6 +277,13 @@ async function deleteChat(c) {
     showPick();
   }
   drawList();
+}
+
+// Shows a chat or channel in the URL, so a reload or Back opens it again. Replace is used for automatic opens, so they add no history entry.
+function setItemHash(kind, id, replace) {
+  const hash = `#${kind === 'chat' ? 'chat' : 'channel'}/${enc(id)}`;
+  if (location.hash === hash) return;
+  history[replace ? 'replaceState' : 'pushState'](null, '', hash);
 }
 
 function convItem(c) {
@@ -311,10 +324,11 @@ function setComposer(node) {
   slot.replaceChildren(...(node ? [node] : []));
 }
 
-// Opens a channel or thread (read-only), or a private chat (with a composer). The kind is 'channel' or 'chat'.
-async function openConversation(id, kind = 'channel') {
+// Opens a channel or thread (read-only), or a private chat (with a composer). The kind is 'channel' or 'chat'. Replace keeps the history entry.
+async function openConversation(id, kind = 'channel', replace = false) {
   closeStream();
   conv.channel = id; conv.kind = kind; dropLive();
+  setItemHash(kind, id, replace);
   const chat = kind === 'chat';
   drawList();
   $('chat-root')?.classList.remove('drawer-open');
@@ -803,7 +817,7 @@ function openStream(id) {
   es.addEventListener('reset', () => {
     if (conv.source !== es) return;
     closeStream();
-    openConversation(id, kind).catch(fail);
+    openConversation(id, kind, true).catch(fail);
   });
   es.addEventListener('closed', event => {
     closeStream();

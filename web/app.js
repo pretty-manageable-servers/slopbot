@@ -15,13 +15,29 @@ function setView(view) {
   history.replaceState(null, '', '#' + view);
   render();
 }
+// The chat or channel named in the URL: #chat/<id> or #channel/<id>. Any other hash gives null.
+function takeHashItem() {
+  const match = /^#(chat|channel)\/(.+)$/.exec(location.hash);
+  if (!match) return null;
+  try { return { kind: match[1], id: decodeURIComponent(match[2]) }; } catch { return null; }
+}
 function chooseView() {
   viewReady = true;
-  const hash = location.hash.slice(1), saved = recall('slopbot-view');
-  const want = ['chat', 'settings'].includes(hash) ? hash : ['chat', 'settings'].includes(saved) ? saved : '';
+  const hash = location.hash.slice(1), saved = recall('slopbot-view'), item = takeHashItem();
+  // A named item is checked against the lists later. An unknown id falls back to the default view, as no hash does.
+  const want = item ? 'chat' : ['chat', 'settings'].includes(hash) ? hash : ['chat', 'settings'].includes(saved) ? saved : '';
   if (want === 'settings' || (!want && !state.server)) tab = state.admin ? 'server' : 'profile';
-  else { tab = 'conversations'; viewAuto = !want; }
+  else { tab = 'conversations'; viewAuto = !want || Boolean(item); }
 }
+// Back and forward: the view follows the URL. A URL without a chat or channel opens the default view.
+window.addEventListener('popstate', () => {
+  if (!viewReady || !state) return;
+  const item = takeHashItem();
+  if (!item) conv.channel = null;
+  tab = location.hash === '#settings' ? (state.admin ? 'server' : 'profile') : 'conversations';
+  viewAuto = !item;
+  render();
+});
 // Used when the user has no conversation to view. The view then falls back to Settings.
 function fallbackToSettings() {
   viewAuto = false;
