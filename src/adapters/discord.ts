@@ -382,10 +382,22 @@ export class DiscordServer implements ChatGateway {
     return ownProgress ? { ...normalized, transient: true } : normalized;
   }
   private async receive(message: DiscordMessage): Promise<void> {
-    if (!message.guildId || message.author.id === this.client.user?.id || !this.bot.accepts(message.guildId, message.channelId)) return;
+    if (!message.guildId || !this.bot.accepts(message.guildId, message.channelId)) return;
+    if (message.author.id === this.client.user?.id) return this.receiveOwn(message);
     const timingScope = { server: message.guildId, channel: message.channelId, id: message.id };
     requestTimings.begin(timingScope); requestTimings.start(timingScope, "references");
     await requestTimings.withScope(timingScope, () => this.receiveScoped(message, timingScope));
+  }
+  /** Slopbot's own messages are ignored, except a bot web reply whose exact returned ID matched. */
+  private async receiveOwn(message: DiscordMessage): Promise<void> {
+    const server = message.guildId!, channel = message.channelId;
+    const web = await this.webReplies.origin({ server, channel, id: message.id }).catch(error => {
+      logError("web_reply_origin_failed", error, { stage: "web reply origin", server, channel, messageId: message.id }, true);
+      return undefined;
+    });
+    if (!web) return;
+    const base: Incoming = { ...this.normalize(message), botAuthor: false, mentionsBot: this.client.user ? message.mentions.users.has(this.client.user.id) : false, repliesToBot: false };
+    await this.bot.receive(asWebUser(base, web));
   }
   private async receiveScoped(message: DiscordMessage, timingScope: { server: string; channel: string; id: string }): Promise<void> {
     let repliesToBot = false;

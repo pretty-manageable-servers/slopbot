@@ -16,7 +16,7 @@ import type { Job } from "../queue.js";
 import type { ToolArgs, ToolCall, ToolContext, ToolOperation } from "../tools.js";
 import type { HistoryQuery, HistoryPage } from '../search/history-search.js';
 import type { AppRecord } from '../records.js';
-import type { WebReplyRow, WebWebhookRow } from '../web-replies.js';
+import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
 export class PostgresStore {
   async record(
     server: string,
@@ -611,15 +611,18 @@ export class PostgresStore {
     async saveWebWebhook(row: WebWebhookRow): Promise<void> {
         await this.db.prepare("INSERT INTO web_webhooks VALUES(?,?,?,?) ON CONFLICT(server,channel) DO UPDATE SET webhook_id=excluded.webhook_id,token_encrypted=excluded.token_encrypted").run(row.server, row.channel, row.webhook_id, row.token_encrypted);
     }
-    async insertWebReply(row: WebReplyRow): Promise<void> {
-        await this.db.prepare("INSERT INTO web_replies VALUES(?,?,?,?,?,?,?)").run(row.id, row.server, row.channel, row.user_id, row.status, row.message_id, row.created_at);
+    async deleteWebWebhook(server: string, channel: string): Promise<void> {
+        await this.db.prepare("DELETE FROM web_webhooks WHERE server=? AND channel=?").run(server, channel);
     }
-    async finishWebReply(id: string, status: "posted" | "failed", messageId?: string): Promise<boolean> {
-        return (await this.db.prepare("UPDATE web_replies SET status=?,message_id=? WHERE id=? AND status='pending'").run(status, messageId ?? null, id)).changes > 0;
+    async insertWebReply(row: WebReplyRow): Promise<void> {
+        await this.db.prepare("INSERT INTO web_replies (id,server,channel,user_id,status,message_id,created_at,via) VALUES(?,?,?,?,?,?,?,?)").run(row.id, row.server, row.channel, row.user_id, row.status, row.message_id, row.created_at, row.via);
+    }
+    async finishWebReply(id: string, status: "posted" | "failed", messageId?: string, via?: WebVia): Promise<boolean> {
+        return (await this.db.prepare("UPDATE web_replies SET status=?,message_id=?,via=COALESCE(?,via) WHERE id=? AND status='pending'").run(status, messageId ?? null, via ?? null, id)).changes > 0;
     }
     async webReplyByMessage(server: string, messageId: string): Promise<WebReplyRow | undefined> {
-        const row = await this.db.prepare("SELECT id,server,channel,user_id,status,message_id,created_at FROM web_replies WHERE server=? AND message_id=?").get(server, messageId);
-        return row ? { id: String(row.id), server: String(row.server), channel: String(row.channel), user_id: String(row.user_id), status: String(row.status) as WebReplyRow["status"], message_id: row.message_id === null ? null : String(row.message_id), created_at: Number(row.created_at) } : undefined;
+        const row = await this.db.prepare("SELECT id,server,channel,user_id,status,message_id,created_at,via FROM web_replies WHERE server=? AND message_id=?").get(server, messageId);
+        return row ? { id: String(row.id), server: String(row.server), channel: String(row.channel), user_id: String(row.user_id), status: String(row.status) as WebReplyRow["status"], message_id: row.message_id === null ? null : String(row.message_id), created_at: Number(row.created_at), via: String(row.via) as WebReplyRow["via"] } : undefined;
     }
     async userUsage(server: string, user: string): Promise<UserLimitState> {
         const resets = Object.fromEntries((await this.db.prepare("SELECT kind, count FROM user_limit_resets WHERE server=? AND user_id=?").all(server, user)).map(row => [String(row.kind), Number(row.count)]));

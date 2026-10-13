@@ -17,7 +17,7 @@ import type { ToolArgs, ToolCall, ToolContext, ToolJournal, ToolOperation } from
 
 import type { HistoryQuery, HistoryPage } from '../search/history-search.js';
 import type { AppRecord } from '../records.js';
-import type { WebReplyRow, WebWebhookRow } from '../web-replies.js';
+import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
 export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore {
   async record(
     server: string,
@@ -360,9 +360,10 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       CREATE TABLE IF NOT EXISTS user_limit_resets (server TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(server,user_id,kind));
       CREATE TABLE IF NOT EXISTS web_webhooks (server TEXT NOT NULL, channel TEXT NOT NULL, webhook_id TEXT NOT NULL, token_encrypted TEXT NOT NULL, PRIMARY KEY(server,channel));
       CREATE INDEX IF NOT EXISTS web_webhooks_hook ON web_webhooks(server,webhook_id);
-      CREATE TABLE IF NOT EXISTS web_replies (id TEXT PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, user_id TEXT NOT NULL, status TEXT NOT NULL, message_id TEXT, created_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS web_replies (id TEXT PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, user_id TEXT NOT NULL, status TEXT NOT NULL, message_id TEXT, created_at INTEGER NOT NULL, via TEXT NOT NULL DEFAULT 'webhook');
       CREATE INDEX IF NOT EXISTS web_replies_message ON web_replies(server,message_id);
     `);
+    if (!this.db.prepare("PRAGMA table_info(web_replies)").all().some(column => column.name === "via")) this.db.exec("ALTER TABLE web_replies ADD COLUMN via TEXT NOT NULL DEFAULT 'webhook'");
     const operationColumns = this.db.prepare("PRAGMA table_info(tool_operations)").all();
     if (!operationColumns.some(column => column.name === "resource")) this.db.exec("ALTER TABLE tool_operations ADD COLUMN resource TEXT");
     const jobColumns = this.db.prepare("PRAGMA table_info(jobs)").all();
@@ -706,15 +707,18 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   saveWebWebhook(row: WebWebhookRow): void {
     this.db.prepare("INSERT INTO web_webhooks VALUES(?,?,?,?) ON CONFLICT(server,channel) DO UPDATE SET webhook_id=excluded.webhook_id,token_encrypted=excluded.token_encrypted").run(row.server, row.channel, row.webhook_id, row.token_encrypted);
   }
-  insertWebReply(row: WebReplyRow): void {
-    this.db.prepare("INSERT INTO web_replies VALUES(?,?,?,?,?,?,?)").run(row.id, row.server, row.channel, row.user_id, row.status, row.message_id, row.created_at);
+  deleteWebWebhook(server: string, channel: string): void {
+    this.db.prepare("DELETE FROM web_webhooks WHERE server=? AND channel=?").run(server, channel);
   }
-  finishWebReply(id: string, status: "posted" | "failed", messageId?: string): boolean {
-    return this.db.prepare("UPDATE web_replies SET status=?,message_id=? WHERE id=? AND status='pending'").run(status, messageId ?? null, id).changes > 0;
+  insertWebReply(row: WebReplyRow): void {
+    this.db.prepare("INSERT INTO web_replies (id,server,channel,user_id,status,message_id,created_at,via) VALUES(?,?,?,?,?,?,?,?)").run(row.id, row.server, row.channel, row.user_id, row.status, row.message_id, row.created_at, row.via);
+  }
+  finishWebReply(id: string, status: "posted" | "failed", messageId?: string, via?: WebVia): boolean {
+    return this.db.prepare("UPDATE web_replies SET status=?,message_id=?,via=COALESCE(?,via) WHERE id=? AND status='pending'").run(status, messageId ?? null, via ?? null, id).changes > 0;
   }
   webReplyByMessage(server: string, messageId: string): WebReplyRow | undefined {
-    const row = this.db.prepare("SELECT id,server,channel,user_id,status,message_id,created_at FROM web_replies WHERE server=? AND message_id=?").get(server, messageId);
-    return row ? { id: String(row.id), server: String(row.server), channel: String(row.channel), user_id: String(row.user_id), status: String(row.status) as WebReplyRow["status"], message_id: row.message_id === null ? null : String(row.message_id), created_at: Number(row.created_at) } : undefined;
+    const row = this.db.prepare("SELECT id,server,channel,user_id,status,message_id,created_at,via FROM web_replies WHERE server=? AND message_id=?").get(server, messageId);
+    return row ? { id: String(row.id), server: String(row.server), channel: String(row.channel), user_id: String(row.user_id), status: String(row.status) as WebReplyRow["status"], message_id: row.message_id === null ? null : String(row.message_id), created_at: Number(row.created_at), via: String(row.via) as WebReplyRow["via"] } : undefined;
   }
 
   private userWindows(server: string, user: string): UserLimitWindow[] {

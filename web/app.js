@@ -147,17 +147,17 @@ async function boot() {
 boot().catch(error => { if (error.status === 401) showScreen('login'); else { showScreen('none'); notice(error.message); } });
 
 // Reply box for one conversation. A transcript view calls renderReplyBox(container, server, channel).
-// The server sends the reply as the signed-in user through a channel webhook.
+// The server sends the reply as the signed-in user through a channel webhook, or as Slopbot when the bot lacks Manage Webhooks.
 function renderReplyBox(container, server, channel) {
   const box = document.createElement('form');
   box.className = 'card reply-box';
-  box.innerHTML = '<label>Reply<textarea name="text" rows="3" maxlength="2000" required></textarea></label><p class="small reply-status" aria-live="polite"></p><button class="primary" type="submit">Send reply</button>';
-  const field = box.elements.text, status = box.querySelector('.reply-status'), button = box.querySelector('button');
+  box.innerHTML = '<label>Reply<textarea name="text" rows="3" maxlength="2000" required></textarea></label><p class="small reply-status" aria-live="polite"></p><p class="small reply-note" hidden>Posted by Slopbot for you (it lacks Manage Webhooks)</p><button class="primary" type="submit">Send reply</button>';
+  const field = box.elements.text, status = box.querySelector('.reply-status'), note = box.querySelector('.reply-note'), button = box.querySelector('button');
   box.onsubmit = async event => {
     event.preventDefault();
     const text = field.value.trim();
     if (!text) return;
-    button.disabled = true; status.textContent = 'Sending…';
+    button.disabled = true; status.textContent = 'Sending…'; note.hidden = true;
     try {
       const response = await fetch(`/api/conversations/${encodeURIComponent(channel)}/reply`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ server, text }) });
       const data = await response.json().catch(() => ({}));
@@ -166,6 +166,7 @@ function renderReplyBox(container, server, channel) {
       if (!response.ok) throw new Error(data.error || 'Reply failed.');
       field.value = '';
       status.textContent = data.status === 'posted' ? 'Sent. Slopbot will answer in the channel.' : 'Sent to Discord, but Slopbot did not pick it up in time, so it will not answer.';
+      note.hidden = data.via !== 'bot';
     } catch (error) { status.textContent = error.message; }
     finally { button.disabled = false; }
   };

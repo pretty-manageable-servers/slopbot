@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
-import { ChannelType, WebhookClient, type Client, type Message as DiscordMessage } from "discord.js";
-import { test } from "node:test";
+import { ChannelType, PermissionFlagsBits, WebhookClient, type Client, type Message as DiscordMessage } from "discord.js";
+import { test, type TestContext } from "node:test";
 import { DiscordServer } from "../src/adapters/discord.js";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { FakeLLM } from "../src/adapters/fake-llm.js";
@@ -12,7 +12,7 @@ import { loadConfig } from "../src/config.js";
 import { parseMessage } from "../src/domain.js";
 import type { ParticipationGate } from "../src/participation.js";
 import { createConsole } from "../src/web-console.js";
-import { asWebUser, openToken, sealToken, WEB_REPLY_WAIT_MS, WebReplies, WebReplyError, webReplyKey, type WebAuthor, type WebHook, type WebReplyDiscord } from "../src/web-replies.js";
+import { asWebUser, botWebContent, escapeMarkdown, MANAGE_WEBHOOKS_TTL_MS, MissingWebhookPermissionError, openToken, sealToken, stripBotWebPrefix, UnknownWebhookError, WEB_REPLY_WAIT_MS, WebReplies, WebReplyError, webReplyKey, type WebAuthor, type WebHook, type WebOrigin, type WebReplyDiscord } from "../src/web-replies.js";
 import { UserLimiter } from "../src/user-limiter.js";
 
 const SERVER = "1528063444874432734", PARENT = "1528063444874432735", THREAD = "1528063444874432736", USER = "1514413259522838529";
@@ -25,16 +25,23 @@ interface HarnessOptions {
   on?: boolean;
   facts?: Partial<ChannelFacts> | null;
   send?: (hook: WebHook, post: Post) => Promise<string>;
+  sendAsBot?: (channel: string, content: string) => Promise<string>;
   secret?: ReturnType<typeof webReplyKey>;
   waitMs?: number;
   accepts?: boolean;
+  /** The bot's Manage Webhooks permission. Tests change it through `state`. */
+  manage?: boolean;
+  /** Makes every webhook create fail with this error. */
+  createError?: Error;
+  now?: () => number;
 }
 
-/** Real SQLite and limiter; fake Discord that records every webhook call. */
+/** Real SQLite and limiter; fake Discord that records every webhook and bot call. */
 function harness(options: HarnessOptions = {}) {
   const store = new SQLiteStore(":memory:");
   const limiter = new UserLimiter(store, { fiveHourCostMicros: 1000, weekCostMicros: 100000, gracePercent: 10 });
-  const calls = { createWebhook: [] as string[], deleteWebhook: [] as string[], send: [] as { hook: WebHook; post: Post }[] };
+  const calls = { createWebhook: [] as string[], deleteWebhook: [] as string[], send: [] as { hook: WebHook; post: Post }[], sendAsBot: [] as { channel: string; content: string }[] };
+  const state = { manage: options.manage ?? true };
   let hooks = 0, messages = 0;
   const discord: WebReplyDiscord = {
     async channel(_server, channel) {
@@ -42,9 +49,11 @@ function harness(options: HarnessOptions = {}) {
       return channel === PARENT ? { parent: PARENT, thread: false } : undefined;
     },
     async member(_server, user) { return user === USER ? AUTHOR : undefined; },
-    async createWebhook(parent) { hooks++; calls.createWebhook.push(parent); return { id: `hook-${hooks}`, token: `token-${hooks}-secret` }; },
+    async canManageWebhooks() { return state.manage; },
+    async createWebhook(parent) { calls.createWebhook.push(parent); if (options.createError) throw options.createError; hooks++; return { id: `hook-${hooks}`, token: `token-${hooks}-secret` }; },
     async deleteWebhook(_parent, id) { calls.deleteWebhook.push(id); },
     async send(hook, post) { calls.send.push({ hook, post }); return options.send ? options.send(hook, post) : `msg-${++messages}`; },
+    async sendAsBot(channel, content) { calls.sendAsBot.push({ channel, content }); return options.sendAsBot ? options.sendAsBot(channel, content) : `bot-${++messages}`; },
   };
   const facts = options.facts === null ? undefined : { ...base, ...options.facts };
   const access = new ChannelAccess({ async facts() { return facts; } });
@@ -54,12 +63,13 @@ function harness(options: HarnessOptions = {}) {
     enabled: () => options.on ?? true,
     accepts: () => options.accepts ?? true,
     waitMs: options.waitMs ?? 1000,
+    ...(options.now ? { now: options.now } : {}),
   });
-  return { store, limiter, calls, service };
+  return { store, limiter, calls, service, state };
 }
 const reply = (service: WebReplies, channel = PARENT, text = "hello from the web") => service.reply({ user: USER, server: SERVER, channel, text });
 const expectStatus = (promise: Promise<unknown>, status: number) => assert.rejects(promise, (error: unknown) => error instanceof WebReplyError && error.status === status);
-const event = (id: string, webhookId: string, channel = PARENT) => ({ server: SERVER, channel, id, webhookId });
+const event = (id: string, webhookId: string | undefined, channel = PARENT) => ({ server: SERVER, channel, id, webhookId });
 
 test("the wait for a web reply post is 10 seconds", () => assert.equal(WEB_REPLY_WAIT_MS, 10000));
 
@@ -163,9 +173,10 @@ test("a message posted with the returned ID is matched while the post is in flig
   const h = harness({ send: async (hook) => { pending = h.service.origin(event("real-1", hook.id)); return "real-1"; } });
   t.after(() => h.store.close());
   await reply(h.service);
-  const origin = await pending as { user: string; author: WebAuthor } | undefined;
+  const origin = await pending as WebOrigin | undefined;
   assert.equal(origin?.user, USER);
   assert.equal(origin?.author.name, AUTHOR.name);
+  assert.equal(origin?.via, "webhook");
   const incoming: Incoming = { id: "real-1", server: SERVER, channel: PARENT, author: "webhook", text: "hello from the web", botAuthor: true, mentionsBot: false, repliesToBot: false, isBot: true };
   const user = asWebUser(incoming, origin!);
   assert.equal(user.author, USER);
@@ -224,6 +235,120 @@ test("rotate deletes the old webhook and stores a new one", async t => {
   assert.equal((await h.store.webWebhook(SERVER, PARENT))?.webhook_id, "hook-2");
   await reply(h.service);
   assert.equal(h.calls.send[1]!.hook.id, "hook-2");
+});
+
+test("an unknown webhook is replaced once, and the retried post is matched by its exact ID", async t => {
+  let gone = false, pending: Promise<unknown> | undefined;
+  const h = harness({ send: async hook => {
+    if (gone && hook.id === "hook-1") throw new UnknownWebhookError("Unknown Webhook");
+    if (hook.id === "hook-2") pending = h.service.origin(event("retried-1", "hook-2"));
+    return hook.id === "hook-2" ? "retried-1" : "msg-first";
+  } });
+  t.after(() => h.store.close());
+  await reply(h.service);
+  gone = true;
+  const result = await reply(h.service, PARENT, "after the webhook was deleted");
+  assert.deepEqual([result.status, result.messageId, result.via], ["posted", "retried-1", "webhook"]);
+  assert.deepEqual(h.calls.createWebhook, [PARENT, PARENT], "one create at first, one replacement");
+  assert.deepEqual(h.calls.send.map(call => call.hook.id), ["hook-1", "hook-1", "hook-2"], "one retry only");
+  assert.equal((await h.store.webWebhook(SERVER, PARENT))?.webhook_id, "hook-2");
+  const origin = await pending as WebOrigin | undefined;
+  assert.deepEqual([origin?.user, origin?.via], [USER, "webhook"]);
+  const row = await h.store.webReplyByMessage(SERVER, "retried-1");
+  assert.deepEqual([row?.status, row?.via, row?.user_id], ["posted", "webhook", USER]);
+});
+
+test("an unknown webhook after the retry is a 502, with no third try", async t => {
+  const h = harness({ send: async () => { throw new UnknownWebhookError("Unknown Webhook"); } });
+  t.after(() => h.store.close());
+  await expectStatus(reply(h.service), 502);
+  assert.equal(h.calls.send.length, 2);
+  assert.deepEqual(h.calls.createWebhook, [PARENT, PARENT]);
+});
+
+test("an unknown webhook that cannot be replaced falls back to the bot, and the row says bot", async t => {
+  let clock = 1_000_000, gone = false;
+  const h = harness({
+    now: () => clock,
+    send: async hook => { if (gone && hook.id === "hook-1") throw new UnknownWebhookError("Unknown Webhook"); return "msg-first"; },
+    sendAsBot: async () => "bot-after-unknown",
+  });
+  t.after(() => h.store.close());
+  await reply(h.service);
+  gone = true;
+  h.state.manage = false;
+  clock += MANAGE_WEBHOOKS_TTL_MS;
+  const result = await reply(h.service, PARENT, "lost the permission");
+  assert.deepEqual([result.via, result.messageId, result.status], ["bot", "bot-after-unknown", "posted"]);
+  assert.equal(h.calls.createWebhook.length, 1, "no replacement without Manage Webhooks");
+  assert.equal(await h.store.webWebhook(SERVER, PARENT), undefined);
+  const row = await h.store.webReplyByMessage(SERVER, "bot-after-unknown");
+  assert.deepEqual([row?.via, row?.status], ["bot", "posted"]);
+  // An event that arrives after the post returned is matched through the row, so the row must say bot.
+  assert.equal((await h.service.origin(event("bot-after-unknown", undefined)))?.via, "bot");
+});
+
+test("without Manage Webhooks the bot posts, the echo matches as the user, and the model sees the text only", async t => {
+  let pending: Promise<unknown> | undefined;
+  const h = harness({ manage: false, sendAsBot: async (channel) => { pending = h.service.origin(event("bot-1", undefined, channel)); return "bot-1"; } });
+  t.after(() => h.store.close());
+  const result = await reply(h.service, PARENT, "  hi there  ");
+  assert.deepEqual([result.status, result.messageId, result.via], ["posted", "bot-1", "bot"]);
+  assert.deepEqual(h.calls.createWebhook, []);
+  assert.deepEqual(h.calls.send, []);
+  assert.deepEqual(h.calls.sendAsBot, [{ channel: PARENT, content: "**Alice Display** (from web): hi there" }]);
+  const origin = await pending as WebOrigin | undefined;
+  assert.deepEqual([origin?.user, origin?.via], [USER, "bot"]);
+  const incoming: Incoming = { id: "bot-1", server: SERVER, channel: PARENT, author: "bot", text: "**Alice Display** (from web): hi there", botAuthor: true, mentionsBot: false, repliesToBot: false, isBot: true };
+  const user = asWebUser(incoming, origin!);
+  assert.equal(user.author, USER);
+  assert.equal(user.isBot, false);
+  assert.equal(user.botAuthor, false);
+  assert.equal(user.addressed, true);
+  assert.equal(user.source, "web");
+  assert.equal(user.text, "hi there");
+  const row = await h.store.webReplyByMessage(SERVER, "bot-1");
+  assert.deepEqual([row?.status, row?.via, row?.user_id], ["posted", "bot", USER]);
+  // A thread reply goes to the thread itself, with no webhook thread_id.
+  await reply(h.service, THREAD, "in a thread");
+  assert.equal(h.calls.sendAsBot.at(-1)?.channel, THREAD);
+});
+
+test("the bot prefix escapes the display name, and stripping removes it", () => {
+  assert.equal(escapeMarkdown("*Bob_ @x\n[y]\\"), "\\*Bob\\_ \\@x \\[y\\]\\\\");
+  const content = botWebContent("*Bob_ **x** (from web): ", "hi");
+  assert.equal(stripBotWebPrefix(content), "hi");
+  assert.equal(stripBotWebPrefix("**x** (from web): **y** (from web): hi"), "**y** (from web): hi", "only one prefix is removed");
+  assert.equal(stripBotWebPrefix("no prefix here"), "no prefix here");
+});
+
+test("a bot reply that cannot fit the name is refused before anything is posted", async t => {
+  const h = harness({ manage: false }); t.after(() => h.store.close());
+  await expectStatus(reply(h.service, PARENT, "x".repeat(1980)), 400);
+  assert.equal(h.calls.sendAsBot.length, 0);
+  assert.equal((await reply(h.service, PARENT, "x".repeat(1960))).via, "bot");
+});
+
+test("no Manage Webhooks is not kept for good: the check runs again after 30 seconds", async t => {
+  let clock = 1_000_000;
+  const h = harness({ manage: false, now: () => clock }); t.after(() => h.store.close());
+  await reply(h.service);
+  h.state.manage = true;
+  assert.equal((await reply(h.service)).via, "bot", "the no is reused for 30 seconds");
+  clock += MANAGE_WEBHOOKS_TTL_MS;
+  assert.equal((await reply(h.service)).via, "webhook");
+  assert.deepEqual(h.calls.createWebhook, [PARENT]);
+  assert.equal(h.calls.sendAsBot.length, 2);
+});
+
+test("a create that Discord refuses with Missing Permissions falls back to the bot", async t => {
+  const h = harness({ createError: new MissingWebhookPermissionError("Missing Permissions") }); t.after(() => h.store.close());
+  const result = await reply(h.service, PARENT, "hi");
+  assert.equal(result.via, "bot");
+  assert.deepEqual(h.calls.createWebhook, [PARENT]);
+  assert.equal(h.calls.send.length, 0);
+  assert.equal(h.calls.sendAsBot.length, 1);
+  assert.equal(await h.store.webWebhook(SERVER, PARENT), undefined, "no webhook row is saved");
 });
 
 test("web replies skip JEV and reach the answer path; the source flag survives parsing", async t => {
@@ -325,4 +450,110 @@ test("the Discord adapter queues only the exact returned message as the user", a
   assert.equal(jobs[0]!.message.isBot, false);
   assert.equal(jobs[0]!.message.addressed, true);
   assert.equal(jobs[0]!.message.authorName, displayName);
+});
+
+/** A Discord adapter over a fake client. The test feeds in Slopbot's and users' messages as Discord would send them. */
+async function adapterFixture(t: TestContext, options: { manage?: boolean; createError?: unknown } = {}) {
+  const guild = "1528063444874432734", channel = "1528064977913647236", bot = "1514413259522838528", hook = "1528064977913647999", member = "1514413259522838530", typer = "1514413259522838531";
+  const previousKey = process.env.WEB_REPLY_KEY;
+  process.env.WEB_REPLY_KEY = KEY.toString("base64");
+  t.after(() => { if (previousKey === undefined) delete process.env.WEB_REPLY_KEY; else process.env.WEB_REPLY_KEY = previousKey; });
+  let onBotSend: (content: string) => string = () => { throw new Error("unexpected bot post"); };
+  const permissions = { has: (flag: unknown) => flag !== PermissionFlagsBits.ManageWebhooks || options.manage !== false };
+  const target = {
+    id: channel, type: ChannelType.GuildText, guildId: guild, name: "general", isDMBased: () => false, isThread: () => false, isTextBased: () => true, isSendable: () => true,
+    permissionsFor: () => permissions,
+    async createWebhook() { if (options.createError) throw options.createError; return { id: hook, token: "adapter-token" }; },
+    async send(payload: { content?: string }) { return { id: onBotSend(payload.content ?? "") }; },
+  };
+  const memberObject = { displayName: "Alice Display", user: { id: member, username: "alice", globalName: null, bot: false }, displayAvatarURL: () => AUTHOR.avatarURL, permissions };
+  const client = Object.assign(new EventEmitter(), {
+    user: { id: bot, tag: "Slopbot" },
+    channels: { fetch: async () => target },
+    guilds: { fetch: async () => ({ id: guild, name: "Server", members: { fetch: async () => memberObject, fetchMe: async () => ({ permissions }) } }) },
+    fetchWebhook: async () => undefined,
+  });
+  const config = loadConfig({ DISCORD_BOT_TOKEN: "test-only", DISCORD_GUILD_ID: guild, DISCORD_CHANNEL_IDS: channel, LLM_MODE: "mock" });
+  const store = new SQLiteStore(":memory:"); t.after(() => store.close());
+  await store.setSetting(guild, `web_transcripts:${channel}`, true);
+  const server = new DiscordServer(config, store, new FakeLLM(), client as unknown as Client, guild, undefined);
+  const event = (id: string, content: string, author: string, flags: { webhook?: boolean; bot?: boolean; mentionsBot?: boolean } = {}) => ({
+    id, guildId: guild, channelId: channel, content, webhookId: flags.webhook ? author : null, attachments: new Map(), embeds: [], reference: null,
+    mentions: { users: new Map<string, { id: string }>(flags.mentionsBot ? [[bot, { id: bot }]] : []) }, member: null, guild: { name: "Server" }, createdTimestamp: 1, editedTimestamp: null,
+    author: { id: author, username: "alice", globalName: null, bot: Boolean(flags.bot || flags.webhook) },
+  }) as unknown as DiscordMessage;
+  return { server, store, guild, channel, bot, hook, typer, event, setBotSend: (fn: (content: string) => string) => { onBotSend = fn; } };
+}
+const settle = () => new Promise(resolve => setTimeout(resolve, 100));
+
+test("a bot web reply is answered as the user, and its prefix is removed for the model", async t => {
+  const f = await adapterFixture(t, { manage: false });
+  f.setBotSend(content => { f.server.messageCreate(f.event("bot-real", content, f.bot, { bot: true })); return "bot-real"; });
+  const result = await f.server.consoleReply(USER, f.channel, "hi there") as { messageId: string; status: string; via: string };
+  assert.deepEqual([result.messageId, result.status, result.via], ["bot-real", "posted", "bot"]);
+  await settle();
+  const jobs = f.store.jobs(f.guild, f.channel);
+  assert.equal(jobs.length, 1, "only the matched bot message becomes a request");
+  assert.equal(jobs[0]!.message.id, "bot-real");
+  assert.equal(jobs[0]!.message.author, USER);
+  assert.equal(jobs[0]!.message.isBot, false);
+  assert.equal(jobs[0]!.message.addressed, true);
+  assert.equal(jobs[0]!.message.source, "web");
+  assert.equal(jobs[0]!.message.text, "hi there");
+  assert.equal(jobs[0]!.message.authorName, "Alice Display");
+});
+
+test("other Slopbot messages are ignored, and a typed prefix is never a web reply", async t => {
+  const f = await adapterFixture(t, { manage: false });
+  f.server.messageCreate(f.event("bot-other", "Slopbot's own answer", f.bot, { bot: true }));
+  f.server.messageCreate(f.event("typed", "**Alice Display** (from web): hi", f.typer, { mentionsBot: true }));
+  await settle();
+  const jobs = f.store.jobs(f.guild, f.channel);
+  assert.deepEqual(jobs.map(job => job.message.id), ["typed"]);
+  assert.equal(jobs[0]!.message.author, f.typer);
+  assert.equal(jobs[0]!.message.source, undefined);
+  assert.equal(jobs[0]!.message.text, "**Alice Display** (from web): hi");
+});
+
+test("a user who types the prefix while a bot web post is in flight is not matched", async t => {
+  const f = await adapterFixture(t, { manage: false });
+  f.setBotSend(content => {
+    f.server.messageCreate(f.event("typed-during", content, f.typer, { mentionsBot: true }));
+    f.server.messageCreate(f.event("bot-real", content, f.bot, { bot: true }));
+    return "bot-real";
+  });
+  await f.server.consoleReply(USER, f.channel, "hi");
+  await settle();
+  const jobs = f.store.jobs(f.guild, f.channel);
+  const typed = jobs.find(job => job.message.id === "typed-during"), real = jobs.find(job => job.message.id === "bot-real");
+  assert.equal(typed?.message.author, f.typer);
+  assert.equal(typed?.message.source, undefined);
+  assert.equal(real?.message.author, USER);
+  assert.equal(real?.message.source, "web");
+});
+
+test("the Discord adapter replaces a webhook that Discord reports as unknown, then posts again", async t => {
+  const f = await adapterFixture(t);
+  let sends = 0;
+  t.mock.method(WebhookClient.prototype, "send", async function (this: WebhookClient, payload: { content?: string }) {
+    sends++;
+    if (sends === 1) throw Object.assign(new Error("Unknown Webhook"), { code: 10015, status: 404 });
+    f.server.messageCreate(f.event("retry-1", payload.content ?? "", f.hook, { webhook: true }));
+    return { id: "retry-1" } as never;
+  });
+  const result = await f.server.consoleReply(USER, f.channel, "hello") as { messageId: string; via: string };
+  assert.deepEqual([sends, result.messageId, result.via], [2, "retry-1", "webhook"]);
+  await settle();
+  const jobs = f.store.jobs(f.guild, f.channel);
+  assert.deepEqual(jobs.map(job => [job.message.id, job.message.author, job.message.source]), [["retry-1", USER, "web"]]);
+});
+
+test("the Discord adapter falls back to the bot when Discord refuses the webhook create", async t => {
+  const f = await adapterFixture(t, { createError: Object.assign(new Error("Missing Permissions"), { code: 50013 }) });
+  f.setBotSend(content => { f.server.messageCreate(f.event("bot-fallback", content, f.bot, { bot: true })); return "bot-fallback"; });
+  const result = await f.server.consoleReply(USER, f.channel, "hello") as { messageId: string; via: string };
+  assert.deepEqual([result.messageId, result.via], ["bot-fallback", "bot"]);
+  await settle();
+  const jobs = f.store.jobs(f.guild, f.channel);
+  assert.deepEqual(jobs.map(job => [job.message.id, job.message.author, job.message.source]), [["bot-fallback", USER, "web"]]);
 });
