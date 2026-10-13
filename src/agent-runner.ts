@@ -180,9 +180,9 @@ export class AgentRunner {
 
   private async runActive(message: Message, machine: HarnessMachine, step: (event: HarnessEvent) => Promise<void>, signal: AbortSignal, taskKey?: string, partial?: string): Promise<Reply> {
     const tools = this.services.tools?.snapshot?.() ?? this.services.tools;
-    const modelTools = tools?.schemas?.();
+    const modelTools = tools?.schemas?.(message);
     const native = modelTools !== undefined;
-    const prefix = tools ? this.prefix.map(item => ({ ...item, content: item.content + "\n" + (native ? nativeToolInstructions : toolInstructions + tools.catalog()) })) : this.prefix;
+    const prefix = tools ? this.prefix.map(item => ({ ...item, content: item.content + "\n" + (native ? nativeToolInstructions : toolInstructions + tools.catalog(message)) })) : this.prefix;
     const schemaBudget = modelTools ? this.counter.count([{ role: "system", content: JSON.stringify(modelTools) }]) : 0;
     const inputLimit = this.inputLimit - schemaBudget;
     let { sourceVersion, history, inputs, sources, quoteAnswer, clarificationAnswer, suggested, quotes } = await requestTimings.measure(message, "context", () => this.contextBuilder.build(message, taskKey, this.recentMessages, (message, key, limit) => this.boundedHistory(message, key, limit), prefix, tools, schemaBudget));

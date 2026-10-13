@@ -1,3 +1,4 @@
+import { isPrivateChannel } from "./private-chat.js";
 import type { Config } from "./config.js";
 import { selfKnowledgeTool } from "./self-knowledge.js";
 import type { Json, Message } from "./domain.js";
@@ -50,6 +51,8 @@ export function webTranscriptsEnabled(store: Pick<ServerToolStore, "setting">, s
 }
 /** The switch that applies to a channel or thread: a thread uses its parent's switch. */
 export function transcriptSwitchOn(store: Pick<ServerToolStore, "setting"> & { taskThreads(server: string): { thread: string; parent: string }[] }, server: string, channel: string): boolean {
+  // A private chat has no switch. Its stream is read only by its owner (see web-chats.ts).
+  if (isPrivateChannel(channel)) return true;
   const parent = store.taskThreads(server).find(task => task.thread === channel)?.parent ?? channel;
   return webTranscriptsEnabled(store, server, parent);
 }

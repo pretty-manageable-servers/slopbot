@@ -224,7 +224,7 @@ export class DiscordServer implements ChatGateway {
         return channel.send({content,embeds:[{footer:{text:toolProgressFooter}}],...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? {reply:{messageReference:message.id,failIfNotExists:false}} : {}),allowedMentions:{parse:[],repliedUser:false}});
       });
     }, presentation: discordPresentation, profiles: store, harness: store, tools: {
-      catalog: () => this.tools.catalog(), schemas: () => this.tools.schemas(), suggest: message => this.tools.suggest(message),
+      catalog: message => this.tools.catalog(message), schemas: message => this.tools.schemas(message), suggest: message => this.tools.suggest(message),
       execute: (message, call, id, version) => this.bot.executeTool(message, call, id, version),
       snapshot: () => {
         const selected = this.tools.capture();
