@@ -471,3 +471,53 @@ test("one limit covers a user in all servers, and old rows for each server merge
   assert.equal(await shared.useReset("alice", "5h"), true);
   assert.equal((await shared.check("alice", now)).allowed, true);
 });
+
+test("listKnownUsers merges servers, adds web-only users, searches names and IDs, pages and sorts by 5h spend", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
+  store.identifyAuthor("s1", "100", ["Alice", "ali"]);
+  store.identifyAuthor("s2", "100", ["Alice A"]);
+  store.identifyAuthor("s1", "200", ["Bob"]);
+  store.identifyAuthor("s1", "700", ["Amy"]);
+  store.identifyAuthor("s1", "400", ["Robot"], true);
+  store.identifyAuthor("web", "500", ["Dan"]);
+  store.identifyAuthor("web", "300", ["Carol"]);
+  await limits.record("100", 50, 0);
+  await limits.record("200", 90, 0);
+  await limits.record("500", 10, 0);
+  await store.grantResets("global", "300", "week", 1);
+  const ids = (page: { users: { user: string }[] }) => page.users.map(row => row.user);
+  const all = await store.listKnownUsers("", 50, 0);
+  // Bot 400 is not listed. Web-only 500 and 300 are listed, with no servers.
+  assert.equal(all.total, 5);
+  assert.deepEqual(ids(all), ["200", "100", "500", "700", "300"]);
+  assert.deepEqual(all.users.find(row => row.user === "100"), { user: "100", names: ["Alice", "ali", "Alice A"], servers: ["s1", "s2"] });
+  assert.deepEqual(all.users.find(row => row.user === "500"), { user: "500", names: ["Dan"], servers: [] });
+  assert.deepEqual(all.users.find(row => row.user === "300"), { user: "300", names: ["Carol"], servers: [] });
+  assert.deepEqual(ids(await store.listKnownUsers("  ALI ", 50, 0)), ["100"], "name search is case-insensitive and trimmed");
+  assert.deepEqual(ids(await store.listKnownUsers("carol", 50, 0)), ["300"], "web names are searched");
+  assert.deepEqual(ids(await store.listKnownUsers("100", 50, 0)), ["100"], "an exact ID matches that ID");
+  assert.deepEqual(ids(await store.listKnownUsers(" 200 ", 50, 0)), ["200"]);
+  assert.deepEqual(ids(await store.listKnownUsers("400", 50, 0)), [], "a bot is not a known user");
+  assert.deepEqual(ids(await store.listKnownUsers("30", 50, 0)), [], "digits that are not an ID search the names");
+  assert.deepEqual(ids(await store.listKnownUsers("zzz", 50, 0)), []);
+  const page = await store.listKnownUsers("", 2, 0);
+  assert.deepEqual([page.total, ids(page)], [5, ["200", "100"]]);
+  assert.deepEqual(ids(await store.listKnownUsers("", 2, 2)), ["500", "700"]);
+  assert.deepEqual(ids(await store.listKnownUsers("", 2, 4)), ["300"]);
+  store.close();
+});
+
+test("userTokenTotalsByServer lists each server and model", async () => {
+  const store = new SQLiteStore();
+  const totals = { input: 10, output: 2, cached: 4, costMicros: 7 };
+  await store.addTokenTotals("s2", "alice", "nimbus", totals, 1000);
+  await store.addTokenTotals("s1", "alice", "vane", totals, 1000);
+  await store.addTokenTotals("s1", "alice", "nimbus", totals, 2000);
+  await store.addTokenTotals("s1", "alice", "nimbus", totals, 3000);
+  await store.addTokenTotals("s1", "bob", "nimbus", totals, 1000);
+  const rows = await store.userTokenTotalsByServer("alice");
+  assert.deepEqual(rows.map(row => [row.server, row.model]), [["s1", "nimbus"], ["s1", "vane"], ["s2", "nimbus"]]);
+  assert.deepEqual(rows[0], { server: "s1", model: "nimbus", requests: 2, input: 20, output: 4, cached: 8, costMicros: 14, firstAt: 2000, lastAt: 3000 });
+  assert.deepEqual(await store.userTokenTotalsByServer("nobody"), []);
+  store.close();
+});
