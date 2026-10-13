@@ -38,7 +38,7 @@ import {
   MessageFlags, PermissionFlagsBits, ChannelType, ActivityType,
   type ChatInputCommandInteraction, type Interaction, type Message as DiscordMessage, type PartialMessage,
 } from "discord.js";
-import { buildToolCommands, buildUsageCommand, usageReply } from "./discord-commands.js";
+import { buildStopCommand, buildToolCommands, buildUsageCommand, usageReply } from "./discord-commands.js";
 import { registerProfileTools } from "../profiles.js";
 import { Application } from "../application.js";
 import { Bot, splitReply, type ChatGateway, type Incoming } from "../bot.js";
@@ -94,7 +94,7 @@ export class DiscordServer implements ChatGateway {
   private channels: string[];
   private historyTimer: ReturnType<typeof setInterval> | undefined;
 
-  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">, team?: Pick<TeamAdmins, "canEdit">) {
+  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">, private readonly team?: Pick<TeamAdmins, "canEdit">) {
     this.client = client;
     this.renderer = new ReplyRenderer(store, discordPresentation);
     this.chatGateway = new WebChatGateway(store, guildId);
@@ -308,7 +308,7 @@ export class DiscordServer implements ChatGateway {
     this.reminders.start();
     this.fixWatches?.start();
     sync(); this.historyTimer = setInterval(sync, 60000);
-    void this.registerCommands().catch(error => logError("Could not register /slopbot and /usage commands. Check application command permissions.", error, { server: this.guildId }));
+    void this.registerCommands().catch(error => logError("Could not register /slopbot, /usage and /stop commands. Check application command permissions.", error, { server: this.guildId }));
   }
   interaction(interaction: Interaction): void {
     if ((interaction.isButton() || interaction.isStringSelectMenu()) && interaction.customId.startsWith('slopui:')) {
@@ -316,6 +316,7 @@ export class DiscordServer implements ChatGateway {
     }
     if (interaction.isChatInputCommand() && interaction.commandName === "slopbot") void this.command(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isChatInputCommand() && interaction.commandName === "usage") void this.usageCommand(interaction).catch(error => logError("Command failed.", error));
+    if (interaction.isChatInputCommand() && interaction.commandName === "stop") void this.stopCommand(interaction).catch(error => logError("Command failed.", error));
   }
   messageCreate(message: DiscordMessage): void { void this.receive(message).catch(error => logError("Discord event failed. Check channel permissions.", error)); }
   messageUpdate(updated: DiscordMessage | PartialMessage): void {
@@ -360,10 +361,28 @@ export class DiscordServer implements ChatGateway {
     const guild = await this.client.guilds.fetch(this.guildId);
     // set() replaces the whole list, so commands from older versions are removed.
     // /usage is a separate command, so /slopbot stays as it is.
-    await guild.commands.set([buildToolCommands(this.tools).toJSON(), buildUsageCommand().toJSON()]);
+    await guild.commands.set([buildToolCommands(this.tools).toJSON(), buildUsageCommand().toJSON(), buildStopCommand().toJSON()]);
     // Slopbot registers no global commands. Old global commands stay visible and fail, so remove them.
     const global = await this.client.application?.commands.fetch();
     if (global?.size) await this.client.application!.commands.set([]);
+  }
+  /** Stops responses in a channel. The web console calls it too. Manage Server and team editors stop all responses. */
+  async stopResponses(channel: string, user: string, manager: boolean): Promise<number> {
+    const admin = manager || (this.team ? await this.team.canEdit(user).catch(() => false) : false);
+    return this.bot.stop(this.guildId, channel, user, admin);
+  }
+  /** The /stop command. Stops the Slopbot responses in this channel. */
+  private async stopCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (interaction.guildId !== this.guildId) return;
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    try {
+      const manager = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? false;
+      const stopped = await this.stopResponses(interaction.channelId, interaction.user.id, manager);
+      await interaction.editReply({ content: stopped ? `Stopped ${stopped} response${stopped === 1 ? "" : "s"}.` : "No response to stop. You can stop only the responses that you started.", allowedMentions: { parse: [] } });
+    } catch (error) {
+      logError("command_failed", error, { stage: "stop command", server: this.guildId, messageId: interaction.id });
+      await interaction.editReply({ content: errorReply(error), allowedMentions: { parse: [] } });
+    }
   }
   /**
    * The /usage command. Read-only, so it never checks the UserLimiter gate: a user over the limit

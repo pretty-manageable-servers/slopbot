@@ -150,6 +150,25 @@ export class Bot {
     } else { await this.process(request, ingested); }
   }
 
+  /**
+   * Stops the responses in a channel: cancels queued jobs and interrupts running ones.
+   * An admin stops all of them. Other users stop only the responses that their own messages started.
+   * Returns the number of stopped responses.
+   */
+  async stop(server: string, channel: string, user: string, admin: boolean): Promise<number> {
+    const store = this.options.queueStore;
+    if (server !== this.server || !store) return 0;
+    let stopped = 0;
+    for (const job of await store.jobs(server, channel)) {
+      if (!["pending", "ready", "running", "sending"].includes(job.status)) continue;
+      if (!admin && job.message.author !== user) continue;
+      if (!await store.cancelJob(job.id)) continue;
+      await this.app.interrupt(server, job.message.id).catch(error => logError("stop_interrupt_failed", error, { server, jobId: job.id }));
+      stopped++;
+    }
+    return stopped;
+  }
+
   setChannels(channels: readonly string[]): void {
     for (const channel of [...this.channels, ...this.tasks]) this.app.disallowChannel(this.server, channel);
     this.channels = [...channels]; this.tasks.clear();

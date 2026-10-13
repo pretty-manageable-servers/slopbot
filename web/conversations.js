@@ -1795,7 +1795,28 @@ function chatComposer(id) {
   const meter = usageMeter();
   conv.meter = meter;
   const effort = effortPicker(id, () => id || made);
-  box.append(field, meter.wrap, effort, send);
+  // Stop shows while a response runs. It stops the Slopbot response of this chat.
+  const stop = document.createElement('button');
+  stop.type = 'button';
+  stop.className = 'chat-send chat-stop';
+  stop.hidden = true;
+  stop.setAttribute('aria-label', 'Stop response');
+  stop.title = 'Stop response';
+  stop.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor"/></svg>';
+  stop.addEventListener('click', async () => {
+    const chatId = id || made;
+    if (!chatId) return;
+    stop.disabled = true;
+    try { await sendJson('POST', `/api/chats/${enc(chatId)}/stop`, {}); status.textContent = 'Response stopped.'; }
+    catch { status.textContent = 'Could not stop the response. Try again.'; }
+    finally { stop.disabled = false; }
+  });
+  const stopTimer = setInterval(() => {
+    if (!form.isConnected) { clearInterval(stopTimer); return; }
+    const running = conv.live.size > 0;
+    stop.hidden = !running; send.hidden = running;
+  }, 300);
+  box.append(field, meter.wrap, effort, stop, send);
   const linked = conv.ask && conv.ask.chat === id ? conv.ask.text : '';
   if (linked) {
     field.value = linked;
