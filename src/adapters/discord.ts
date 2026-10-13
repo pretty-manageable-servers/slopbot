@@ -699,8 +699,11 @@ export class DiscordAdapter {
       console.log(`Slopbot connected as ${client.user.tag}. LLM mode: ${config.mock ? "mock" : "provider"}. Servers: ${client.guilds.cache.size}`);
       for (const guild of client.guilds.cache.values()) void this.open(guild.id).catch(error => logError("server_start_failed", error, { server: guild.id }));
     });
-    this.client.on(Events.GuildCreate, guild => { if (this.botUser) void this.open(guild.id).catch(error => logError("server_start_failed", error, { server: guild.id })); });
-    this.client.on(Events.GuildDelete, guild => { void this.close(guild.id).catch(error => logError("server_stop_failed", error, { server: guild.id })); });
+    // A server or member change drops the remembered membership at once.
+    const forget = () => this.memberCache.clear();
+    this.client.on(Events.GuildMemberRemove, forget); this.client.on(Events.GuildMemberUpdate, forget);
+    this.client.on(Events.GuildCreate, guild => { forget(); if (this.botUser) void this.open(guild.id).catch(error => logError("server_start_failed", error, { server: guild.id })); });
+    this.client.on(Events.GuildDelete, guild => { forget(); void this.close(guild.id).catch(error => logError("server_stop_failed", error, { server: guild.id })); });
     this.client.on(Events.InteractionCreate, interaction => { if (interaction.guildId) void this.route(interaction.guildId, server => server.interaction(interaction)); });
     this.client.on(Events.Error, error => logError("discord_client_failed", error));
     this.client.on(Events.MessageCreate, message => { if (message.guildId) void this.route(message.guildId, server => server.messageCreate(message)); });
