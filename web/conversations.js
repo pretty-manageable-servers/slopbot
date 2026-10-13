@@ -55,12 +55,15 @@ async function openConversation(id) {
     const page = await request(`/api/conversations/${enc(id)}/messages?server=${enc(state.server.id)}&limit=50`);
     if (conv.channel !== id) return;
     const info = conv.list.find(c => c.id === id) || { kind: 'channel', name: page.channel.name };
-    main.innerHTML = `<header class="conv-head"><h2></h2><p class="small" id="conv-status">Connecting…</p></header><button id="conv-older" class="older" type="button" hidden>Load older messages</button><div id="conv-log" class="conv-log" role="log" aria-live="polite" aria-relevant="additions"></div>`;
+    main.innerHTML = `<header class="conv-head"><h2></h2><div class="conv-tools"><p class="small" id="conv-status">Connecting…</p><div id="conv-share" hidden></div></div></header><button id="conv-older" class="older" type="button" hidden>Load older messages</button><div id="conv-log" class="conv-log" role="log" aria-live="polite" aria-relevant="additions"></div><div id="conv-reply" hidden></div>`;
     main.querySelector('h2').textContent = label({ ...info, name: info.name || page.channel.name });
     const log = $('conv-log');
     for (const m of page.messages) log.append(messageNode(m));
     $('conv-older').hidden = !page.hasMore;
     $('conv-older').onclick = () => loadOlder(id);
+    // The server says who may share and who may send. Sent replies arrive through the live stream, so the box adds nothing to the log.
+    if (page.canShare && window.SlopbotShares) { $('conv-share').hidden = false; window.SlopbotShares.renderShareButton($('conv-share'), state.server.id, id); }
+    if (page.canSend) { $('conv-reply').hidden = false; renderReplyBox($('conv-reply'), state.server.id, id); }
     conv.lastStream = page.streamId;
     conv.seen = page.streamId;
     log.scrollTop = log.scrollHeight;

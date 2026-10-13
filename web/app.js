@@ -164,7 +164,7 @@ function adminUsage(users, name, off) {
   return `<section class="card"><h2>Usage</h2><p class="scope">${adminUser ? 'One user.' : `The ${users.length} users with the highest 5-hour spend in ${esc(name)}.`}</p><form id="admin-find" class="chan-window"><label>Discord user ID<input name="user" inputmode="numeric" maxlength="20" placeholder="123456789012345678"></label><button>Find user</button>${adminUser ? '<button type="button" id="admin-all">Show all users</button>' : ''}</form><div id="admin-users">${users.map(row).join('') || '<p class="small">No users have spend or banked resets in this server yet.</p>'}</div></section>`;
 }
 function adminTranscripts(servers, off) {
-  return `<section class="card"><h2>Web transcripts</h2><p class="scope">Per channel, for every server. Off by default. Discord permissions still decide who can see a transcript.</p><div id="admin-transcripts">${servers.map(server => `<p class="eyebrow">${esc(server.name)}</p><ul class="chan-list">${server.channels.map(channel => `<li class="chan"><div class="chan-info"><strong>#${esc(channel.name)}</strong></div><div class="chan-actions"><label class="switch"><input type="checkbox" data-server="${esc(server.id)}" data-channel="${esc(channel.id)}"${channel.enabled ? ' checked' : ''}${off}><span>${channel.enabled ? 'On' : 'Off'}</span></label></div></li>`).join('') || '<li class="small">Slopbot serves no channels in this server yet.</li>'}</ul>`).join('') || '<p class="small">Slopbot is not running in any server yet.</p>'}</div></section>`;
+  return `<section class="card"><h2>Web transcripts</h2><p class="scope">Per channel, for every server. Off by default. Discord permissions still decide who can see a transcript.</p><div id="admin-transcripts">${servers.map(server => `<p class="eyebrow">${esc(server.name)}</p><ul class="chan-list">${server.channels.map(channel => `<li class="chan"><div class="chan-info"><strong>#${esc(channel.name)}</strong></div><div class="chan-actions"><label class="switch"><input type="checkbox" data-server="${esc(server.id)}" data-channel="${esc(channel.id)}"${channel.enabled ? ' checked' : ''}${off}><span>${channel.enabled ? 'On' : 'Off'}</span></label><button type="button" data-action="rotate" data-server="${esc(server.id)}" data-channel="${esc(channel.id)}" data-name="${esc(channel.name)}"${off}>Rotate webhook</button></div></li>`).join('') || '<li class="small">Slopbot serves no channels in this server yet.</li>'}</ul>`).join('') || '<p class="small">Slopbot is not running in any server yet.</p>'}</div></section>`;
 }
 async function renderAdmin() {
   const edit = admin.canEdit, off = edit ? '' : ' disabled';
@@ -190,8 +190,10 @@ async function renderAdmin() {
       adminPrices(prices, names, edit),
       adminServer ? adminUsage(users, current.name, off) : '',
       adminTranscripts(servers, off),
+      adminServer ? '<section class="card" id="admin-shares"></section>' : '',
     ].join('');
     $('admin-pick').onchange = () => { adminServer = $('admin-pick').value; adminUser = ''; renderAdmin(); };
+    if (adminServer && window.SlopbotShares) window.SlopbotShares.renderShareList($('admin-shares'), adminServer);
     if (limits && edit) $('admin-limits').onsubmit = event => {
       event.preventDefault();
       const form = event.target, data = new FormData(form);
@@ -231,6 +233,13 @@ async function renderAdmin() {
         });
       };
     }
+    $('admin-transcripts').onclick = event => {
+      const button = event.target.closest('button[data-action="rotate"]');
+      if (!button || !edit) return;
+      const { server, channel, name } = button.dataset;
+      if (!confirm(`Make a new web webhook for #${name}? The old webhook stops working at once.`)) return;
+      adminRun(button, async () => { await request('/api/admin/web-webhooks/rotate', { server, channel }); notice(`Web webhook rotated for #${name}.`); });
+    };
     $('admin-transcripts').onchange = async event => {
       const box = event.target;
       if (!box.dataset.channel) return;

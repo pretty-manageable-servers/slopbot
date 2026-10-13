@@ -6,6 +6,7 @@ import { parseToolCalls, toolResult, type ToolCall, type ToolOutput } from "./to
 import type { HistoryPage, HistoryQuery } from "./search/history-search.js";
 import { reasoningText, runEvents, shortArgs, slopbotId, transcriptMessage, type ConversationEvent, type ConversationEventStore, type RunEvents, type TranscriptMessage } from "./run-events.js";
 import { transcriptSwitchOn } from "./server-tools.js";
+import { canCreateShare, type ShareRule } from "./shares.js";
 
 export interface TranscriptRun { id: string; message: Message; purpose: string; status: string; result: string | null }
 export interface ToolTurn { calls: ToolCall[]; results: Record<string, ToolOutput> }
@@ -30,6 +31,8 @@ export interface TranscriptHost {
   /** Text channels that Slopbot serves in the server. */
   configured(server: string): readonly string[];
   channelName(server: string, channel: string): Promise<string | undefined>;
+  /** Who may share the channel. Without it, canShare is always false. */
+  shareRule?: ShareRule;
 }
 
 export interface TranscriptRoutes {
@@ -258,6 +261,7 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
     json(res, 200, {
       channel: { id: channel, name: (await host.channelName(server, channel)) ?? channel, parent: await parentOf(server, channel) },
       canSend: access.send,
+      canShare: host.shareRule ? await canCreateShare(user, server, host.shareRule).catch(() => false) : false,
       streamId,
       hasMore: rows.length > limit,
       messages: await views(server, rows.slice(0, limit).reverse()),

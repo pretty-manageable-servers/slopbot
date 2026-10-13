@@ -49,7 +49,7 @@ import { configuredChannels, registerServerTools, webTranscriptKey, webTranscrip
 import { ChannelAccess } from "../channel-access.js";
 import { TeamAdmins, discordTeamSource } from "../team-admins.js";
 import { publishMessage, publishMessageDelete, publishTool, runEvents } from "../run-events.js";
-import { ShareService } from "../shares.js";
+import { ShareService, type ShareRule } from "../shares.js";
 import { discordChannelAccessSource, wireChannelAccessEvents } from "./discord-channel-access.js";
 import { displayToolResult, ToolError, ToolRegistry, UncertainActionError, stableOperationId } from "../tools.js";
 import { WebReplies, asWebUser, webReplyKey } from "../web-replies.js";
@@ -586,6 +586,11 @@ export class DiscordServer implements ChatGateway {
   adminSetTranscript(channel: string, enabled: boolean): Promise<unknown> {
     return this.setTranscript(channel, enabled);
   }
+  /** Makes a new web webhook for a monitored channel. Old webhook tokens stop working. */
+  adminRotateWebhook(channel: string): Promise<{ webhookId: string }> {
+    if (!this.channels.includes(channel)) throw new ToolError('Slopbot is not monitoring that channel.');
+    return this.webReplies.rotateWebhook(this.guildId, channel);
+  }
   private async transcripts(): Promise<{ channels: TranscriptChannel[] }> {
     const names = await (await this.client.guilds.fetch(this.guildId)).channels.fetch();
     return { channels: this.channels.map(id => ({ id, name: names.get(id)?.name ?? id, enabled: webTranscriptsEnabled(this.store, this.guildId, id) })) };
@@ -616,7 +621,9 @@ export class DiscordAdapter {
   readonly access: ChannelAccess;
   /** Team roles of the Developer Portal team that owns the bot. Used by the console admin panel. */
   readonly team: TeamAdmins;
-  /** Share links for the web console. The team admin check is added here when the team panel exists. */
+  /** Who may make, list and revoke share links: Manage Server in the server, or a team editor. */
+  readonly shareRule: ShareRule;
+  /** Share links for the web console. */
   readonly shares: ShareService;
 
   constructor(private readonly config: Config, private readonly store: RuntimeStore, private readonly llm: LLM, client?: Client) {
@@ -626,7 +633,8 @@ export class DiscordAdapter {
     this.access = new ChannelAccess(discordChannelAccessSource(this.client));
     wireChannelAccessEvents(this.client, this.access);
     runEvents.attach(store);
-    this.shares = new ShareService({ store, access: this.access, rule: { manager: (user, server) => this.hasManageServer(user, server) } });
+    this.shareRule = { manager: (user, server) => this.hasManageServer(user, server), teamAdmin: user => this.team.canEdit(user) };
+    this.shares = new ShareService({ store, access: this.access, rule: this.shareRule });
     this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;
     this.client.once(Events.ClientReady, async client => {
       this.botUser = client.user.id;
@@ -722,6 +730,11 @@ export class DiscordAdapter {
     const opening = this.servers.get(guildId);
     if (!opening) throw new ToolError('Slopbot is not running in that server.');
     return (await opening).adminSetTranscript(channel, enabled);
+  }
+  async adminRotateWebhook(guildId: string, channel: string): Promise<unknown> {
+    const opening = this.servers.get(guildId);
+    if (!opening) throw new ToolError('Slopbot is not running in that server.');
+    return (await opening).adminRotateWebhook(channel);
   }
   /** Manage Server in one guild. A user who is not a member, or has no permission, gets false. */
   async hasManageServer(user: string, server: string): Promise<boolean> {

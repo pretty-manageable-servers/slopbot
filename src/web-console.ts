@@ -17,6 +17,7 @@ export interface ConsoleAdmin {
   canEdit(user: string): Promise<boolean>;
   servers(): Promise<unknown>;
   setTranscript(server: string, channel: string, enabled: boolean): Promise<unknown>;
+  rotateWebhook(server: string, channel: string): Promise<unknown>;
   panel: AdminPanel;
 }
 export interface ConsoleBackend {
@@ -70,6 +71,10 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
     const input = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
     if (typeof input.enabled !== 'boolean') throw new AdminInputError('Invalid web transcript setting.');
     return admin.setTranscript(snowflake(input.server, 'server'), snowflake(input.channel, 'channel'), input.enabled);
+  }
+  if (path === '/api/admin/web-webhooks/rotate') {
+    const input = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+    return admin.rotateWebhook(snowflake(input.server, 'server'), snowflake(input.channel, 'channel'));
   }
   return undefined;
 }

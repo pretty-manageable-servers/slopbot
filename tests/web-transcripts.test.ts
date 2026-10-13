@@ -11,7 +11,7 @@ import { createConsole } from "../src/web-console.js";
 import type { Message, ModelEvent } from "../src/domain.js";
 
 const SERVER = "1528063444874432734", CHANNEL = "1528063444874432735", THREAD = "1528063444874432736", OTHER = "1528063444874432737";
-const USER = "1514413259522838529", STRANGER = "1514413259522838530", BOT = "1528063444874432799";
+const USER = "1514413259522838529", STRANGER = "1514413259522838530", BOT = "1528063444874432799", VIEWER = "1514413259522838531";
 const base: ChannelFacts = { thread: false, privateThread: false, viewChannel: true, readMessageHistory: true, sendMessages: true, sendMessagesInThreads: true, threadMember: false };
 const settle = () => new Promise(resolve => setTimeout(resolve, 25));
 
@@ -35,7 +35,7 @@ async function fixture(t: { after(fn: () => unknown): void }): Promise<Fixture> 
   };
   const access = new ChannelAccess(source);
   const names: Record<string, string> = { [CHANNEL]: "general", [OTHER]: "secret", [THREAD]: "task-1" };
-  const host: TranscriptHost = { store, access, configured: () => [CHANNEL, OTHER], channelName: async (_server, channel) => names[channel] };
+  const host: TranscriptHost = { store, access, configured: () => [CHANNEL, OTHER], channelName: async (_server, channel) => names[channel], shareRule: { manager: async () => false, teamAdmin: async user => user === USER } };
   const routes = createTranscripts(host);
   const http = createServer((req, res) => {
     const user = req.headers["x-user"] ? String(req.headers["x-user"]) : undefined;
@@ -143,6 +143,16 @@ test("the list has switched-on channels and threads the user can view, newest fi
   assert.equal(list.body.conversations[1].canSend, true);
   // A stranger is not in the server, so the list is empty and reads are refused.
   assert.deepEqual((await get(f, `/api/conversations?server=${SERVER}`, STRANGER)).body.conversations, []);
+});
+
+test("the messages response says who may send and who may share", async t => {
+  const f = await fixture(t);
+  const editor = await get(f, `/api/conversations/${CHANNEL}/messages?server=${SERVER}`);
+  assert.equal(editor.status, 200);
+  assert.deepEqual([editor.body.canSend, editor.body.canShare], [true, true]);
+  const viewer = await get(f, `/api/conversations/${CHANNEL}/messages?server=${SERVER}`, VIEWER);
+  assert.equal(viewer.status, 200);
+  assert.deepEqual([viewer.body.canSend, viewer.body.canShare], [true, false]);
 });
 
 test("a switched-off channel is 403 and never listed", async t => {

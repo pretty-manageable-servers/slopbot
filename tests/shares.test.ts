@@ -7,6 +7,7 @@ import { parseMessage, type Message } from '../src/domain.js';
 import { webTranscriptKey } from '../src/server-tools.js';
 import { ShareError, ShareService, buildMessages, canCreateShare, isShareId, isShareWrite, renderSharePage, scrubText, toolLine } from '../src/shares.js';
 import { createConsole } from '../src/web-console.js';
+import { TeamAdmins } from '../src/team-admins.js';
 
 const server = '1528063444874432734', channel = '1528063444874432735';
 const admin = '151441325952283852', ada = '151441325952283850', mention = '151441325952283853', bot = '151441325952283854';
@@ -16,7 +17,7 @@ const secretArgument = 'SECRET-ARGUMENT-7731', costMarker = '0.424242';
 interface Fixture { store: SQLiteStore; service: ShareService; clock: { now: number } }
 
 /** A store with one question, one Slopbot answer that used a tool, and a later message. */
-async function fixture(options: { managers?: string[]; teamAdmins?: string[]; view?: boolean; switchOn?: boolean } = {}): Promise<Fixture> {
+async function fixture(options: { managers?: string[]; teamAdmins?: string[]; teams?: TeamAdmins; view?: boolean; switchOn?: boolean } = {}): Promise<Fixture> {
   const store = new SQLiteStore(':memory:');
   const clock = { now: 5000 };
   if (options.switchOn !== false) store.setSetting(server, webTranscriptKey(channel), true);
@@ -38,7 +39,7 @@ async function fixture(options: { managers?: string[]; teamAdmins?: string[]; vi
   const service = new ShareService({
     store,
     access: { async check() { return { view: options.view ?? true }; } },
-    rule: { manager: async user => (options.managers ?? [admin]).includes(user), ...(options.teamAdmins ? { teamAdmin: async (user: string) => options.teamAdmins!.includes(user) } : {}) },
+    rule: { manager: async user => (options.managers ?? [admin]).includes(user), ...(options.teamAdmins ? { teamAdmin: async (user: string) => options.teamAdmins!.includes(user) } : {}), ...(options.teams ? { teamAdmin: (user: string) => options.teams!.canEdit(user) } : {}) },
     now: () => clock.now,
   });
   return { store, service, clock };
@@ -68,6 +69,17 @@ test('a team admin can create and revoke when the hook says so', async () => {
   const { id } = await service.create(ada, { server, channel });
   assert.equal((await service.list(ada, server)).shares.length, 1);
   await service.revoke(ada, id);
+  assert.equal(await service.snapshot(id), undefined);
+});
+
+test('team editors share through TeamAdmins.canEdit, and team readers get 403', async () => {
+  const EDITOR = '151441325952283860', READER = '151441325952283861';
+  const teams = new TeamAdmins({ async load() { return { ownerId: admin, members: [{ id: EDITOR, role: 'developer', accepted: true }, { id: READER, role: 'read_only', accepted: true }] }; } });
+  const { service } = await fixture({ managers: [], teams });
+  const { id } = await service.create(EDITOR, { server, channel });
+  assert.equal(isShareId(id), true);
+  await assert.rejects(service.create(READER, { server, channel }), (error: unknown) => error instanceof ShareError && error.status === 403);
+  await service.revoke(EDITOR, id);
   assert.equal(await service.snapshot(id), undefined);
 });
 

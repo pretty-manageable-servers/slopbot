@@ -33,6 +33,8 @@
 .conv-main{min-width:0}
 .conv-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:12px}
 .conv-head h2{margin:0}
+.conv-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.conv-tools .small{margin:0}
+#conv-reply{margin-top:12px}
 .conv-log{display:flex;flex-direction:column;gap:14px;max-height:calc(100vh - 260px);min-height:240px;overflow:auto;padding-right:6px}
 .msg{border-top:1px solid var(--line);padding-top:12px}
 .msg:first-child{border-top:0;padding-top:0}

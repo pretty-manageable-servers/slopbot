@@ -87,7 +87,8 @@ test('team admin routes need team membership, and only editors can change settin
   const teams = new TeamAdmins({ async load() { return { ownerId: OWNER, members: [...members] }; } });
   const limiter = new UserLimiter(store, { fiveHourCostMicros: 100, weekCostMicros: 0, gracePercent: 10 });
   const panel = new AdminPanel({ model: 'nimbus', jevModel: 'cirrus', embeddingModel: 'embed', baseUrl: 'https://models.example.com/v1', modelPrices: {}, fallbackPrice: { input: 1, cached_input: 1, output: 1 }, userLimit5hCostMicros: 100, userLimitWeekCostMicros: 0, userLimitGracePercent: 10 }, store, limiter);
-  const admin: ConsoleAdmin = { role: id => teams.role(id), canEdit: id => teams.canEdit(id), servers: async () => ({ servers: [{ id: SERVER, name: 'Test server', channels: [] }] }), setTranscript: async (server, channel, enabled) => ({ server, channel, enabled }), panel };
+  const rotated: string[] = [];
+  const admin: ConsoleAdmin = { role: id => teams.role(id), canEdit: id => teams.canEdit(id), servers: async () => ({ servers: [{ id: SERVER, name: 'Test server', channels: [] }] }), setTranscript: async (server, channel, enabled) => ({ server, channel, enabled }), rotateWebhook: async (_server, channel) => { rotated.push(channel); return { webhookId: 'hook-2' }; }, panel };
   const server = createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'}, {
     async snapshot() { return {}; }, async invoke() { return {}; }, admin,
   });
@@ -121,6 +122,7 @@ test('team admin routes need team membership, and only editors can change settin
     ['/api/admin/usage/reset', { server: SERVER, user: USER, kind: '5h' }],
     ['/api/admin/usage/grant', { server: SERVER, user: USER, kind: '5h', count: 1 }],
     ['/api/admin/transcripts', { server: SERVER, channel: '300000000000000001', enabled: true }],
+    ['/api/admin/web-webhooks/rotate', { server: SERVER, channel: '300000000000000001' }],
   ];
 
   // Not a member: every admin route is refused.
@@ -147,6 +149,15 @@ test('team admin routes need team membership, and only editors can change settin
   assert.equal((await post('/api/admin/limits', { server: 'nope', five_hour_cost_micros: 1, week_cost_micros: 0, grace_percent: 0 }, developer)).status, 400);
   assert.equal(store.setting(SERVER, 'user_limit_5h_cost_micros'), 5000000, 'bad input saves nothing');
   assert.equal((await get(`/api/admin/limits?server=${SERVER}`, developer)).status, 200);
+
+  // Rotate: refused members rotate nothing; an editor rotates one channel's webhook and bad input rotates nothing.
+  assert.deepEqual(rotated, []);
+  const rotate = await post('/api/admin/web-webhooks/rotate', { server: SERVER, channel: '300000000000000001' }, developer);
+  assert.equal(rotate.status, 200);
+  assert.deepEqual(await rotate.json(), { webhookId: 'hook-2' });
+  assert.deepEqual(rotated, ['300000000000000001']);
+  assert.equal((await post('/api/admin/web-webhooks/rotate', { server: SERVER, channel: 'bad' }, developer)).status, 400);
+  assert.deepEqual(rotated, ['300000000000000001']);
 
   // Prices: add, read back, remove. The saved table is the only thing that changes.
   const priced = await (await post('/api/admin/prices', writes[1]![1], developer)).json() as { saved_models: string[]; prices: Record<string, unknown>; models: string[] };
