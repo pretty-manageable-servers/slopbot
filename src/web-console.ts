@@ -67,7 +67,7 @@ const SESSION_AGE = SESSION_MS / 1000;
 const SESSION_SWEEP_MS = 3_600_000;
 /** The database stores only this hash of the cookie value. */
 const sessionHash = (id: string) => createHash('sha256').update(id).digest('hex');
-const allowed = new Set(['monitoring', 'context', 'cooldown', 'channels', 'index', 'profile', 'timing', 'tool_display']);
+const allowed = new Set(['monitoring', 'context', 'cooldown', 'channels', 'index', 'profile', 'timing', 'tool_display', 'default_effort']);
 /** Team admin routes. Every one needs team membership; POST also needs an editing role. */
 async function adminRoute(admin: ConsoleAdmin, user: string, method: string, path: string, query: URLSearchParams, body: unknown): Promise<unknown> {
   const role = await admin.role(user);

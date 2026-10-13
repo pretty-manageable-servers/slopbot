@@ -35,7 +35,7 @@ import { registerProfileTools } from "../profiles.js";
 import { Application } from "../application.js";
 import { Bot, splitReply, type ChatGateway, type Incoming } from "../bot.js";
 import type { Config } from "../config.js";
-import type { Message } from "../domain.js";
+import { parseEffort, type Message } from "../domain.js";
 import type { LLM } from "../ports.js";
 import type { RuntimeStore } from "../runtime-store.js";
 import { LLMClassifier, ParticipationGate } from "../participation.js";
@@ -594,6 +594,7 @@ export class DiscordServer implements ChatGateway {
         cooldown_seconds: this.store.setting(guild.id, 'cooldown_seconds') ?? this.config.jevCooldownSeconds,
         max_unsolicited_per_hour: this.store.setting(guild.id, 'max_unsolicited_per_hour') ?? this.config.jevMaxRepliesPerHour,
         tool_display: toolDisplayMode(this.store.setting(guild.id, 'tool_display')),
+        default_effort: parseEffort(this.store.setting(guild.id, 'default_effort')) ?? 'default',
         timing_footer: this.store.setting(guild.id, 'timing_footer') ?? false,
         model: this.config.model, mock: this.config.mock,
       } : null };

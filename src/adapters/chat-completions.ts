@@ -108,6 +108,8 @@ export class ChatCompletionsLLM implements LLM {
   readonly contextTokenLimit: number;
   private readonly aliases: ModelAliases;
   private readonly cacheDiagnostics = new PromptCacheDiagnostics();
+  /** Models whose provider rejected the effort field. Effort is not sent to them again. */
+  private readonly noEffort = new Set<string>();
   constructor(private readonly options: ProviderOptions, private readonly fetcher: typeof fetch = fetch) {
     this.aliases = new ModelAliases(options.baseUrl);
     this.model = options.model;
@@ -122,12 +124,21 @@ export class ChatCompletionsLLM implements LLM {
     const messages = wireMessages(prompt);
     yield { kind: "opaque", payload: this.cacheDiagnostics.compare(prompt, messages) };
     let response: Response;
-    try { response = await this.aliases.request(this.options.model, model => requestTimings.wait(`${phase} response headers`, () => this.fetcher(`${this.options.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+    const request = (effort: string | undefined) => this.aliases.request(this.options.model, model => requestTimings.wait(`${phase} response headers`, () => this.fetcher(`${this.options.baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.options.apiKey}` },
-      body: JSON.stringify({ model, messages, ...(prompt.tools?.length ? { tools: prompt.tools, tool_choice: "auto" } : {}), stream: true, stream_options: { include_usage: true }, max_tokens: maxOutputTokens }),
+      body: JSON.stringify({ model, messages, ...(prompt.tools?.length ? { tools: prompt.tools, tool_choice: "auto" } : {}), stream: true, stream_options: { include_usage: true }, max_tokens: maxOutputTokens, ...(effort ? { reasoning_effort: effort } : {}) }),
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(this.options.timeoutMs ?? 120_000)]) : AbortSignal.timeout(this.options.timeoutMs ?? 120_000),
     })));
+    try {
+      const effort = prompt.effort && !this.noEffort.has(this.options.model) ? prompt.effort : undefined;
+      response = await request(effort);
+      if (effort && response.status === 400 && /effort|reasoning/i.test(await response.clone().text().catch(() => ""))) {
+        // The model does not support effort. Send the request again without it, and remember this.
+        this.noEffort.add(this.options.model);
+        await response.body?.cancel().catch(() => undefined);
+        response = await request(undefined);
+      }
     } catch (error) {
       if (error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name)) throw error;
       if (error instanceof RequestError) throw error;

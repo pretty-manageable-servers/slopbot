@@ -1362,7 +1362,7 @@ function chatComposer(id) {
   send.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const meter = usageMeter();
   conv.meter = meter;
-  box.append(field, meter.wrap, send);
+  box.append(field, meter.wrap, effortPicker(id), send);
   const linked = conv.ask && conv.ask.chat === id ? conv.ask.text : '';
   if (linked) {
     field.value = linked;
@@ -1598,4 +1598,56 @@ function textNode(tag, text, className = '') {
   if (className) node.className = className;
   node.textContent = text;
   return node;
+}
+
+// Reasoning effort of one chat. A small menu button next to Send. The choice is saved on the chat.
+const EFFORT_LEVELS = [['low', 'Low'], ['medium', 'Medium'], ['xhigh', 'Extra high']];
+function effortPicker(id) {
+  const chat = () => conv.chats.find(c => c.id === id);
+  const wrap = textNode('div', '', 'effort-pick');
+  const button = document.createElement('button');
+  button.type = 'button'; button.className = 'effort-button';
+  button.setAttribute('aria-haspopup', 'menu'); button.setAttribute('aria-expanded', 'false');
+  const menu = document.createElement('div');
+  menu.className = 'effort-menu'; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', 'Reasoning effort'); menu.hidden = true;
+  let current = (chat() && chat().effort) || 'medium';
+  const label = value => EFFORT_LEVELS.find(item => item[0] === value)[1];
+  const items = EFFORT_LEVELS.map(([value, name]) => {
+    const item = textNode('button', name, 'effort-item');
+    item.type = 'button'; item.setAttribute('role', 'menuitemradio');
+    item.onclick = async () => {
+      close(true);
+      const before = current;
+      current = value; paint();
+      try {
+        await sendJson('PATCH', `/api/chats/${enc(id)}`, { effort: value });
+        if (chat()) chat().effort = value;
+      } catch (error) { current = before; paint(); fail(error); }
+    };
+    return item;
+  });
+  menu.append(...items);
+  function paint() {
+    button.textContent = label(current);
+    button.setAttribute('aria-label', `Reasoning effort: ${label(current)}`);
+    items.forEach((item, index) => item.setAttribute('aria-checked', String(EFFORT_LEVELS[index][0] === current)));
+  }
+  function close(focus) { menu.hidden = true; button.setAttribute('aria-expanded', 'false'); document.removeEventListener('click', outside, true); if (focus) button.focus(); }
+  function outside(event) { if (!wrap.contains(event.target)) close(false); }
+  function open() {
+    menu.hidden = false; button.setAttribute('aria-expanded', 'true');
+    document.addEventListener('click', outside, true);
+    (items.find(item => item.getAttribute('aria-checked') === 'true') || items[0]).focus();
+  }
+  button.onclick = () => menu.hidden ? open() : close(true);
+  wrap.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !menu.hidden) { event.preventDefault(); event.stopPropagation(); close(true); return; }
+    if (menu.hidden || !['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+    event.preventDefault();
+    const at = items.indexOf(document.activeElement), step = event.key === 'ArrowDown' ? 1 : -1;
+    items[(at + step + items.length) % items.length].focus();
+  });
+  paint();
+  wrap.append(button, menu);
+  return wrap;
 }
