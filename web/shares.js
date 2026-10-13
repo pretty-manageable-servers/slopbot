@@ -172,6 +172,7 @@
         await load();
       } catch (failure) {
         error.textContent = failure.message;
+        status.textContent = failure.message;
       } finally {
         create.disabled = false;
       }
