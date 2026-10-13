@@ -44,6 +44,8 @@ export interface Store {
   // Lifetime totals per user and model. Chat delete, channel purge, retention and purgeUnconfigured never remove them.
   addTokenTotals(server: string, user: string, model: string, totals: TokenTotals, at: number): Promise<void>;
   userTokenTotals(server: string, user: string): Promise<UserTokenTotalRow[]>;
+  // All servers together, plus the top `limit` servers and models by cost.
+  tokenTotalsSummary(limit: number): Promise<TokenTotalsSummary>;
 }
 
 /** Spend in micro-dollars for one window kind, starting at windowStart. */
@@ -53,6 +55,13 @@ export interface UserLimitRow extends UserLimitState { user: string }
 /** Token counts and cost of model calls. input is the uncached prompt tokens; cached is the cached part of the prompt. */
 export interface TokenTotals { input: number; output: number; cached: number; costMicros: number }
 export interface UserTokenTotalRow extends TokenTotals { model: string; requests: number; firstAt: number; lastAt: number }
+/** Sums of the token totals and request count, over all rows of a group. */
+export type TokenSums = TokenTotals & { requests: number };
+export interface TokenTotalsSummary {
+  total: TokenSums;
+  servers: (TokenSums & { server: string })[];
+  models: (TokenSums & { model: string })[];
+}
 
 export interface Transport {
   send(message: Message, reply: Reply): Promise<void>;

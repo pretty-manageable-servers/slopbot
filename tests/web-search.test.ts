@@ -44,3 +44,8 @@ test('protected search sends Access credentials only over HTTPS and refuses redi
  },Date.now,access);
  await search.search('hello',1);assert.equal(calls,1);
 });
+test('SearXNG with no results and failed engines reports the engine fault',async()=>{
+ const broken=new SearxNGSearch('http://localhost:8080',async()=>Response.json({results:[],unresponsive_engines:[['google','CAPTCHA'],['duckduckgo','timeout']]}));
+ await assert.rejects(broken.search('q',1),/search engines failed \(google: CAPTCHA; duckduckgo: timeout\)/);
+ assert.deepEqual(await new SearxNGSearch('http://localhost:8080',async()=>Response.json({results:[],unresponsive_engines:[]})).search('q',1),[]);
+});

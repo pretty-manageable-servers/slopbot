@@ -137,7 +137,7 @@ test('uncertain MCP writes are not retried and read hints do not authorize reads
   assert.equal(registry.requiresThread(name, { limit: 1 }), true);
   await assert.rejects(registry.invokeResult(message, name, { limit: 1 }, 'write', 'agent'), UncertainActionError);
   await assert.rejects(registry.invokeResult(message, name, { limit: 1 }, 'write', 'agent'), UncertainActionError);
-  await assert.rejects(registry.invokeResult(message, name, { limit: 1 }, 'another', 'agent'), /unresolved action/);
+  await assert.rejects(registry.invokeResult(message, name, { limit: 1 }, 'another', 'agent'), /did not finish/);
   assert.equal(calls, 1);
 });
 

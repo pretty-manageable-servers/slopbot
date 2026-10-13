@@ -48,6 +48,7 @@ import { UserLimiter, UserLimitError, limitReply, usageView } from "../user-limi
 import { createUsageMeter, type UsageMeter } from "../usage-meter.js";
 import { registerUsageTool } from "../usage-tools.js";
 import { configuredChannels, registerServerTools, webTranscriptKey, webTranscriptsEnabled } from "../server-tools.js";
+import { pageItems, type ServerListRow, type ServerPage } from "../admin-panel.js";
 import { ChannelAccess } from "../channel-access.js";
 import { TeamAdmins, discordTeamSource } from "../team-admins.js";
 import { publishMessage, publishMessageDelete, publishTool, runEvents } from "../run-events.js";
@@ -639,6 +640,10 @@ export class DiscordServer implements ChatGateway {
   adminTranscripts(): Promise<{ channels: TranscriptChannel[] }> {
     return this.transcripts();
   }
+  /** Channel count and how many channels have web transcripts on. Makes no Discord calls. */
+  adminSummary(): { channelCount: number; transcriptsOn: number } {
+    return { channelCount: this.channels.length, transcriptsOn: this.channels.filter(id => webTranscriptsEnabled(this.store, this.guildId, id)).length };
+  }
   adminSetTranscript(channel: string, enabled: boolean): Promise<unknown> {
     return this.setTranscript(channel, enabled);
   }
@@ -854,10 +859,25 @@ export class DiscordAdapter {
   async consoleSetTranscript(user: string, guildId: string, channel: string, enabled: boolean): Promise<unknown> {
     return (await this.server(user, guildId)).consoleSetTranscript(user, channel, enabled);
   }
-  /** Every server Slopbot runs in, with its web transcript switches. The console checks the team role first. */
-  async adminServers(): Promise<unknown> {
-    const servers = await Promise.all([...this.servers].map(async ([id, opening]) => ({ id, name: this.client.guilds.cache.get(id)?.name ?? id, ...await (await opening).adminTranscripts() })));
-    return { servers: servers.sort((a, b) => a.name.localeCompare(b.name)) };
+  /** The display name of a server, or its ID when Discord has not cached the name. */
+  adminServerName(guildId: string): string {
+    return this.client.guilds.cache.get(guildId)?.name ?? guildId;
+  }
+  /** The display name and icon of a server, as the Manage servers list shows them. */
+  adminServerInfo(guildId: string): { name: string; icon: string | null } {
+    const guild = this.client.guilds.cache.get(guildId);
+    return { name: guild?.name ?? guildId, icon: guild?.iconURL({ size: 64 }) ?? null };
+  }
+  /** One page of the servers Slopbot runs in, filtered by name and sorted. Makes no channel calls. The console checks the team role first. */
+  async adminServers(page: ServerPage): Promise<unknown> {
+    const rows: ServerListRow[] = await Promise.all([...this.servers].map(async ([id, opening]) => ({ id, name: this.adminServerName(id), icon: this.client.guilds.cache.get(id)?.iconURL({ size: 64 }) ?? null, ...(await opening).adminSummary() })));
+    return pageItems(rows, page);
+  }
+  /** One server's channels with their web transcript switches. */
+  async adminServerChannels(guildId: string): Promise<unknown> {
+    const opening = this.servers.get(guildId);
+    if (!opening) throw new ToolError('Slopbot is not running in that server.');
+    return { server: guildId, name: this.adminServerName(guildId), ...await (await opening).adminTranscripts() };
   }
   async adminSetTranscript(guildId: string, channel: string, enabled: boolean): Promise<unknown> {
     const opening = this.servers.get(guildId);

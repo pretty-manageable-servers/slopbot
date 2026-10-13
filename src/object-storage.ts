@@ -2,7 +2,8 @@ import { logError } from './errors.js';
 import { randomUUID } from 'node:crypto';
 import type { Json, Message } from './domain.js';
 import type { RecordStore, AppRecord } from './records.js';
-import { ToolError, type ToolContext, type ToolDefinition } from './tools.js';
+import { ToolError, discordOnlyMessage, type ToolContext, type ToolDefinition } from './tools.js';
+import { isPrivateChannel } from './private-chat.js';
 import { DiscordFileFetcher, type FileFetcher } from './files.js';
 import { sourceFingerprint } from './source-context.js';
 
@@ -177,6 +178,8 @@ export function objectStorageTool(services: StorageServices): ToolDefinition {
     },
     async authorize(context, args) {
       await services.authorize(context.message);
+      // Send posts a Discord DM, so a private chat cannot use it. The other actions stay available.
+      if (args.action === 'send' && isPrivateChannel(context.message.channel)) throw new ToolError(discordOnlyMessage);
       if (['info', 'read', 'link', 'send', 'copy', 'load_sandbox'].includes(String(args.action))) await services.storage.entry(context.message.server, context.message.author, String(args.owner ?? context.message.author), String(args.path), false, (args.storage_scope ?? 'user_server') as StorageScope, context.isAdmin);
     },
     async execute(context, args) {

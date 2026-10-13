@@ -3,6 +3,8 @@ import { test } from 'node:test';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { sandboxTool, type SandboxProvider, type SandboxSession, type SandboxAttachments } from '../src/sandbox.js';
 import { ToolRegistry, ToolError, UncertainActionError } from '../src/tools.js';
+import { describeError } from '../src/errors.js';
+import { privateChannel } from '../src/private-chat.js';
 
 function setup(attachments?: SandboxAttachments) {
   const store = new SQLiteStore();
@@ -264,4 +266,71 @@ test('template build failures do not advertise success; lost responses remain un
   const {Sandbox} = await import('e2b');
   t.mock.method(Sandbox, 'create', async () => {throw new NotFoundError('missing template');});
   await assert.rejects(provider.create({},600000,'missing'), error => error instanceof ToolError && /template/.test(error.message));
+});
+
+test('sandbox create maps a refused request to a plain tool error; timeouts and server errors stay uncertain', async t => {
+  const { createServer } = await import('node:http');
+  const { E2BSandboxProvider } = await import('../src/adapters/e2b-sandbox.js');
+  const seen: string[] = [];
+  let status = 404;
+  const server = createServer((request, response) => {
+    seen.push(`${request.method} ${request.url}`);
+    response.writeHead(status, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ code: status, message: 'private backend detail' }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const { port } = server.address() as import('node:net').AddressInfo;
+  const provider = new E2BSandboxProvider({ apiKey: 'test-only', apiUrl: `http://127.0.0.1:${port}`, sandboxUrl: `http://127.0.0.1:${port}` });
+
+  await assert.rejects(provider.create({}, 600000, 'python'), error => error instanceof ToolError && error.status === 'rejected'
+    && error.message === 'Sandbox template "python" does not exist. Use action "templates" to list templates, or omit template to use the default.');
+  assert.deepEqual(seen, ['POST /v2/sandboxes']);
+  assert.ok(!(await rejection(provider.create({}, 600000, 'python'))).message.includes('private backend detail'));
+
+  status = 400;
+  await assert.rejects(provider.create({}, 600000, 'bad name'), error => error instanceof ToolError && /HTTP 400\)\. No sandbox was created/.test(error.message));
+  status = 403;
+  await assert.rejects(provider.create({}, 600000), error => error instanceof ToolError && error.status === 'failed' && /HTTP 403/.test(error.message));
+  status = 408;
+  await assert.rejects(provider.create({}, 600000), UncertainActionError);
+});
+
+async function rejection(promise: Promise<unknown>): Promise<Error> {
+  try { await promise; } catch (error) { return error as Error; }
+  throw new Error('expected a rejection');
+}
+
+test('an uncertain sandbox action stops blocking after its orphan lifetime; private chats get a plain message', async t => {
+  const f = setup(); t.after(() => f.store.close());
+  let failNext = true;
+  const provider: SandboxProvider = { ...f.provider, async create(meta, lease, template) {
+    const session = await f.provider.create(meta, lease, template);
+    session.run = async () => {
+      if (failNext) { failNext = false; throw new Error('connection lost'); }
+      return { stdout: 'ok', stderr: '', exitCode: 0 };
+    };
+    return session;
+  } };
+  const registry = new ToolRegistry(f.store, async () => false); registry.register(sandboxTool(f.store, provider));
+  const chat = { ...f.message, channel: privateChannel('chat-1') };
+  const start = Date.UTC(2026, 9, 13, 10, 0, 0);
+  let now = start;
+  t.mock.method(Date, 'now', () => now);
+  const run = (id: string) => registry.invoke(chat, 'sandbox', { action: 'run', command: 'ok' }, id, 'agent');
+
+  await assert.rejects(run('first'), UncertainActionError);
+  now = start + 60000;
+  const blocked = await rejection(run('second'));
+  assert.ok(blocked instanceof ToolError);
+  assert.equal(blocked.message, 'An earlier sandbox action in this chat did not finish (started 2026-10-13 10:00 UTC). It clears automatically at 2026-10-13 10:10 UTC.');
+  assert.ok(!/task|operation first|reconcile/i.test(blocked.message));
+  assert.equal(describeError(blocked).context.operationId, 'first');
+  assert.equal((await f.store.operation('first'))?.status, 'started');
+
+  now = start + 600001;
+  assert.equal(await run('third'), 'Exit code: 0\nstdout:\nok\nstderr:\n');
+  const abandoned = await f.store.operation('first');
+  assert.equal(abandoned?.status, 'failed');
+  assert.match(abandoned?.result ?? '', /"reason":"abandoned"/);
 });

@@ -60,13 +60,13 @@ export function transcriptSwitchOn(store: Pick<ServerToolStore, "setting"> & { t
 export function registerServerTools(registry: ToolRegistry, services: ServerToolServices): void {
   const { config, store, participation, history, server } = services;
   const add = (tool: ToolDefinition) => registry.register(tool);
-  add({ name: "timing", description: "Toggle request timing footers for this server; full delivery timings remain in logs", fields: { enabled: { type: "boolean", description: "Show timing at the end of replies", required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
+  add({ name: "timing", scope: "discord", description: "Toggle request timing footers for this server; full delivery timings remain in logs", fields: { enabled: { type: "boolean", description: "Show timing at the end of replies", required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
     async execute(_context, args) { await store.setSetting(server, "timing_footer", args.enabled!); return `Timing footers ${args.enabled ? "enabled" : "disabled"}. Footer totals end before Discord delivery; logs include delivery.`; }
   });
   add({ name: "default_effort", description: "Choose the default reasoning effort for this server: low, medium, xhigh, or default (the provider decides). Models without effort support ignore it.", fields: { level: { ...choice("Default reasoning effort", ["default", "low", "medium", "xhigh"]), required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
     async execute(_context, args) { await store.setSetting(server, "default_effort", args.level!); return `Default reasoning effort set to ${args.level}.`; }
   });
-  add({ name: "tool_display", description: "Choose tool activity in completed replies: none, summary (one grey line with counts), or full (counts plus failed calls).", fields: { mode: { ...choice("Tool activity display", ["none", "summary", "full"]), required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
+  add({ name: "tool_display", scope: "discord", description: "Choose tool activity in completed replies: none, summary (one grey line with counts), or full (counts plus failed calls).", fields: { mode: { ...choice("Tool activity display", ["none", "summary", "full"]), required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
     async execute(_context, args) { await store.setSetting(server, "tool_display", args.mode!); return `Tool activity display set to ${args.mode}. Live progress remains enabled.`; }
   });
   add(selfKnowledgeTool(registry, () => `Native function calling: enabled\nObject storage: ${config.objectStorage ? "configured" : "not configured"}; file_store scopes user/server/user_server, with ownership and sharing controls\nTool rounds per attempt: ${config.maxToolRounds}\nPMServers docs reviewed: 2026-10-12; latest changelog: 2026-10-12\nReply model: ${config.model}\nParticipation model: ${config.jevModel}\nMock mode: ${config.mock}\nDatabase adapter: ${config.databaseUrl ? "PostgreSQL/pgvector" : "SQLite"}\nMonitoring enabled: ${participation.options.enabled}\nEmbeddings enabled: ${config.embeddingsEnabled && !config.mock}; model: ${config.embeddingModel}\nContext budget: ${config.contextTokens}; output reserve: ${config.outputTokens}\nReply context messages: ${store.setting(server, "reply_context") ?? config.replyContextMessages}`));
@@ -81,13 +81,13 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
       const usage = await store.llmUsage(server);
       return `Reply model: ${config.model}\nJEV model: ${config.jevModel}\nMonitoring: ${participation.options.enabled}\nJEV context: ${participation.options.contextMessages} messages\nReply context: ${store.setting(server, "reply_context") ?? config.replyContextMessages} messages\nUnsolicited limits per channel: ${participation.options.cooldownMs / 1000}s, ${participation.options.maxUnsolicitedPerHour}/hour\nChannels: ${services.channels().map(id => `<#${id}>`).join(", ") || "none"}\nContext: ${config.contextTokens} token budget, ${config.outputTokens} reserved for output; conservative UTF-8 byte counter\nEmbeddings: ${config.embeddingsEnabled && !config.mock}; saved lesson/memory semantic search; chat uses SQL keywords\nLLM reported usage: ${usage.input} input, ${usage.output} output, ${usage.cached} cached input tokens from ${usage.requests} usage events. Missing provider usage is not inferred.`;
     } });
-  add({ name: "monitoring", description: "Enable or disable JEV monitoring", fields: { enabled: { type: "boolean", description: "Whether JEV monitors unaddressed messages", required: true } }, access: "admin", effect: "write", retrySafe: true,
+  add({ name: "monitoring", scope: "discord", description: "Enable or disable JEV monitoring", fields: { enabled: { type: "boolean", description: "Whether JEV monitors unaddressed messages", required: true } }, access: "admin", effect: "write", retrySafe: true,
     async execute(_context, args) {
       await store.setSetting(server, "monitoring", args.enabled!);
       participation.options.enabled = Boolean(args.enabled) && !config.mock;
       return `Monitoring ${participation.options.enabled ? "enabled" : "disabled"}. Mentions and replies still work.`;
     } });
-  add({ name: "reactions", description: "Set emoji reaction frequency from 0 (off) to 100 (every suitable opportunity); requires monitoring", fields: {
+  add({ name: "reactions", scope: "discord", description: "Set emoji reaction frequency from 0 (off) to 100 (every suitable opportunity); requires monitoring", fields: {
     frequency: integer("0 to 100. Default 60. Percentage of classifier-selected funny messages to react to", 100),
   }, access: "admin", effect: "write", retrySafe: true,
     async execute(_context, args) {
@@ -96,14 +96,14 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
       participation.options.reactionFrequency = frequency;
       return `Reaction frequency: ${frequency}/100. ${frequency === 0 ? "Reactions disabled." : `${frequency}% of suitable funny messages; no separate cooldown or hourly cap. Monitoring must be enabled.`}`;
     } });
-  add({ name: "context", description: "Configure preceding messages for JEV or replies", fields: { messages: integer("0 to 100 preceding messages", 100), target: choice("Default: jev", ["jev", "reply"]) }, access: "admin", effect: "write", retrySafe: true,
+  add({ name: "context", scope: "discord", description: "Configure preceding messages for JEV or replies", fields: { messages: integer("0 to 100 preceding messages", 100), target: choice("Default: jev", ["jev", "reply"]) }, access: "admin", effect: "write", retrySafe: true,
     async execute(_context, args) {
       const count = Number(args.messages), target = args.target ?? "jev";
       if (target === "reply") { await store.setSetting(server, "reply_context", count); services.setReplyContext(count); }
       else { await store.setSetting(server, "classifier_context", count); participation.options.contextMessages = count; }
       return `${target} receives up to ${count} preceding messages.`;
     } });
-  add({ name: "cooldown", description: "Set unsolicited reply limits per channel", fields: { seconds: integer("Minimum interval in seconds", 3600), per_hour: integer("Maximum unsolicited replies per hour", 1000) }, access: "admin", effect: "write", retrySafe: true,
+  add({ name: "cooldown", scope: "discord", description: "Set unsolicited reply limits per channel", fields: { seconds: integer("Minimum interval in seconds", 3600), per_hour: integer("Maximum unsolicited replies per hour", 1000) }, access: "admin", effect: "write", retrySafe: true,
     async execute(_context, args) {
       await store.setSetting(server, "cooldown_seconds", args.seconds!); await store.setSetting(server, "max_unsolicited_per_hour", args.per_hour!);
       participation.options.cooldownMs = Number(args.seconds) * 1000; participation.options.maxUnsolicitedPerHour = Number(args.per_hour);
@@ -117,7 +117,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
     } });
   add({ name: "channel_find", description: "Find visible server text channels by name before changing channel settings", fields: { query: { type: "string", description: "Channel name to search", required: true } }, access: "admin", effect: "read", retrySafe: true,
     async execute(context, args) { return services.findChannels(context.message, String(args.query)); } });
-  add({ name: "channels", description: "List, add or remove monitored channels; removal purges searchable content", fields: { action: choice("Default: list", ["list", "add", "remove"]), channel }, access: "admin", effect: "write", retrySafe: true, writes: args => (args.action ?? "list") !== "list",
+  add({ name: "channels", scope: "discord", description: "List, add or remove monitored channels; removal purges searchable content", fields: { action: choice("Default: list", ["list", "add", "remove"]), channel }, access: "admin", effect: "write", retrySafe: true, writes: args => (args.action ?? "list") !== "list",
     async execute(context, args) {
       const action = args.action ?? "list", channels = [...services.channels()];
       if (action === "list") return channels.map(id => `<#${id}>`).join("\n") || "No channels configured.";
@@ -129,7 +129,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
       await store.setSetting(server, "channels", next); await services.setChannels(next);
       return action === "add" ? `<#${id}> is configured. Older chat history will be imported; new messages are saved and searchable. Only saved lessons and memories use embeddings.` : `<#${id}> is disabled. Searchable content and its task scopes were purged; operational logs remain retained.`;
     } });
-  add({ name: "index", description: "Manage history windows, older imports, progress and saved memory embedding usage", fields: { channel, action: choice("Default: status", ["status", "window", "more", "pause", "resume"]), days: integer("Initial coverage window in days", 3650, false, 1) }, access: "admin", effect: "write", retrySafe: false, writes: args => (args.action ?? "status") !== "status",
+  add({ name: "index", scope: "discord", description: "Manage history windows, older imports, progress and saved memory embedding usage", fields: { channel, action: choice("Default: status", ["status", "window", "more", "pause", "resume"]), days: integer("Initial coverage window in days", 3650, false, 1) }, access: "admin", effect: "write", retrySafe: false, writes: args => (args.action ?? "status") !== "status",
     matchRead(message) {
       if (!/\b(index(?:ing)?\b.*\b(status|progress)\b|(?:status|progress)\b.*\bindex(?:ing)?\b)/i.test(message.text)) return undefined;
       const target = message.text.match(/<#(\d{17,20})>/)?.[1];
@@ -165,7 +165,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
     async execute(context) { const notes = await store.memories(context.message.server, (await services.originMessage(context.message)).channel); return notes.length ? notes.slice(0, 20).map(note => `${note.id} | author ${note.author} | ${note.content}`).join("\n") : "No active saved memories in this channel."; } });
   add({ name: "memory_forget", description: "Forget one of your saved statements", fields: { id: { type: "string", description: "Memory ID", required: true } }, access: "member", effect: "write", retrySafe: true,
     async execute(context, args) { return await store.forget(context.message.server, (await services.originMessage(context.message)).channel, String(args.id), context.message.author) ? "Memory forgotten." : "No active memory with that ID owned by you in this channel."; } });
-  add({ name: "task_start", description: "Move sustained work or an action request into a dedicated task thread", fields: { goal: { type: "string", description: "Task goal", required: true } }, access: "member", effect: "write", retrySafe: false, resource: message => `task-thread:${message.server}:${message.id}`,
+  add({ name: "task_start", scope: "discord", description: "Move sustained work or an action request into a dedicated task thread", fields: { goal: { type: "string", description: "Task goal", required: true } }, access: "member", effect: "write", retrySafe: false, resource: message => `task-thread:${message.server}:${message.id}`,
     async execute(context, args) { await context.assertActive(); const threadId = await services.startTask(context.message, String(args.goal)); return { text: `Task thread: <#${threadId}>`, handoff: { threadId } }; },
     async reconcile(context) { const thread = await services.reconcileTask(context.message); return thread ? { text: `Task thread: <#${thread}>`, handoff: { threadId: thread } } : undefined; } });
   add({ name: "task_status", description: "Inspect queued, failed and blocked requests in this task", fields: {}, access: "member", effect: "read", retrySafe: true,

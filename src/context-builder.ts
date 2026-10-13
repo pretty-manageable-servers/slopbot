@@ -6,6 +6,9 @@ import type { TokenCounter } from "./context.js";
 import type { ProfileStore } from "./profiles.js";
 import type { ToolExecutor } from "./tools.js";
 import { expandReplySubject, shouldRecall, personResponses, suggestRequestTool } from "./request-routing.js";
+import { isPrivateChannel } from "./private-chat.js";
+
+const privateChatRule = "This is a private web chat. It has no task threads. Do writes directly in this chat. Never call task_start. This replaces the task thread rule in the tool instructions for this chat.";
 
 interface ContextOptions {
   store: Store; recall?: Recall; profiles?: ProfileStore; tools?: ToolExecutor;
@@ -18,7 +21,9 @@ export class ContextBuilder {
     prefix = this.options.prefix, tools = this.options.tools, schemaBudget = 0) {
     const sourceVersion = await this.options.store.contextVersion(message.server, message.channel);
     let request: PromptItem = { role: "user", content: message.text, author: message.author, sourceIds: [message.id], ...(message.modelImages?.length ? { images: message.modelImages } : {}) };
-    const metadata: PromptItem[] = this.options.tools ? [{ role: "user", contextOnly: true, content: JSON.stringify({ request_context: { server_id: message.server, channel_id: message.channel, requester_id: message.author, task_id: message.taskId ?? null, is_task: Boolean(message.taskId) } }) }] : [];
+    // A private chat has no task threads, so the thread rule in the tool instructions does not apply to it. Only this request says so.
+    const privateChat = isPrivateChannel(message.channel) ? { private_web_chat: true, private_chat_rule: privateChatRule } : {};
+    const metadata: PromptItem[] = this.options.tools ? [{ role: "user", contextOnly: true, content: JSON.stringify({ request_context: { server_id: message.server, channel_id: message.channel, requester_id: message.author, task_id: message.taskId ?? null, is_task: Boolean(message.taskId), ...privateChat } }) }] : [];
     let budget = this.options.inputLimit - schemaBudget - this.options.counter.count([...prefix, ...metadata, request]);
     if (budget < 0) throw new RequestError("CONTEXT_BUDGET", `Request exceeds context budget: request and schemas are ${-budget} estimated input units over the limit.`, "Reduce the request or increase CONTEXT_TOKENS while leaving room for OUTPUT_TOKENS.", { inputLimit: this.options.inputLimit, schemaBudget });
     const referencedContext = message.replyTo ? await this.options.store.context(message, recentMessages) : undefined;

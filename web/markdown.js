@@ -77,10 +77,61 @@
     return s.replace(/\u0001(\d+)\u0002/g, (_, n) => held[n]);
   }
 
+  // Highlighting uses window.hljs from web/highlight.min.js. It runs only when the fence names a known language.
+  // hljs escapes the code itself, so its output is safe to put in the page. Big blocks, failures and a missing
+  // library leave the code plain. Results are cached, so a reloaded chat does not highlight the same code again.
+  const HIGHLIGHT_MAX = 20000;
+  const HIGHLIGHT_CACHE_MAX = 200;
+  const highlightCache = new Map();
+
+  function highlightCode(lang, code) {
+    const hl = typeof window !== 'undefined' ? window.hljs : undefined;
+    if (!lang || !hl || code.length > HIGHLIGHT_MAX) return undefined;
+    const key = `${lang}\u0000${code}`;
+    if (highlightCache.has(key)) return highlightCache.get(key);
+    let out;
+    try {
+      if (hl.getLanguage(lang)) out = hl.highlight(code, { language: lang, ignoreIllegals: true }).value;
+    } catch {
+      out = undefined;
+    }
+    if (typeof out === 'string') {
+      highlightCache.set(key, out);
+      if (highlightCache.size > HIGHLIGHT_CACHE_MAX) highlightCache.delete(highlightCache.keys().next().value);
+    }
+    return out;
+  }
+
   function codeBlock(info, body) {
     const lang = info.trim().split(/\s+/)[0].toLowerCase().replace(/[^a-z0-9+#-]/g, '');
-    const label = lang ? `<div class="md-code-lang">${lang}</div>` : '';
-    return `<div class="md-code">${label}<pre><code>${esc(body.join('\n'))}</code></pre></div>`;
+    const code = body.join('\n');
+    const highlighted = highlightCode(lang, code);
+    const head = `<div class="md-code-head">${lang ? `<div class="md-code-lang">${lang}</div>` : ''}<button type="button" class="md-copy">Copy</button></div>`;
+    const attrs = highlighted === undefined ? '' : ` class="hljs language-${lang}"`;
+    return `<div class="md-code">${head}<pre><code${attrs}>${highlighted === undefined ? esc(code) : highlighted}</code></pre></div>`;
+  }
+
+  // Copy buttons. One document listener serves every code block, so the markup has no inline script.
+  function copyCode(button) {
+    const block = button.closest('.md-code');
+    const codeNode = block ? block.querySelector('pre code') : null;
+    const text = codeNode ? codeNode.textContent : '';
+    const showLabel = (label) => {
+      button.textContent = label;
+      setTimeout(() => { button.textContent = 'Copy'; }, 1500);
+    };
+    try {
+      navigator.clipboard.writeText(text).then(() => showLabel('Copied'), () => showLabel('Copy failed'));
+    } catch {
+      showLabel('Copy failed');
+    }
+  }
+
+  if (typeof document !== 'undefined') {
+    document.addEventListener('click', (event) => {
+      const button = event.target && event.target.closest ? event.target.closest('.md-copy') : null;
+      if (button) copyCode(button);
+    });
   }
 
   // Groups runs of the same kind (ordered or not) into one list each.

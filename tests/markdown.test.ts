@@ -54,7 +54,7 @@ test("HTML inside inline code and fenced code is shown as text", () => {
   assert.equal(render("`<b>x</b>`"), "<p><code>&lt;b&gt;x&lt;/b&gt;</code></p>");
   assert.equal(
     render("```html\n<script>x</script>\n```"),
-    '<div class="md-code"><div class="md-code-lang">html</div><pre><code>&lt;script&gt;x&lt;/script&gt;</code></pre></div>',
+    '<div class="md-code"><div class="md-code-head"><div class="md-code-lang">html</div><button type="button" class="md-copy">Copy</button></div><pre><code>&lt;script&gt;x&lt;/script&gt;</code></pre></div>',
   );
 });
 
@@ -143,25 +143,25 @@ test("paragraphs and line breaks", () => {
 test("fenced code block with a language keeps its text unformatted", () => {
   assert.equal(
     render("```js\nconst a = 1 < 2; **x**\n```"),
-    '<div class="md-code"><div class="md-code-lang">js</div><pre><code>const a = 1 &lt; 2; **x**</code></pre></div>',
+    '<div class="md-code"><div class="md-code-head"><div class="md-code-lang">js</div><button type="button" class="md-copy">Copy</button></div><pre><code>const a = 1 &lt; 2; **x**</code></pre></div>',
   );
 });
 
 test("fenced code block without a language has no label", () => {
-  assert.equal(render("```\nx\n```"), '<div class="md-code"><pre><code>x</code></pre></div>');
+  assert.equal(render("```\nx\n```"), '<div class="md-code"><div class="md-code-head"><button type="button" class="md-copy">Copy</button></div><pre><code>x</code></pre></div>');
 });
 
 test("language label keeps only [a-z0-9+#-]", () => {
   assert.equal(
     render("```Py<img>\nx\n```"),
-    '<div class="md-code"><div class="md-code-lang">pyimg</div><pre><code>x</code></pre></div>',
+    '<div class="md-code"><div class="md-code-head"><div class="md-code-lang">pyimg</div><button type="button" class="md-copy">Copy</button></div><pre><code>x</code></pre></div>',
   );
 });
 
 test("unclosed fence treats the rest as code", () => {
   assert.equal(
     render("```\n**not bold**\nmore"),
-    '<div class="md-code"><pre><code>**not bold**\nmore</code></pre></div>',
+    '<div class="md-code"><div class="md-code-head"><button type="button" class="md-copy">Copy</button></div><pre><code>**not bold**\nmore</code></pre></div>',
   );
 });
 

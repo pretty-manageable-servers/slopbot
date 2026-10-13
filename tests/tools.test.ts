@@ -89,7 +89,7 @@ test("unresolved writes block other operations on the same resource until reconc
   registry.register({ name: "external", description: "external action", fields: {}, access: "member", effect: "write", retrySafe: false,
     async execute() { writes++; if (writes === 1) throw new Error("connection lost"); return "done"; }, async reconcile() { return "confirmed"; } });
   await assert.rejects(registry.invoke(message, "external", {}, "first", "agent"), UncertainActionError);
-  await assert.rejects(registry.invoke(message, "external", {}, "second", "command"), /unresolved action/);
+  await assert.rejects(registry.invoke(message, "external", {}, "second", "command"), /did not finish/);
   assert.equal(writes, 1);
   await registry.invoke(message, "external", {}, "first", "agent");
   assert.equal(await registry.invoke(message, "external", {}, "second", "command"), "done");

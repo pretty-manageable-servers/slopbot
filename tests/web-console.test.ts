@@ -7,12 +7,19 @@ import { join } from 'node:path';
 import { consoleOptions, createConsole } from '../src/web-console.js';
 import { ToolError } from '../src/tools.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
-import { AdminPanel } from '../src/admin-panel.js';
+import { AdminInputError, AdminPanel, pageItems, serverPage } from '../src/admin-panel.js';
+import { DEFAULT_INSTRUCTIONS, fullSystemText, systemText } from '../src/agent-runner.js';
+import { nativeToolInstructions } from '../src/tools.js';
+import type { PresentationPolicy } from '../src/presentation/policy.js';
 import { TeamAdmins, type TeamSnapshot } from '../src/team-admins.js';
 import { UserLimiter } from '../src/user-limiter.js';
 import type { ConsoleAdmin } from '../src/web-console.js';
 import { MemberDirectory } from '../src/member-directory.js';
 import { fakeSource } from './member-fakes.js';
+import { activePrices, GLOBAL_SETTINGS_SCOPE, usageCostMicros } from '../src/usage-cost.js';
+
+type PriceBody = { input: number; cached_input: number; output: number };
+type PricesBody = { fallback: PriceBody; models: { model: string; default: PriceBody & { source: string }; override: PriceBody | null }[] };
 
 test('web console is opt-in and rejects insecure public origins', () => {
   assert.equal(consoleOptions({}), undefined);
@@ -133,7 +140,8 @@ test('team admin routes need team membership, and only editors can change settin
   const directory = new MemberDirectory(fakeSource({ [DEVELOPER]: { username: 'dev', inServer: true }, [READER]: { username: 'reader', inServer: true }, [USER]: { username: 'ada', nickname: 'Ada L', serverAvatar: AVATAR, inServer: true, email: 'ada@example.com' } }));
   const panel = new AdminPanel({ model: 'nimbus', jevModel: 'cirrus', embeddingModel: 'embed', baseUrl: 'https://models.example.com/v1', modelPrices: {}, fallbackPrice: { input: 1, cached_input: 1, output: 1 }, userLimit5hCostMicros: 100, userLimitWeekCostMicros: 0, userLimitGracePercent: 10 }, store, limiter, directory);
   const rotated: string[] = [];
-  const admin: ConsoleAdmin = { role: id => teams.role(id), canEdit: id => teams.canEdit(id), servers: async () => ({ servers: [{ id: SERVER, name: 'Test server', channels: [] }] }), setTranscript: async (server, channel, enabled) => ({ server, channel, enabled }), rotateWebhook: async (_server, channel) => { rotated.push(channel); return { webhookId: 'hook-2' }; }, panel };
+  const serverRows = [{ id: SERVER, name: 'Test server', channelCount: 0, transcriptsOn: 0 }];
+  const admin: ConsoleAdmin = { role: id => teams.role(id), canEdit: id => teams.canEdit(id), servers: async page => pageItems(serverRows, page), serverChannels: async server => ({ server, name: 'Test server', channels: [] }), serverInfo: id => ({ name: id === SERVER ? 'Test server' : id, icon: null }), setTranscript: async (server, channel, enabled) => ({ server, channel, enabled }), rotateWebhook: async (_server, channel) => { rotated.push(channel); return { webhookId: 'hook-2' }; }, panel };
   const server = createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'}, { sessions: new SQLiteStore(), async canSignIn() { return true; },
     async snapshot() { return {}; }, async invoke() { return {}; }, admin,
   });
@@ -160,7 +168,7 @@ test('team admin routes need team membership, and only editors can change settin
   const get = (path: string, session: Record<string, string>) => originalFetch(base + path, { headers: session });
   const post = (path: string, body: unknown, session: Record<string, string>) => originalFetch(base + path, { method: 'POST', headers: { ...session, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const outsider = await login(OUTSIDER), reader = await login(READER), developer = await login(DEVELOPER);
-  const reads = ['/api/admin/me', `/api/admin/limits?server=${SERVER}`, '/api/admin/prices', `/api/admin/usage?server=${SERVER}`, `/api/admin/members?server=${SERVER}&q=ad`, '/api/admin/servers'];
+  const reads = ['/api/admin/me', `/api/admin/limits?server=${SERVER}`, '/api/admin/prices', '/api/admin/system-prompt',`/api/admin/usage?server=${SERVER}`, `/api/admin/members?server=${SERVER}&q=ad`, '/api/admin/servers', '/api/admin/servers?q=test&offset=0&limit=50', `/api/admin/servers/channels?server=${SERVER}`, '/api/admin/usage/total', '/api/admin/system-prompt/full'];
   const writes: [string, unknown][] = [
     ['/api/admin/limits', { server: SERVER, five_hour_cost_micros: 5000000, week_cost_micros: 20000000, grace_percent: 15 }],
     ['/api/admin/prices', { model: 'stratus', input: 1000000, cached_input: 100000, output: 4000000 }],
@@ -168,6 +176,7 @@ test('team admin routes need team membership, and only editors can change settin
     ['/api/admin/usage/grant', { server: SERVER, user: USER, kind: '5h', count: 1 }],
     ['/api/admin/transcripts', { server: SERVER, channel: '300000000000000001', enabled: true }],
     ['/api/admin/web-webhooks/rotate', { server: SERVER, channel: '300000000000000001' }],
+    ['/api/admin/system-prompt', { text: 'Be brief.' }],
   ];
 
   // Not a member: every admin route is refused.
@@ -204,16 +213,24 @@ test('team admin routes need team membership, and only editors can change settin
   assert.equal((await post('/api/admin/web-webhooks/rotate', { server: SERVER, channel: 'bad' }, developer)).status, 400);
   assert.deepEqual(rotated, ['300000000000000001']);
 
-  // Prices: add, read back, remove. The saved table is the only thing that changes.
-  const priced = await (await post('/api/admin/prices', writes[1]![1], developer)).json() as { saved_models: string[]; prices: Record<string, unknown>; models: string[] };
-  assert.deepEqual(priced.saved_models, ['stratus']);
-  assert.deepEqual(priced.prices.stratus, { input: 1000000, cached_input: 100000, output: 4000000 });
-  assert.ok(priced.models.includes('nimbus') && priced.models.includes('cirrus') && priced.models.includes('embed') && priced.models.includes('stratus'));
+  // Prices: each row has the default (no config price, so the fallback) and the override. Save, then reset with remove.
+  const priced = await (await post('/api/admin/prices', writes[1]![1], developer)).json() as PricesBody;
+  const rowOf = (view: PricesBody, model: string) => view.models.find(item => item.model === model)!;
+  assert.deepEqual(rowOf(priced, 'stratus'), { model: 'stratus', default: { input: 1, cached_input: 1, output: 1, source: 'fallback' }, override: { input: 1000000, cached_input: 100000, output: 4000000 } });
+  assert.deepEqual(rowOf(priced, 'nimbus'), { model: 'nimbus', default: { input: 1, cached_input: 1, output: 1, source: 'fallback' }, override: null });
+  assert.ok(priced.models.some(item => item.model === 'cirrus') && priced.models.some(item => item.model === 'embed'));
+  assert.deepEqual(priced.fallback, { input: 1, cached_input: 1, output: 1 });
   for (const bad of [{ model: '', input: 1, cached_input: 1, output: 1 }, { model: 'x', input: -1, cached_input: 1, output: 1 }, { model: '__proto__', input: 1, cached_input: 1, output: 1 }, { model: 'x', input: 1, output: 1 }]) {
     assert.equal((await post('/api/admin/prices', bad, developer)).status, 400, JSON.stringify(bad));
   }
-  const removed = await (await post('/api/admin/prices', { model: 'stratus', remove: true }, developer)).json() as { saved_models: string[] };
-  assert.deepEqual(removed.saved_models, []);
+  // Reset: a read-only member is refused and nothing changes; an editor's reset removes only that override.
+  assert.equal((await post('/api/admin/prices', { model: 'stratus', remove: true }, reader)).status, 403);
+  assert.deepEqual(rowOf(await (await get('/api/admin/prices', reader)).json() as PricesBody, 'stratus').override, { input: 1000000, cached_input: 100000, output: 4000000 });
+  const reset = await (await post('/api/admin/prices', { model: 'stratus', remove: true }, developer)).json() as PricesBody;
+  // stratus is in use nowhere else, so its row goes away with the override (as the old Remove did).
+  assert.equal(reset.models.some(item => item.model === 'stratus'), false);
+  assert.equal(reset.models.some(item => item.model === 'nimbus'), true);
+  assert.equal((await post('/api/admin/prices', { model: 'stratus', remove: true }, outsider)).status, 403);
 
   // Usage: list, one user, grant, reset. Banked resets survive a window reset.
   await limiter.record(SERVER, USER, 60, Date.now());
@@ -249,11 +266,32 @@ test('team admin routes need team membership, and only editors can change settin
   // Web transcripts: the team editor can switch a channel, and the value is checked.
   assert.equal((await post('/api/admin/transcripts', { server: SERVER, channel: '300000000000000001', enabled: 'yes' }, developer)).status, 400);
   assert.deepEqual(await (await post('/api/admin/transcripts', writes[4]![1], developer)).json(), { server: SERVER, channel: '300000000000000001', enabled: true });
-  assert.deepEqual(await (await get('/api/admin/servers', developer)).json(), { servers: [{ id: SERVER, name: 'Test server', channels: [] }] });
+  assert.equal((await post('/api/admin/system-prompt', { text: 'Be brief.' }, reader)).status, 403);
+  assert.deepEqual(await (await post('/api/admin/system-prompt', { text: 'Be brief.' }, developer)).json(), { text: 'Be brief.', default: DEFAULT_INSTRUCTIONS, max: 8000 });
+  assert.deepEqual(await (await get('/api/admin/system-prompt', reader)).json(), { text: 'Be brief.', default: DEFAULT_INSTRUCTIONS, max: 8000 });
+  assert.deepEqual(await (await get('/api/admin/servers', developer)).json(), { servers: [{ id: SERVER, name: 'Test server', channelCount: 0, transcriptsOn: 0 }], total: 1 });
+  assert.deepEqual(await (await get(`/api/admin/servers/channels?server=${SERVER}`, developer)).json(), { server: SERVER, name: 'Test server', channels: [] });
+  assert.equal((await get('/api/admin/servers/channels?server=bad', developer)).status, 400);
+  assert.equal((await get('/api/admin/servers?limit=51', developer)).status, 400);
 
   // Losing the role takes effect after the team reload.
   members = [];
   assert.equal((await get('/api/admin/me', developer)).status, 200, 'the cache still holds the old team');
+});
+test('team system prompt is saved for all servers, cleared by empty text, and bounded', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const limiter = new UserLimiter(store, { fiveHourCostMicros: 100, weekCostMicros: 0, gracePercent: 10 });
+  const directory = new MemberDirectory(fakeSource({}));
+  const panel = new AdminPanel({ model: 'nimbus', jevModel: 'cirrus', embeddingModel: 'embed', baseUrl: 'https://models.example.com/v1', modelPrices: {}, fallbackPrice: { input: 1, cached_input: 1, output: 1 }, userLimit5hCostMicros: 100, userLimitWeekCostMicros: 0, userLimitGracePercent: 10 }, store, limiter, directory);
+  assert.deepEqual(panel.systemPrompt(), { text: null, default: DEFAULT_INSTRUCTIONS, max: 8000 });
+  assert.deepEqual(await panel.saveSystemPrompt({ text: '  Answer in French.  ' }), { text: 'Answer in French.', default: DEFAULT_INSTRUCTIONS, max: 8000 });
+  assert.equal(store.setting('global', 'system_prompt'), 'Answer in French.');
+  await assert.rejects(panel.saveSystemPrompt({ text: 'x'.repeat(8001) }), AdminInputError);
+  await assert.rejects(panel.saveSystemPrompt({ text: 3 }), AdminInputError);
+  assert.equal(panel.systemPrompt().text, 'Answer in French.', 'bad input saves nothing');
+  assert.equal((await panel.saveSystemPrompt({ text: 'x'.repeat(8000) })).text?.length, 8000, 'the limit itself is allowed');
+  assert.deepEqual(await panel.saveSystemPrompt({ text: '   ' }), { text: null, default: DEFAULT_INSTRUCTIONS, max: 8000 });
+  assert.equal(store.setting('global', 'system_prompt'), null);
 });
 test('Sign-in needs a shared server, and old logins stop when the user leaves', async t => {
   let mode: 'member' | 'none' | 'error' = 'member';
@@ -297,4 +335,87 @@ test('Sign-in needs a shared server, and old logins stop when the user leaves', 
   assert.match(gone.headers.get('set-cookie')!,/Max-Age=0/);
   mode = 'member';
   assert.equal((await originalFetch(base+'/api/settings',{headers:{Cookie:cookie}})).status,401);
+});
+
+test('server list searches by name and pages 20 at a time, sorted by name', () => {
+  const rows = Array.from({ length: 45 }, (_, index) => ({ id: `1000000000000000${String(index).padStart(2, '0')}`, name: `Server ${String(index).padStart(2, '0')}`, channelCount: index % 3, transcriptsOn: 0 }));
+  rows.push({ id: '100000000000000099', name: 'Alpha Guild', channelCount: 1, transcriptsOn: 1 });
+  const first = pageItems(rows, serverPage(new URLSearchParams()));
+  assert.equal(first.total, 46);
+  assert.equal(first.servers.length, 20);
+  assert.equal(first.servers[0]!.name, 'Alpha Guild');
+  assert.equal(pageItems(rows, serverPage(new URLSearchParams('offset=40'))).servers.length, 6);
+  assert.equal(pageItems(rows, serverPage(new URLSearchParams('offset=60'))).servers.length, 0);
+  assert.equal(pageItems(rows, serverPage(new URLSearchParams('limit=50'))).servers.length, 46);
+  const found = pageItems(rows, serverPage(new URLSearchParams('q=%20ALPHA%20')));
+  assert.deepEqual(found, { servers: [{ id: '100000000000000099', name: 'Alpha Guild', channelCount: 1, transcriptsOn: 1 }], total: 1 });
+  assert.equal(pageItems(rows, serverPage(new URLSearchParams('q=server%2003'))).total, 1);
+  assert.equal(pageItems(rows, serverPage(new URLSearchParams('q=nothing-here'))).total, 0);
+  for (const query of ['limit=0', 'limit=51', 'limit=abc', 'offset=-1', 'offset=1.5', `q=${'a'.repeat(101)}`]) {
+    assert.throws(() => serverPage(new URLSearchParams(query)), AdminInputError, query);
+  }
+});
+
+test('usage totals add every server and list the top 10 servers and models by cost', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const limiter = new UserLimiter(store, { fiveHourCostMicros: 100, weekCostMicros: 0, gracePercent: 10 });
+  const config = { model: 'nimbus', jevModel: 'cirrus', embeddingModel: 'embed', baseUrl: 'https://models.example.com/v1', modelPrices: {}, fallbackPrice: { input: 1, cached_input: 1, output: 1 }, userLimit5hCostMicros: 100, userLimitWeekCostMicros: 0, userLimitGracePercent: 10 };
+  const panel = new AdminPanel(config, store, limiter, new MemberDirectory(fakeSource({})));
+  const info = (id: string) => ({ name: `Name ${id}`, icon: `https://cdn.discordapp.com/icons/${id}.png` });
+  const none = { requests: 0, cost_micros: 0, total_tokens: 0, input_tokens: 0, cached_tokens: 0, output_tokens: 0 };
+  assert.deepEqual(await panel.totalUsage(info), { total: none, servers: [], models: [] });
+  for (let index = 1; index <= 12; index++) {
+    await store.addTokenTotals(`srv${index}`, 'user-1', index % 2 ? 'nimbus' : 'cirrus', { input: 10 * index, output: index, cached: index, costMicros: 1000 * index }, 1000 + index);
+  }
+  const totals = await panel.totalUsage(info);
+  // Total tokens is uncached input plus cached input plus output.
+  assert.deepEqual(totals.total, { requests: 12, cost_micros: 78000, total_tokens: 936, input_tokens: 780, cached_tokens: 78, output_tokens: 78 });
+  assert.equal(totals.servers.length, 10);
+  assert.deepEqual(totals.servers[0], { server: 'srv12', name: 'Name srv12', icon: 'https://cdn.discordapp.com/icons/srv12.png', requests: 1, cost_micros: 12000, total_tokens: 144, input_tokens: 120, cached_tokens: 12, output_tokens: 12 });
+  assert.deepEqual(totals.servers[9], { server: 'srv3', name: 'Name srv3', icon: 'https://cdn.discordapp.com/icons/srv3.png', requests: 1, cost_micros: 3000, total_tokens: 36, input_tokens: 30, cached_tokens: 3, output_tokens: 3 });
+  assert.deepEqual(totals.models, [
+    { model: 'cirrus', requests: 6, cost_micros: 42000, total_tokens: 504, input_tokens: 420, cached_tokens: 42, output_tokens: 42 },
+    { model: 'nimbus', requests: 6, cost_micros: 36000, total_tokens: 432, input_tokens: 360, cached_tokens: 36, output_tokens: 36 },
+  ]);
+});
+
+test('model prices: each row shows the config or fallback default, the override, and billing uses override ?? default', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const limiter = new UserLimiter(store, { fiveHourCostMicros: 100, weekCostMicros: 0, gracePercent: 10 });
+  const config = { model: 'nimbus', jevModel: 'cirrus', embeddingModel: 'embed', baseUrl: 'https://models.example.com/v1', modelPrices: { cirrus: { input: 2000000, cached_input: 200000, output: 8000000 } }, fallbackPrice: { input: 1, cached_input: 1, output: 3 }, userLimit5hCostMicros: 100, userLimitWeekCostMicros: 0, userLimitGracePercent: 10 };
+  const panel = new AdminPanel(config, store, limiter, new MemberDirectory(fakeSource({})));
+  const row = (view: PricesBody, model: string) => view.models.find(item => item.model === model)!;
+  const configured = { input: 2000000, cached_input: 200000, output: 8000000 };
+  const fallback = { input: 1, cached_input: 1, output: 3 };
+  let view = panel.prices() as PricesBody;
+  assert.deepEqual(row(view, 'cirrus'), { model: 'cirrus', default: { ...configured, source: 'config' }, override: null });
+  assert.deepEqual(row(view, 'nimbus'), { model: 'nimbus', default: { ...fallback, source: 'fallback' }, override: null });
+  // An override replaces the default in billing; the default is still shown next to it.
+  view = await panel.savePrice({ model: 'cirrus', input: 5000000, cached_input: 500000, output: 9000000 }) as PricesBody;
+  assert.deepEqual(row(view, 'cirrus'), { model: 'cirrus', default: { ...configured, source: 'config' }, override: { input: 5000000, cached_input: 500000, output: 9000000 } });
+  const billed = (prices: Parameters<typeof usageCostMicros>[2]) => usageCostMicros({ prompt_tokens: 1000000 }, 'cirrus', prices, config.fallbackPrice);
+  assert.equal(billed(activePrices(store.setting(GLOBAL_SETTINGS_SCOPE, 'model_prices'), config.modelPrices)), 5000000);
+  // Reset (remove) puts the default back, and billing uses the config price again.
+  view = await panel.savePrice({ model: 'cirrus', remove: true }) as PricesBody;
+  assert.deepEqual(row(view, 'cirrus'), { model: 'cirrus', default: { ...configured, source: 'config' }, override: null });
+  assert.equal(billed(activePrices(store.setting(GLOBAL_SETTINGS_SCOPE, 'model_prices'), config.modelPrices)), 2000000);
+  // Bad saved entries are ignored by billing, so they show no override either.
+  await store.setSetting(GLOBAL_SETTINGS_SCOPE, 'model_prices', { nimbus: { input: 'x' } });
+  assert.equal(row(panel.prices() as PricesBody, 'nimbus').override, null);
+});
+
+test('full system prompt is the base, the presentation rules and the tool rules, with the saved prompt when set', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const limiter = new UserLimiter(store, { fiveHourCostMicros: 100, weekCostMicros: 0, gracePercent: 10 });
+  const directory = new MemberDirectory(fakeSource({}));
+  const config = { model: 'nimbus', jevModel: 'cirrus', embeddingModel: 'embed', baseUrl: 'https://models.example.com/v1', modelPrices: {}, fallbackPrice: { input: 1, cached_input: 1, output: 1 }, userLimit5hCostMicros: 100, userLimitWeekCostMicros: 0, userLimitGracePercent: 10 };
+  const presentation: PresentationPolicy = { id: 'test', rules: [{ id: 'plain', instruction: 'Use plain text only.', apply: text => text }] };
+  const panel = new AdminPanel(config, store, limiter, directory, presentation);
+  assert.equal(panel.fullSystemPrompt().text, `${DEFAULT_INSTRUCTIONS}\nUse plain text only.\n${nativeToolInstructions}`);
+  assert.equal(panel.fullSystemPrompt().text, fullSystemText(DEFAULT_INSTRUCTIONS, presentation));
+  await panel.saveSystemPrompt({ text: '  Be brief.  ' });
+  assert.equal(panel.fullSystemPrompt().text, `Be brief.\nUse plain text only.\n${nativeToolInstructions}`);
+  assert.equal(systemText('Be brief.', presentation), 'Be brief.\nUse plain text only.');
+  const bare = new AdminPanel(config, store, limiter, directory);
+  assert.equal(bare.fullSystemPrompt().text, `Be brief.\n${nativeToolInstructions}`);
 });

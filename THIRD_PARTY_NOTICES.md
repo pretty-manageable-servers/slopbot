@@ -5,3 +5,9 @@
 Source: `auger-core/auger-statemachine.mmd`. The upstream Rust implementation was also reviewed in `auger-core/src/harness/states.rs` and `auger-core/src/harness/session.rs`.
 
 Auger is licensed under GNU Affero General Public License version 3. The adapted module carries the corresponding SPDX notice. The upstream license is included in `licenses/auger-AGPL-3.0.txt`.
+
+# highlight.js
+
+`web/highlight.min.js` is highlight.js 11.10.0 (core and 20 common languages), built from the npm package `@highlightjs/cdn-assets@11.10.0`. It is served to the Slopbot console for syntax highlighting in code blocks.
+
+Highlight.js is licensed under the BSD 3-Clause License. The upstream license is included in `licenses/highlightjs-BSD-3-Clause.txt`.

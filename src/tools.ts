@@ -1,4 +1,4 @@
-import { ToolError, UncertainActionError, errorSummary, redactErrorText, describeError } from "./errors.js";
+import { ToolError, UncertainActionError, errorContext, errorSummary, redactErrorText, describeError } from "./errors.js";
 import {stableJson} from './prompt-cache.js';
 import { requestTimings } from "./request-timing.js";
 import { createHash } from "node:crypto";
@@ -66,9 +66,13 @@ export interface ToolDefinition {
   effect: "read" | "write";
   retrySafe: boolean;
   execution?: "inline" | "thread";
+  /** The tool acts on Discord itself (posts or edits Discord messages, threads, reactions, or changes Discord server or channel settings), so it is not offered in private web chats. */
+  scope?: "discord";
   publicResult?(args: ToolArgs): boolean;
   matchRead?(message: Message): ToolArgs | undefined;
   resource?(message: Message, args: ToolArgs): string;
+  /** A started write on its resource older than this no longer blocks other writes; it is ended as failed with reason "abandoned". Only for work that cannot outlive this time (for example an orphan that expires on its own). */
+  staleAfterMs?: number;
   writes?(args: ToolArgs): boolean;
   validate?(args: ToolArgs): ToolArgs;
   authorize?(context: ToolContext, args: ToolArgs): Promise<void>;
@@ -78,9 +82,22 @@ export interface ToolDefinition {
 export interface ToolOperation {
   id: string; name: string; args: ToolArgs; resource: string | null; status: "started" | "done" | "failed"; result: string | null;
 }
+export interface BlockingOperation { id: string; startedAt: number }
+/** The message for a write that waits on an earlier unfinished write. Private chats say "chat", not "task". */
+function blockedError(message: Message, name: string, blocking: BlockingOperation, staleAfterMs: number | undefined): ToolError {
+  const noun = isPrivateChannel(message.channel) ? "chat" : "task";
+  const started = utcTime(blocking.startedAt);
+  const error = new ToolError(staleAfterMs === undefined
+    ? `An earlier ${name} action in this ${noun} did not finish (started ${started}). Another ${name} action waits until it is reconciled.`
+    : `An earlier ${name} action in this ${noun} did not finish (started ${started}). It clears automatically at ${utcTime(blocking.startedAt + staleAfterMs)}.`);
+  return errorContext(error, { tool: name, operationId: blocking.id }) as ToolError;
+}
+function utcTime(ms: number): string { return new Date(ms).toISOString().slice(0, 16).replace("T", " ") + " UTC"; }
 export interface ToolJournal {
   operation(id: string): ToolOperation | undefined | Promise<ToolOperation | undefined>;
-  blockingOperation(resource: string, exceptId: string): string | undefined | Promise<string | undefined>;
+  blockingOperation(resource: string, exceptId: string): BlockingOperation | undefined | Promise<BlockingOperation | undefined>;
+  /** Ends every started operation on the resource that began before startedBefore, except exceptId, as failed with the given stored result. */
+  expireOperations(resource: string, startedBefore: number, exceptId: string, result: string): void | Promise<void>;
   beginOperation(context: ToolContext, name: string, args: ToolArgs): void | Promise<void>;
   endOperation(id: string, result: string, failed?: boolean): void | Promise<void>;
 }
@@ -99,6 +116,9 @@ export interface ToolExecutor {
   execute(message: Message, call: ToolCall, operationId: string, expectedVersion?: number, invocation?: ToolInvocation): Promise<ToolOutput>;
 }
 export { ToolError, UncertainActionError } from "./errors.js";
+
+/** Returned when a private chat calls a Discord-scoped tool. */
+export const discordOnlyMessage = "This action is only available in Discord.";
 
 export class ToolRegistry {
   private readonly writers = new Map<string, Promise<void>>();
@@ -152,16 +172,18 @@ export class ToolRegistry {
   }
   async recordedOperation(operationId: string): Promise<ToolOperation | undefined> { return this.journal.operation(operationId); }
   suggest(message: Message): ToolCall | undefined {
-    const matches = this.definitions().flatMap(tool => {
+    // Only a tool offered for this message may be forced, so a private chat never gets a Discord-scoped call.
+    const matches = this.definitions().filter(tool => offeredIn(tool, message)).flatMap(tool => {
       const args = tool.matchRead?.(message);
       return args && this.effect(tool.name, args) === "read" ? [{ name: tool.name, arguments: this.validate(tool.name, args) }] : [];
     });
     return matches.length === 1 ? matches[0] : undefined;
   }
-  /** The tools the model is offered for this message. A private chat gets read-only tools only. */
+  /** The tools the model is offered for this message. A private chat gets every tool except Discord-scoped ones. */
   catalog(message?: Message): string { return catalogOf(this.definitions(), message); }
   schemas(message?: Message): readonly ModelTool[] { return schemasOf(this.definitions(), message); }
   effect(name: string, args: ToolArgs): "read" | "write" { const tool = this.tools.get(name); return tool?.writes ? tool.writes(args) ? "write" : "read" : tool?.effect ?? "read"; }
+  scopeOf(name: string): "discord" | undefined { return this.tools.get(name)?.scope; }
   requiresThread(name: string, args: ToolArgs): boolean {
     return this.effect(name,args) === "write" && this.tools.get(name)?.execution !== "inline";
   }
@@ -206,8 +228,8 @@ export class ToolRegistry {
   }
   async invokeResult(message: Message, name: string, input: unknown, operationId: string, source: "command" | "agent", expectedVersion?: number, invocation?: ToolInvocation): Promise<ToolResult> {
     const args = this.validate(name, input), tool = this.tools.get(name)!;
-    // A private chat can only read. Writes would reach Discord or other channels.
-    if (isPrivateChannel(message.channel) && this.effect(name, args) !== "read") throw new ToolError("This action is not available in private chats.");
+    // A private chat cannot act on Discord. Every other tool follows the same rules as in Discord.
+    if (isPrivateChannel(message.channel) && tool.scope === "discord") throw new ToolError(discordOnlyMessage);
     if (this.effect(name, args) === "read") return this.perform(message, name, args, operationId, source, expectedVersion, invocation);
     const key = tool.resource?.(message, args) ?? `server:${message.server}:tool:${name}`;
     const previous = this.writers.get(key) ?? Promise.resolve();
@@ -237,8 +259,10 @@ export class ToolRegistry {
     const args = context.arguments;
     const previous = await this.journal.operation(operationId);
     if (context.resource) {
+      // An uncertain write that outlived its own lifetime cannot have a live effect, so it stops blocking.
+      if (tool!.staleAfterMs !== undefined) await this.journal.expireOperations(context.resource, Date.now() - tool!.staleAfterMs, operationId, encodeToolResult({ text: "abandoned", reason: "abandoned", status: "failed", failure: { causes: [] } }));
       const blocking = await this.journal.blockingOperation(context.resource, operationId);
-      if (blocking) throw new ToolError(`This resource has an unresolved action ${blocking}. Reconcile its task before another write.`);
+      if (blocking) throw blockedError(message, name, blocking, tool!.staleAfterMs);
     }
     if (previous) {
       if (previous.name !== name || JSON.stringify(previous.args) !== JSON.stringify(args)) throw new UncertainActionError("Operation ID was reused with different arguments");
@@ -272,9 +296,9 @@ function sortedDefinitions(tools: ReadonlyMap<string, ToolDefinition>): readonly
   return [...tools.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** A private chat is offered read-only tools. Other channels are offered every tool. */
+/** A private chat is offered every tool except Discord-scoped ones. Other channels are offered every tool. */
 function offeredIn(tool: ToolDefinition, message?: Message): boolean {
-  return !message || !isPrivateChannel(message.channel) || (tool.effect === "read" && !tool.writes);
+  return !message || !isPrivateChannel(message.channel) || tool.scope !== "discord";
 }
 
 function catalogOf(definitions: readonly ToolDefinition[], message?: Message): string {

@@ -12,13 +12,13 @@ import type { LLM } from '../src/ports.js';
 const request = { server: 's', channel: 'c', taskId: 'c', id: 'm', author: 'alice', text: 'Compare the results.' };
 const readTool = (name: string, execute: ToolDefinition['execute']): ToolDefinition => ({ name, description: 'Structured read', fields: {}, access: 'member', effect: 'read', retrySafe: true, programmatic: true, outputSchema: { type: 'object' }, execute });
 
-test('private chats retain read-only catalogs and programs cannot bypass write restrictions', async t => {
+test('private chats hide Discord-scoped tools and programs cannot bypass write restrictions', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const registry = new ToolRegistry(store, async () => true);
   let writes = 0;
   registry.register(readTool('read', async () => ({ text: 'Read', data: { value: 1 } })));
   registry.register({ ...readTool('mixed', async () => { writes++; return { text: 'Written', data: {} }; }),
-    fields: { action: { type: 'string', required: true, description: 'Action', choices: ['read', 'write'] } }, writes: args => args.action === 'write' });
+    fields: { action: { type: 'string', required: true, description: 'Action', choices: ['read', 'write'] } }, writes: args => args.action === 'write', scope: 'discord' });
   registry.register(programTool(registry));
   const message = { ...request, channel: 'web:private' };
   const selected = registry.capture();
@@ -26,7 +26,7 @@ test('private chats retain read-only catalogs and programs cannot bypass write r
   assert.equal(catalog.find(tool => tool.name === 'read')?.programmatic, true);
   assert.equal(catalog.some(tool => tool.name === 'mixed'), false);
   assert.match(selected.schemas(message).find(tool => tool.function.name === 'read')!.function.description, /program_exec/);
-  await assert.rejects(registry.invokeResult(message, 'mixed', { action: 'write' }, 'private-direct', 'agent'), /not available in private chats/);
+  await assert.rejects(registry.invokeResult(message, 'mixed', { action: 'write' }, 'private-direct', 'agent'), /only available in Discord/);
   await assert.rejects(registry.invokeResult(message, 'program_exec', { tools: ['mixed'], code: 'await tools.mixed({action:"write"});' }, 'private-program', 'agent'), /cannot execute writes/);
   assert.equal(writes, 0);
 });

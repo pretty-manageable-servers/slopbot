@@ -7,13 +7,10 @@ import type { Message } from "./domain.js";
 import type { Store } from "./ports.js";
 import type { Knowledge } from "./memory.js";
 import type { TaskWorker, QueueStore } from "./queue.js";
-import { ToolError, type ToolCall, type ToolRegistry, type ToolResult } from "./tools.js";
+import { ToolError, discordOnlyMessage, type ToolCall, type ToolRegistry, type ToolResult } from "./tools.js";
 import type { ParticipationGate } from "./participation.js";
 import { UserLimitError, limitReply } from "./user-limiter.js";
 import { isPrivateChannel } from "./private-chat.js";
-
-/** A private chat has no tasks, memories or writes. Its messages are never sent to Discord. */
-const PRIVATE_CHAT_NOTICE = "This is not available in private chats.";
 
 export interface Incoming extends Message {
   readonly botAuthor: boolean;
@@ -114,8 +111,6 @@ export class Bot {
       if (!ingested && !await this.store.ingest({ ...message, addressed: false })) return;
       const command = text.match(/^!(remember|memory|forget)(?:\s+([\s\S]*))?$/i)!;
       const kind = command[1]!.toLowerCase(), value = command[2]?.trim() ?? "";
-      // Private chats can list memories but never change them.
-      if (privateChat && kind !== "memory") { await this.send(message, PRIVATE_CHAT_NOTICE); return; }
       if (this.options.tools) {
         const name = kind === "remember" ? "memory_remember" : kind === "forget" ? "memory_forget" : "memory";
         const args = kind === "remember" ? { text: value } : kind === "forget" ? { id: value } : {};
@@ -139,7 +134,7 @@ export class Bot {
       return;
     }
     if (!task && /^!task(?:\s|$)/i.test(text)) {
-      if (privateChat) { if (!ingested && !await this.store.ingest({ ...message, addressed: false })) return; await this.send(message, PRIVATE_CHAT_NOTICE); return; }
+      if (privateChat) { if (!ingested && !await this.store.ingest({ ...message, addressed: false })) return; await this.send(message, discordOnlyMessage); return; }
       if (this.options.worker) { await this.options.worker.enqueue({ ...message, addressed: true }); return; }
       if (!ingested && !await this.store.ingest({ ...message, addressed: false })) return;
       const goal = text.replace(/^!task\s*/i, "");
@@ -197,9 +192,10 @@ export class Bot {
     if (!registry || !this.accepts(message.server, message.channel)) throw new ToolError("Tools are unavailable in this channel");
     registry.validate(call.name, call.arguments);
     await registry.checkAccess(message, call.name);
-    // Checked before the thread rule, so a private chat never starts a task thread.
-    if (isPrivateChannel(message.channel) && registry.effect(call.name, call.arguments) !== "read") throw new ToolError(PRIVATE_CHAT_NOTICE);
-    if (registry.requiresThread(call.name, call.arguments) && !this.tasks.has(message.channel) && call.name !== "task_start") {
+    // Checked before the thread rule. A private chat has no task threads, so its writes run in the chat itself.
+    const privateChat = isPrivateChannel(message.channel);
+    if (privateChat && registry.scopeOf(call.name) === "discord") throw new ToolError(discordOnlyMessage);
+    if (!privateChat && registry.requiresThread(call.name, call.arguments) && !this.tasks.has(message.channel) && call.name !== "task_start") {
       const thread = await this.startTask(message, message.text);
       return { text: `Task started in <#${thread}>. Updates will appear there.`, handoff: { threadId: thread } };
     }
@@ -242,8 +238,9 @@ export class Bot {
 
   private async send(message: Message, text: string, runId?: string, deliveryId?: string, activity?: readonly import("./tool-activity.js").ToolActivity[], ui?: import("./ui/schema.js").UiDocument): Promise<void> {
     for (const sent of await this.gateway.reply(message, text, deliveryId, activity, ui)) {
-      await this.store.ingest({ ...sent, addressed: false });
+      // Link first: the web console checks which messages a run used when the saved reply shows up.
       await this.store.linkOutput(sent, runId, message.id);
+      await this.store.ingest({ ...sent, addressed: false });
     }
   }
 }

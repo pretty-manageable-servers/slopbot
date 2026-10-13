@@ -171,8 +171,13 @@ function showPickPane() {
   showPick();
   drawList();
 }
+// The address of a chat or channel: /chat/<id> or /team/<id>, with /run/<runId> for one conversation of a channel.
+function itemPath(kind, id, run = null) {
+  return `/${kind === 'chat' ? 'chat' : 'team'}/${enc(id)}${run ? `/run/${enc(run)}` : ''}`;
+}
+// The Servers view with no channel open is at /team.
 function clearItemHash() {
-  if (/^#(chat|channel)\b/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search);
+  if (location.pathname !== '/team' || /^#(chat|channel)\b/.test(location.hash)) history.replaceState(null, '', '/team' + location.search);
 }
 document.querySelectorAll('#top-tabs [data-view]').forEach(tab => tab.addEventListener('click', () => switchView(tab.dataset.view)));
 
@@ -182,11 +187,12 @@ function renderConversations() {
   if (!conv.view) conv.view = recall('slopbot-view') === 'servers' ? 'servers' : 'chats';
   conv.blank = false;
   setPageTitle('Chat');
-  $('chat-host').innerHTML = '<div id="chat-root" class="chat"><button id="chat-backdrop" class="chat-backdrop" type="button" aria-label="Close conversations" tabindex="-1"></button><aside id="chat-side" class="chat-side" aria-label="Conversations"><button id="chat-drawer-close" class="chat-drawer-close" type="button">Conversations <span aria-hidden="true">×</span></button><div id="chat-server" class="chat-server pick-slot" hidden></div><input id="conv-search" class="chat-search" type="search" aria-label="Filter chats or channels"><div id="conv-list" class="chat-list"></div></aside><section id="conv-main" class="chat-pane"><header class="chat-head"><button id="chat-drawer" class="chat-drawer" type="button" aria-expanded="false" aria-controls="chat-side" aria-label="Open conversations" title="Conversations"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button><h2 id="chat-title" class="chat-title"></h2><div class="chat-tools"><span id="chat-private" class="chat-private" hidden>' + LOCK_ICON + '<span>Private</span></span><span id="conv-status" class="chat-status"></span><div id="conv-share" class="chat-share" hidden></div></div></header><div id="conv-view" class="chat-view"></div><div id="conv-reply" class="chat-composer" hidden></div></section></div>';
+  $('chat-host').innerHTML = '<div id="chat-root" class="chat"><button id="chat-backdrop" class="chat-backdrop" type="button" aria-label="Close conversations" tabindex="-1"></button><aside id="chat-side" class="chat-side" aria-label="Conversations"><button id="chat-drawer-close" class="chat-drawer-close" type="button">Conversations <span aria-hidden="true">×</span></button><div id="chat-server" class="chat-server pick-slot" hidden></div><button id="chat-resize" class="chat-resize" type="button" role="separator" aria-orientation="vertical" aria-label="Resize conversations" title="Drag to resize. Double-click to reset."></button><input id="conv-search" class="chat-search" type="search" aria-label="Filter chats or channels"><div id="conv-list" class="chat-list"></div></aside><section id="conv-main" class="chat-pane"><header class="chat-head"><button id="chat-drawer" class="chat-drawer" type="button" aria-expanded="false" aria-controls="chat-side" aria-label="Open conversations" title="Conversations"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button><h2 id="chat-title" class="chat-title"></h2><div class="chat-tools"><span id="chat-private" class="chat-private" hidden>' + LOCK_ICON + '<span>Private</span></span><span id="conv-status" class="chat-status"></span><div id="conv-share" class="chat-share" hidden></div></div></header><div id="conv-view" class="chat-view"></div><div id="conv-reply" class="chat-composer" hidden></div></section></div>';
   // Typing filters the list of the open view live. Message search is in the Cmd+K palette.
   $('conv-search').oninput = () => { conv.filter = $('conv-search').value; drawList(); };
   $('chat-drawer').onclick = toggleDrawer;
   $('chat-drawer-close').onclick = () => setConversationDrawer(false, true);
+  setupResize($('chat-root'), $('chat-resize'));
   $('chat-backdrop').onclick = () => setConversationDrawer(false, true);
   $('chat-root').onkeydown = event => {
     if (event.defaultPrevented || !$('chat-root').classList.contains('drawer-open')) return;
@@ -250,7 +256,7 @@ async function loadConversations() {
   const openChat = chatId => openConversation(chatId, 'chat', true).catch(fail);
   if (item && item.kind === 'chat' && conv.chats.some(c => c.id === item.id)) openChat(item.id);
   else if (conv.view === 'chats') {
-    if (item) history.replaceState(null, '', '#chat');
+    if (item) history.replaceState(null, '', '/chat' + location.search);
     openBlankChat();
   }
   const before = { channel: conv.channel, blank: conv.blank };
@@ -433,7 +439,7 @@ async function deleteChat(c) {
   conv.chats = conv.chats.filter(item => item.id !== c.id);
   if (conv.kind === 'chat' && conv.channel === c.id) {
     closeConversation();
-    history.replaceState(null, '', '#chat');
+    history.replaceState(null, '', '/chat' + location.search);
     setHeading('');
     $('chat-private').hidden = true;
     $('conv-status').hidden = true;
@@ -445,9 +451,9 @@ async function deleteChat(c) {
 
 // Shows a chat or channel in the URL, so a reload or Back opens it again. Replace is used for automatic opens, so they add no history entry.
 function setItemHash(kind, id, replace, run = null) {
-  const hash = `#${kind === 'chat' ? 'chat' : 'channel'}/${enc(id)}${run ? `/run/${enc(run)}` : ''}`;
-  if (location.hash === hash) return;
-  history[replace ? 'replaceState' : 'pushState'](null, '', hash);
+  const path = itemPath(kind, id, run);
+  if (location.pathname === path && !location.hash) return;
+  history[replace ? 'replaceState' : 'pushState'](null, '', path + location.search);
 }
 
 function convItem(c) {
@@ -610,6 +616,47 @@ async function refreshView(id) {
 function showView(node) {
   const view = $('conv-view');
   if (view) view.replaceChildren(node);
+}
+
+// The sidebar width. Drag the handle or use the arrow keys. A double-click goes back to the default. The width is kept in this browser.
+const SIDE_WIDTH = { key: 'slopbot.sideWidth', start: 240, min: 180, max: 520 };
+
+function setupResize(root, handle) {
+  const clamp = width => Math.round(Math.min(Math.max(width, SIDE_WIDTH.min), Math.min(SIDE_WIDTH.max, window.innerWidth - 320)));
+  const apply = width => {
+    const value = clamp(width);
+    root.style.setProperty('--side-width', value + 'px');
+    handle.setAttribute('aria-valuenow', String(value));
+    return value;
+  };
+  const save = width => { try { localStorage.setItem(SIDE_WIDTH.key, String(width)); } catch { } };
+  let saved = SIDE_WIDTH.start;
+  try { saved = Number(localStorage.getItem(SIDE_WIDTH.key)) || SIDE_WIDTH.start; } catch { }
+  handle.setAttribute('aria-valuemin', String(SIDE_WIDTH.min));
+  handle.setAttribute('aria-valuemax', String(SIDE_WIDTH.max));
+  apply(saved);
+  handle.onpointerdown = event => {
+    event.preventDefault();
+    handle.setPointerCapture(event.pointerId);
+    const left = root.getBoundingClientRect().left;
+    root.classList.add('resizing');
+    let width = saved;
+    handle.onpointermove = move => { width = apply(move.clientX - left); };
+    handle.onpointerup = handle.onpointercancel = () => {
+      handle.onpointermove = handle.onpointerup = handle.onpointercancel = null;
+      root.classList.remove('resizing');
+      saved = width; save(width);
+    };
+  };
+  handle.onkeydown = event => {
+    const step = event.shiftKey ? 40 : 10;
+    if (event.key === 'ArrowLeft') saved = apply(saved - step);
+    else if (event.key === 'ArrowRight') saved = apply(saved + step);
+    else return;
+    event.preventDefault();
+    save(saved);
+  };
+  handle.ondblclick = () => { saved = apply(SIDE_WIDTH.start); save(saved); };
 }
 
 function showPick() { showView(emptyNote('Pick a conversation', 'Choose a channel or thread on the left.')); }
@@ -805,7 +852,7 @@ async function resumeAsk() {
     // The text stays with this chat until the user sends it or clears it. Any later open of the chat shows it again.
     conv.ask = { server: state.server.id, chat: id, text };
     conv.chats = [{ id, title: '', updated: Date.now() }, ...conv.chats];
-    history.replaceState(null, '', '#chat/' + encodeURIComponent(id));
+    history.replaceState(null, '', itemPath('chat', id) + location.search);
     renderChat(true);
   } catch (error) {
     if (error.status === 401) { try { sessionStorage.setItem('slopbot-ask', text); } catch { } showScreen('login'); return; }
@@ -835,7 +882,7 @@ function openBlankChat() {
   closeConversation();
   conv.blank = true; conv.kind = 'chat'; conv.channel = null;
   conv.chatNote = '';
-  if (location.hash !== '#chat') history.pushState(null, '', '#chat');
+  if (location.pathname !== '/chat' || location.hash) history.pushState(null, '', '/chat' + location.search);
   drawList();
   setConversationDrawer(false, true);
   $('chat-private').hidden = false;
@@ -1136,9 +1183,12 @@ function runBlock(runIds) {
 }
 
 // All steps of all rounds form one flat list. A text or thinking step with only spaces gets no row.
+// Text after the last tool step is the answer. The message shows it, so the run box does not show it again.
 function storedRunRows(run) {
   const rows = [];
-  for (const step of run.steps.filter(isShownStep)) {
+  const steps = run.steps.filter(isShownStep);
+  const lastTool = steps.findLastIndex(step => step.type === 'tool');
+  for (const step of steps.filter((step, index) => step.type !== 'text' || index < lastTool)) {
     if (step.type === 'text') rows.push(textNode('div', step.text, 'chat-run-prose'));
     else if (step.type === 'thinking') rows.push(thinkRow(step.text));
     else rows.push(toolRow(step.name, step.status, step.args, step.result, 'Result', false));
@@ -1168,13 +1218,14 @@ function formatDuration(ms) {
   return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
 }
 
-// Thinking text is clamped to 2 lines. A click shows all of it.
+// A thinking row is one line, the same as a tool row: the label, the start of the text and a chevron. A click shows all of the text.
 function thinkRow(text, ms, open) {
   const button = document.createElement('button');
   button.type = 'button';
-  button.className = 'chat-think';
-  button.append(textNode('span', thinkLabel(ms, open), 'chat-think-label'), textNode('span', text, 'chat-think-text'));
-  button.onclick = () => button.classList.toggle('open');
+  button.className = 'chat-tool-line chat-think';
+  button.setAttribute('aria-expanded', 'false');
+  button.append(textNode('span', '', 'chat-tool-status'), textNode('span', thinkLabel(ms, open), 'chat-tool-name chat-think-label'), textNode('span', text, 'chat-tool-args chat-think-text'), textNode('span', '›', 'chat-chev'));
+  button.onclick = () => button.setAttribute('aria-expanded', String(button.classList.toggle('open')));
   return button;
 }
 
@@ -1331,7 +1382,11 @@ function openStream(id) {
     try { handler(JSON.parse(event.data)); } catch { }
   });
   // One conversation view shows only its own messages, so live events are not drawn into it. It reloads after each change instead.
-  on('message', data => { if (conv.run) scheduleView(id); else if (data.action === 'delete') removeMessage(data.id); else upsertMessage(data.message); });
+  on('message', data => {
+    if (conv.run) scheduleView(id); else if (data.action === 'delete') removeMessage(data.id); else upsertMessage(data.message);
+    // The reply is linked to its run before it is saved, so it is the time to check again which messages a run used. run.end comes too soon.
+    if (kind !== 'chat' && data.message?.slopbot) refreshUsed(id);
+  });
   on('run.start', data => { scheduleRuns(id); if (!conv.run) startLive(data.ref, data.requestId); });
   on('run.delta', data => { if (!conv.run) delta(data.ref, data.part, data.text); });
   on('run.tool', data => { if (!conv.run) tool(data); });
@@ -1701,7 +1756,7 @@ function dropPendingCard(force) {
 function attachNewChat(chatId) {
   conv.channel = chatId; conv.kind = 'chat'; conv.blank = false;
   conv.lastStream = 0; conv.seen = 0;
-  history.replaceState(null, '', '#chat/' + enc(chatId));
+  history.replaceState(null, '', itemPath('chat', chatId) + location.search);
   conv.chats = [{ id: chatId, title: '', updated: Date.now() }, ...conv.chats];
   drawList();
   if (window.SlopbotShares) { $('conv-share').hidden = false; window.SlopbotShares.renderChatShare($('conv-share'), chatId); }
@@ -1714,7 +1769,7 @@ function detachNewChat(chatId) {
   closeStream();
   conv.chats = conv.chats.filter(c => c.id !== chatId);
   conv.channel = null; conv.blank = true;
-  history.replaceState(null, '', '#chat');
+  history.replaceState(null, '', '/chat' + location.search);
   $('conv-status').hidden = true;
   $('conv-share').hidden = true; $('conv-share').replaceChildren();
   drawList();

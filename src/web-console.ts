@@ -5,7 +5,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { ToolError, type ToolArgs } from './tools.js';
 import type { ChannelAccess } from './channel-access.js';
-import { AdminInputError, snowflake, type AdminPanel } from './admin-panel.js';
+import { AdminInputError, serverPage, snowflake, type AdminPanel, type ServerInfo, type ServerPage } from './admin-panel.js';
 import type { TeamRole } from './team-admins.js';
 import type { TranscriptRoutes } from './web-transcripts.js';
 import { WebReplyError } from './web-replies.js';
@@ -18,7 +18,12 @@ import { ChatError } from './web-chats.js';
 export interface ConsoleAdmin {
   role(user: string): Promise<TeamRole | undefined>;
   canEdit(user: string): Promise<boolean>;
-  servers(): Promise<unknown>;
+  /** One page of the servers Slopbot runs in, filtered by name. */
+  servers(page: ServerPage): Promise<unknown>;
+  /** One server's channels with their web transcript switches. */
+  serverChannels(server: string): Promise<unknown>;
+  /** The server's display name and icon. The name is the ID, and the icon null, when Discord has not cached the server. */
+  serverInfo(server: string): ServerInfo;
   setTranscript(server: string, channel: string, enabled: boolean): Promise<unknown>;
   rotateWebhook(server: string, channel: string): Promise<unknown>;
   panel: AdminPanel;
@@ -84,13 +89,18 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
     if (path === '/api/admin/me') return { role, canEdit: await admin.canEdit(user) };
     if (path === '/api/admin/limits') return panel.limits(query.get('server'));
     if (path === '/api/admin/prices') return panel.prices();
+    if (path === '/api/admin/system-prompt') return panel.systemPrompt();
     if (path === '/api/admin/usage') return panel.usage(query.get('server'), query.get('user') ?? undefined);
     if (path === '/api/admin/members') return panel.members(query.get('server'), query.get('q') ?? '');
-    if (path === '/api/admin/servers') return admin.servers();
+    if (path === '/api/admin/servers') return admin.servers(serverPage(query));
+    if (path === '/api/admin/servers/channels') return admin.serverChannels(snowflake(query.get('server'), 'server'));
+    if (path === '/api/admin/usage/total') return panel.totalUsage(id => admin.serverInfo(id));
+    if (path === '/api/admin/system-prompt/full') return panel.fullSystemPrompt();
     return undefined;
   }
   if (path === '/api/admin/limits') return panel.saveLimits(body);
   if (path === '/api/admin/prices') return panel.savePrice(body);
+  if (path === '/api/admin/system-prompt') return panel.saveSystemPrompt(body);
   if (path === '/api/admin/usage/reset') return panel.resetUsage(body);
   if (path === '/api/admin/usage/grant') return panel.grantResets(body);
   if (path === '/api/admin/transcripts') {
@@ -112,8 +122,10 @@ const landingCsp = consoleCsp.replace("script-src 'self'", "script-src 'self' 'u
 /** Console file for a /console path, or undefined. Only these names are served. */
 const consoleFile = (path: string) => {
   if (path === '/console' || path === '/console/') return 'index.html';
+  // Chat and channel addresses: /chat, /chat/<id>, /team, /team/<id> and /team/<id>/run/<runId>. The page reads the path.
+  if (/^\/(chat|team)(\/[^/]+)?\/?$/.test(path) || /^\/team\/[^/]+\/run\/[^/]+\/?$/.test(path)) return 'index.html';
   const name = path.startsWith('/console/') ? path.slice('/console/'.length) : '';
-  return /^(app\.js|palette\.js|conversations\.js|markdown\.js|style\.css|chat\.css|console\.css|shares\.js|shares\.css|assets\/(logo-(light|dark)\.svg|favicon\.svg|[a-z0-9-]+\.woff2))$/.test(name) ? name : undefined;
+  return /^(app\.js|palette\.js|conversations\.js|markdown\.js|highlight\.min\.js|style\.css|chat\.css|console\.css|shares\.js|shares\.css|assets\/(logo-(light|dark)\.svg|favicon\.svg|[a-z0-9-]+\.woff2))$/.test(name) ? name : undefined;
 };
 /** Landing file for a path: the home page, /_next/ files and top-level files such as /favicon.svg. */
 const landingFile = (path: string) => path === '/' ? 'index.html' : path.startsWith('/_next/') || /^\/[^/]+$/.test(path) ? path.slice(1) : undefined;
