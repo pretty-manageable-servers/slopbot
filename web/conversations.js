@@ -578,6 +578,7 @@ function messageNode(m) {
     const bubble = textNode('div', '', 'chat-text');
     if (m.timestamp) bubble.title = timeLabel(m.timestamp);
     renderText(bubble, m.text);
+    if (m.images && m.images.length) article.append(imageStrip(m));
     article.append(bubble);
     if (m.editedAt) article.append(textNode('span', 'edited', 'chat-edited'));
     return article;
@@ -1170,7 +1171,8 @@ function chatComposer(id) {
     form.addEventListener('submit', () => { if (field.value.trim()) { banner.remove(); conv.ask = null; } });
     requestAnimationFrame(() => { fitField(field); box.classList.add('has-text'); field.focus(); });
   }
-  form.append(status, box, textNode('p', 'Slopbot is AI and can make mistakes.', 'chat-foot'));
+  const pics = imageTray(form, box, field, status, id);
+  form.append(status, pics.tray, box, textNode('p', 'Slopbot is AI and can make mistakes.', 'chat-foot'));
   const sync = () => { box.classList.toggle('has-text', field.value.trim() !== ''); fitField(field); };
   let sending = false;
   field.addEventListener('input', () => { sync(); status.textContent = ''; });
@@ -1180,15 +1182,16 @@ function chatComposer(id) {
   form.addEventListener('submit', async event => {
     event.preventDefault();
     const text = field.value.trim();
-    if (!text || sending) return;
+    if ((!text && !pics.ids().length) || sending) return;
+    if (pics.uploading()) { status.textContent = 'Wait for the images to finish uploading.'; return; }
     sending = true; send.disabled = true; status.textContent = 'Sending…';
     try {
-      const response = await fetch(`/api/chats/${enc(id)}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ text }) });
+      const response = await fetch(`/api/chats/${enc(id)}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ text, images: pics.ids() }) });
       const data = await response.json().catch(() => ({}));
       if (response.status === 401) { status.textContent = ''; showScreen('login'); return; }
       if (response.status === 429) { status.textContent = `Limit reached, resets ${new Date(data.resetAt).toLocaleString()}.`; return; }
       if (!response.ok) throw new Error(data.error || 'Message failed.');
-      field.value = ''; sync(); status.textContent = '';
+      field.value = ''; sync(); status.textContent = ''; pics.clear();
       // The first message moves the composer to the bottom. The list is reloaded for the new order and title.
       leaveEmpty(form.closest('.chat-hero'));
       refreshChats();
@@ -1354,4 +1357,94 @@ function textNode(tag, text, className = '') {
   if (className) node.className = className;
   node.textContent = text;
   return node;
+}
+
+
+// Chat images. The server stores them privately and sends them to the model. The page loads them from the chat's image route.
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
+const IMAGE_MAX_COUNT = 10;
+const imageUrl = (chat, imageId) => `/api/chats/${enc(chat)}/images/${enc(imageId)}`;
+const sizeLabel = bytes => bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+
+// Thumbnails of a sent message. After a reload they come from the stored image.
+function imageStrip(m) {
+  const strip = textNode('div', '', 'chat-images');
+  const chat = String(m.channel || '').replace(/^web:/, '');
+  for (const image of m.images) {
+    const img = document.createElement('img');
+    img.src = imageUrl(chat, image.imageId); img.alt = image.name; img.loading = 'lazy';
+    img.title = `${image.name} (${sizeLabel(image.size)})`;
+    img.addEventListener('error', () => img.replaceWith(textNode('span', `${image.name} (${sizeLabel(image.size)})`, 'chat-image-chip')));
+    strip.append(img);
+  }
+  return strip;
+}
+
+// Paste, drop and attach for the composer. Each image uploads at once; the message sends only the image IDs.
+function imageTray(form, box, field, status, chat) {
+  const tray = textNode('div', '', 'chat-tray');
+  tray.hidden = true;
+  const items = [];
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'image/*'; input.multiple = true; input.hidden = true;
+  const attach = document.createElement('button');
+  attach.type = 'button'; attach.className = 'chat-attach'; attach.textContent = '+';
+  attach.setAttribute('aria-label', 'Attach images'); attach.title = 'Attach images';
+  box.prepend(attach);
+  form.append(input);
+  const show = () => { tray.hidden = items.length === 0; };
+  const remove = item => {
+    items.splice(items.indexOf(item), 1); item.node.remove(); show();
+    if (item.id) fetch(imageUrl(chat, item.id), { method: 'DELETE', headers: { 'X-CSRF-Token': csrf } }).catch(() => {});
+  };
+  const add = async file => {
+    if (!IMAGE_TYPES.includes(file.type)) { status.textContent = `${file.name || 'This file'} is not a PNG, JPEG, GIF or WebP image.`; return; }
+    if (file.size > IMAGE_MAX_BYTES) { status.textContent = `${file.name || 'This image'} is larger than 25 MB.`; return; }
+    if (items.length >= IMAGE_MAX_COUNT) { status.textContent = `Attach ${IMAGE_MAX_COUNT} images or fewer.`; return; }
+    const item = { id: null, node: textNode('div', '', 'chat-thumb') };
+    const label = textNode('span', `${file.name || 'image'} (uploading…)`, 'chat-image-chip');
+    const close = document.createElement('button');
+    close.type = 'button'; close.textContent = '\u00d7'; close.setAttribute('aria-label', `Remove ${file.name || 'image'}`);
+    close.addEventListener('click', () => remove(item));
+    item.node.append(label, close); items.push(item); tray.append(item.node); show();
+    item.upload = (async () => {
+      try {
+        const response = await fetch(`/api/chats/${enc(chat)}/images?name=${enc(file.name || '')}`, { method: 'POST', headers: { 'Content-Type': file.type, 'X-CSRF-Token': csrf }, body: file });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(response.status === 429 ? 'Limit reached.' : data.error || 'Upload failed.');
+        item.id = data.imageId;
+        if (!items.includes(item)) { fetch(imageUrl(chat, item.id), { method: 'DELETE', headers: { 'X-CSRF-Token': csrf } }).catch(() => {}); return; }
+        const img = document.createElement('img');
+        img.src = imageUrl(chat, item.id); img.alt = data.name; img.title = `${data.name} (${sizeLabel(data.size)})`;
+        label.replaceWith(img);
+      } catch (error) {
+        status.textContent = error.message;
+        if (items.includes(item)) { items.splice(items.indexOf(item), 1); item.node.remove(); show(); }
+      } finally { item.done = true; }
+    })();
+  };
+  const addAll = files => { for (const file of files) void add(file); };
+  attach.addEventListener('click', () => input.click());
+  input.addEventListener('change', () => { addAll([...input.files]); input.value = ''; });
+  field.addEventListener('paste', event => {
+    const files = [...(event.clipboardData ? event.clipboardData.files : [])].filter(file => file.type.startsWith('image/'));
+    if (files.length) { event.preventDefault(); addAll(files); }
+  });
+  const hasFiles = event => event.dataTransfer && [...event.dataTransfer.types].includes('Files');
+  const over = event => { if (!form.isConnected) return document.removeEventListener('dragover', over); if (hasFiles(event)) { event.preventDefault(); form.classList.add('dragging'); } };
+  const drop = event => {
+    if (!form.isConnected) return document.removeEventListener('drop', drop);
+    form.classList.remove('dragging');
+    if (!hasFiles(event)) return;
+    event.preventDefault(); addAll([...event.dataTransfer.files]);
+  };
+  document.addEventListener('dragover', over); document.addEventListener('drop', drop);
+  document.addEventListener('dragleave', event => { if (!event.relatedTarget) form.classList.remove('dragging'); });
+  return {
+    tray,
+    ids: () => items.filter(item => item.id).map(item => item.id),
+    uploading: () => items.some(item => !item.done),
+    clear: () => { items.splice(0); tray.replaceChildren(); show(); },
+  };
 }
