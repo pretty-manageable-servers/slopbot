@@ -94,4 +94,9 @@ CREATE INDEX IF NOT EXISTS messages_channel ON messages(server,channel,sequence)
 
 CREATE TABLE IF NOT EXISTS app_records (server TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, revision BIGINT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(server,kind,id));
 
+CREATE TABLE IF NOT EXISTS web_webhooks (server TEXT NOT NULL, channel TEXT NOT NULL, webhook_id TEXT NOT NULL, token_encrypted TEXT NOT NULL, PRIMARY KEY(server,channel));
+CREATE INDEX IF NOT EXISTS web_webhooks_hook ON web_webhooks(server,webhook_id);
+CREATE TABLE IF NOT EXISTS web_replies (id TEXT PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, user_id TEXT NOT NULL, status TEXT NOT NULL, message_id TEXT, created_at BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS web_replies_message ON web_replies(server,message_id);
+
 CREATE INDEX IF NOT EXISTS messages_fulltext ON messages USING gin(to_tsvector('simple',body::jsonb->>'text'));

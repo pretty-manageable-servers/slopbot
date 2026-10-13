@@ -19,3 +19,4 @@
 .filter{margin:0 0 16px}
 .switch{display:flex;align-items:center;gap:8px;margin:0}.switch input{margin:0}
 @media(max-width:760px){.chan{grid-template-columns:1fr}.chan-actions{justify-content:flex-start}.chan-window input{width:100px}}
+.reply-box textarea{width:100%;box-sizing:border-box}
