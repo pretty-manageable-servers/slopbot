@@ -420,7 +420,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   }
   knownAuthors(server: string): { author: string; named: boolean }[] {
     return this.db.prepare(`SELECT DISTINCT json_extract(m.body,'$.author') AS author, d.author AS named FROM messages m
-      LEFT JOIN author_directory d ON d.server=m.server AND d.author=json_extract(m.body,'$.author') WHERE m.server=?`).all(server)
+      LEFT JOIN author_directory d ON d.server=m.server AND d.author=json_extract(m.body,'$.author') WHERE m.server=? AND m.channel NOT LIKE 'web:%'`).all(server)
       .map(row => ({ author: String(row.author), named: row.named !== null }));
   }
   identifyAuthor(server: string, author: string, names: readonly string[], bot = false, identity: Record<string, string> = {}): void {
@@ -618,7 +618,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
 
   // Web transcripts (read-only views and the live event store).
   async conversationActivity(server: string): Promise<{ channel: string; newest: number }[]> {
-    return this.db.prepare("SELECT channel, MAX(COALESCE(json_extract(body,'$.timestamp'),0)) AS newest FROM messages WHERE server=? GROUP BY channel")
+    return this.db.prepare("SELECT channel, MAX(COALESCE(json_extract(body,'$.timestamp'),0)) AS newest FROM messages WHERE server=? AND channel NOT LIKE 'web:%' GROUP BY channel")
       .all(server).map(row => ({ channel: String(row.channel), newest: Number(row.newest) }));
   }
   async conversationMessages(server: string, channel: string, before: { time: number; id: string } | undefined, limit: number): Promise<Message[]> {
@@ -845,8 +845,9 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
 
   reindex(server: string, channels: readonly string[]): number {
     if (!this.embeddings || !channels.length) return 0;
+    // Private chats are never indexed for search, even when a caller passes their channel.
     const rows = this.db.prepare(`SELECT m.* FROM memories m WHERE m.server=?
-      AND m.status='active' AND m.channel IN (${channels.map(() => "?").join(",")}) AND NOT EXISTS
+      AND m.status='active' AND m.channel NOT LIKE 'web:%' AND m.channel IN (${channels.map(() => "?").join(",")}) AND NOT EXISTS
       (SELECT 1 FROM memory_embeddings e WHERE e.server=m.server AND e.memory_id=m.id AND e.model=?)`)
       .all(server, ...channels, this.embeddings.model);
     for (const row of rows) this.queueIndex({ server, channel: String(row.channel), author: String(row.author), id: String(row.id), text: String(row.content) }, false);
