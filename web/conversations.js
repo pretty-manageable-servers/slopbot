@@ -1,6 +1,6 @@
 // Conversations tab: a chat view of channel and thread transcripts (read-only), private chats with a composer, Slopbot runs and the live stream.
 // Uses globals from app.js: $, request, busy, fail, notice, state, csrf, showScreen.
-const conv = { server: '', list: [], chats: [], chatNote: '', kind: 'channel', channel: null, blank: false, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, folded: new Set(), renaming: null, filter: '', view: null, runs: new Map(), open: new Set(), run: null, timers: new Map() };
+const conv = { server: '', list: [], chats: [], chatNote: '', kind: 'channel', channel: null, blank: false, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, folded: new Set(), renaming: null, filter: '', view: null, runs: new Map(), open: new Set(), run: null, timers: new Map(), inbox: false, inboxDone: false, inboxCount: 0 };
 const NEW_CHAT = 'New chat';
 const chatTitle = c => c.title || NEW_CHAT;
 // Times may be a number or a date string. A missing time counts as 0.
@@ -131,6 +131,7 @@ function placeTabPill() {
 window.addEventListener('resize', placeTabPill);
 function setView(view, redraw = true) {
   conv.view = view;
+  conv.inbox = false;
   remember('slopbot-view', view);
   paintViews();
   renderChatServers();
@@ -138,11 +139,12 @@ function setView(view, redraw = true) {
 }
 // A tab switch keeps the open item only when it belongs to the new view. Otherwise Chats opens a new chat and Servers shows the pick hint.
 function switchView(view) {
-  if (view === conv.view) return;
+  const wasInbox = conv.inbox;
+  if (view === conv.view && !wasInbox) return;
   animateViews(conv.view, view, () => {
     setView(view);
     if (view === 'chats') { if (!conv.blank && (conv.kind !== 'chat' || !conv.channel)) openBlankChat(); }
-    else if (conv.kind === 'chat' || conv.blank) showPickPane();
+    else if (conv.kind === 'chat' || conv.blank || wasInbox) showPickPane();
   });
 }
 // Servers is to the right of Chats, so the slide goes left going forward and right going back.
@@ -182,7 +184,7 @@ function clearItemHash() {
 document.querySelectorAll('#top-tabs [data-view]').forEach(tab => tab.addEventListener('click', () => switchView(tab.dataset.view)));
 
 function renderConversations() {
-  if (conv.server !== state.server.id) { closeConversation(); conv.server = state.server.id; conv.channel = null; conv.list = []; conv.chats = []; conv.chatNote = ''; conv.renaming = null; conv.runs = new Map(); conv.open = new Set(); for (const timer of conv.timers.values()) clearTimeout(timer); conv.timers = new Map(); }
+  if (conv.server !== state.server.id) { closeConversation(); conv.inboxCount = 0; conv.server = state.server.id; conv.channel = null; conv.list = []; conv.chats = []; conv.chatNote = ''; conv.renaming = null; conv.runs = new Map(); conv.open = new Set(); for (const timer of conv.timers.values()) clearTimeout(timer); conv.timers = new Map(); refreshInboxCount(); }
   setChatMode(true);
   if (!conv.view) conv.view = recall('slopbot-view') === 'servers' ? 'servers' : 'chats';
   conv.blank = false;
@@ -281,7 +283,7 @@ function drawList() {
   const list = $('conv-list');
   if (!list) return;
   const chatsView = conv.view !== 'servers';
-  list.replaceChildren(...(chatsView ? [newChatButton()] : []));
+  list.replaceChildren(inboxButton(), ...(chatsView ? [newChatButton()] : []));
   if (chatsView && conv.chatNote) list.append(textNode('p', conv.chatNote, 'small chat-none'));
   // The filter box narrows the list live. A row being renamed stays visible.
   const filter = (conv.filter || '').trim();
@@ -313,6 +315,134 @@ function newChatButton() {
   button.innerHTML = PENCIL_ICON + '<span>New chat</span>';
   button.onclick = () => newChat();
   return button;
+}
+
+// The Inbox entry in the sidebar. Its badge counts the open items of the selected server. The items show in the main pane.
+function inboxButton() {
+  const count = conv.inboxCount || 0, shown = count >= 50 ? '50+' : String(count);
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.id = 'inbox-open';
+  button.className = 'chat-new chat-inbox';
+  button.setAttribute('aria-pressed', String(!!conv.inbox));
+  button.setAttribute('aria-label', count ? `Inbox, ${shown} open` : 'Inbox');
+  button.append(textNode('span', 'Inbox', 'chat-inbox-label'));
+  if (count) button.append(textNode('span', shown, 'chat-inbox-count'));
+  button.onclick = () => openInbox();
+  return button;
+}
+// Opens the Inbox in the main pane. The open chat or channel is closed, as for the Servers view with no item.
+async function openInbox() {
+  closeConversation();
+  conv.inbox = true;
+  setConversationDrawer(false, true);
+  $('chat-private').hidden = true;
+  $('conv-status').hidden = true;
+  $('conv-share').hidden = true;
+  $('conv-share').replaceChildren();
+  setComposer(null);
+  setHeading('Inbox');
+  drawList();
+  showView(busy('md', 'Loading…'));
+  await loadInbox();
+}
+// The open items of the server, or all items with Show done. Each route answers { items }.
+const fetchInbox = (id, done) => request(`/api/servers/${enc(id)}/inbox${done ? '?done=1' : ''}`).then(result => Array.isArray(result.items) ? result.items : []);
+// Draws the Inbox panel for the server it was opened for. A reply for another server or an old view is dropped.
+async function loadInbox() {
+  const id = state.server.id;
+  const current = () => conv.inbox && conv.server === id;
+  let items;
+  try { items = await fetchInbox(id, conv.inboxDone); }
+  catch (error) {
+    if (error.status === 401) return fail(error);
+    if (current()) { conv.inboxCount = 0; drawList(); showView(textNode('p', 'The inbox is not available right now.', 'small chat-none')); }
+    return;
+  }
+  if (!current()) return;
+  if (conv.inboxDone) await refreshInboxCount();
+  else { conv.inboxCount = items.length; drawList(); }
+  if (!current()) return;
+  showView(inboxPanel(items));
+}
+// The badge only. It reads the open items, so Show done does not change it.
+async function refreshInboxCount() {
+  const id = conv.server;
+  try {
+    const items = await fetchInbox(id, false);
+    if (conv.server !== id || !$('conv-list')) return;
+    conv.inboxCount = items.length;
+  } catch (error) {
+    if (error.status === 401) return fail(error);
+    if (conv.server !== id) return;
+    conv.inboxCount = 0;
+  }
+  drawList();
+}
+// Marks items done (ids, or "all") and redraws the panel and the badge.
+async function markInboxDone(ids, button) {
+  const id = state.server.id;
+  if (button) button.disabled = true;
+  try { await sendJson('POST', `/api/servers/${enc(id)}/inbox/done`, { ids }); }
+  catch (error) { if (button) button.disabled = false; return fail(error); }
+  if (conv.inbox && conv.server === id) await loadInbox();
+  else await refreshInboxCount();
+}
+function inboxPanel(items) {
+  const section = document.createElement('section');
+  section.className = 'inbox';
+  const bar = document.createElement('div');
+  bar.className = 'inbox-bar';
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'inbox-toggle';
+  toggle.setAttribute('aria-pressed', String(conv.inboxDone));
+  toggle.textContent = 'Show done';
+  toggle.onclick = () => { conv.inboxDone = !conv.inboxDone; showView(busy('md', 'Loading…')); loadInbox(); };
+  const all = document.createElement('button');
+  all.type = 'button';
+  all.className = 'inbox-all';
+  all.textContent = 'Mark all done';
+  all.disabled = !items.some(item => !item.done_at);
+  all.onclick = () => markInboxDone('all', all);
+  bar.append(toggle, all);
+  section.append(bar);
+  if (!items.length) { section.append(textNode('p', 'Your inbox is empty.', 'inbox-empty')); return section; }
+  const list = document.createElement('ol');
+  list.className = 'inbox-list';
+  list.onclick = event => { const button = event.target.closest('button[data-done]'); if (button) markInboxDone([button.dataset.done], button); };
+  list.append(...items.map(inboxRow));
+  section.append(list);
+  return section;
+}
+// One summary: who asked, when, the text (as text, never HTML), a link to the first source message and a Done button.
+function inboxRow(item) {
+  const row = document.createElement('li');
+  row.className = `inbox-item${item.done_at ? ' done' : ''}`;
+  const head = document.createElement('div');
+  head.className = 'inbox-head';
+  const time = textNode('time', relTime(item.created_at), 'inbox-time');
+  time.dateTime = new Date(item.created_at).toISOString();
+  time.title = timeLabel(item.created_at);
+  head.append(textNode('strong', item.sender, 'inbox-sender'), time);
+  const summary = document.createElement('p');
+  summary.className = 'inbox-summary';
+  plainText(summary, String(item.summary));
+  const actions = document.createElement('div');
+  actions.className = 'inbox-actions';
+  const source = item.sourceIds && item.sourceIds[0];
+  if (source) {
+    const link = document.createElement('a');
+    link.href = `https://discord.com/channels/${enc(item.server)}/${enc(item.channel)}/${enc(source)}`;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = 'Open in Discord';
+    actions.append(link);
+  }
+  if (item.done_at) actions.append(textNode('span', 'Done', 'inbox-done-mark'));
+  else { const done = document.createElement('button'); done.type = 'button'; done.dataset.done = item.id; done.textContent = 'Done'; actions.append(done); }
+  row.append(head, summary, actions);
+  return row;
 }
 
 // One private chat: a lock, the title, the relative time and the "⋯" menu. While the chat is renamed, the row holds the rename box.
@@ -1421,6 +1551,7 @@ function closeStream() {
 
 function closeConversation() {
   closeStream();
+  conv.inbox = false;
   dropLive();
   conv.channel = null;
   conv.run = null;

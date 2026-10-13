@@ -14,6 +14,7 @@ import type { WebSessionStore } from './web-session-store.js';
 import type { ChatRoutes } from './web-chats.js';
 import { ChatError } from './web-chats.js';
 import { runtimeVersion } from './operations-config.js';
+import type { InboxItem } from './inbox.js';
 
 /** Team admin backend. Roles come from the Developer Portal team; panel holds the limits, prices and usage. */
 export interface ConsoleAdmin {
@@ -46,6 +47,8 @@ export interface ConsoleBackend {
   usage?(user: string, server: string): Promise<unknown>;
   /** Uses one of the signed-in user's own banked resets on a window, then returns the new meter. */
   useReset?(user: string, server: string, kind: string): Promise<unknown>;
+  /** The signed-in user's own inbox items for one server, newest first. Open items only unless includeDone is set. */
+  inbox?: { list(user: string, server: string, includeDone: boolean): Promise<InboxItem[]>; done(user: string, server: string, ids: string[] | 'all'): Promise<number> };
   setTranscript?(user: string, server: string, channel: string, enabled: boolean): Promise<unknown>;
   /** Live per-user view and send checks for the read and send routes. */
   access?: ChannelAccess;
@@ -293,6 +296,12 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
           if (!backend.usage) return send(res, 404, { error: 'Not found.' });
           return send(res, 200, await backend.usage(session.user, server));
         }
+        const inboxList = routePath.match(/^\/api\/servers\/([^/]+)\/inbox$/);
+        if (req.method === 'GET' && inboxList) {
+          if (!/^\d{17,20}$/.test(inboxList[1]!)) return send(res, 400, { error: 'Invalid server.' });
+          if (!backend.inbox) return send(res, 404, { error: 'Not found.' });
+          return send(res, 200, { items: await backend.inbox.list(session.user, inboxList[1]!, url.searchParams.get('done') === '1') });
+        }
         if (req.method === 'GET' && routePath === '/api/shares') {
           if (!backend.shares) return send(res, 404, { error: 'Not found.' });
           return send(res, 200, await backend.shares.list(session.user, url.searchParams.get('server') ?? ''));
@@ -308,6 +317,18 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
           if (input.kind !== '5h' && input.kind !== 'week') return send(res, 400, { error: 'Invalid window.' });
           try { return send(res, 200, await backend.useReset(session.user, input.server, input.kind)); }
           catch (error) { if (error instanceof ToolError) return send(res, 409, { error: error.message }); throw error; }
+        }
+        const inboxDone = routePath.match(/^\/api\/servers\/([^/]+)\/inbox\/done$/);
+        if (inboxDone) {
+          if (!/^\d{17,20}$/.test(inboxDone[1]!)) return send(res, 400, { error: 'Invalid server.' });
+          if (!backend.inbox) return send(res, 404, { error: 'Not found.' });
+          if (!req.headers['content-type']?.startsWith('application/json')) return send(res, 415, { error: 'Send JSON.' });
+          let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 16384) return send(res, 413, { error: 'Request too large.' }); }
+          let input: { ids?: unknown };
+          try { input = JSON.parse(body); } catch { return send(res, 400, { error: 'Invalid JSON.' }); }
+          const ids = input?.ids;
+          if (!(ids === 'all' || (Array.isArray(ids) && ids.length >= 1 && ids.length <= 100 && ids.every(id => typeof id === 'string')))) return send(res, 400, { error: 'Invalid inbox items.' });
+          return send(res, 200, { changed: await backend.inbox.done(session.user, inboxDone[1]!, ids) });
         }
         const continued = routePath.match(/^\/api\/shares\/([A-Za-z0-9_-]{22})\/continue$/);
         if (continued) {
