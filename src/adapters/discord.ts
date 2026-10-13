@@ -385,19 +385,24 @@ export class DiscordServer implements ChatGateway {
       return;
     }
     await interaction.reply({ content: "Slopbot is on it.", flags: MessageFlags.Ephemeral });
-    const target = interaction.targetMessage;
-    const source = { ...this.normalize(target), addressed: false };
-    await this.store.ingest(source);
-    const member = interaction.member && "displayName" in interaction.member ? interaction.member.displayName : undefined;
-    const incoming: Incoming = {
-      id: `app:${interaction.id}`, server: this.guildId, channel: interaction.channelId, author: interaction.user.id,
-      authorName: member ?? interaction.user.globalName ?? interaction.user.username,
-      authorAliases: [interaction.user.username, ...(interaction.user.globalName ? [interaction.user.globalName] : [])],
-      text: messageAppText(interaction.commandName, source.authorName ?? source.author, source.text),
-      replyTo: target.id, timestamp: interaction.createdTimestamp,
-      botAuthor: false, mentionsBot: true, repliesToBot: false,
-    };
-    await this.bot.receive(incoming);
+    try {
+      const target = interaction.targetMessage;
+      const source = { ...this.normalize(target), addressed: false };
+      await this.store.ingest(source);
+      const member = interaction.member && "displayName" in interaction.member ? interaction.member.displayName : undefined;
+      const incoming: Incoming = {
+        id: `app:${interaction.id}`, server: this.guildId, channel: interaction.channelId, author: interaction.user.id,
+        authorName: member ?? interaction.user.globalName ?? interaction.user.username,
+        authorAliases: [interaction.user.username, ...(interaction.user.globalName ? [interaction.user.globalName] : [])],
+        text: messageAppText(interaction.commandName, source.authorName ?? source.author, source.text),
+        replyTo: target.id, timestamp: interaction.createdTimestamp,
+        botAuthor: false, mentionsBot: true, repliesToBot: false,
+      };
+      await this.bot.receive(incoming);
+    } catch (error) {
+      logError("command_failed", error, { stage: "message app", server: this.guildId, messageId: interaction.id });
+      await interaction.editReply({ content: errorReply(error), allowedMentions: { parse: [] } });
+    }
   }
   /** The "Continue in Slopbot web" message command. Makes a private web chat with the message and sends a private link to it. */
   private async continueInWeb(interaction: MessageContextMenuCommandInteraction): Promise<void> {
