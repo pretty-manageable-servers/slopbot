@@ -118,7 +118,68 @@ function renderAccount() {
   accountButton.replaceChildren(accountAvatar(avatarUrl, name));
   $('account-name').replaceChildren(accountAvatar(avatarUrl, name), document.createTextNode(name));
 }
-function notice(text) { $('notice').textContent = text; }
+// The bottom toast. A normal notice hides itself after 5 seconds. A sticky notice (an error) stays until it is dismissed.
+// A new notice replaces the text and restarts the timer. The toast never takes focus.
+let noticeTimer = 0;
+function dismissNotice() {
+  clearTimeout(noticeTimer);
+  noticeTimer = 0;
+  $('notice').hidden = true;
+  $('notice-text').textContent = '';
+}
+function notice(text, sticky = false) {
+  clearTimeout(noticeTimer);
+  $('notice-text').textContent = text;
+  $('notice').hidden = !text;
+  noticeTimer = sticky || !text ? 0 : setTimeout(dismissNotice, 5000);
+}
+$('notice-close').onclick = dismissNotice;
+$('notice').addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); dismissNotice(); } });
+// Asks a yes or no question in a styled dialog. It resolves true only when the confirm button is used. Cancel, Escape and a click on the backdrop resolve false.
+// Text is set with textContent only. Clicks and keys inside the dialog do not reach page listeners, so an open usage popover stays open.
+function askConfirm({ title, body = '', confirmLabel = 'Confirm', danger = false }) {
+  return new Promise(resolve => {
+    const dialog = document.createElement('dialog');
+    dialog.className = 'confirm-dialog';
+    dialog.setAttribute('aria-labelledby', 'confirm-title');
+    const heading = document.createElement('h2');
+    heading.id = 'confirm-title';
+    heading.textContent = title;
+    dialog.append(heading);
+    if (body) {
+      const text = document.createElement('p');
+      text.id = 'confirm-body';
+      text.textContent = body;
+      dialog.setAttribute('aria-describedby', 'confirm-body');
+      dialog.append(text);
+    }
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Cancel';
+    const ok = document.createElement('button');
+    ok.type = 'button';
+    ok.className = danger ? 'confirm-ok danger' : 'confirm-ok';
+    ok.textContent = confirmLabel;
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+    actions.append(cancel, ok);
+    dialog.append(actions);
+    cancel.onclick = () => dialog.close();
+    ok.onclick = () => dialog.close('confirm');
+    // Escape closes the dialog through the native cancel. It does not reach the page, so a usage popover is not closed too.
+    dialog.addEventListener('keydown', event => { if (event.key === 'Escape') event.stopPropagation(); });
+    dialog.addEventListener('click', event => {
+      event.stopPropagation();
+      const box = dialog.getBoundingClientRect();
+      const outside = event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom;
+      if (event.target === dialog && outside) dialog.close();
+    });
+    dialog.addEventListener('close', () => { resolve(dialog.returnValue === 'confirm'); dialog.remove(); });
+    document.body.append(dialog);
+    dialog.showModal();
+    (danger ? cancel : ok).focus();
+  });
+}
 function showScreen(name) { $('top-tabs').hidden = name !== 'console'; $('boot').hidden = name !== 'boot'; $('login').hidden = name !== 'login'; $('console').hidden = name !== 'console'; $('account').hidden = name !== 'console'; }
 const loader = size => { const svg = $('loader').content.firstElementChild.cloneNode(true); if (size) svg.classList.add(size); return svg; };
 function busy(size, text) { const box = document.createElement('div'), label = document.createElement('p'); box.className = 'busy'; label.textContent = text; box.append(loader(size), label); return box; }
@@ -129,7 +190,7 @@ async function request(path, body) {
   return data;
 }
 const settingsFor = id => request(id ? `/api/settings?server=${encodeURIComponent(id)}` : '/api/settings');
-function fail(error) { if (error.status === 401) showScreen('login'); else notice(error.message); }
+function fail(error) { if (error.status === 401) showScreen('login'); else notice(error.message, true); }
 async function run(button, task) {
   const label = button.textContent;
   button.disabled = true; button.setAttribute('aria-busy', 'true'); button.replaceChildren(loader('sm'));
@@ -159,9 +220,9 @@ function applySettings(result) {
   renderAccount();
   render();
 }
-function channelAction(button) {
+async function channelAction(button) {
   const { channel: id, action } = button.dataset;
-  if (action === 'remove' && !confirm('Stop monitoring this channel? This purges searchable content and dependent task context. Operational logs remain.')) return;
+  if (action === 'remove' && !(await askConfirm({ title: 'Stop monitoring this channel?', body: 'This purges searchable content and dependent task context. Operational logs remain.', confirmLabel: 'Stop monitoring', danger: true }))) return;
   run(button, () => (action === 'add' || action === 'remove') ? save('channels', { action, channel: id }, id) : save('index', { action }, id));
 }
 // The import progress of a running job. A window job shows the share of its time window it has reached.
@@ -243,12 +304,12 @@ function render() {
     filter.hidden = state.channels.length <= 8;
     filter.oninput = () => { channelQuery = filter.value; drawChannels(); };
     list.onclick = event => { const button = event.target.closest('button[data-channel]'); if (button) channelAction(button); };
-    list.onsubmit = event => {
+    list.onsubmit = async event => {
       event.preventDefault();
       const form = event.target, id = form.dataset.channel, days = Number(new FormData(form).get('days'));
       const channel = state.channels.find(c => c.id === id), current = channel?.history?.days;
       // A shorter window deletes saved messages. The user must confirm first; Cancel changes nothing.
-      if (current !== undefined && days < current && !confirm(`Delete saved messages older than ${days} days in #${channel.name}? This cannot be undone.`)) return;
+      if (current !== undefined && days < current && !(await askConfirm({ title: 'Delete older messages?', body: `Delete saved messages older than ${days} days in #${channel.name}? This cannot be undone.`, confirmLabel: 'Delete', danger: true }))) return;
       run(form.querySelector('button'), () => save('index', { action: 'window', days }, id));
     };
     drawChannels();
@@ -290,8 +351,8 @@ function renderMcp() {
   for (const connection of connections) bind(`mcp-${connection.id}`, f => configure({action:'save',id:connection.id,url:f.get('url'),transport:f.get('transport'),enabled:f.has('enabled'),timeoutMs:Number(f.get('timeoutMs')),concurrency:Number(f.get('concurrency')),
     ...(f.has('remove_token') ? {token:''} : f.get('token') ? {token:f.get('token')} : {}),
     tools:connection.tools.flatMap((tool,index) => f.has(`tool-${index}`) ? [{name:tool.name,schemaHash:tool.schemaHash,access:f.get(`access-${index}`),effect:f.get(`effect-${index}`)}] : [])}));
-  document.querySelectorAll('[data-mcp-action]').forEach(button => { button.onclick = () => {
-    if (button.dataset.mcpAction === 'remove' && !confirm('Remove this connection and its saved credential?')) return;
+  document.querySelectorAll('[data-mcp-action]').forEach(button => { button.onclick = async () => {
+    if (button.dataset.mcpAction === 'remove' && !(await askConfirm({ title: 'Remove this connection?', body: 'Its saved credential is removed too.', confirmLabel: 'Remove', danger: true }))) return;
     run(button, () => configure({action:button.dataset.mcpAction,id:button.dataset.mcpId}));
   }; });
 }
@@ -413,9 +474,10 @@ async function renderAdmin() {
         form.elements.model.value = button.dataset.model; form.elements.input.value = priceText(price.input); form.elements.cached.value = priceText(price.cached_input); form.elements.output.value = priceText(price.output);
         form.scrollIntoView({ block: 'center' });
       }; });
-      document.querySelectorAll('[data-price="remove"]').forEach(button => { button.onclick = () => {
+      document.querySelectorAll('[data-price="remove"]').forEach(button => { button.onclick = async () => {
         const model = button.dataset.model;
-        if (confirm(`Remove the saved price for ${model}? The configured price applies again.`)) adminRun(button, async () => { await request('/api/admin/prices', { model, remove: true }); notice('Saved price removed.'); });
+        if (!await askConfirm({ title: 'Remove the saved price?', body: `The saved price for ${model} is removed. The configured price applies again.`, confirmLabel: 'Remove', danger: true })) return;
+        adminRun(button, async () => { await request('/api/admin/prices', { model, remove: true }); notice('Saved price removed.'); });
       }; });
     }
     if (adminServer) {
@@ -431,11 +493,11 @@ async function renderAdmin() {
         });
       };
     }
-    $('admin-transcripts').onclick = event => {
+    $('admin-transcripts').onclick = async event => {
       const button = event.target.closest('button[data-action="rotate"]');
       if (!button || !edit) return;
       const { server, channel, name } = button.dataset;
-      if (!confirm(`Make a new web webhook for #${name}? The old webhook stops working at once.`)) return;
+      if (!await askConfirm({ title: 'Make a new web webhook?', body: `The old webhook for #${name} stops working at once.`, confirmLabel: 'Make new webhook', danger: true })) return;
       adminRun(button, async () => { await request('/api/admin/web-webhooks/rotate', { server, channel }); notice(`Web webhook rotated for #${name}.`); });
     };
     $('admin-transcripts').onchange = async event => {
@@ -457,7 +519,7 @@ $('server').onchange = async () => {
 };
 $('server-icon').onerror = () => { $('server-icon').hidden = true; };
 $('brand').onclick = event => { if ($('console').hidden) return; event.preventDefault(); tab = state.admin ? 'server' : 'profile'; render(); window.scrollTo(0, 0); };
-$('logout').onclick = async () => { try { await request('/api/logout',{}); location.reload(); } catch (error) { notice(error.message); } };
+$('logout').onclick = async () => { try { await request('/api/logout',{}); location.reload(); } catch (error) { notice(error.message, true); } };
 async function boot() {
   const remembered = recall('slopbot-server');
   let result;
@@ -466,7 +528,7 @@ async function boot() {
   applySettings(result);
   await loadAdmin();
 }
-boot().catch(error => { if (error.status === 401) showScreen('login'); else { showScreen('none'); notice(error.message); } });
+boot().catch(error => { if (error.status === 401) showScreen('login'); else { showScreen('none'); notice(error.message, true); } });
 
 // Reply box for one conversation. A transcript view calls renderReplyBox(container, server, channel).
 // The server sends the reply as the signed-in user through a channel webhook, or as Slopbot when the bot lacks Manage Webhooks.

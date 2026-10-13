@@ -172,7 +172,7 @@ function chatMenu(c, row) {
   menu.className = 'chat-menu';
   menu.setAttribute('role', 'menu');
   menu.hidden = true;
-  const del = menuItem('Delete', () => { closeMenu(row, false); deleteChat(c); });
+  const del = menuItem('Delete', () => { closeMenu(row, true); deleteChat(c); });
   del.classList.add('danger');
   menu.append(menuItem('Rename', () => { closeMenu(row, false); startRename(c.id); }), del);
   more.onclick = () => (menu.hidden ? openMenu(row) : closeMenu(row, true));
@@ -260,7 +260,7 @@ async function commitRename(c, raw) {
 
 // Deletes a private chat after a confirm. An open chat goes to the empty state.
 async function deleteChat(c) {
-  if (!confirm(`Delete "${chatTitle(c)}"? Its messages and runs are removed. This cannot be undone.`)) return;
+  if (!await askConfirm({ title: 'Delete chat?', body: `"${chatTitle(c)}". Its messages and runs are removed. This cannot be undone.`, confirmLabel: 'Delete', danger: true })) return;
   try { await sendJson('DELETE', `/api/chats/${enc(c.id)}`); } catch (error) { return fail(error); }
   conv.chats = conv.chats.filter(item => item.id !== c.id);
   if (conv.kind === 'chat' && conv.channel === c.id) {
@@ -1263,7 +1263,7 @@ function resetButton(meter, item) {
   button.type = 'button';
   button.onclick = async event => {
     event.stopPropagation();
-    if (!confirm(`Use one ${label} reset? Your ${label} usage goes back to 0%.`)) return;
+    if (!await askConfirm({ title: `Use a ${label} reset?`, body: `Your ${label} usage goes back to 0%.`, confirmLabel: 'Use reset' })) return;
     button.disabled = true;
     try {
       const data = await request('/api/usage/reset', { server: state.server.id, kind: item.kind });
