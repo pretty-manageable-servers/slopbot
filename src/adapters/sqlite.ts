@@ -126,47 +126,8 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
         .all(query, ...values)
         .map((row) => parseMessage(JSON.parse(String(row.body))));
     }
-    let semantic: Message[] = [];
-    let degraded = false;
-    if (request.mode === "semantic" || request.mode === "hybrid") {
-      if (this.embeddings && request.query.trim()) {
-        try {
-          const query = await this.embed(
-            {
-              server: request.server,
-              channel: request.channel,
-              author: "search",
-              id: "search",
-              text: request.query,
-            },
-            "query",
-            request.requester ? { server: request.server, user: request.requester } : undefined,
-          );
-          const ranked = this.db
-            .prepare(
-              `SELECT m.body,e.vector FROM messages m JOIN embeddings e ON e.server=m.server AND e.message_id=m.id WHERE ${where} AND e.model=?`,
-            )
-            .all(...values, this.embeddings.model);
-          semantic = ranked
-            .map((row) => ({
-              message: parseMessage(JSON.parse(String(row.body))),
-              score: cosine(query, JSON.parse(String(row.vector))),
-            }))
-            .filter((item) => item.score > 0)
-            .sort((a, b) => b.score - a.score)
-            .slice(0, 200)
-            .map((item) => item.message);
-        } catch {
-          degraded = true;
-        }
-      } else degraded = true;
-    }
-    const lists =
-      request.mode === "semantic" && !degraded
-        ? [semantic]
-        : request.mode === "hybrid"
-          ? [keywords, semantic]
-          : [keywords];
+    const degraded = request.mode === "semantic" || request.mode === "hybrid";
+    const lists = [keywords];
     const scores = new Map<string, { message: Message; score: number }>();
     for (const list of lists)
       list.forEach((message, index) => {
@@ -320,9 +281,9 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
         memory_id TEXT NOT NULL, server TEXT NOT NULL, message_id TEXT NOT NULL,
         PRIMARY KEY(memory_id,message_id)
       );
-      CREATE TABLE IF NOT EXISTS embeddings (
-        server TEXT NOT NULL, message_id TEXT NOT NULL, model TEXT NOT NULL,
-        vector TEXT NOT NULL, PRIMARY KEY(server,message_id,model)
+      CREATE TABLE IF NOT EXISTS memory_embeddings (
+        server TEXT NOT NULL, memory_id TEXT NOT NULL, model TEXT NOT NULL,
+        vector TEXT NOT NULL, PRIMARY KEY(server,memory_id,model)
       );
       CREATE TABLE IF NOT EXISTS run_sources (
         run_id TEXT NOT NULL, server TEXT NOT NULL, message_id TEXT NOT NULL,
@@ -340,6 +301,8 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
         requests INTEGER NOT NULL DEFAULT 0, tokens INTEGER NOT NULL DEFAULT 0, unknown_tokens INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(server,channel,model,purpose)
       );
+      DROP TABLE IF EXISTS embeddings;
+      DELETE FROM embedding_usage WHERE purpose IN ('index','query');
       CREATE TABLE IF NOT EXISTS task_checkpoints (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT, task_key TEXT NOT NULL, through_sequence INTEGER NOT NULL,
         item TEXT NOT NULL, run_id TEXT NOT NULL, valid INTEGER NOT NULL DEFAULT 1
@@ -467,7 +430,6 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     const result = this.db.prepare(
       "INSERT OR IGNORE INTO messages(server,id,channel,body) VALUES(?,?,?,?)",
     ).run(message.server, message.id, message.channel, JSON.stringify(message));
-    if (result.changes === 1) this.queueIndex(message);
     return result.changes === 1;
   }
 
@@ -701,14 +663,11 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     if (message.authorName) this.identifyAuthor(message.server, message.author, [message.authorName, ...(message.authorAliases ?? [])], message.isBot, message.authorIdentity);
     if (this.db.prepare("SELECT 1 FROM message_tombstones WHERE server=? AND id=?").get(message.server, message.id)) throw contextChangedError(message, { reason: "message_deleted", sourceId: message.id });
     this.db.exec("BEGIN IMMEDIATE");
-    let added = false;
     try {
-      const result = this.db.prepare("INSERT OR IGNORE INTO messages(server,id,channel,body) VALUES(?,?,?,?)").run(message.server, message.id, message.channel, JSON.stringify(message));
-      added = result.changes === 1;
+      this.db.prepare("INSERT OR IGNORE INTO messages(server,id,channel,body) VALUES(?,?,?,?)").run(message.server, message.id, message.channel, JSON.stringify(message));
       this.db.prepare("INSERT OR IGNORE INTO jobs(id,server,channel,message_id,message,status) VALUES(?,?,?,?,?,'pending')").run(randomUUID(), message.server, message.channel, message.id, JSON.stringify(message));
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
-    if (added) this.queueIndex(message);
     return this.job(this.db.prepare("SELECT * FROM jobs WHERE server=? AND message_id=?").get(message.server, message.id)!);
   }
   acquireWorker(server: string, owner: string, expires: number): boolean {
@@ -851,11 +810,11 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
 
   reindex(server: string, channels: readonly string[]): number {
     if (!this.embeddings || !channels.length) return 0;
-    const rows = this.db.prepare(`SELECT m.body FROM messages m WHERE m.server=?
-      AND m.channel IN (${channels.map(() => "?").join(",")}) AND NOT EXISTS
-      (SELECT 1 FROM embeddings e WHERE e.server=m.server AND e.message_id=m.id AND e.model=?)`)
+    const rows = this.db.prepare(`SELECT m.* FROM memories m WHERE m.server=?
+      AND m.status='active' AND m.channel IN (${channels.map(() => "?").join(",")}) AND NOT EXISTS
+      (SELECT 1 FROM memory_embeddings e WHERE e.server=m.server AND e.memory_id=m.id AND e.model=?)`)
       .all(server, ...channels, this.embeddings.model);
-    for (const row of rows) this.queueIndex(parseMessage(JSON.parse(String(row.body))), false);
+    for (const row of rows) this.queueIndex({ server, channel: String(row.channel), author: String(row.author), id: String(row.id), text: String(row.content) }, false);
     return rows.length;
   }
 
@@ -877,25 +836,24 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   private queueIndex(message: Message, charge = true): void {
     if (!this.embeddings || !message.text.trim()) return;
     this.indexTail = this.indexTail.then(async () => {
-      const existing = this.db.prepare("SELECT 1 FROM embeddings WHERE server=? AND message_id=? AND model=?").get(message.server, message.id, this.embeddings!.model);
+      const existing = this.db.prepare("SELECT 1 FROM memory_embeddings WHERE server=? AND memory_id=? AND model=?").get(message.server, message.id, this.embeddings!.model);
       if (existing) return;
-      // Index work is charged to the message author. A bot message has no payer, so attribution() skips its charge.
-      const vector = await this.embed(message, "index", charge ? attribution(message) : undefined);
-      const current = this.db.prepare("SELECT body FROM messages WHERE server=? AND id=?").get(message.server, message.id);
-      if (!current || parseMessage(JSON.parse(String(current.body))).text !== message.text) return;
-      this.db.prepare("INSERT OR REPLACE INTO embeddings VALUES(?,?,?,?)")
+      const vector = await this.embed(message, "memory_index", charge ? attribution(message) : undefined);
+      const current = this.db.prepare("SELECT content FROM memories WHERE server=? AND id=? AND status='active'").get(message.server, message.id);
+      if (!current || String(current.content) !== message.text) return;
+      this.db.prepare("INSERT OR REPLACE INTO memory_embeddings VALUES(?,?,?,?)")
         .run(message.server, message.id, this.embeddings!.model, JSON.stringify(vector));
-    }).catch(error => logError("embedding_index_failed_keyword_search_available", error, { stage: "embedding indexing", server: message.server, channel: message.channel, messageId: message.id }));
+    }).catch(error => logError("memory_embedding_index_failed", error, { stage: "memory embedding indexing", server: message.server, channel: message.channel, messageId: message.id }));
   }
 
   indexStats(server: string, channel: string): { messages: number; vectors: number; oldest: number | null; newest: number | null; usage: { model: string; purpose: string; requests: number; tokens: number; unknown: number }[] } {
     const row = this.db.prepare("SELECT count(*) AS count,min(json_extract(body,'$.timestamp')) AS oldest,max(json_extract(body,'$.timestamp')) AS newest FROM messages WHERE server=? AND channel=?").get(server, channel)!;
-    const vectors = this.db.prepare("SELECT count(*) AS count FROM embeddings e JOIN messages m ON m.server=e.server AND m.id=e.message_id WHERE m.server=? AND m.channel=? AND e.model=?").get(server, channel, this.embeddings?.model ?? "")!;
+    const vectors = this.db.prepare("SELECT count(*) AS count FROM memory_embeddings e JOIN memories m ON m.server=e.server AND m.id=e.memory_id WHERE m.server=? AND m.channel=? AND m.status='active' AND e.model=?").get(server, channel, this.embeddings?.model ?? "")!;
     const usage = this.db.prepare("SELECT * FROM embedding_usage WHERE server=? AND channel=?").all(server, channel).map(value => ({ model: String(value.model), purpose: String(value.purpose), requests: Number(value.requests), tokens: Number(value.tokens), unknown: Number(value.unknown_tokens) }));
     return { messages: Number(row.count), vectors: Number(vectors.count), oldest: row.oldest === null ? null : Number(row.oldest), newest: row.newest === null ? null : Number(row.newest), usage };
   }
 
-  private async embed(message: Message, purpose: "index" | "query", who?: Attribution): Promise<readonly number[]> {
+  private async embed(message: Message, purpose: "memory_index" | "memory_query", who?: Attribution): Promise<readonly number[]> {
     const result = this.embeddings!.embedWithUsage
       ? await this.embeddings!.embedWithUsage(message.text, who)
       : { vector: await this.embeddings!.embed(message.text), tokens: null };
@@ -921,6 +879,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       this.bumpVersion(message.server, message.channel);
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+    this.queueIndex({ ...message, id: memory.id, text: memory.content });
     return memory;
   }
 
@@ -987,12 +946,21 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     if (personQuery) return [{ kind: "retrieval", author: "system", sourceIds: [], content: targets.length > 1 ? "Person name is ambiguous. Ask which member the requester means before attributing messages." : "Could not resolve the requested person from known channel author names. Ask for their Discord mention. Do not attribute unrelated recent chat to them." }];
     const terms = searchTerms(message.text);
     const notes = await this.memories(message.server, message.channel);
-    const relevant = [...notes].sort((a, b) => {
-      const score = (memory: MemoryRecord) => terms.filter(term => memory.content.toLowerCase().includes(term)).length;
-      return score(b) - score(a);
-    }).slice(0, Math.min(limit, 4));
+    const semanticScores = new Map<string, number>();
+    if (this.embeddings && notes.length && message.text.trim()) {
+      try {
+        const rows = this.db.prepare(`SELECT e.memory_id,e.vector FROM memory_embeddings e JOIN memories m ON m.server=e.server AND m.id=e.memory_id WHERE m.server=? AND m.channel=? AND m.status='active' AND e.model=?`)
+          .all(message.server, message.channel, this.embeddings.model);
+        if (rows.length) {
+          const query = await this.embed(message, "memory_query", attribution(message));
+          for (const row of rows) semanticScores.set(String(row.memory_id), cosine(query, JSON.parse(String(row.vector))));
+        }
+      } catch (error) { logError("memory_embedding_query_failed", error, { server: message.server, channel: message.channel }); }
+    }
+    const score = (memory: MemoryRecord) => terms.filter(term => memory.content.toLowerCase().includes(term)).length + Math.max(0, semanticScores.get(memory.id) ?? 0);
+    const relevant = [...notes].sort((a, b) => score(b) - score(a)).slice(0, Math.min(limit, 4));
     for (const memory of relevant) evidence.push({ kind: "memory", content: memory.content, author: memory.author, sourceIds: memory.sourceIds });
-    const recalled=await this.searchHistory({server:message.server,channel:message.channel,query:message.text,mode:'hybrid',limit,excludeId:message.id,requester:message.isBot?undefined:message.author});
+    const recalled=await this.searchHistory({server:message.server,channel:message.channel,query:message.text,mode:'keyword',limit,excludeId:message.id,requester:message.isBot?undefined:message.author});
     const selected=new Map(recalled.messages.map(item=>[item.id,item]));
     for (const item of selected.values()) {
       if (evidence.length >= limit) break;
@@ -1038,7 +1006,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     this.db.prepare("UPDATE memories SET status='invalidated' WHERE status='active' AND id IN (SELECT memory_id FROM memory_sources WHERE server=? AND message_id=?)")
       .run(server, id);
     this.db.prepare("UPDATE profile_events SET valid=0 WHERE server=? AND id IN (SELECT e.id FROM profile_events e,json_each(e.sources) s WHERE e.server=? AND s.value=?)").run(server, server, id);
-    this.db.prepare("DELETE FROM embeddings WHERE server=? AND message_id=?").run(server, id);
+    this.db.prepare("DELETE FROM memory_embeddings WHERE server=? AND memory_id IN (SELECT memory_id FROM memory_sources WHERE server=? AND message_id=?)").run(server, server, id);
     const dependents = this.db.prepare("SELECT output_id FROM source_dependents WHERE server=? AND source_id=?").all(server, id);
     for (const dependent of dependents) {
       const output = String(dependent.output_id);
@@ -1081,11 +1049,11 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     this.db.prepare("UPDATE messages SET body=? WHERE server=? AND id=? AND channel=?")
       .run(JSON.stringify(message), message.server, message.id, message.channel);
     this.invalidate(message.server, message.channel, { reason: "message_edited", sourceId: message.id });
-    this.queueIndex(message);
+
   }
 
   private async removeTransient(server: string, channel: string, id: string): Promise<void> {
-    this.db.prepare("DELETE FROM embeddings WHERE server=? AND message_id=?").run(server, id);
+    this.db.prepare("DELETE FROM memory_embeddings WHERE server=? AND memory_id IN (SELECT memory_id FROM memory_sources WHERE server=? AND message_id=?)").run(server, server, id);
     this.db.prepare("DELETE FROM messages WHERE server=? AND channel=? AND id=?").run(server, channel, id);
   }
 

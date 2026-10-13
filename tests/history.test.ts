@@ -70,7 +70,7 @@ test("failed imports retain a cursor, pause blocks work, and a new worker resume
   assert.equal(resumed.state("c").job, null);
 });
 
-test("embedding usage counts actual reported tokens and missing counts; duplicate queues reuse vectors", async t => {
+test("only saved memories generate embedding usage; backfill reuses vectors", async t => {
   let calls = 0;
   const store = new SQLiteStore(":memory:", { model: "test", async embed() { return [1, 0]; }, async embedWithUsage() {
     return { vector: [1, 0], tokens: ++calls === 1 ? 12 : null };
@@ -78,9 +78,13 @@ test("embedding usage counts actual reported tokens and missing counts; duplicat
   t.after(() => store.close());
   const rows = messages(2);
   for (const row of rows) await store.ingest(row);
+  assert.equal(store.reindex("s", ["c"]), 0);
+  await store.finishIndexing();
+  assert.equal(calls, 0);
+  for (const row of rows) await store.remember(row, row.text);
   store.reindex("s", ["c"]);
   await store.finishIndexing();
   assert.equal(calls, 2);
   assert.equal(store.indexStats("s", "c").vectors, 2);
-  assert.deepEqual(store.indexStats("s", "c").usage, [{ model: "test", purpose: "index", requests: 2, tokens: 12, unknown: 1 }]);
+  assert.deepEqual(store.indexStats("s", "c").usage, [{ model: "test", purpose: "memory_index", requests: 2, tokens: 12, unknown: 1 }]);
 });

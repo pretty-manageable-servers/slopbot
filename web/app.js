@@ -64,7 +64,7 @@ function render() {
   if (tab === 'conversations') return renderConversations();
   $('breadcrumb').textContent = `Settings / ${tab === 'profile' ? 'My profile' : tab === 'channels' ? 'Channels' : tab === 'mcp' ? 'MCP connections' : 'Server'}`;
   $('title').textContent = {server:'Make room for good ideas.',channels:'Choose where Slopbot listens.',mcp:'Connect more tools.',profile:'Introduce yourself.'}[tab];
-  $('description').textContent = {server:'Set how Slopbot participates in your server.',channels:'Manage monitored channels and their history imports.',mcp:'Add remote MCP servers and choose their tools. Changes apply without restarting or redeploying Slopbot.',profile:'Your profile is public to this Discord server. You control who can edit it.'}[tab];
+  $('description').textContent = {server:'Set how Slopbot participates in your server.',channels:'Manage monitored channels and saved chat history. Only saved lessons and memories use embeddings.',mcp:'Add remote MCP servers and choose their tools. Changes apply without restarting or redeploying Slopbot.',profile:'Your profile is public to this Discord server. You control who can edit it.'}[tab];
   const s = state.settings;
   if (tab !== 'profile' && !state.admin) { $('content').innerHTML = '<p>Manage Server permission is required for these controls.</p>'; return; }
   if (tab === 'server') {

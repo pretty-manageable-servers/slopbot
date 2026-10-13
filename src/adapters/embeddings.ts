@@ -28,7 +28,7 @@ export class ProviderEmbeddings implements Embeddings {
 
   async embedWithUsage(text: string, who?: Attribution): Promise<{ vector: readonly number[]; tokens: number | null }> {
     // PMServers uses a different alias for the same Gemma model. Keep the index
-    // identity stable so switching gateways does not re-embed channel history.
+    // identity stable so switching gateways does not re-embed saved memories.
     const model = embeddingPriceModel(this.baseUrl, this.model);
     let response!: Response;
     for (let attempt = 0; attempt < 3; attempt++) {

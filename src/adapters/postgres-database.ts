@@ -59,7 +59,7 @@ export function postgresSql(input: string, values: unknown[]): { sql: string; va
   if (replace) {
     const table = sql.match(/INSERT INTO (\w+)/i)?.[1];
     if (table === "settings") sql += " ON CONFLICT(server,key) DO UPDATE SET value=excluded.value";
-    else if(table === "embeddings") sql += " ON CONFLICT(server,message_id,model) DO UPDATE SET vector=excluded.vector";
+    else if(table === "memory_embeddings") sql += " ON CONFLICT(server,memory_id,model) DO UPDATE SET vector=excluded.vector";
     else throw new Error(`Unsupported replacement table ${table}`);
   }
   sql = sql.replace("SET requests=requests+1,tokens=tokens+excluded.tokens,unknown_tokens=unknown_tokens+excluded.unknown_tokens", "SET requests=embedding_usage.requests+1,tokens=embedding_usage.tokens+excluded.tokens,unknown_tokens=embedding_usage.unknown_tokens+excluded.unknown_tokens");
@@ -76,9 +76,10 @@ export function serializeStore<T extends object>(store: T): T {
   let tail = Promise.resolve();
   return new Proxy(store, { get(target, property, receiver) {
     const value = Reflect.get(target, property, receiver);
+    if (property === "indexMessage" && typeof value === "function") return (...args: unknown[]) => scope.exit(() => value.apply(receiver, args));
     if (typeof value !== "function" || value.constructor.name !== "AsyncFunction" || property === "finishIndexing") return typeof value === "function" ? value.bind(receiver) : value;
     return async (...args: unknown[]) => {
-      if(property !== "indexMessage" && scope.getStore()?.active) return value.apply(receiver,args);
+      if(scope.getStore()?.active) return value.apply(receiver,args);
       const previous=tail; let release!: () => void;
       tail=new Promise<void>(resolve=>{release=resolve;}); await requestTimings.wait("database connection queue", () => previous);
       const current={active:true};

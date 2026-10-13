@@ -131,7 +131,7 @@ export function registerReportTools(
           channel,
           requester: context.message.author,
           query: String(args.query ?? ""),
-          mode: args.query ? "hybrid" : "keyword",
+          mode: "keyword",
           limit: 40,
           ...(after !== undefined ? { after } : {}),
           ...(before !== undefined ? { before } : {}),

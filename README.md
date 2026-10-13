@@ -41,7 +41,7 @@ Test actual continuity: inside a task thread, say "The budget is $200", then ask
 
 ## Context and memory, about 3 minutes to test
 
-1. Restart with `npm start`. Messages are indexed in the background using `llama.cpp/embeddinggemma-2`. Retrieval combines keywords, semantic matches and source-linked notes, restricted to the current server and channel.
+1. Restart with `npm start`. Chat messages are stored and searched in SQL. Saved lessons/memories are embedded in the background using `llama.cpp/embeddinggemma-2`, restricted to the current server and channel.
 2. Send `@Slopbot !remember The dinner budget is $200`. This explicitly saves your statement with its author and source message ID. It does not mark it as a group agreement.
 3. Ask `@Slopbot What is our dinner budget?` in the same channel. Use `@Slopbot !memory` to inspect saved notes and IDs. Only the note's author can use `@Slopbot !forget <id>`.
 4. Edit or delete the source message, then ask again. The saved note and dependent generated messages are removed from future recall. Original reasoning and run logs remain retained as operational records, outside search.
@@ -51,7 +51,7 @@ Names are linked to stable Discord author IDs. On startup, existing indexed auth
 
 Replies use the referenced message and its stored ancestor chain as their focus. Unrelated recent chat is excluded; explicit history and quote requests can also retrieve memory. Attachment metadata is retained, but media contents are not inspected yet. A question about an image or GIF should say that limitation rather than describe unseen content.
 
-Set `DATABASE_URL` to use PostgreSQL/pgvector. Without it, local development uses SQLite cosine search. Postgres stores vectors natively and computes cosine distance within the permitted server, channel and embedding model. Keyword retrieval uses FTS5 when the installed SQLite supports it, with SQL keyword matching as a compatibility fallback. Semantic retrieval remains available in either case. New message indexing and keyword retrieval continue if the embedding provider fails; failed embeddings can be retried on restart.
+Set `DATABASE_URL` to use PostgreSQL/pgvector. SQLite is available locally. Chat search uses database full-text indexes or SQL keyword matching. Embeddings are reserved for explicitly saved lessons/memories; failures fall back to keyword ranking and can be retried on restart. Opening either database removes the legacy per-message embedding table and its usage counters while retaining chat history and saved memories.
 
 ## Participation
 
@@ -87,10 +87,10 @@ Web transcript live events are kept for `CONVERSATION_EVENTS_RETENTION_DAYS` day
 
 - `/slopbot index channel:#chat action:window days:30` sets initial coverage to 30 days.
 - `/slopbot index channel:#chat action:more` imports up to 5000 messages before the oldest imported message. Repeat to reach the beginning.
-- `/slopbot index channel:#chat action:status` shows stored dates, message/vector counts, import progress and successful embedding requests/reported tokens, separated by indexing and queries.
-- `/slopbot index channel:#chat action:pause` pauses history import after the current page; `action:resume` continues. Live ingestion and its embeddings continue.
+- `/slopbot index channel:#chat action:status` shows stored dates, message/saved-memory vector counts, import progress and successful embedding requests/reported tokens, separated by indexing and queries.
+- `/slopbot index channel:#chat action:pause` pauses history import after the current page; `action:resume` continues. Live message ingestion continues.
 
-The window controls import coverage, not deletion or prompt size. Older imported text remains saved. Messages are deduplicated; existing vectors for the same model are reused. Usage starts being counted with this version, includes edits/retries that succeed, and marks requests without provider token counts as unknown. Failed requests may still be billed by the provider and are not included. No currency estimates are made. These commands require Manage Server permission.
+The window controls import coverage, not deletion or prompt size. Older imported text remains saved. Messages are deduplicated; saved memory vectors for the same model are reused. Usage starts being counted with this version, includes edits/retries that succeed, and marks requests without provider token counts as unknown. Failed requests may still be billed by the provider and are not included. No currency estimates are made. These commands require Manage Server permission.
 
 ## People and profiles
 

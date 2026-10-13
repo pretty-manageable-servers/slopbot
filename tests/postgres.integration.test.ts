@@ -22,7 +22,7 @@ test("Postgres preserves identity, context, journals, queue ordering, vectors an
     const newer={...m,id:"two",text:"Tell me about memory",timestamp:2,replyTo:m.id};await store.ingest(newer);await store.finishIndexing();
     assert.equal((await store.context(newer,5))[0]?.id,m.id);
     const keywordOnly=await PostgresStore.connect(url);try { assert.ok((await keywordOnly.retrieve({...newer,text:"hello"},10)).some(row=>row.sourceIds.includes(m.id))); } finally { await keywordOnly.close(); }
-    assert.equal((await store.indexStats(m.server,m.channel)).vectors,2);
+    assert.equal((await store.indexStats(m.server,m.channel)).vectors,0);
     assert.ok((await store.retrieve(newer,10)).some(row=>row.sourceIds.includes(m.id)));
     const memory=await store.remember(m,"A source linked memory");assert.equal((await store.memories(m.server,m.channel))[0]?.id,memory.id);
     await store.startRun("run",newer,{prefixVersion:"v1",prefix:[],history:[],inputs:[]});await store.recordSources("run",m.server,[m.id]);
@@ -65,7 +65,8 @@ test("stopping background indexing retains messages for a later restart", {skip:
     assert.equal((await store.indexStats(message.server,message.channel)).messages,1);
     assert.equal((await store.indexStats(message.server,message.channel)).vectors,0);
     await store.close();store=await PostgresStore.connect(url,embeddings,"slopbot_test_stop");
-    assert.equal(await store.reindex(message.server,[message.channel]),1);
+    assert.equal(await store.reindex(message.server,[message.channel]),0);
+    await store.remember(message,"A lesson to keep");
     await store.finishIndexing();assert.equal((await store.indexStats(message.server,message.channel)).vectors,1);
   } finally {
     await store.close();const cleanup=new Client({connectionString:url});await cleanup.connect();
@@ -87,7 +88,7 @@ test('new search and feature records use an isolated Postgres schema', {skip: !p
     await store.finishIndexing();
     assert.deepEqual((await store.readHistory(base.server,base.channel,'2',1)).map(message=>message.id),['1','2','3']);
     const search=await store.searchHistory({server:base.server,channel:base.channel,query:'deploy',mode:'hybrid',limit:10});
-    assert.equal(search.degraded,false);assert.ok(search.messages.some(message=>message.id==='3'));
+    assert.equal(search.degraded,true);assert.ok(search.messages.some(message=>message.id==='3'));
     assert.equal((await store.searchHistory({server:base.server,channel:base.channel,query:'deploy starts',mode:'exact',limit:10})).messages.length,1);
     assert.equal(await store.putRecord(base.server,'ui','one',{text:'hello'},0),true);
     const claims=await Promise.all([store.putRecord(base.server,'ui','one',{text:'a'},1),store.putRecord(base.server,'ui','one',{text:'b'},1)]);
@@ -143,3 +144,43 @@ test('stream event batches preserve all deltas in an isolated Postgres schema', 
  const last=await store.lastContextChange(m.server,m.channel) as {reason:string;sourceId:string};assert.equal(last.reason,'message_edited');assert.equal(last.sourceId,m.id);
  } finally {await store.close();}
  });
+
+test("Postgres migrates chat vectors to memory-only storage without deleting history", { skip: !process.env.TEST_DATABASE_URL }, async () => {
+  const url = process.env.TEST_DATABASE_URL!, schema = 'slopbot_test_memory_' + Date.now().toString(36);
+  let calls = 0;
+  const embeddings = { model: 'memory-test', async embed() { calls++; return [1, 0, 0]; } };
+  let store = await PostgresStore.connect(url, embeddings, schema);
+  const cleanup = new Client({ connectionString: url });
+  await cleanup.connect();
+  const source: Message = { server: 's', channel: 'c', author: 'a', id: '1', text: 'source text' };
+  try {
+    await store.ingest(source);
+    await store.revise({ ...source, text: 'edited source' });
+    await store.enqueueJob({ ...source, id: '2' });
+    await store.searchHistory({ server: 's', channel: 'c', query: 'source', mode: 'hybrid', limit: 10 });
+    assert.equal(await store.reindex('s', ['c']), 0);
+    await store.finishIndexing();
+    assert.equal(calls, 0);
+    const memory = await store.remember(source, 'A saved lesson');
+    await store.finishIndexing();
+    assert.equal(calls, 1);
+    await store.close();
+    await cleanup.query(`CREATE TABLE "${schema}".embeddings(server TEXT,message_id TEXT,model TEXT,vector vector);
+      INSERT INTO "${schema}".embeddings VALUES('s','1','old','[1,0,0]');
+      INSERT INTO "${schema}".embedding_usage VALUES('s','c','old','index',10,100,0)`);
+    store = await PostgresStore.connect(url, embeddings, schema);
+    assert.equal((await store.indexStats('s', 'c')).messages, 2);
+    assert.equal((await store.indexStats('s', 'c')).vectors, 1);
+    assert.equal((await store.memories('s', 'c'))[0]?.id, memory.id);
+    assert.deepEqual((await store.indexStats('s', 'c')).usage.map(row => row.purpose), ['memory_index']);
+    assert.equal((await cleanup.query('SELECT to_regclass($1) AS legacy', [schema + '.embeddings'])).rows[0]?.legacy, null);
+    assert.ok((await store.retrieve({ ...source, id: 'query', text: 'knowledge' }, 8)).some(item => item.kind === 'memory'));
+    await store.remove('s', 'c', source.id);
+    assert.equal((await store.indexStats('s', 'c')).vectors, 0);
+  } finally {
+    await store.finishIndexing();
+    await store.close();
+    await cleanup.query(`DROP SCHEMA "${schema}" CASCADE`);
+    await cleanup.end();
+  }
+});
