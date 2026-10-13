@@ -357,10 +357,12 @@ export class DiscordServer implements ChatGateway {
   }
   private async registerCommands(): Promise<void> {
     const guild = await this.client.guilds.fetch(this.guildId);
-    const command = buildToolCommands(this.tools);
-    await guild.commands.create(command.toJSON());
-    // A separate command, so /slopbot stays as it is.
-    await guild.commands.create(buildUsageCommand().toJSON());
+    // set() replaces the whole list, so commands from older versions are removed.
+    // /usage is a separate command, so /slopbot stays as it is.
+    await guild.commands.set([buildToolCommands(this.tools).toJSON(), buildUsageCommand().toJSON()]);
+    // Slopbot registers no global commands. Old global commands stay visible and fail, so remove them.
+    const global = await this.client.application?.commands.fetch();
+    if (global?.size) await this.client.application!.commands.set([]);
   }
   /**
    * The /usage command. Read-only, so it never checks the UserLimiter gate: a user over the limit
