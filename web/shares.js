@@ -127,7 +127,7 @@
       }));
     }
     revokeAll.addEventListener('click', async () => {
-      if (!confirm('Remove every share link in this server? Links stop working at once.')) return;
+      if (!await askConfirm({ title: 'Remove every share link?', body: 'Links in this server stop working at once.', confirmLabel: 'Remove all', danger: true })) return;
       try { await post('/api/shares/revoke-all', { server }); await load(); }
       catch (failure) { status.textContent = failure.message; }
     });
