@@ -139,6 +139,7 @@ function emptyNote(title, hint) {
 function setHeading(text) { $('chat-title').textContent = text; }
 
 function setComposer(node) {
+  if (!node) conv.meter = null;
   const slot = $('conv-reply');
   if (!slot) return;
   slot.hidden = !node;
@@ -170,7 +171,7 @@ async function openConversation(id) {
     if (page.canShare && window.SlopbotShares) { $('conv-share').hidden = false; window.SlopbotShares.renderShareButton($('conv-share'), state.server.id, id); }
     showView(transcriptView(id, page));
     // The server says who may send. Sent replies arrive through the live stream, so the box adds nothing to the log.
-    if (page.canSend) setComposer(chatComposer(state.server.id, id, info.kind === 'thread' ? `Message ${name}` : `Message #${name}`));
+    if (page.canSend) { setComposer(chatComposer(state.server.id, id, info.kind === 'thread' ? `Message ${name}` : `Message #${name}`)); refreshUsage(); }
     conv.lastStream = page.streamId;
     conv.seen = page.streamId;
     const log = $('conv-log');
@@ -485,7 +486,7 @@ function openStream(id) {
   on('run.start', data => startLive(data.ref, data.requestId));
   on('run.delta', data => delta(data.ref, data.part, data.text));
   on('run.tool', data => tool(data));
-  on('run.end', data => endLive(data.ref));
+  on('run.end', data => { endLive(data.ref); refreshUsage(); });
   // The server pruned events after this stream's position. Reload the messages from the newest page.
   es.addEventListener('reset', () => {
     if (conv.source !== es) return;
@@ -739,7 +740,9 @@ function chatComposer(server, channel, placeholder) {
   send.className = 'chat-send';
   send.setAttribute('aria-label', 'Send message');
   send.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-  box.append(field, send);
+  const meter = usageMeter();
+  conv.meter = meter;
+  box.append(field, meter.wrap, send);
   form.append(status, note, box, textNode('p', 'Slopbot is AI and can make mistakes.', 'chat-foot'));
   const sync = () => { box.classList.toggle('has-text', field.value.trim() !== ''); fitField(field); };
   let sending = false;
@@ -802,6 +805,96 @@ async function searchConversations(text) {
     }
     showView(wrap);
   } catch (error) { showView(textNode('p', error.message, 'small chat-none')); fail(error); }
+}
+
+// The usage meter in the composer. A ring fills to the larger window percent. The popover shows percents and reset times only.
+function usageMeter() {
+  const wrap = document.createElement('div');
+  wrap.className = 'chat-usage';
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'chat-usage-button';
+  button.title = 'Usage';
+  button.setAttribute('aria-label', 'Usage');
+  button.setAttribute('aria-haspopup', 'dialog');
+  button.setAttribute('aria-expanded', 'false');
+  button.innerHTML = '<svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true" focusable="false"><circle cx="9" cy="9" r="7" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="2.5"/><circle class="chat-usage-arc" cx="9" cy="9" r="7" fill="none" stroke="currentColor" stroke-width="2.5" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 9 9)"/></svg>';
+  const pop = document.createElement('div');
+  pop.className = 'chat-usage-pop';
+  pop.setAttribute('role', 'dialog');
+  pop.setAttribute('aria-label', 'Usage');
+  pop.hidden = true;
+  pop.append(textNode('p', 'Loading…', 'chat-usage-note'));
+  const meter = { wrap, button, arc: button.querySelector('.chat-usage-arc'), pop };
+  button.onclick = () => toggleUsage(meter);
+  wrap.append(button, pop);
+  return meter;
+}
+
+function toggleUsage(meter) {
+  const open = meter.pop.hidden;
+  meter.pop.hidden = !open;
+  meter.button.setAttribute('aria-expanded', String(open));
+}
+
+function closeUsage() {
+  const meter = conv.meter;
+  if (!meter || meter.pop.hidden) return;
+  meter.pop.hidden = true;
+  meter.button.setAttribute('aria-expanded', 'false');
+}
+
+// Outside click closes the popover. Escape closes it and gives focus back to the button.
+document.addEventListener('click', event => { if (conv.meter && !conv.meter.wrap.contains(event.target)) closeUsage(); });
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape' || !conv.meter || conv.meter.pop.hidden) return;
+  closeUsage();
+  conv.meter.button.focus();
+});
+
+// Relative reset time, such as "Resets in 3 hours".
+function resetsLabel(ts) {
+  const diff = ts - Date.now();
+  const units = [['day', 86400000], ['hour', 3600000], ['minute', 60000]];
+  const [unit, size] = units.find(([, ms]) => Math.abs(diff) >= ms) || units[2];
+  return `Resets ${new Intl.RelativeTimeFormat([], { numeric: 'auto' }).format(Math.round(diff / size), unit)}`;
+}
+
+// Fills the ring to the larger window percent, and writes the popover rows. A window without a limit shows "No limit".
+function paintUsage(meter, data) {
+  const windows = data.windows || [];
+  meter.arc.setAttribute('stroke-dasharray', `${Math.max(0, ...windows.map(item => item.percent ?? 0))} 100`);
+  const rows = [textNode('p', `Plan: ${data.plan} (free)`, 'chat-usage-plan')];
+  for (const item of windows) {
+    const title = item.kind === '5h' ? '5-hour limit' : 'Weekly limit';
+    const row = document.createElement('div');
+    row.className = 'chat-usage-row';
+    row.append(textNode('p', item.percent === null ? `${title}: No limit` : `${title}: ${item.percent}% used`, 'chat-usage-line'));
+    if (item.percent !== null) {
+      const track = textNode('div', '', 'chat-usage-track');
+      const fill = textNode('div', '', 'chat-usage-fill');
+      fill.style.width = `${item.percent}%`;
+      track.append(fill);
+      row.append(track);
+    }
+    if (item.resetAt) row.append(textNode('p', resetsLabel(item.resetAt), 'chat-usage-note'));
+    rows.push(row);
+  }
+  meter.pop.replaceChildren(...rows);
+}
+
+// Loads the meter for the open server. It runs when a conversation opens and after each run ends.
+async function refreshUsage() {
+  const meter = conv.meter;
+  if (!meter || !meter.wrap.isConnected) return;
+  try {
+    const data = await request(`/api/usage?server=${enc(state.server.id)}`);
+    if (conv.meter === meter) paintUsage(meter, data);
+  } catch (error) {
+    if (conv.meter !== meter) return;
+    if (error.status === 401) return fail(error);
+    meter.pop.replaceChildren(textNode('p', 'Usage is not available right now.', 'chat-usage-note'));
+  }
 }
 
 function textNode(tag, text, className = '') {
