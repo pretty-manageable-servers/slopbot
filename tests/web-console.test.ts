@@ -14,8 +14,8 @@ test('Discord login binds state to browser, protects writes, and destroys logout
   let user = '', name = '', deny = false;
   const server = createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'}, {
     async snapshot(id) { if (deny) throw new ToolError('Membership revoked'); return {user:id}; },
-    async invoke(id, _channel, tool) { if (deny) throw new ToolError('Permission revoked'); user=id;name=tool;return {text:'Saved'}; },
-    async mcp(id, input) { if (deny) throw new ToolError('Manage Server permission is required.'); user=id;name='mcp';return {text:'Connected',input}; },
+    async invoke(id, _server, _channel, tool) { if (deny) throw new ToolError('Permission revoked'); user=id;name=tool;return {text:'Saved'}; },
+    async mcp(id, _server, input) { if (deny) throw new ToolError('Manage Server permission is required.'); user=id;name='mcp';return {text:'Connected',input}; },
   });
   server.listen(0,'127.0.0.1'); await once(server,'listening');
   t.after(() => new Promise<void>(resolve => server.close(()=>resolve())));

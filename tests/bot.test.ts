@@ -128,7 +128,8 @@ test("mock config requires Discord details but no AI key", () => {
   });
   assert.equal(config.model, "nimbus");
   assert.equal(config.apiKey, "");
-  assert.throws(() => loadConfig({}), /DISCORD_GUILD_ID/);
+  assert.throws(() => loadConfig({}), /DISCORD_BOT_TOKEN/);
+  assert.throws(() => loadConfig({ DISCORD_BOT_TOKEN: "test-only", DISCORD_CHANNEL_IDS: "223456789012345678", LLM_MODE: "mock" }), /DISCORD_GUILD_ID/);
 });
 
 test("task handoff carries the referenced profile rather than unrelated channel chat", async t => {

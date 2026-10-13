@@ -18,6 +18,7 @@ export interface ServerToolStore extends Knowledge, QueueStore {
 }
 export interface ServerToolServices {
   config: Config;
+  server: string;
   store: ServerToolStore;
   participation: { options: ParticipationOptions; diagnostics: Map<string, string> };
   history: HistoryImporter;
@@ -37,21 +38,21 @@ const choice = (description: string, choices: string[]): ToolField => ({ type: "
 const integer = (description: string, max: number, required = true, min = 0): ToolField => ({ type: "integer", description, min, max, required });
 const date = (value: number | null) => value === null ? "none" : new Date(value).toISOString();
 
-export function configuredChannels(config: Config, store: Pick<ServerToolStore, "setting">): string[] {
-  const saved = store.setting(config.guildId, "channels");
-  return Array.isArray(saved) && saved.every(id => typeof id === "string" && /^\d{17,20}$/.test(id)) ? [...new Set(saved as string[])] : [...config.channelIds];
+export function configuredChannels(config: Config, store: Pick<ServerToolStore, "setting">, server: string): string[] {
+  const saved = store.setting(server, "channels");
+  return Array.isArray(saved) && saved.every(id => typeof id === "string" && /^\d{17,20}$/.test(id)) ? [...new Set(saved as string[])] : server === config.channelServer ? [...config.channelIds] : [];
 }
 
 export function registerServerTools(registry: ToolRegistry, services: ServerToolServices): void {
-  const { config, store, participation, history } = services;
+  const { config, store, participation, history, server } = services;
   const add = (tool: ToolDefinition) => registry.register(tool);
   add({ name: "timing", description: "Toggle request timing footers for this server; full delivery timings remain in logs", fields: { enabled: { type: "boolean", description: "Show timing at the end of replies", required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
-    async execute(_context, args) { await store.setSetting(config.guildId, "timing_footer", args.enabled!); return `Timing footers ${args.enabled ? "enabled" : "disabled"}. Footer totals end before Discord delivery; logs include delivery.`; }
+    async execute(_context, args) { await store.setSetting(server, "timing_footer", args.enabled!); return `Timing footers ${args.enabled ? "enabled" : "disabled"}. Footer totals end before Discord delivery; logs include delivery.`; }
   });
   add({ name: "tool_display", description: "Choose tool activity in completed replies: none, summary counts, or full calls with arguments. Live progress always shows arguments.", fields: { mode: { ...choice("Tool activity display", ["none", "summary", "full"]), required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
-    async execute(_context, args) { await store.setSetting(config.guildId, "tool_display", args.mode!); return `Tool activity display set to ${args.mode}. Live progress remains enabled.`; }
+    async execute(_context, args) { await store.setSetting(server, "tool_display", args.mode!); return `Tool activity display set to ${args.mode}. Live progress remains enabled.`; }
   });
-  add(selfKnowledgeTool(registry, () => `Native function calling: enabled\nObject storage: ${config.objectStorage ? "configured" : "not configured"}; file_store scopes user/server/user_server, with ownership and sharing controls\nTool rounds per attempt: ${config.maxToolRounds}\nPMServers docs reviewed: 2026-10-12; latest changelog: 2026-10-12\nReply model: ${config.model}\nParticipation model: ${config.jevModel}\nMock mode: ${config.mock}\nDatabase adapter: ${config.databaseUrl ? "PostgreSQL/pgvector" : "SQLite"}\nMonitoring enabled: ${participation.options.enabled}\nEmbeddings enabled: ${config.embeddingsEnabled && !config.mock}; model: ${config.embeddingModel}\nContext budget: ${config.contextTokens}; output reserve: ${config.outputTokens}\nReply context messages: ${store.setting(config.guildId, "reply_context") ?? config.replyContextMessages}`));
+  add(selfKnowledgeTool(registry, () => `Native function calling: enabled\nObject storage: ${config.objectStorage ? "configured" : "not configured"}; file_store scopes user/server/user_server, with ownership and sharing controls\nTool rounds per attempt: ${config.maxToolRounds}\nPMServers docs reviewed: 2026-10-12; latest changelog: 2026-10-12\nReply model: ${config.model}\nParticipation model: ${config.jevModel}\nMock mode: ${config.mock}\nDatabase adapter: ${config.databaseUrl ? "PostgreSQL/pgvector" : "SQLite"}\nMonitoring enabled: ${participation.options.enabled}\nEmbeddings enabled: ${config.embeddingsEnabled && !config.mock}; model: ${config.embeddingModel}\nContext budget: ${config.contextTokens}; output reserve: ${config.outputTokens}\nReply context messages: ${store.setting(server, "reply_context") ?? config.replyContextMessages}`));
   const scoped = async (message: Message, target: Json | undefined): Promise<string> => {
     const id = target === undefined ? (await services.originMessage(message)).channel : String(target);
     if (!services.accepts(id)) throw new ToolError("That channel is not configured for Slopbot.");
@@ -60,12 +61,12 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
   };
   add({ name: "status", description: "Show models, context budgets, cache usage and monitored channels", fields: {}, access: "admin", effect: "read", retrySafe: true,
     async execute() {
-      const usage = await store.llmUsage(config.guildId);
-      return `Reply model: ${config.model}\nJEV model: ${config.jevModel}\nMonitoring: ${participation.options.enabled}\nJEV context: ${participation.options.contextMessages} messages\nReply context: ${store.setting(config.guildId, "reply_context") ?? config.replyContextMessages} messages\nUnsolicited limits per channel: ${participation.options.cooldownMs / 1000}s, ${participation.options.maxUnsolicitedPerHour}/hour\nChannels: ${services.channels().map(id => `<#${id}>`).join(", ") || "none"}\nContext: ${config.contextTokens} token budget, ${config.outputTokens} reserved for output; conservative UTF-8 byte counter\nEmbeddings: ${config.embeddingsEnabled && !config.mock}; configured database semantic search\nLLM reported usage: ${usage.input} input, ${usage.output} output, ${usage.cached} cached input tokens from ${usage.requests} usage events. Missing provider usage is not inferred.`;
+      const usage = await store.llmUsage(server);
+      return `Reply model: ${config.model}\nJEV model: ${config.jevModel}\nMonitoring: ${participation.options.enabled}\nJEV context: ${participation.options.contextMessages} messages\nReply context: ${store.setting(server, "reply_context") ?? config.replyContextMessages} messages\nUnsolicited limits per channel: ${participation.options.cooldownMs / 1000}s, ${participation.options.maxUnsolicitedPerHour}/hour\nChannels: ${services.channels().map(id => `<#${id}>`).join(", ") || "none"}\nContext: ${config.contextTokens} token budget, ${config.outputTokens} reserved for output; conservative UTF-8 byte counter\nEmbeddings: ${config.embeddingsEnabled && !config.mock}; configured database semantic search\nLLM reported usage: ${usage.input} input, ${usage.output} output, ${usage.cached} cached input tokens from ${usage.requests} usage events. Missing provider usage is not inferred.`;
     } });
   add({ name: "monitoring", description: "Enable or disable JEV monitoring", fields: { enabled: { type: "boolean", description: "Whether JEV monitors unaddressed messages", required: true } }, access: "admin", effect: "write", retrySafe: true,
     async execute(_context, args) {
-      await store.setSetting(config.guildId, "monitoring", args.enabled!);
+      await store.setSetting(server, "monitoring", args.enabled!);
       participation.options.enabled = Boolean(args.enabled) && !config.mock;
       return `Monitoring ${participation.options.enabled ? "enabled" : "disabled"}. Mentions and replies still work.`;
     } });
@@ -74,27 +75,27 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
   }, access: "admin", effect: "write", retrySafe: true,
     async execute(_context, args) {
       const frequency = Number(args.frequency);
-      await store.setSetting(config.guildId, "reaction_frequency", frequency);
+      await store.setSetting(server, "reaction_frequency", frequency);
       participation.options.reactionFrequency = frequency;
       return `Reaction frequency: ${frequency}/100. ${frequency === 0 ? "Reactions disabled." : `${frequency}% of suitable funny messages; no separate cooldown or hourly cap. Monitoring must be enabled.`}`;
     } });
   add({ name: "context", description: "Configure preceding messages for JEV or replies", fields: { messages: integer("0 to 100 preceding messages", 100), target: choice("Default: jev", ["jev", "reply"]) }, access: "admin", effect: "write", retrySafe: true,
     async execute(_context, args) {
       const count = Number(args.messages), target = args.target ?? "jev";
-      if (target === "reply") { await store.setSetting(config.guildId, "reply_context", count); services.setReplyContext(count); }
-      else { await store.setSetting(config.guildId, "classifier_context", count); participation.options.contextMessages = count; }
+      if (target === "reply") { await store.setSetting(server, "reply_context", count); services.setReplyContext(count); }
+      else { await store.setSetting(server, "classifier_context", count); participation.options.contextMessages = count; }
       return `${target} receives up to ${count} preceding messages.`;
     } });
   add({ name: "cooldown", description: "Set unsolicited reply limits per channel", fields: { seconds: integer("Minimum interval in seconds", 3600), per_hour: integer("Maximum unsolicited replies per hour", 1000) }, access: "admin", effect: "write", retrySafe: true,
     async execute(_context, args) {
-      await store.setSetting(config.guildId, "cooldown_seconds", args.seconds!); await store.setSetting(config.guildId, "max_unsolicited_per_hour", args.per_hour!);
+      await store.setSetting(server, "cooldown_seconds", args.seconds!); await store.setSetting(server, "max_unsolicited_per_hour", args.per_hour!);
       participation.options.cooldownMs = Number(args.seconds) * 1000; participation.options.maxUnsolicitedPerHour = Number(args.per_hour);
       return `Unsolicited replies: ${args.per_hour}/hour per channel, at least ${args.seconds}s apart. Explicit requests bypass limits.`;
     } });
   add({ name: "why", description: "Inspect the latest JEV decision in a channel", fields: { channel }, access: "admin", effect: "read", retrySafe: true,
     async execute(context, args) {
       const id = await scoped(context.message, args.channel);
-      const reason = participation.diagnostics.get(JSON.stringify([config.guildId, id]));
+      const reason = participation.diagnostics.get(JSON.stringify([server, id]));
       return `Monitoring enabled: ${participation.options.enabled}\nLast JEV outcome: ${reason ?? "none since startup"}\nExplicit requests bypass JEV and unsolicited cooldowns.`;
     } });
   add({ name: "channel_find", description: "Find visible server text channels by name before changing channel settings", fields: { query: { type: "string", description: "Channel name to search", required: true } }, access: "admin", effect: "read", retrySafe: true,
@@ -108,7 +109,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
       await services.validateChannel(context.message, id, true);
       await context.assertActive();
       const next = action === "add" ? [...new Set([...channels, id])] : channels.filter(value => value !== id);
-      await store.setSetting(config.guildId, "channels", next); await services.setChannels(next);
+      await store.setSetting(server, "channels", next); await services.setChannels(next);
       return action === "add" ? `<#${id}> is configured. History import and live indexing are enabled.` : `<#${id}> is disabled. Searchable content and its task scopes were purged; operational logs remain retained.`;
     } });
   add({ name: "index", description: "Manage history windows, older imports, progress and embedding usage", fields: { channel, action: choice("Default: status", ["status", "window", "more", "pause", "resume"]), days: integer("Initial coverage window in days", 3650, false, 1) }, access: "admin", effect: "write", retrySafe: false, writes: args => (args.action ?? "status") !== "status",
@@ -126,15 +127,15 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
       if (action === "pause") await history.pause(id);
       else if (action === "resume") await history.resume(id);
       else if (action === "window" || action === "more") await history.start(id, action, args.days === undefined ? undefined : Number(args.days));
-      const state = history.state(id), stats = await store.indexStats(config.guildId, id);
+      const state = history.state(id), stats = await store.indexStats(server, id);
       const usage = stats.usage.map(item => `${item.model} ${item.purpose}: ${item.requests} successful requests, ${item.tokens} reported tokens, ${item.unknown} requests without token counts`).join("\n") || "No embedding usage recorded yet.";
       const result = `History window: ${state.days} days. Older imports are retained.\nImport: ${state.paused ? "paused" : state.error ? `failed; retries automatically (${state.errorReason ?? "reason unavailable for this older failure"})` : state.job ? `${state.job.kind}, ${state.job.scanned} scanned, ${state.job.added} added` : "idle"}\nReached beginning of channel: ${state.exhausted}\nStored: ${stats.messages} messages, ${stats.vectors} vectors for the current model\nStored dates: ${date(stats.oldest)} to ${date(stats.newest)}\nLast completed window scan: ${date(state.syncedThrough || null)}\n${usage}\nCosts are not estimated. Live ingestion continues during an import pause.`;
-      await store.setSetting(config.guildId, `index-operation:${context.operationId}`, result);
+      await store.setSetting(server, `index-operation:${context.operationId}`, result);
       return result;
     },
     async reconcile(context, args) {
       // Persisted command acknowledgement prevents a repeated "more" from extending twice.
-      const saved = store.setting(config.guildId, `index-operation:${context.operationId}`);
+      const saved = store.setting(server, `index-operation:${context.operationId}`);
       if (typeof saved === "string") return saved;
       const id = await scoped(context.message, args.channel);
       if ((args.action === "window" || args.action === "more") && history.state(id).job) return "The previously requested import is still pending; it was not started twice.";
