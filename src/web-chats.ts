@@ -11,7 +11,7 @@ import type { MemberDirectory } from "./member-directory.js";
 import type { UserLimiter } from "./user-limiter.js";
 import { ToolError, stableOperationId } from "./tools.js";
 import { requestTimings } from "./request-timing.js";
-import { PRIVATE_CHAT_MAX_CHARS, PRIVATE_CHAT_TITLE_CHARS, newPrivateChatId, privateChannel, privateChatTitle } from "./private-chat.js";
+import { PRIVATE_CHANNEL_PREFIX, PRIVATE_CHAT_MAX_CHARS, PRIVATE_CHAT_TITLE_CHARS, isPrivateChannel, newPrivateChatId, privateChannel, privateChatTitle } from "./private-chat.js";
 import { publishMessage, runEvents, slopbotId, type ConversationEventStore, type RunEvents } from "./run-events.js";
 import { messageViews, openStream, type TranscriptStore } from "./web-transcripts.js";
 import type { WebChatRow } from "./web-chat-store.js";
@@ -168,6 +168,12 @@ export class WebChatService {
       end: () => { res.end(); },
     });
     res.on("close", () => stop());
+  }
+
+  /** True when the user owns the private chat in this channel, and the chat is in this server. Errors count as no. */
+  async owns(user: string, server: string, channel: string): Promise<boolean> {
+    if (!isPrivateChannel(channel)) return false;
+    return this.owned(user, channel.slice(PRIVATE_CHANNEL_PREFIX.length)).then(chat => chat.server === server, () => false);
   }
 
   /** The chat, when the user owns it and is still in its server. Anything else is a 404. */
