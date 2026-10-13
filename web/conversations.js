@@ -91,10 +91,12 @@ async function loadConversations() {
   const id = state.server.id;
   // A failed chat list (for example a 404 before the server routes exist) leaves the Private chats group empty. The channels still load.
   const chats = fetchChats(id).catch(error => { if (error.status === 401) throw error; return []; });
+  const run = conv.loadRun = (conv.loadRun || 0) + 1;
   const [result, privateChats] = await Promise.all([request(`/api/conversations?server=${enc(id)}`), chats]);
-  if (conv.server !== id || !$('conv-list')) return;
+  // A newer load has started, so only that one may choose the view.
+  if (run !== conv.loadRun || conv.server !== id || !$('conv-list')) return;
   conv.list = result.conversations;
-  conv.chats = privateChats;
+  conv.chats = conv.ask && conv.ask.server === id && !privateChats.some(c => c.id === conv.ask.chat) ? [{ id: conv.ask.chat, title: '', updated: Date.now() }, ...privateChats] : privateChats;
   drawList();
   // A chat or channel named in the URL opens first. An id that is not listed falls back to the default view.
   const item = takeHashItem();
@@ -453,16 +455,14 @@ async function resumeAsk() {
   if (!text) return;
   clearAsk();
   if (!state.server) { notice('Slopbot is not in any of your servers yet, so it cannot answer your question.', true); return; }
-  tab = 'conversations'; viewAuto = false; render();
   try {
     const id = (await sendJson('POST', '/api/chats', { server: state.server.id })).id;
+    // The text stays with this chat until the user sends it or clears it. Any later open of the chat shows it again.
+    conv.ask = { server: state.server.id, chat: id, text };
     conv.chats = [{ id, title: '', updated: Date.now() }, ...conv.chats];
-    conv.prefill = text;
-    await openConversation(id, 'chat');
-    conv.prefill = '';
-    refreshChats();
+    history.replaceState(null, '', '#chat/' + encodeURIComponent(id));
+    tab = 'conversations'; viewAuto = false; render();
   } catch (error) {
-    conv.prefill = '';
     if (error.status === 401) { try { sessionStorage.setItem('slopbot-ask', text); } catch { } showScreen('login'); return; }
     notice(error.status === 404 ? 'Private chats are not available right now.' : error.message, true);
   }
@@ -1157,7 +1157,7 @@ function chatComposer(id) {
   const meter = usageMeter();
   conv.meter = meter;
   box.append(field, meter.wrap, send);
-  const linked = conv.prefill;
+  const linked = conv.ask && conv.ask.chat === id ? conv.ask.text : '';
   if (linked) {
     field.value = linked;
     const banner = document.createElement('div');
@@ -1165,9 +1165,9 @@ function chatComposer(id) {
     banner.setAttribute('role', 'alert');
     banner.append(textNode('strong', 'This question came from a link. Read it before you send it.'), textNode('span', ' ' + ASK_WARNING));
     form.append(banner);
-    field.addEventListener('input', () => { if (!field.value.trim()) banner.remove(); });
+    field.addEventListener('input', () => { if (!field.value.trim()) { banner.remove(); conv.ask = null; } });
     // The user read the text and sent it, so the warning goes.
-    form.addEventListener('submit', () => { if (field.value.trim()) banner.remove(); });
+    form.addEventListener('submit', () => { if (field.value.trim()) { banner.remove(); conv.ask = null; } });
     requestAnimationFrame(() => { fitField(field); box.classList.add('has-text'); field.focus(); });
   }
   form.append(status, box, textNode('p', 'Slopbot is AI and can make mistakes.', 'chat-foot'));
