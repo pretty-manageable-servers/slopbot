@@ -51,6 +51,8 @@ import { TeamAdmins, discordTeamSource } from "../team-admins.js";
 import { publishMessage, publishMessageDelete, publishTool, runEvents } from "../run-events.js";
 import { discordChannelAccessSource, wireChannelAccessEvents } from "./discord-channel-access.js";
 import { displayToolResult, ToolError, ToolRegistry, UncertainActionError, stableOperationId } from "../tools.js";
+import { WebReplies, asWebUser, webReplyKey } from "../web-replies.js";
+import { discordWebReplies } from "./discord-web-replies.js";
 
 /** Slopbot state and services for one Discord server. All servers share one client. */
 interface TranscriptChannel { id: string; name: string; enabled: boolean }
@@ -68,10 +70,11 @@ export class DiscordServer implements ChatGateway {
   private readonly worker: TaskWorker;
   private readonly limiter: UserLimiter;
   private readonly history: HistoryImporter;
+  private readonly webReplies: WebReplies;
   private channels: string[];
   private historyTimer: ReturnType<typeof setInterval> | undefined;
 
-  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store)) {
+  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client))) {
     this.client = client;
     this.renderer = new ReplyRenderer(store, discordPresentation);
     this.channels = configuredChannels(config, store, guildId);
@@ -199,6 +202,11 @@ export class DiscordServer implements ChatGateway {
       } } : {}),
     }));
     this.limiter = usage.limiter;
+    this.webReplies = new WebReplies({
+      store, discord: discordWebReplies(client), access, limiter: this.limiter, secret: webReplyKey(),
+      enabled: parent => webTranscriptsEnabled(store, guildId, parent),
+      accepts: channel => this.bot.accepts(guildId, channel),
+    });
     registerUsageTool(this.tools, this.limiter);
     this.app = new Application(store, llm, {
       allowedChannels: this.channels.map(channel => ({ server: guildId, channel })),
@@ -381,12 +389,24 @@ export class DiscordServer implements ChatGateway {
     return ownProgress ? { ...normalized, transient: true } : normalized;
   }
   private async receive(message: DiscordMessage): Promise<void> {
-    if (!message.guildId || message.author.id === this.client.user?.id || !this.bot.accepts(message.guildId, message.channelId)) return;
+    if (!message.guildId || !this.bot.accepts(message.guildId, message.channelId)) return;
+    if (message.author.id === this.client.user?.id) return this.receiveOwn(message);
     const live = this.normalize(message);
     if (!live.transient) await publishMessage(this.store, live).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
     const timingScope = { server: message.guildId, channel: message.channelId, id: message.id };
     requestTimings.begin(timingScope); requestTimings.start(timingScope, "references");
     await requestTimings.withScope(timingScope, () => this.receiveScoped(message, timingScope));
+  }
+  /** Slopbot's own messages are ignored, except a bot web reply whose exact returned ID matched. */
+  private async receiveOwn(message: DiscordMessage): Promise<void> {
+    const server = message.guildId!, channel = message.channelId;
+    const web = await this.webReplies.origin({ server, channel, id: message.id }).catch(error => {
+      logError("web_reply_origin_failed", error, { stage: "web reply origin", server, channel, messageId: message.id }, true);
+      return undefined;
+    });
+    if (!web) return;
+    const base: Incoming = { ...this.normalize(message), botAuthor: false, mentionsBot: this.client.user ? message.mentions.users.has(this.client.user.id) : false, repliesToBot: false };
+    await this.bot.receive(asWebUser(base, web));
   }
   private async receiveScoped(message: DiscordMessage, timingScope: { server: string; channel: string; id: string }): Promise<void> {
     let repliesToBot = false;
@@ -405,7 +425,13 @@ export class DiscordServer implements ChatGateway {
         referenced = reference;
       } catch { break; } // Missing references grant no access.
     }
-    const incoming: Incoming = { ...this.normalize(message), botAuthor: message.author.bot || Boolean(message.webhookId), mentionsBot: this.client.user ? message.mentions.users.has(this.client.user.id) : false, repliesToBot };
+    const base: Incoming = { ...this.normalize(message), botAuthor: message.author.bot || Boolean(message.webhookId), mentionsBot: this.client.user ? message.mentions.users.has(this.client.user.id) : false, repliesToBot };
+    // Only the exact ID that Slopbot's web post returned counts as the user. The event waits up to 10 s for that post.
+    const web = message.webhookId && message.guildId ? await requestTimings.wait("web reply origin", () => this.webReplies.origin({ server: message.guildId!, channel: message.channelId, id: message.id, webhookId: message.webhookId! }).catch(error => {
+      logError("web_reply_origin_failed", error, { stage: "web reply origin", server: message.guildId!, channel: message.channelId, messageId: message.id }, true);
+      return undefined;
+    })) : undefined;
+    const incoming: Incoming = web ? asWebUser(base, web) : base;
     requestTimings.end(timingScope, "references");
     await this.bot.receive(incoming);
   }
@@ -540,6 +566,10 @@ export class DiscordServer implements ChatGateway {
     const member = await guild.members.fetch({ user, force: true });
     if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) throw new ToolError('Manage Server permission is required.');
   }
+  /** Posts a web reply as the user. Only the user's own permissions and limits apply. */
+  async consoleReply(user: string, channel: string, text: string): Promise<unknown> {
+    return this.webReplies.reply({ user, server: this.guildId, channel, text });
+  }
   async consoleTranscripts(user: string): Promise<unknown> {
     await this.assertManager(user);
     return this.transcripts();
@@ -615,7 +645,7 @@ export class DiscordAdapter {
     if (existing) return existing;
     if (!this.allowed(guildId)) return Promise.reject(new ToolError("Slopbot is not enabled for this server."));
     const opening = (async () => {
-      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage);
+      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage, this.access);
       await server.start();
       await server.ready(this.botUser!);
       return server;
@@ -672,6 +702,9 @@ export class DiscordAdapter {
     const found = await this.client.channels.fetch(channel).catch(() => undefined);
     if (!found || !("guildId" in found) || found.guildId !== server || !("name" in found) || typeof found.name !== "string") return undefined;
     return found.name;
+  }
+  async consoleReply(user: string, guildId: string | undefined, channel: string, text: string): Promise<unknown> {
+    return (await this.server(user, guildId)).consoleReply(user, channel, text);
   }
   async consoleSetTranscript(user: string, guildId: string, channel: string, enabled: boolean): Promise<unknown> {
     return (await this.server(user, guildId)).consoleSetTranscript(user, channel, enabled);

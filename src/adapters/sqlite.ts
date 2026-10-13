@@ -21,6 +21,7 @@ import type { ConversationEvent } from '../run-events.js';
 /** Rows deleted by one retention statement, so a large prune never holds the database for long. */
 const CONVERSATION_PRUNE_BATCH = 10000;
 
+import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
 export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore {
   async record(
     server: string,
@@ -368,7 +369,12 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       );
       CREATE INDEX IF NOT EXISTS conversation_events_channel ON conversation_events(server,channel,stream_id);
       CREATE INDEX IF NOT EXISTS conversation_events_created ON conversation_events(created_at);
+      CREATE TABLE IF NOT EXISTS web_webhooks (server TEXT NOT NULL, channel TEXT NOT NULL, webhook_id TEXT NOT NULL, token_encrypted TEXT NOT NULL, PRIMARY KEY(server,channel));
+      CREATE INDEX IF NOT EXISTS web_webhooks_hook ON web_webhooks(server,webhook_id);
+      CREATE TABLE IF NOT EXISTS web_replies (id TEXT PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, user_id TEXT NOT NULL, status TEXT NOT NULL, message_id TEXT, created_at INTEGER NOT NULL, via TEXT NOT NULL DEFAULT 'webhook');
+      CREATE INDEX IF NOT EXISTS web_replies_message ON web_replies(server,message_id);
     `);
+    if (!this.db.prepare("PRAGMA table_info(web_replies)").all().some(column => column.name === "via")) this.db.exec("ALTER TABLE web_replies ADD COLUMN via TEXT NOT NULL DEFAULT 'webhook'");
     const operationColumns = this.db.prepare("PRAGMA table_info(tool_operations)").all();
     if (!operationColumns.some(column => column.name === "resource")) this.db.exec("ALTER TABLE tool_operations ADD COLUMN resource TEXT");
     const jobColumns = this.db.prepare("PRAGMA table_info(jobs)").all();
@@ -761,6 +767,32 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
 
   setSetting(server: string, key: string, value: Json): void {
     this.db.prepare("INSERT OR REPLACE INTO settings VALUES(?,?,?)").run(server, key, JSON.stringify(value));
+  }
+
+  // Web replies (src/web-replies.ts).
+  webWebhook(server: string, channel: string): WebWebhookRow | undefined {
+    const row = this.db.prepare("SELECT server,channel,webhook_id,token_encrypted FROM web_webhooks WHERE server=? AND channel=?").get(server, channel);
+    return row ? { server: String(row.server), channel: String(row.channel), webhook_id: String(row.webhook_id), token_encrypted: String(row.token_encrypted) } : undefined;
+  }
+  webWebhookByHook(server: string, webhookId: string): WebWebhookRow | undefined {
+    const row = this.db.prepare("SELECT server,channel,webhook_id,token_encrypted FROM web_webhooks WHERE server=? AND webhook_id=?").get(server, webhookId);
+    return row ? { server: String(row.server), channel: String(row.channel), webhook_id: String(row.webhook_id), token_encrypted: String(row.token_encrypted) } : undefined;
+  }
+  saveWebWebhook(row: WebWebhookRow): void {
+    this.db.prepare("INSERT INTO web_webhooks VALUES(?,?,?,?) ON CONFLICT(server,channel) DO UPDATE SET webhook_id=excluded.webhook_id,token_encrypted=excluded.token_encrypted").run(row.server, row.channel, row.webhook_id, row.token_encrypted);
+  }
+  deleteWebWebhook(server: string, channel: string): void {
+    this.db.prepare("DELETE FROM web_webhooks WHERE server=? AND channel=?").run(server, channel);
+  }
+  insertWebReply(row: WebReplyRow): void {
+    this.db.prepare("INSERT INTO web_replies (id,server,channel,user_id,status,message_id,created_at,via) VALUES(?,?,?,?,?,?,?,?)").run(row.id, row.server, row.channel, row.user_id, row.status, row.message_id, row.created_at, row.via);
+  }
+  finishWebReply(id: string, status: "posted" | "failed", messageId?: string, via?: WebVia): boolean {
+    return this.db.prepare("UPDATE web_replies SET status=?,message_id=?,via=COALESCE(?,via) WHERE id=? AND status='pending'").run(status, messageId ?? null, via ?? null, id).changes > 0;
+  }
+  webReplyByMessage(server: string, messageId: string): WebReplyRow | undefined {
+    const row = this.db.prepare("SELECT id,server,channel,user_id,status,message_id,created_at,via FROM web_replies WHERE server=? AND message_id=?").get(server, messageId);
+    return row ? { id: String(row.id), server: String(row.server), channel: String(row.channel), user_id: String(row.user_id), status: String(row.status) as WebReplyRow["status"], message_id: row.message_id === null ? null : String(row.message_id), created_at: Number(row.created_at), via: String(row.via) as WebReplyRow["via"] } : undefined;
   }
 
   private userWindows(server: string, user: string): UserLimitWindow[] {

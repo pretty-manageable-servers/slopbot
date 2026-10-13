@@ -8,6 +8,7 @@ import type { ChannelAccess } from './channel-access.js';
 import { AdminInputError, snowflake, type AdminPanel } from './admin-panel.js';
 import type { TeamRole } from './team-admins.js';
 import type { TranscriptRoutes } from './web-transcripts.js';
+import { WebReplyError } from './web-replies.js';
 
 /** Team admin backend. Roles come from the Developer Portal team; panel holds the limits, prices and usage. */
 export interface ConsoleAdmin {
@@ -28,6 +29,8 @@ export interface ConsoleBackend {
   admin?: ConsoleAdmin;
   /** Read-only conversation transcripts, runs, search and the live stream. */
   conversations?: TranscriptRoutes;
+  /** Posts a web reply as the signed-in user. Errors with a WebReplyError keep their status. */
+  reply?(user: string, server: string | undefined, channel: string, text: string): Promise<unknown>;
 }
 export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string }
 export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOptions | undefined {
@@ -133,6 +136,20 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         }
         if (req.method !== 'POST' || req.headers.origin !== new URL(options.origin).origin || req.headers['x-csrf-token'] !== session.csrf) return send(res, 403, { error: 'Invalid request.' });
         if (routePath === '/api/logout') { sessions.delete(id); res.setHeader('Set-Cookie', cookie('slopbot_session', '', 0)); return send(res, 200, { ok: true }); }
+        const conversation = routePath.match(/^\/api\/conversations\/(\d{17,20})\/reply$/);
+        if (conversation) {
+          if (!backend.reply) return send(res, 404, { error: 'Not found.' });
+          if (!req.headers['content-type']?.startsWith('application/json')) return send(res, 415, { error: 'Send JSON.' });
+          let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 16384) return send(res, 413, { error: 'Request too large.' }); }
+          let input: { server?: string; text?: string };
+          try { input = JSON.parse(body); } catch { return send(res, 400, { error: 'Invalid JSON.' }); }
+          if (input?.server !== undefined && (typeof input.server !== 'string' || !/^\d{17,20}$/.test(input.server))) return send(res, 400, { error: 'Invalid server.' });
+          try { return send(res, 201, await backend.reply(session.user, input?.server, conversation[1]!, typeof input?.text === 'string' ? input.text : '')); }
+          catch (error) {
+            if (error instanceof WebReplyError) return send(res, error.status, { error: error.message, ...(error.resetAt !== undefined ? { resetAt: error.resetAt } : {}) });
+            throw error;
+          }
+        }
         if (!routePath.startsWith('/api/admin/') && !['/api/settings', '/api/mcp', '/api/web-transcripts/channels'].includes(routePath)) return send(res, 404, { error: 'Not found.' });
         if (!req.headers['content-type']?.startsWith('application/json')) return send(res, 415, { error: 'Send JSON.' });
         let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > (routePath === '/api/mcp' ? 65536 : 16384)) return send(res, 413, { error: 'Request too large.' }); }

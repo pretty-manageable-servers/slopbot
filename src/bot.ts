@@ -63,12 +63,13 @@ export class Bot {
     catch (error) {
       if (!(error instanceof UserLimitError)) throw error;
       // Only a direct request gets the notice. Unsolicited replies stay silent.
-      if (message.mentionsBot || message.repliesToBot || this.tasks.has(message.channel)) await this.send(message, limitReply(error.resetAt));
+      if (message.mentionsBot || message.repliesToBot || message.addressed === true || this.tasks.has(message.channel)) await this.send(message, limitReply(error.resetAt));
     }
   }
   private async receiveScoped(message: Incoming): Promise<void> {
     const task = this.tasks.has(message.channel);
-    let addressed = task || message.mentionsBot || message.repliesToBot;
+    // A web reply arrives with addressed=true, so it always gets an answer and skips JEV.
+    let addressed = task || message.mentionsBot || message.repliesToBot || message.addressed === true;
     let ingested = false;
     if (!addressed) {
       if (!await this.store.ingest({ ...message, addressed: false })) return;
