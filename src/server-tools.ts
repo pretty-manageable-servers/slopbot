@@ -11,6 +11,7 @@ import { decisionThresholds, type ParticipationHistoryStore } from './participat
 import type { HistoryImporter } from "./history.js";
 import type { QueueStore } from "./queue.js";
 import { ToolError, type ToolField, type ToolRegistry, type ToolDefinition } from "./tools.js";
+import type { Inbox } from "./inbox.js";
 
 export interface ServerToolStore extends Knowledge, QueueStore, ParticipationHistoryStore {
   setting(server: string, key: string): unknown;
@@ -39,11 +40,22 @@ export interface ServerToolServices {
   wakeWorker(): void;
   // True for a member of the Developer Portal team that owns Slopbot (owner, admin or developer).
   isTeamEditor(user: string): Promise<boolean>;
+  // The inbox tools are registered only when this is set.
+  inbox?: Inbox;
 }
 const channel: ToolField = { type: "channel", description: "Discord channel ID; defaults to the current channel" };
 const choice = (description: string, choices: string[]): ToolField => ({ type: "string", description, choices });
 const integer = (description: string, max: number, required = true, min = 0): ToolField => ({ type: "integer", description, min, max, required });
 const date = (value: number | null) => value === null ? "none" : new Date(value).toISOString();
+/** Splits a comma-separated argument and drops empty parts. */
+const commaList = (raw: unknown): string[] => String(raw ?? "").split(",").map(part => part.trim()).filter(Boolean);
+/** Age text for an inbox line, such as "5m ago", "3h ago" or "2d ago". */
+function inboxAge(ms: number): string {
+  const minutes = Math.max(0, Math.floor(ms / 60_000));
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 48 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
+}
 
 export function configuredChannels(config: Config, store: Pick<ServerToolStore, "setting">, server: string): string[] {
   const saved = store.setting(server, "channels");
@@ -255,4 +267,31 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
       const retried = await store.retryJob(context.message.server, context.message.channel, String(args.id));
       services.wakeWorker(); return retried ? "Request queued for recovery." : "That request is not failed or blocked.";
     } });
+  const inbox = services.inbox;
+  if (inbox) {
+    add({ name: "inbox_add", description: "Put a summary in another member's inbox, when a member asks to put something in someone's inbox. Write a plain summary of at most 1000 characters: who said what and what the target must act on. Use the source message IDs from context.", fields: { target: { type: "string", description: "Discord user ID of the member whose inbox gets the item", required: true }, summary: { type: "string", description: "Plain summary, at most 1000 characters", required: true }, source_ids: { type: "string", description: "Comma-separated Discord message IDs that the summary covers", required: true } }, access: "member", effect: "write", retrySafe: false,
+      async execute(context, args) {
+        const target = userId(args.target);
+        if (!target) throw new ToolError("Target must be a Discord user ID.");
+        const sourceIds = commaList(args.source_ids);
+        if (!sourceIds.length || sourceIds.some(id => !/^\d{17,20}$/.test(id))) throw new ToolError("Source IDs must be comma-separated Discord message IDs.");
+        const channel = (await services.originMessage(context.message)).channel;
+        const item = await inbox.add({ server: context.message.server, target, sender: context.message.author, channel, sourceIds, summary: String(args.summary ?? "") });
+        return `Added inbox item ${item.id} for <@${target}>.`;
+      } });
+    add({ name: "inbox_list", description: "List your own inbox items in this server: id, sender, age, summary and a jump link. Open items only, unless include_done is true.", fields: { include_done: { type: "boolean", description: "Include items you marked done" } }, access: "member", effect: "read", retrySafe: true,
+      async execute(context, args) {
+        const items = await inbox.list(context.message.server, context.message.author, args.include_done === true);
+        if (!items.length) return "Your inbox is empty.";
+        const now = Date.now();
+        return items.map(item => `${item.id} | from <@${item.sender}> | ${inboxAge(now - item.created_at)} | ${item.summary} | https://discord.com/channels/${context.message.server}/${item.channel}/${item.sourceIds[0]}${item.done_at === null ? "" : " | done"}`).join("\n");
+      } });
+    add({ name: "inbox_done", description: "Mark your own inbox items done. Use the item IDs from inbox_list, comma-separated, or all.", fields: { ids: { type: "string", description: "Comma-separated item IDs, or all", required: true } }, access: "member", effect: "write", retrySafe: true,
+      async execute(context, args) {
+        const raw = String(args.ids ?? "").trim();
+        if (!raw) throw new ToolError("Give item IDs, or all.");
+        const count = await inbox.done(context.message.server, context.message.author, raw === "all" ? "all" : commaList(raw));
+        return count ? `Marked ${count} inbox item${count === 1 ? "" : "s"} done.` : "No open inbox items matched.";
+      } });
+  }
 }
