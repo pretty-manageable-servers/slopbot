@@ -208,3 +208,12 @@ main.chat-mode{padding:0;max-width:none;min-width:0}
 .chat .chat-usage-reset{display:block;width:100%;margin:8px 0 0;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:none;color:var(--strong);font-size:13px;text-align:center}
 .chat .chat-usage-reset:hover:not(:disabled){background:var(--pill)}
 .chat-link-warning{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:13px;color:var(--muted);background:var(--surface)}.chat-link-warning strong{color:var(--strong)}
+
+/* Reasoning effort picker in the composer */
+.chat .effort-pick{position:relative;flex:none}
+.chat .effort-button{padding:6px 10px;border:0;border-radius:999px;background:var(--pill);color:var(--muted);font-size:12px}
+.chat .effort-button:hover{color:var(--strong)}
+.chat .effort-menu{position:absolute;right:0;bottom:100%;z-index:20;min-width:120px;margin-bottom:6px;padding:4px;border:1px solid var(--line);border-radius:10px;background:var(--surface);box-shadow:0 8px 24px rgb(0 0 0 / .25)}
+.chat .effort-item{display:block;width:100%;padding:7px 10px;border:0;border-radius:6px;background:none;color:var(--text);font-size:13px;text-align:left}
+.chat .effort-item:hover,.chat .effort-item:focus-visible{background:var(--pill);color:var(--strong)}
+.chat .effort-item[aria-checked=true]{color:var(--strong);font-weight:600}
