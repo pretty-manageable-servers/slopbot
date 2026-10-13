@@ -102,7 +102,9 @@ export function parseMessage(input: unknown): Message {
   if (value.authorAliases !== undefined && (!Array.isArray(value.authorAliases) || value.authorAliases.some(alias => typeof alias !== "string"))) throw new TypeError("Invalid author aliases");
   if (value.authorIdentity !== undefined && (!value.authorIdentity || typeof value.authorIdentity !== "object" || Array.isArray(value.authorIdentity) || Object.values(value.authorIdentity).some(item => typeof item !== "string"))) throw new TypeError("Invalid Discord identity");
   if (value.attachments !== undefined && (!Array.isArray(value.attachments) || value.attachments.some(item => !item || typeof item.name !== "string" || typeof item.url !== "string" || (item.contentType !== undefined && typeof item.contentType !== "string") || (item.preview !== undefined && typeof item.preview !== "boolean") || (item.size !== undefined && (!Number.isSafeInteger(item.size) || item.size < 0))))) throw new TypeError("Invalid attachments");
+  if (value.effort !== undefined && parseEffort(value.effort) === undefined) throw new TypeError("Invalid effort");
   return {
+    ...(value.effort ? { effort: value.effort as Effort } : {}),
     ...(value.attachments ? { attachments: value.attachments as Attachment[] } : {}),
     ...(value.authorIdentity ? { authorIdentity: value.authorIdentity as Record<string,string> } : {}),
     ...(value.authorName ? { authorName: value.authorName as string } : {}),
