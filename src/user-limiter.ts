@@ -11,6 +11,13 @@ export const USER_LIMIT_WINDOWS = [
   { kind: "week", durationMs: 7 * 24 * HOUR_MS, setting: "user_limit_week_cost_micros" },
 ] as const;
 
+/** Global setting: Record<userId, UserLimitOverride>. A set value replaces the global limit for that user; 0 means no limit. */
+export const USER_LIMIT_OVERRIDES_SETTING = "user_limit_overrides";
+/** null uses the global limit. */
+export interface UserLimitOverride { five_hour_cost_micros: number | null; week_cost_micros: number | null }
+/** The valid override of one user in the saved setting, or null. Invalid values become null. */
+export function limitOverride(_saved: unknown, _user: string): UserLimitOverride | null { throw new Error("Not built: WP2"); }
+
 export type UserLimit = { allowed: true } | { allowed: false; resetAt: number };
 export interface UserLimitDefaults { fiveHourCostMicros: number; weekCostMicros: number; gracePercent: number }
 export interface UserUsageWindow { kind: string; spent: number; limit: number; resetAt: number | null; banked: number }

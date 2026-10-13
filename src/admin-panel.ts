@@ -1,7 +1,7 @@
 import type { Config } from "./config.js";
 import type { Json } from "./domain.js";
-import type { Store, TokenSums } from "./ports.js";
-import { savedLimit, USER_LIMIT_SCOPE, type UserLimiter } from "./user-limiter.js";
+import type { Store, TokenSums, UserTokenTotalRow } from "./ports.js";
+import { savedLimit, USER_LIMIT_SCOPE, type UserLimiter, type UserLimitOverride, type UserUsageWindow } from "./user-limiter.js";
 import { activePrices, GLOBAL_SETTINGS_SCOPE, type ModelPrice } from "./usage-cost.js";
 import { modelsInUse } from "./usage-meter.js";
 import type { MemberDirectory, MemberProfile } from "./member-directory.js";
@@ -36,6 +36,10 @@ export type AdminConfig = Pick<Config, "model" | "jevModel" | "embeddingModel" |
 export type AdminStore = Pick<Store, "listUserUsage" | "resetUserUsage" | "grantResets" | "tokenTotalsSummary" | "listProviderKeys" | "addProviderKey" | "deleteProviderKey" | "providerKeyUsage"> & { setting(server: string, key: string): unknown; setSetting(server: string, key: string, value: Json): void | Promise<void>; resetProviderKey?(id: string, month: string): void | Promise<void> };
 export type WindowKind = "5h" | "week";
 export interface LimitValues { five_hour_cost_micros: number; week_cost_micros: number; grace_percent: number }
+export interface UserServer { id: string; name: string }
+export interface UserRowView { user: MemberProfile; servers: UserServer[]; windows: UserUsageWindow[]; override: UserLimitOverride | null }
+export interface UsersPageView { total: number; limit: 5 | 10 | 25 | 50; offset: number; users: UserRowView[] }
+export interface UserDetailView extends UserRowView { totals: (UserTokenTotalRow & { server: string; serverName: string })[] }
 export interface LimitsView extends LimitValues { server: string; defaults: LimitValues }
 /** configured is the price from the config table; fallback is used when the config has no price for the model. */
 export type PriceSource = "config" | "fallback";

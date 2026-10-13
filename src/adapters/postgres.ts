@@ -7,7 +7,7 @@ import type { ToolOutput } from "../tools.js";
 import { PostgresDatabase, serializeStore } from "./postgres-database.js";
 import { randomUUID } from "node:crypto";
 import { parseMessage, type Effort, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
-import type { AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow, TokenTotals, UserTokenTotalRow, TokenTotalsSummary } from "../ports.js";
+import type { AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow, TokenTotals, UserTokenTotalRow, TokenTotalsSummary, KnownUserPage } from "../ports.js";
 import type { KeyedProvider, ProviderKeyRow, ProviderKeyUsage } from "../web-providers.js";
 import { cosine, searchTerms, type Embeddings, type Evidence, type MemoryRecord } from "../memory.js";
 import { attribution, type Attribution } from "../usage-meter.js";
@@ -791,6 +791,8 @@ export class PostgresStore {
         return (await this.db.prepare("SELECT model,requests,input_tokens,output_tokens,cached_tokens,cost_micros,first_at,last_at FROM user_token_totals WHERE server=? AND user_id=? ORDER BY model").all(server, user))
             .map(row => ({ model: String(row.model), requests: Number(row.requests), input: Number(row.input_tokens), output: Number(row.output_tokens), cached: Number(row.cached_tokens), costMicros: Number(row.cost_micros), firstAt: Number(row.first_at), lastAt: Number(row.last_at) }));
     }
+    async listKnownUsers(_search: string, _limit: number, _offset: number): Promise<KnownUserPage> { throw new Error("Not built: WP1"); }
+    async userTokenTotalsByServer(_user: string): Promise<(UserTokenTotalRow & { server: string })[]> { throw new Error("Not built: WP1"); }
     async tokenTotalsSummary(limit: number): Promise<TokenTotalsSummary> {
         const [total] = await this.db.prepare("SELECT COALESCE(SUM(requests),0) AS requests, COALESCE(SUM(input_tokens),0) AS input, COALESCE(SUM(output_tokens),0) AS output, COALESCE(SUM(cached_tokens),0) AS cached, COALESCE(SUM(cost_micros),0) AS cost FROM user_token_totals").all();
         const servers = await this.db.prepare("SELECT server, SUM(requests) AS requests, SUM(input_tokens) AS input, SUM(output_tokens) AS output, SUM(cached_tokens) AS cached, SUM(cost_micros) AS cost FROM user_token_totals GROUP BY server ORDER BY cost DESC, server LIMIT ?").all(limit);
