@@ -166,3 +166,7 @@ textarea.prompt-field{font-family:'JetBrains Mono',monospace;resize:vertical}
 .web-key-form{margin-top:8px;padding-top:4px;border-top:1px solid var(--line)}
 .web-key-form .primary{margin-top:10px}
 .web-key-form .small{margin:6px 0 0}
+
+/* Slopbot build line at the bottom of the settings side column. The sha links to its commit. */
+.version-line{margin:16px 0 0;font-size:12px;color:var(--muted)}
+.version-line a{color:inherit}

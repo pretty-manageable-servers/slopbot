@@ -47,6 +47,8 @@ export interface Store extends ProviderKeyStore {
   userTokenTotals(server: string, user: string): Promise<UserTokenTotalRow[]>;
   // All servers together, plus the top `limit` servers and models by cost.
   tokenTotalsSummary(limit: number): Promise<TokenTotalsSummary>;
+  // Replies sent since a time (ms), across all servers. Each triggering message counts once.
+  countRepliesSince(since: number): Promise<number>;
 }
 
 /** Spend in micro-dollars for one window kind, starting at windowStart. */

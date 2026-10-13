@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS context_versions (
         PRIMARY KEY(server,channel)
       );
 CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY, message TEXT NOT NULL, content TEXT NOT NULL, created_at BIGINT NOT NULL, result TEXT);
+CREATE INDEX IF NOT EXISTS deliveries_created ON deliveries(created_at);
 CREATE TABLE IF NOT EXISTS embedding_usage (
         server TEXT NOT NULL, channel TEXT NOT NULL, model TEXT NOT NULL, purpose TEXT NOT NULL,
         requests BIGINT NOT NULL DEFAULT 0, tokens BIGINT NOT NULL DEFAULT 0, unknown_tokens BIGINT NOT NULL DEFAULT 0,

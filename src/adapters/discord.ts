@@ -35,13 +35,14 @@ import { ReplyRenderer } from "../reply-renderer.js";
 import { registerFileTool, inspectFile } from '../files.js';
 import {
   Client, Events, GatewayIntentBits, Partials, ThreadAutoArchiveDuration,
-  MessageFlags, PermissionFlagsBits, ChannelType,
+  MessageFlags, PermissionFlagsBits, ChannelType, ActivityType,
   type ChatInputCommandInteraction, type Interaction, type Message as DiscordMessage, type PartialMessage,
 } from "discord.js";
 import { buildToolCommands, buildUsageCommand, usageReply } from "./discord-commands.js";
 import { registerProfileTools } from "../profiles.js";
 import { Application } from "../application.js";
 import { Bot, splitReply, type ChatGateway, type Incoming } from "../bot.js";
+import { PresenceUpdater } from "../presence.js";
 import type { Config } from "../config.js";
 import { parseEffort, type Message } from "../domain.js";
 import type { LLM } from "../ports.js";
@@ -721,6 +722,8 @@ export class DiscordAdapter {
   readonly shares: ShareService;
   /** Discord names and avatars for the console and transcripts. One cache for every server. */
   readonly members: MemberDirectory;
+  /** Custom status with today's reply count and the server count. Started when the client is ready. */
+  private readonly presence: PresenceUpdater;
 
   constructor(private readonly config: Config, private readonly store: RuntimeStore, private readonly llm: LLM, client?: Client) {
     this.usage = createUsageMeter(config, store);
@@ -729,12 +732,18 @@ export class DiscordAdapter {
     this.team = new TeamAdmins(discordTeamSource(this.client));
     this.access = new ChannelAccess(discordChannelAccessSource(this.client));
     wireChannelAccessEvents(this.client, this.access);
+    this.presence = new PresenceUpdater({
+      setStatus: text => { this.client.user?.setPresence({ activities: [{ type: ActivityType.Custom, name: 'custom', state: text }], status: 'online' }); },
+      countReplies: since => this.store.countRepliesSince(since),
+      guildCount: () => this.client.guilds.cache.size,
+    });
     runEvents.attach(store);
     this.shareRule = { manager: (user, server) => this.hasManageServer(user, server), teamAdmin: user => this.team.canEdit(user) };
     this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;
     this.shares = new ShareService({ store, access: this.access, rule: this.shareRule, member: (user, server) => this.isServerMember(user, server), images: this.objectStorageProvider ?? new LocalDiskStorage() });
     this.client.once(Events.ClientReady, async client => {
       this.botUser = client.user.id;
+      this.presence.start();
       console.log(`Slopbot connected as ${client.user.tag}. LLM mode: ${config.mock ? "mock" : "provider"}. Servers: ${client.guilds.cache.size}`);
       for (const guild of client.guilds.cache.values()) void this.open(guild.id).catch(error => logError("server_start_failed", error, { server: guild.id }));
     });
@@ -924,6 +933,7 @@ export class DiscordAdapter {
   }
   async start(): Promise<void> { await this.client.login(this.config.discordToken); }
   async stop(): Promise<void> {
+    this.presence.stop();
     await Promise.all([...this.servers.keys()].map(id => this.close(id)));
     await this.client.destroy();
     this.objectStorageProvider?.close();

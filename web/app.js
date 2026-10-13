@@ -873,6 +873,17 @@ function finishSettings(result) {
   render();
   refreshGreeting();
 }
+// The Slopbot build line in the settings side column. One fetch at boot. It needs no login. If the fetch fails, the line stays hidden.
+async function loadVersion() {
+  let version;
+  try { const response = await fetch('/api/version'); if (!response.ok) return; version = await response.json(); }
+  catch { return; }
+  const line = $('version'), date = version.time ? new Date(version.time) : null;
+  if (!version.sha) line.textContent = 'Slopbot · dev';
+  else line.innerHTML = `Slopbot · <a href="${esc(version.url)}" target="_blank" rel="noopener">${esc(version.sha)}</a>` + (date && !Number.isNaN(date.getTime()) ? ` · ${esc(date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }))}` : '');
+  line.hidden = false;
+}
+loadVersion();
 boot().catch(error => { if (error.status === 401) { showScreen('login'); if (takeAsk()) notice('Sign in with Discord to send your question to Slopbot.'); } else { showScreen('none'); notice(error.message, true); } });
 
 // Reply box for one conversation. A transcript view calls renderReplyBox(container, server, channel).

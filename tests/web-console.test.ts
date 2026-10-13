@@ -510,3 +510,26 @@ test('full system prompt is the base, the presentation rules and the tool rules,
   const bare = new AdminPanel(config, store, limiter, directory);
   assert.equal(bare.fullSystemPrompt().text, `Be brief.\n${nativeToolInstructions}`);
 });
+test('/api/version is public and shows the build sha and time, or nulls for a missing or bad sha', async t => {
+  const keys = ['SLOPBOT_BUILD_SHA', 'SLOPBOT_BUILD_TIME'] as const;
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  t.after(() => { for (const key of keys) { if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; } });
+  const sha = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+  const server = createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'}, { sessions: new SQLiteStore(), async canSignIn() { return true; }, async snapshot(){return {};}, async invoke(){return {};} });
+  server.listen(0,'127.0.0.1'); await once(server,'listening');
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  const base = `http://127.0.0.1:${address.port}`;
+  // No cookie is sent, so the route must not need a login.
+  const version = async () => { const response = await fetch(base + '/api/version'); assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store'); return response.json(); };
+  delete process.env.SLOPBOT_BUILD_SHA; delete process.env.SLOPBOT_BUILD_TIME;
+  assert.deepEqual(await version(), { sha: null, time: null, url: null });
+  process.env.SLOPBOT_BUILD_SHA = sha; process.env.SLOPBOT_BUILD_TIME = '2026-10-13T10:00:00Z';
+  assert.deepEqual(await version(), { sha: 'a1b2c3d', time: '2026-10-13T10:00:00.000Z', url: `https://github.com/pretty-manageable-servers/slopbot/commit/${sha}` });
+  process.env.SLOPBOT_BUILD_SHA = 'not-a-sha';
+  assert.deepEqual(await version(), { sha: null, time: '2026-10-13T10:00:00.000Z', url: null });
+  process.env.SLOPBOT_BUILD_SHA = sha + '0';
+  assert.deepEqual(await version(), { sha: null, time: '2026-10-13T10:00:00.000Z', url: null });
+  process.env.SLOPBOT_BUILD_SHA = sha; process.env.SLOPBOT_BUILD_TIME = 'yesterday';
+  assert.deepEqual(await version(), { sha: 'a1b2c3d', time: null, url: `https://github.com/pretty-manageable-servers/slopbot/commit/${sha}` });
+});

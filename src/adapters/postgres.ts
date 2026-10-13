@@ -714,6 +714,10 @@ export class PostgresStore {
         (await this.db.prepare("INSERT OR IGNORE INTO deliveries VALUES(?,?,?,?,NULL)").run(id, JSON.stringify(message), content, Date.now()));
     }
     async finishDelivery(id: string, result: Message): Promise<void> { (await this.db.prepare("UPDATE deliveries SET result=? WHERE id=?").run(JSON.stringify(result), id)); }
+    async countRepliesSince(since: number): Promise<number> {
+        const row = await this.db.prepare("SELECT COUNT(DISTINCT (message::jsonb->>'server')||':'||(message::jsonb->>'id')) AS n FROM deliveries WHERE result IS NOT NULL AND created_at>=?").get(since);
+        return Number(row?.n ?? 0);
+    }
     setting(server: string, key: string): unknown { return structuredClone(this.settingsCache.get(JSON.stringify([server,key]))); }
     async setSetting(server: string, key: string, value: Json): Promise<void> {
         (await this.db.prepare("INSERT OR REPLACE INTO settings VALUES(?,?,?)").run(server, key, JSON.stringify(value)));
