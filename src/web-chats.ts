@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { logError } from "./errors.js";
 import type { ChatGateway } from "./bot.js";
-import type { Message } from "./domain.js";
+import { parseEffort, type Effort, type Message } from "./domain.js";
 import type { ToolActivity } from "./tool-activity.js";
 import type { UiDocument } from "./ui/schema.js";
 import type { ChannelAccess } from "./channel-access.js";
@@ -23,6 +23,7 @@ export interface ChatStore extends TranscriptStore, ConversationEventStore, Shar
   webChat(id: string): Promise<WebChatRow | undefined>;
   webChats(server: string, owner: string): Promise<WebChatRow[]>;
   renameWebChat(id: string, title: string, updated: number): Promise<void>;
+  setWebChatEffort(id: string, effort: Effort | null): Promise<void>;
   touchWebChat(id: string, updated: number): Promise<void>;
   deleteWebChat(id: string, server: string, channel: string, at: number): Promise<void>;
   setting(server: string, key: string): unknown;
@@ -87,9 +88,22 @@ export class WebChatService {
     this.shares = new ChatShareService(store, now);
   }
 
-  async list(user: string, server: string): Promise<{ id: string; title: string; updated: number }[]> {
+  async list(user: string, server: string): Promise<{ id: string; title: string; updated: number; effort: Effort }[]> {
     await this.requireMember(user, server);
-    return (await this.store.webChats(server, user)).map(chat => ({ id: chat.id, title: chat.title, updated: chat.updated }));
+    return (await this.store.webChats(server, user)).map(chat => ({ id: chat.id, title: chat.title, updated: chat.updated, effort: this.effortOf(chat) }));
+  }
+
+  /** The chat's own effort, else the server default, else medium. */
+  private effortOf(chat: WebChatRow): Effort {
+    return chat.effort ?? parseEffort(this.store.setting(chat.server, "default_effort")) ?? "medium";
+  }
+
+  /** Saves the chat's effort. null returns the chat to the server default. */
+  async setEffort(user: string, id: string, raw: unknown): Promise<void> {
+    const chat = await this.owned(user, id);
+    const effort = raw === null ? null : parseEffort(raw);
+    if (effort === undefined) throw new ChatError(400, "Choose low, medium or xhigh.");
+    await this.store.setWebChatEffort(chat.id, effort);
   }
 
   async create(user: string, server: string): Promise<{ id: string }> {
@@ -164,7 +178,7 @@ export class WebChatService {
     const handle = await this.handle(chat.server);
     const channel = privateChannel(chat.id), at = this.now();
     const name = (await this.host.members?.profiles(chat.server, [user]))?.get(user)?.displayName ?? user;
-    const message: Message = { id: `chat-${randomUUID()}`, server: chat.server, channel, author: user, authorName: name, text, timestamp: at, addressed: true, source: "web" };
+    const message: Message = { id: `chat-${randomUUID()}`, server: chat.server, channel, author: user, authorName: name, text, timestamp: at, addressed: true, source: "web", effort: this.effortOf(chat) };
     await this.store.ingest(message);
     if (chat.title) await this.store.touchWebChat(chat.id, at); else await this.store.renameWebChat(chat.id, privateChatTitle(text), at);
     await publishMessage(this.store, message, undefined, this.host.members);
@@ -239,7 +253,11 @@ export function createChatRoutes(service: WebChatService): ChatRoutes {
         }
         const id = parts[1] ?? "";
         if (parts.length === 2) {
-          if (req.method === "PATCH") { await service.rename(user, id, input.title); return json(res, 200, { ok: true }); }
+          if (req.method === "PATCH") {
+            if ("effort" in input) await service.setEffort(user, id, input.effort);
+            if ("title" in input || !("effort" in input)) await service.rename(user, id, input.title);
+            return json(res, 200, { ok: true });
+          }
           if (req.method === "DELETE") { await service.remove(user, id); return json(res, 200, { ok: true }); }
         }
         if (parts.length === 3 && parts[2] === "messages") {

@@ -110,7 +110,7 @@ test("the list, create, rename and delete routes keep the shapes the UI reads", 
   assert.equal(list.status, 200);
   assert.ok(Array.isArray(list.json), "the list is a bare array");
   assert.equal(list.json.length, 1);
-  assert.deepEqual(Object.keys(list.json[0]).sort(), ["id", "title", "updated"]);
+  assert.deepEqual(Object.keys(list.json[0]).sort(), ["effort", "id", "title", "updated"]);
   assert.equal(list.json[0].id, id);
   assert.equal(list.json[0].title, "");
   assert.equal(typeof list.json[0].updated, "number");
@@ -389,4 +389,43 @@ test("a chat link works only while its owner is in the server; a Discord error i
   const back = await f.call(null, "GET", `/api/shares/${shareId}`);
   assert.equal(back.status, 200, "owner rejoined");
   assert.equal(back.json.messages[0].text, "shared line");
+});
+
+test("PATCH effort accepts low, medium, xhigh or null and refuses anything else", async t => {
+  const f = await setup(t);
+  const id = await newChat(f);
+  for (const value of ["low", "medium", "xhigh"]) {
+    assert.equal((await f.call(ALICE, "PATCH", `/api/chats/${id}`, { effort: value })).status, 200);
+    assert.equal((await f.call(ALICE, "GET", `/api/chats?server=${SERVER}`)).json[0].effort, value);
+  }
+  for (const bad of ["high", "", 3, true, "LOW"]) assert.equal((await f.call(ALICE, "PATCH", `/api/chats/${id}`, { effort: bad })).status, 400);
+  assert.equal((await f.call(ALICE, "GET", `/api/chats?server=${SERVER}`)).json[0].effort, "xhigh", "a refused value changes nothing");
+  assert.equal((await f.call(ALICE, "PATCH", `/api/chats/${id}`, { effort: null })).status, 200);
+  assert.equal((await f.call(ALICE, "GET", `/api/chats?server=${SERVER}`)).json[0].effort, "medium", "no choice shows medium");
+  assert.equal((await f.call(ALICE, "PATCH", `/api/chats/${id}`, { title: "Trips" })).status, 200, "a title change still works");
+});
+
+test("only the owner can set the effort of a chat", async t => {
+  const f = await setup(t);
+  const id = await newChat(f);
+  assert.equal((await f.call(BOB, "PATCH", `/api/chats/${id}`, { effort: "low" })).status, 404);
+  assert.equal((await f.call(CAROL, "PATCH", `/api/chats/${id}`, { effort: "low" })).status, 404);
+  assert.equal((await f.call(null, "PATCH", `/api/chats/${id}`, { effort: "low" })).status, 401);
+  assert.equal((await f.call(ALICE, "GET", `/api/chats?server=${SERVER}`)).json[0].effort, "medium");
+});
+
+test("a sent message carries the chat effort, else the server default, else medium", async t => {
+  const f = await setup(t);
+  const id = await newChat(f);
+  await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "one" });
+  assert.equal(f.received.at(-1)!.effort, "medium", "no choice and no setting");
+  f.store.setSetting(SERVER, "default_effort", "low");
+  await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "two" });
+  assert.equal(f.received.at(-1)!.effort, "low", "the server default");
+  f.store.setSetting(SERVER, "default_effort", "default");
+  await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "three" });
+  assert.equal(f.received.at(-1)!.effort, "medium", "the default value means no setting");
+  await f.call(ALICE, "PATCH", `/api/chats/${id}`, { effort: "xhigh" });
+  await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "four" });
+  assert.equal(f.received.at(-1)!.effort, "xhigh", "the chat choice wins");
 });

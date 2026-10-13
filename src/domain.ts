@@ -2,7 +2,15 @@ export type Json = null | boolean | number | string | Json[] | { [key: string]: 
 
 export interface Attachment { readonly name: string; readonly url: string; readonly contentType?: string; readonly size?: number; readonly preview?: boolean }
 
+/** Reasoning effort a user can choose. Providers that do not support it ignore it. */
+export const EFFORTS = ["low", "medium", "xhigh"] as const;
+export type Effort = typeof EFFORTS[number];
+export function parseEffort(value: unknown): Effort | undefined {
+  return EFFORTS.find(effort => effort === value);
+}
+
 export interface Message {
+  readonly effort?: Effort;
   readonly attachments?: readonly Attachment[];
   readonly id: string;
   readonly server: string;
@@ -44,6 +52,7 @@ export interface Prompt {
   readonly history: readonly PromptItem[];
   readonly inputs: readonly PromptItem[];
   readonly maxOutputTokens?: number;
+  readonly effort?: Effort;
   readonly purpose?: "reply" | "checkpoint" | "inspection";
   readonly tools?: readonly ModelTool[];
 }
@@ -93,7 +102,9 @@ export function parseMessage(input: unknown): Message {
   if (value.authorAliases !== undefined && (!Array.isArray(value.authorAliases) || value.authorAliases.some(alias => typeof alias !== "string"))) throw new TypeError("Invalid author aliases");
   if (value.authorIdentity !== undefined && (!value.authorIdentity || typeof value.authorIdentity !== "object" || Array.isArray(value.authorIdentity) || Object.values(value.authorIdentity).some(item => typeof item !== "string"))) throw new TypeError("Invalid Discord identity");
   if (value.attachments !== undefined && (!Array.isArray(value.attachments) || value.attachments.some(item => !item || typeof item.name !== "string" || typeof item.url !== "string" || (item.contentType !== undefined && typeof item.contentType !== "string") || (item.preview !== undefined && typeof item.preview !== "boolean") || (item.size !== undefined && (!Number.isSafeInteger(item.size) || item.size < 0))))) throw new TypeError("Invalid attachments");
+  if (value.effort !== undefined && parseEffort(value.effort) === undefined) throw new TypeError("Invalid effort");
   return {
+    ...(value.effort ? { effort: value.effort as Effort } : {}),
     ...(value.attachments ? { attachments: value.attachments as Attachment[] } : {}),
     ...(value.authorIdentity ? { authorIdentity: value.authorIdentity as Record<string,string> } : {}),
     ...(value.authorName ? { authorName: value.authorName as string } : {}),

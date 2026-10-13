@@ -5,7 +5,7 @@ import type { HarnessState, HarnessEvent } from "../harness-state.js";
 import type { ToolOutput } from "../tools.js";
 import { PostgresDatabase, serializeStore } from "./postgres-database.js";
 import { randomUUID } from "node:crypto";
-import { parseMessage, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
+import { parseMessage, type Effort, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
 import type { AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow } from "../ports.js";
 import { cosine, searchTerms, type Embeddings, type Evidence, type MemoryRecord } from "../memory.js";
 import { attribution, type Attribution } from "../usage-meter.js";
@@ -22,7 +22,7 @@ const CONVERSATION_PRUNE_BATCH = 10000;
 
 import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
 import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, listChatShares, revokeShare, revokeAllShares, deleteChatShares } from '../share-store.js';
-import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../web-chat-store.js';
+import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatEffort, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../web-chat-store.js';
 import { isPrivateChannel } from '../private-chat.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
 import { getWebSession, saveWebSession, deleteWebSession, deleteExpiredWebSessions } from '../web-session-store.js';
@@ -421,6 +421,7 @@ export class PostgresStore {
     async webChats(server: string, owner: string): Promise<WebChatRow[]> { return listWebChats(this.db, server, owner); }
     async liveWebChatChannels(server: string): Promise<string[]> { return liveWebChatChannels(this.db, server); }
     async renameWebChat(id: string, title: string, updated: number): Promise<void> { return renameWebChat(this.db, id, title, updated); }
+    async setWebChatEffort(id: string, effort: Effort | null): Promise<void> { return setWebChatEffort(this.db, id, effort); }
     async touchWebChat(id: string, updated: number): Promise<void> { return touchWebChat(this.db, id, updated); }
     /** Deletes a private chat: its runs, events and queue rows, then its messages. The row stays, marked deleted. */
     async deleteWebChat(id: string, server: string, channel: string, at: number): Promise<void> {
