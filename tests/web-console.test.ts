@@ -92,6 +92,7 @@ test('landing serves the static export, console serves under /console, and trave
   await writeFile(join(dir,'site/out/_next/static/chunks/app.js'),'console.log(1)');
   await writeFile(join(dir,'site/out/favicon.svg'),'<svg xmlns="http://www.w3.org/2000/svg"/>');
   await writeFile(join(dir,'site/out/404.html'),'<!doctype html>');
+  await writeFile(join(dir,'site/out/terms.html'),'<!doctype html><title>Terms</title>');
   await writeFile(join(dir,'secret.txt'),'secret');
   const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:join(dir,'site/out')},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});
   server.listen(0,'127.0.0.1');await once(server,'listening');
@@ -104,6 +105,10 @@ test('landing serves the static export, console serves under /console, and trave
   assert.equal((await fetch(base+'/_next/static/chunks/app.js')).headers.get('content-type'),'text/javascript');
   assert.equal((await fetch(base+'/favicon.svg')).headers.get('content-type'),'image/svg+xml');
   assert.equal((await fetch(base+'/404.html')).status,200);
+  // A page of the export is served without .html, with the landing CSP.
+  const terms=await fetch(base+'/terms');assert.match(await terms.text(),/<title>Terms/);
+  assert.match(terms.headers.get('content-security-policy')!,/script-src 'self' 'unsafe-inline'/);
+  assert.equal((await fetch(base+'/missing-page')).status,404);
   assert.equal((await fetch(base+'/_next/static/chunks/missing.js')).status,404);
   assert.equal((await fetch(base+'/_next/static/chunks/')).status,404);
   assert.equal((await fetch(base+'/_next/../../secret.txt')).status,404);
