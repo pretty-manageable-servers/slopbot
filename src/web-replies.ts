@@ -131,6 +131,8 @@ export class WebReplies {
   private readonly inFlight = new Map<string, Set<Post>>();
   private readonly hooks = new Map<string, Promise<WebHook | undefined>>();
   private readonly manage = new Map<string, { allowed: boolean; expires: number }>();
+  /** Message IDs of recent voice posts. The row has no kind column, so a row match reads the kind here. */
+  private readonly voicePosts = new Map<string, number>();
   private readonly waitMs: number;
   private readonly now: () => number;
   constructor(private readonly options: WebRepliesOptions) {
@@ -178,6 +180,7 @@ export class WebReplies {
     try {
       const sent = await this.deliver(post, { server, channel, parent: target.parent, thread: target.thread, hook, author, text, kind });
       outcome = { ok: true, messageId: sent.messageId, user, author, via: sent.via, kind };
+      if (kind === "voice") this.rememberVoice(sent.messageId);
     } catch (error) {
       logError("web_reply_post_failed", error, { stage: "web reply post", server, channel });
     }
@@ -210,8 +213,7 @@ export class WebReplies {
     const row = await this.store.webReplyByMessage(event.server, event.id);
     if (row && row.status === "posted" && row.channel === event.channel && row.via === via) {
       const author = await this.discord.member(event.server, row.user_id);
-      // A row has no kind column, so a row-only match is a web reply.
-      return author ? { user: row.user_id, author, via, kind: "web" } : undefined;
+      return author ? { user: row.user_id, author, via, kind: this.voicePosts.has(event.id) ? "voice" : "web" } : undefined;
     }
     if (!posts.length) return undefined;
     const hit = await this.until(posts, event.id);
@@ -220,6 +222,12 @@ export class WebReplies {
       return undefined;
     }
     return hit ? { user: hit.user, author: hit.author, via, kind: hit.kind } : undefined;
+  }
+
+  private rememberVoice(messageId: string): void {
+    const now = this.now();
+    for (const [id, at] of this.voicePosts) if (now - at > 10 * 60_000) this.voicePosts.delete(id);
+    this.voicePosts.set(messageId, now);
   }
 
   /** Deletes a channel's web webhook and makes a new one. Old tokens stop working. */

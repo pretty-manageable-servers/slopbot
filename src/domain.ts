@@ -114,7 +114,7 @@ export function parseMessage(input: unknown): Message {
     ...(value.authorName ? { authorName: value.authorName as string } : {}),
     ...(value.authorAliases ? { authorAliases: value.authorAliases as string[] } : {}),
     ...(value.isBot !== undefined ? { isBot: value.isBot as boolean } : {}),
-    ...(value.source !== undefined ? { source: "web" as const } : {}),
+    ...(value.source !== undefined ? { source: value.source === "voice" ? "voice" as const : "web" as const } : {}),
     ...(value.revisionTimestamp !== undefined ? { revisionTimestamp: value.revisionTimestamp as number } : {}),
     ...(value.transient !== undefined ? { transient: value.transient as boolean } : {}),
     id: value.id as string, server: value.server as string,

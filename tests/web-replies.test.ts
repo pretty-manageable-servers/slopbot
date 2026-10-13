@@ -595,6 +595,14 @@ test("origin returns voice kind", async t => {
   assert.equal(user.text, "spoken");
 });
 
+test("origin after the post settles keeps voice kind", async t => {
+  const h = harness({ secret: webReplyKey({}), sendAsBot: async () => "voice-2" });
+  t.after(() => h.store.close());
+  await h.service.reply({ user: USER, server: SERVER, channel: PARENT, text: "spoken", kind: "voice" });
+  const origin = await h.service.origin(event("voice-2", undefined, PARENT));
+  assert.deepEqual([origin?.user, origin?.via, origin?.kind], [USER, "bot", "voice"]);
+});
+
 test("web reply without key still returns 503", async t => {
   const h = harness({ secret: webReplyKey({}) }); t.after(() => h.store.close());
   await expectStatus(h.service.reply({ user: USER, server: SERVER, channel: PARENT, text: "hi", kind: "web" }), 503);
