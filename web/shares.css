@@ -1,22 +1,40 @@
-/* Share page and share dialogs. Colors come from the tokens in style.css. */
+/* Shared conversation page (/s/<id>). Its transcript uses the chat classes from chat.css inside .share-chat.
+   Colors come from the tokens in style.css. These rules load after chat.css, and they are scoped under .share-page. */
 body.share-page{min-height:100vh}
-.share{max-width:760px;margin:0 auto;padding:40px 16px 56px}
-.share h1{font:500 30px/1.2 'Source Serif 4',serif;color:var(--strong);margin:4px 0 8px}
-.share .small,.share-tools,.share-att{color:var(--muted);font-size:13px}
-.share-list{display:grid;gap:14px;margin-top:28px}
-.share-msg{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow-wrap:anywhere}
-.share-msg.bot{border-color:var(--accent)}
-.share-msg header{height:auto;padding:0;border:0;display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:6px}
-.share-msg header strong{color:var(--strong)}
-.share-msg time{color:var(--muted);font-size:12px;margin-left:auto}
-.tag{font-size:11px;color:var(--accent);background:var(--pill);border-radius:999px;padding:0 8px}
-.share-text{white-space:normal}
-.share-att,.share-tools{margin:8px 0 0;padding:0}
-.share-tools{list-style:none;display:grid;gap:2px}
-.share-tools li::before{content:"\2022 ";color:var(--accent)}
-.share-thinking{margin-top:10px;color:var(--muted)}
-.share-thinking summary{cursor:pointer}
-.share-thinking div{margin-top:6px;white-space:normal}
+.share-page [hidden]{display:none!important}
+.share-page .share{min-height:100vh}
+.share-page .share-top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px 16px;max-width:760px;margin:0 auto;padding:14px 20px;border-bottom:1px solid var(--line)}
+.share-page .share-note{margin:0;min-width:0;font-size:12px;color:var(--muted)}
+.share-page .share-note strong{font-weight:600;color:var(--strong)}
+.share-page .share-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-left:auto}
+.share-page .share-actions button{min-height:34px;padding:6px 12px;border:1px solid var(--line);border-radius:8px;background:none;color:var(--text);font:inherit;font-size:13px}
+.share-page .share-actions button:hover:not(:disabled){background:var(--pill)}
+.share-page .share-actions button:disabled{opacity:.6;cursor:wait}
+.share-page #share-continue{border-color:var(--accent);background:var(--accent);color:var(--bg);font-weight:600}
+.share-page #share-continue:hover:not(:disabled){background:var(--accent);filter:brightness(1.08)}
+.share-page .share-status{max-width:760px;margin:8px auto 0;padding:0 20px;font-size:12px;color:var(--muted);text-align:right}
+.share-page .share-status:empty{display:none}
+.share-page .chat.share-chat{display:block;height:auto;min-height:100vh;grid-template-columns:none;overflow:visible}
+.share-page .chat .share-log{flex:none;overflow:visible;padding:12px 20px 40px}
+.share-page .chat .chat-msg{min-width:0}
+.share-page .chat .chat-msg-head time{white-space:nowrap}
+.share-page .chat .chat-images{margin:6px 0 0}
+.share-page .chat .chat-images img{max-width:min(240px,100%);max-height:240px;object-fit:contain}
+.share-page .chat .share-tools{list-style:none;margin:2px 0 6px;padding:0;font-size:13px;color:var(--muted)}
+.share-page .chat .share-tools li{padding:1px 0}
+.share-page .chat .share-tools li::before{content:"\2022 ";color:var(--accent)}
+.share-page .chat .share-thinking{margin:0 0 8px;font-size:13px;color:var(--muted)}
+.share-page .chat .share-thinking summary{cursor:pointer}
+.share-page .chat .share-thinking-text{margin-top:6px;white-space:pre-wrap;overflow-wrap:anywhere}
+.share-page .chat .share-att{margin:6px 0 0;font-size:12px;color:var(--muted)}
+@media(max-width:760px){
+  .share-page .share-top{padding:12px 14px}
+  .share-page .share-actions{margin-left:0;width:100%}
+  .share-page .share-actions button{flex:1 1 auto;min-height:40px}
+  .share-page .share-status{padding:0 14px}
+  .share-page .chat .share-log{padding:8px 12px 32px}
+  .share-page .chat .chat-msg.mine .chat-text{max-width:92%}
+}
 
 /* Share dialog and share list (web/shares.js) */
 .share-tools-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
@@ -32,7 +50,3 @@ body.share-page{min-height:100vh}
 .share-row:first-child{border-top:0}
 .share-row .meta{color:var(--muted);font-size:12px}
 .share-row .off{color:var(--muted)}
-.share-imgs{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 0}.share-img{max-width:240px;max-height:240px;border-radius:10px;border:1px solid var(--line)}
-
-.share-img{max-width:min(240px,100%)}.share-msg{min-width:0}.share-row>*{min-width:0;overflow-wrap:anywhere}
-@media(max-width:760px){.share{padding:24px 12px 32px}.share h1{font-size:25px}.share-list{gap:10px;margin-top:18px}.share-msg{padding:12px}.share-row{grid-template-columns:minmax(0,1fr)}.share-list-box{padding:0 12px}.share-msg time{margin-left:0}}

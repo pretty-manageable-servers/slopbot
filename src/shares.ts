@@ -313,21 +313,28 @@ export class ChatShareService {
   }
 }
 
-export function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
+/** Serializes JSON for a script element. "<", ">", "&" and the line separators are escaped, so no text can end the element. */
+function jsonForScript(value: unknown): string {
+  return JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
-const block = (text: string): string => escapeHtml(text).replace(/\r?\n/g, "<br>");
 
+/**
+ * The public share page. The server sends the frozen copy as JSON. web/shares.js draws it with the chat's own
+ * classes (web/chat.css) and markdown renderer (web/markdown.js). The text is never put in the HTML here.
+ */
 export function renderSharePage(snapshot: ShareSnapshot): string {
-  const messages = snapshot.messages.map(message => {
-    const time = message.at === undefined ? "" : `<time datetime="${escapeHtml(new Date(message.at).toISOString())}">${escapeHtml(new Date(message.at).toISOString().slice(0, 16).replace("T", " "))} UTC</time>`;
-    const pictures = new Set((message.images ?? []).map(image => image.imageId));
-    const shown = (message.images ?? []).map(image => `<img class="share-img" src="/s/${escapeHtml(snapshot.id)}/images/${escapeHtml(image.imageId)}" alt="${escapeHtml(image.name)}" loading="lazy">`).join("");
-    const other = Math.max(0, (message.attachments ?? 0) - pictures.size);
-    const attachments = (shown ? `<div class="share-imgs">${shown}</div>` : "") + (other ? `<p class="share-att">${"[attachment] ".repeat(other).trim()}</p>` : "");
-    const tools = message.tools.length ? `<ul class="share-tools">${message.tools.map(tool => `<li>${escapeHtml(tool.status)}</li>`).join("")}</ul>` : "";
-    const thinking = message.thinking ? `<details class="share-thinking"><summary>Thinking</summary><div>${block(message.thinking)}</div></details>` : "";
-    return `<article class="share-msg${message.bot ? " bot" : ""}"><header><strong>${escapeHtml(message.author)}</strong>${message.bot ? '<span class="tag">Slopbot</span>' : ""}${time}</header><div class="share-text">${block(message.text)}</div>${attachments}${tools}${thinking}</article>`;
-  }).join("");
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><meta name="referrer" content="no-referrer"><title>Shared conversation · Slopbot</title><link rel="icon" href="/console/assets/logo-light.svg"><link rel="stylesheet" href="/console/style.css"><link rel="stylesheet" href="/console/shares.css"></head><body class="share-page"><main class="share"><p class="eyebrow">Shared from Slopbot</p><h1>Shared conversation</h1><p class="small">This is a frozen copy. Messages sent later are not included.</p><section class="share-list">${messages}</section></main></body></html>`;
+  const data = {
+    id: snapshot.id,
+    messages: snapshot.messages.map(message => ({
+      author: message.author,
+      bot: message.bot,
+      at: message.at ?? null,
+      text: message.text,
+      tools: message.tools.map(tool => tool.status),
+      thinking: message.thinking ?? "",
+      images: (message.images ?? []).map(image => ({ src: `/s/${snapshot.id}/images/${image.imageId}`, name: image.name })),
+      other: Math.max(0, message.attachments - (message.images?.length ?? 0)),
+    })),
+  };
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="robots" content="noindex"><meta name="referrer" content="no-referrer"><title>Shared conversation · Slopbot</title><link rel="icon" href="/console/assets/logo-light.svg"><link rel="stylesheet" href="/console/style.css"><link rel="stylesheet" href="/console/chat.css"><link rel="stylesheet" href="/console/shares.css"></head><body class="share-page"><main class="share"><header class="share-top"><p class="share-note"><strong>Shared from Slopbot.</strong> This is a frozen copy. Later messages are not included.</p><div class="share-actions"><button id="share-theme" type="button">Light</button><button id="share-continue" type="button">Continue in Slopbot</button></div></header><p id="share-status" class="share-status" role="status" hidden></p><div class="chat share-chat"><div id="share-log" class="chat-log share-log" role="log"></div></div><noscript><p class="share-status">Turn on JavaScript to read this conversation.</p></noscript></main><script type="application/json" id="share-data">${jsonForScript(data)}</script><script src="/console/markdown.js" defer></script><script src="/console/shares.js" defer></script></body></html>`;
 }

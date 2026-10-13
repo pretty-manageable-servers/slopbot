@@ -10,7 +10,7 @@ const one = '1528063444874432734', two = '1528063444874432735', blocked = '15280
 function fixture(env: Record<string, string> = {}) {
   const permissions = { has: () => true };
   const guild = (id: string, name: string, member: boolean) => ({ id, name, iconURL: () => null,
-    members: { fetch: async () => { if (!member) throw new Error('Unknown member'); return { permissions }; }, fetchMe: async () => ({ permissions }) },
+    members: { fetch: async () => { if (!member) throw new Error('Unknown member'); return { permissions, nickname: 'Server nick', user: { id: user, username: 'ada', globalName: 'Ada Lovelace' } }; }, fetchMe: async () => ({ permissions }) },
     channels: { fetch: async () => new Map() }, commands: { create: async () => ({}) } });
   const guilds = new Map([[one, guild(one, 'Beta', true)], [two, guild(two, 'Alpha', true)], [blocked, guild(blocked, 'Other', false)]]);
   const client = Object.assign(new EventEmitter(), { user: { id: '1514413259522838528', tag: 'slopbot#0' }, destroy: async () => {},
@@ -28,6 +28,8 @@ test('one client serves each server, and the console lists only shared servers',
   assert.deepEqual(servers.map(item => item.name), ['Alpha', 'Beta']);
   const snapshot = await f.adapter.consoleSnapshot(user, one) as { server: { id: string }; servers: unknown[] };
   assert.equal(snapshot.server.id, one); assert.equal(snapshot.servers.length, 2);
+  // The account menu and the greeting show the user's own Discord name, not the server nickname.
+  assert.equal(((await f.adapter.consoleSnapshot(user, one)) as { me: { displayName: string } }).me.displayName, 'Ada Lovelace');
   assert.equal((await f.adapter.consoleSnapshot(user) as { server: { id: string } }).server.id, two);
   await assert.rejects(f.adapter.consoleSnapshot(user, blocked), /not both in that server/);
   f.client.emit(Events.GuildDelete, { id: one }); await settle();

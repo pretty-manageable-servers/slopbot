@@ -4,6 +4,7 @@ import type { Json, Message, ModelEvent } from "./domain.js";
 import type { ChannelAccess, ChannelAccessResult } from "./channel-access.js";
 import { parseToolCalls, toolResult, type ToolCall, type ToolOutput } from "./tools.js";
 import type { HistoryPage, HistoryQuery } from "./search/history-search.js";
+import type { FuzzyHit, FuzzyQuery } from "./search/fuzzy.js";
 import { reasoningText, runEvents, shortArgs, showsProfile, slopbotId, transcriptMessage, type ConversationEvent, type ConversationEventStore, type RunEvents, type TranscriptMessage } from "./run-events.js";
 import type { MemberDirectory } from "./member-directory.js";
 import { transcriptSwitchOn } from "./server-tools.js";
@@ -27,6 +28,8 @@ export interface TranscriptStore extends ConversationEventStore {
   events(runId: string): ModelEvent[] | Promise<ModelEvent[]>;
   toolTurns(server: string, messageId: string): Promise<ToolTurn[]>;
   searchHistory(query: HistoryQuery): Promise<HistoryPage>;
+  /** Fuzzy match of one channel: words in any order, partial words and typos. See search/fuzzy.ts. */
+  searchFuzzy(query: FuzzyQuery): Promise<FuzzyHit[]>;
 }
 
 export interface TranscriptHost {
@@ -322,20 +325,15 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
   async function search(res: ServerResponse, url: URL, server: string, user: string): Promise<void> {
     const query = (url.searchParams.get("q") ?? "").trim();
     if (query.length < 2 || query.length > 200) return json(res, 400, { error: "Search needs 2 to 200 characters." });
-    const mode = url.searchParams.get("mode") ?? "keyword";
-    if (!["keyword", "exact", "hybrid", "semantic"].includes(mode)) return json(res, 400, { error: "Invalid search mode." });
-    // Search reads messages, so it covers only channels whose switch is on.
+    // Search reads messages, so it covers only channels whose switch is on. The access check is in visibleConversations.
     const visible = (await visibleConversations(host, server, user)).filter(item => item.enabled).slice(0, 40);
-    const found: Message[] = [];
-    for (const conversation of visible) {
-      const page = await store.searchHistory({ server, channel: conversation.id, query, mode: mode as HistoryQuery["mode"], limit: 10, requester: user });
-      found.push(...page.messages);
-    }
-    found.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
+    const found: FuzzyHit[] = [];
+    for (const conversation of visible) found.push(...await store.searchFuzzy({ server, channel: conversation.id, query, limit: 50 }));
+    found.sort((a, b) => b.score - a.score || (b.message.timestamp ?? 0) - (a.message.timestamp ?? 0));
     json(res, 200, {
       query,
       channels: visible.map(item => ({ id: item.id, name: item.name })),
-      messages: await views(server, found.slice(0, 50)),
+      messages: await views(server, found.slice(0, 50).map(hit => hit.message)),
     });
   }
 

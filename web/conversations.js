@@ -1,10 +1,60 @@
 // Conversations tab: a chat view of channel and thread transcripts (read-only), private chats with a composer, Slopbot runs and the live stream.
 // Uses globals from app.js: $, request, busy, fail, notice, state, csrf, showScreen.
-const conv = { server: '', list: [], chats: [], chatNote: '', kind: 'channel', channel: null, blank: false, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, folded: new Set(), renaming: null };
+const conv = { server: '', list: [], chats: [], chatNote: '', kind: 'channel', channel: null, blank: false, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, folded: new Set(), renaming: null, filter: '', view: null };
 const NEW_CHAT = 'New chat';
 const chatTitle = c => c.title || NEW_CHAT;
 // Times may be a number or a date string. A missing time counts as 0.
 const timeValue = v => (typeof v === 'number' ? v : Date.parse(v)) || 0;
+// Fuzzy match, same rules as src/search/fuzzy.ts: words in any order, partial words, typos, no case or accents. 0 means no match.
+const foldText = text => String(text).normalize('NFKD').replace(/\p{M}+/gu, '').toLowerCase();
+const fuzzyWords = text => foldText(text).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+const typoLimit = length => (length <= 3 ? 0 : length <= 6 ? 1 : 2);
+// Optimal string alignment distance. Returns limit + 1 when the distance is above the limit.
+function editDistance(a, b, limit) {
+  const n = a.length, m = b.length;
+  if (Math.abs(n - m) > limit) return limit + 1;
+  let before = [], previous = Array.from({ length: m + 1 }, (_, j) => j);
+  for (let i = 1; i <= n; i++) {
+    const row = [i];
+    let low = i;
+    for (let j = 1; j <= m; j++) {
+      let value = Math.min(previous[j] + 1, row[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) value = Math.min(value, before[j - 2] + 1);
+      row.push(value);
+      low = Math.min(low, value);
+    }
+    if (low > limit) return limit + 1;
+    before = previous; previous = row;
+  }
+  return previous[m] > limit ? limit + 1 : previous[m];
+}
+function wordScore(query, word) {
+  if (word === query) return 1;
+  if (query.length >= 2 && word.startsWith(query)) return 0.9;
+  if (query.length >= 4 && word.includes(query)) return 0.8;
+  const limit = typoLimit(query.length);
+  if (!limit) return 0;
+  let best = editDistance(query, word, limit);
+  for (const length of [query.length - 1, query.length, query.length + 1]) if (length > 0 && length < word.length) best = Math.min(best, editDistance(query, word.slice(0, length), limit));
+  return best > limit ? 0 : Math.max(0.1, 0.75 - 0.15 * best);
+}
+function fuzzyScore(query, text) {
+  const phrase = foldText(query).trim();
+  if (!phrase) return 0;
+  if (foldText(text).includes(phrase)) return 1;
+  const terms = [...new Set(fuzzyWords(query))];
+  if (!terms.length) return 0;
+  const words = [...new Set(fuzzyWords(text).slice(0, 400))];
+  let total = 0;
+  for (const term of terms) {
+    let best = 0;
+    for (const word of words) { const score = wordScore(term, word); if (score > best) best = score; if (best === 1) break; }
+    if (best === 0) return 0;
+    total += best;
+  }
+  const ordered = fuzzyWords(text).join(' ').includes(terms.join(' '));
+  return Math.min(1, total / terms.length + (terms.length > 1 && ordered ? 0.1 : 0));
+}
 const LOCK_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
 const PENCIL_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>';
 const MORE_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>';
@@ -37,41 +87,77 @@ function relTime(ts) {
   return new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
-// The chat view has no page title. The breadcrumb, title and description are hidden while it shows.
+// The chat view fills the page. Settings is a separate modal (web/app.js), so its title and sections are not touched here.
 function setChatMode(on) {
   if (!on) setConversationDrawer(false);
-  for (const id of ['breadcrumb', 'title', 'description']) $(id).hidden = on;
   document.querySelector('main').classList.toggle('chat-mode', on);
   $('console').classList.toggle('chat-only', on);
-  markTopTabs();
 }
 
-// The top bar tab for the current view is highlighted. Chat is the Conversations tab.
-function markTopTabs() {
-  const view = tab === 'conversations' && state.server ? 'chat' : 'settings';
-  for (const button of document.querySelectorAll('[data-view]')) {
-    const on = button.dataset.view === view;
-    button.classList.toggle('selected', on);
-    button.setAttribute('aria-current', on ? 'page' : 'false');
-  }
-}
-
-// A compact server picker at the top of the list. It is the same picker as in Settings.
+// The server picker is shown in the Servers view only. It is the same picker as in Settings.
 function renderChatServers() {
   const slot = $('chat-server');
   if (!slot) return;
-  slot.hidden = !(state.servers || []).length;
+  slot.hidden = conv.view !== 'servers' || !(state.servers || []).length;
   slot.classList.add('pick-slot');
-  serverPicker(slot);
+  if (!slot.hidden) serverPicker(slot);
 }
+
+// Two views. Chats lists the private chats of the current server. Servers lists the channels and threads of the chosen server.
+// The view is kept in localStorage. A deep link to a chat or channel picks its view (see loadConversations).
+const SEARCH_HINT = /Mac|iPhone|iPad/.test(navigator.platform || '') ? '⌘K' : 'Ctrl+K';
+function paintViews() {
+  const top = $('top-tabs');
+  if (top) top.hidden = false;
+  document.querySelectorAll('#top-tabs .top-tab').forEach(tab => {
+    const on = tab.dataset.view === conv.view;
+    tab.classList.toggle('selected', on);
+    tab.setAttribute('aria-pressed', String(on));
+  });
+  const search = $('conv-search');
+  if (search) search.placeholder = `Filter · ${SEARCH_HINT} to search messages`;
+}
+function setView(view, redraw = true) {
+  conv.view = view;
+  remember('slopbot-view', view);
+  paintViews();
+  renderChatServers();
+  if (redraw) drawList();
+}
+// A tab switch keeps the open item only when it belongs to the new view. Otherwise Chats opens a new chat and Servers shows the pick hint.
+function switchView(view) {
+  if (view === conv.view) return;
+  setView(view);
+  if (view === 'chats') { if (!conv.blank && (conv.kind !== 'chat' || !conv.channel)) openBlankChat(); }
+  else if (conv.kind === 'chat' || conv.blank) showPickPane();
+}
+// The Servers view with no channel open: the URL loses its item part and the pane shows the pick hint.
+function showPickPane() {
+  closeConversation();
+  clearItemHash();
+  $('chat-private').hidden = true;
+  $('conv-status').hidden = true;
+  $('conv-share').hidden = true;
+  $('conv-share').replaceChildren();
+  setComposer(null);
+  setHeading('');
+  showPick();
+  drawList();
+}
+function clearItemHash() {
+  if (/^#(chat|channel)\b/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search);
+}
+document.querySelectorAll('#top-tabs [data-view]').forEach(tab => tab.addEventListener('click', () => switchView(tab.dataset.view)));
 
 function renderConversations() {
   if (conv.server !== state.server.id) { closeConversation(); conv.server = state.server.id; conv.channel = null; conv.list = []; conv.chats = []; conv.chatNote = ''; conv.renaming = null; }
   setChatMode(true);
+  if (!conv.view) conv.view = recall('slopbot-view') === 'servers' ? 'servers' : 'chats';
   conv.blank = false;
   setPageTitle('Chat');
-  $('content').innerHTML = '<div id="chat-root" class="chat"><button id="chat-backdrop" class="chat-backdrop" type="button" aria-label="Close conversations" tabindex="-1"></button><aside id="chat-side" class="chat-side" aria-label="Conversations"><button id="chat-drawer-close" class="chat-drawer-close" type="button">Conversations <span aria-hidden="true">×</span></button><div id="chat-server" class="chat-server" hidden></div><input id="conv-search" class="chat-search" type="search" placeholder="Search messages" aria-label="Search messages"><div id="conv-list" class="chat-list"></div></aside><section id="conv-main" class="chat-pane"><header class="chat-head"><button id="chat-drawer" class="chat-drawer" type="button" aria-expanded="false" aria-controls="chat-side" aria-label="Open conversations" title="Conversations"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button><h2 id="chat-title" class="chat-title"></h2><div class="chat-tools"><span id="chat-private" class="chat-private" hidden>' + LOCK_ICON + '<span>Private</span></span><span id="conv-status" class="chat-status"></span><div id="conv-share" class="chat-share" hidden></div></div></header><div id="conv-view" class="chat-view"></div><div id="conv-reply" class="chat-composer" hidden></div></section></div>';
-  $('conv-search').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); searchConversations($('conv-search').value); } };
+  $('chat-host').innerHTML = '<div id="chat-root" class="chat"><button id="chat-backdrop" class="chat-backdrop" type="button" aria-label="Close conversations" tabindex="-1"></button><aside id="chat-side" class="chat-side" aria-label="Conversations"><button id="chat-drawer-close" class="chat-drawer-close" type="button">Conversations <span aria-hidden="true">×</span></button><div id="chat-server" class="chat-server pick-slot" hidden></div><input id="conv-search" class="chat-search" type="search" aria-label="Filter chats or channels"><div id="conv-list" class="chat-list"></div></aside><section id="conv-main" class="chat-pane"><header class="chat-head"><button id="chat-drawer" class="chat-drawer" type="button" aria-expanded="false" aria-controls="chat-side" aria-label="Open conversations" title="Conversations"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button><h2 id="chat-title" class="chat-title"></h2><div class="chat-tools"><span id="chat-private" class="chat-private" hidden>' + LOCK_ICON + '<span>Private</span></span><span id="conv-status" class="chat-status"></span><div id="conv-share" class="chat-share" hidden></div></div></header><div id="conv-view" class="chat-view"></div><div id="conv-reply" class="chat-composer" hidden></div></section></div>';
+  // Typing filters the list of the open view live. Message search is in the Cmd+K palette.
+  $('conv-search').oninput = () => { conv.filter = $('conv-search').value; drawList(); };
   $('chat-drawer').onclick = toggleDrawer;
   $('chat-drawer-close').onclick = () => setConversationDrawer(false, true);
   $('chat-backdrop').onclick = () => setConversationDrawer(false, true);
@@ -85,6 +171,7 @@ function renderConversations() {
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     }
   };
+  paintViews();
   renderChatServers();
   drawList();
   if (conv.channel === null && (conv.list.length || conv.chats.length)) showPick(); else showView(busy('md', 'Loading…'));
@@ -130,15 +217,13 @@ async function loadConversations() {
   if (stale()) return;
   conv.chats = conv.ask && conv.ask.server === id && !privateChats.some(c => c.id === conv.ask.chat) ? [{ id: conv.ask.chat, title: '', updated: Date.now() }, ...privateChats] : privateChats;
   drawList();
-  // A chat or channel named in the URL opens first. An id that is not listed falls back to the default view.
+  // A chat or channel named in the URL opens first, and its view shows. An id that is not listed falls back to the view's default.
   const item = takeHashItem();
+  if (item) setView(item.kind === 'chat' ? 'chats' : 'servers', false);
   const openChat = chatId => openConversation(chatId, 'chat', true).catch(fail);
-  const wantsChannel = (item && item.kind === 'channel') || (conv.channel && conv.kind !== 'chat');
   if (item && item.kind === 'chat' && conv.chats.some(c => c.id === item.id)) openChat(item.id);
-  else if (!item && conv.channel && conv.kind === 'chat' && conv.chats.some(c => c.id === conv.channel)) openChat(conv.channel);
-  else if (!wantsChannel) {
+  else if (conv.view === 'chats') {
     if (item) history.replaceState(null, '', '#chat');
-    else if (!location.hash) history.replaceState(null, '', '#chat');
     openBlankChat();
   }
   const before = { channel: conv.channel, blank: conv.blank };
@@ -148,30 +233,38 @@ async function loadConversations() {
   conv.list = result.conversations;
   conv.listLoading = false;
   drawList();
-  if (!wantsChannel) return;
+  if (conv.view !== 'servers') return;
   // The user chose something else while the channels loaded, so the view stays.
   if (conv.channel !== before.channel || conv.blank !== before.blank) return;
   const named = item && item.kind === 'channel' && conv.list.find(c => c.id === item.id);
   if (named) return openConversation(named.id, 'channel', true);
-  if (item) history.replaceState(null, '', '#chat');
+  if (item) clearItemHash();
   if (conv.channel && conv.kind !== 'chat' && conv.list.some(c => c.id === conv.channel)) return openConversation(conv.channel, 'channel', true);
-  openBlankChat();
+  showPickPane();
 }
 
 // The list starts with New chat. Then come Private chats, Channels and Threads.
 function drawList() {
   const list = $('conv-list');
   if (!list) return;
-  list.replaceChildren(newChatButton());
-  if (conv.chatNote) list.append(textNode('p', conv.chatNote, 'small chat-none'));
+  const chatsView = conv.view !== 'servers';
+  list.replaceChildren(...(chatsView ? [newChatButton()] : []));
+  if (chatsView && conv.chatNote) list.append(textNode('p', conv.chatNote, 'small chat-none'));
+  // The filter box narrows the list live. A row being renamed stays visible.
+  const filter = (conv.filter || '').trim();
+  const shown = (name, id) => !filter || id === conv.renaming || fuzzyScore(filter, name) > 0;
   const groups = [];
-  if (conv.chats.length) groups.push(['Private chats', conv.chats.map(chatItem)]);
-  for (const [title, kind] of [['Channels', 'channel'], ['Threads', 'thread']]) {
-    const items = conv.list.filter(c => (c.kind === 'thread' ? 'thread' : 'channel') === kind);
-    if (items.length) groups.push([title, items.map(convItem)]);
+  if (chatsView) {
+    const chats = conv.chats.filter(c => shown(chatTitle(c), c.id));
+    if (chats.length) groups.push(['Private chats', chats.map(chatItem)]);
+  } else {
+    for (const [title, kind] of [['Channels', 'channel'], ['Threads', 'thread']]) {
+      const items = conv.list.filter(c => (c.kind === 'thread' ? 'thread' : 'channel') === kind && shown(c.name, c.id));
+      if (items.length) groups.push([title, items.map(convItem)]);
+    }
+    if (conv.listLoading && !conv.list.length) groups.push(['Channels', [1, 2, 3].map(() => textNode('div', '', 'chat-skel'))]);
   }
-  if (conv.listLoading && !conv.list.length) groups.push(['Channels', [1, 2, 3].map(() => textNode('div', '', 'chat-skel'))]);
-  if (!groups.length) { list.append(textNode('p', 'Nothing to show yet.', 'small chat-none')); return; }
+  if (!groups.length) { list.append(textNode('p', filter ? 'No conversation matches.' : 'Nothing to show yet.', 'small chat-none')); return; }
   for (const [title, nodes] of groups) {
     const group = document.createElement('section');
     group.className = 'chat-group';
@@ -372,6 +465,7 @@ function setComposer(node) {
 // Opens a channel or thread (read-only), or a private chat (with a composer). The kind is 'channel' or 'chat'. Replace keeps the history entry.
 async function openConversation(id, kind = 'channel', replace = false) {
   closeStream();
+  setView(kind === 'chat' ? 'chats' : 'servers', false);
   conv.channel = id; conv.kind = kind; conv.blank = false; dropLive();
   setItemHash(kind, id, replace);
   const chat = kind === 'chat';
@@ -421,6 +515,34 @@ async function openConversation(id, kind = 'channel', replace = false) {
   }
 }
 
+// Used by the command palette (web/palette.js): the private chats and the channels and threads of the open server.
+window.SlopbotChat = {
+  items: () => [
+    ...conv.chats.map(c => ({ kind: 'chat', id: c.id, name: chatTitle(c) })),
+    ...conv.list.map(c => ({ kind: 'channel', id: c.id, name: label(c), thread: c.kind === 'thread' })),
+  ],
+  open: (kind, id) => openConversation(id, kind === 'chat' ? 'chat' : 'channel').catch(fail),
+  view: switchView,
+  // Message search for the palette. It covers the channels of the current server (the search route has no private chat search).
+  searchMessages: async text => {
+    if (!state.server) return [];
+    const result = await request(`/api/conversations/search?server=${enc(state.server.id)}&q=${enc(text)}`);
+    const names = new Map(result.channels.map(c => [c.id, c.name]));
+    return result.messages.slice(0, 10).map(m => ({ id: m.id, channel: m.channel, name: names.get(m.channel) || 'Conversation', authorName: m.authorName, timestamp: m.timestamp, text: m.text }));
+  },
+  // Opens the channel and scrolls to the message when the loaded transcript has it. Older messages are not loaded for this.
+  openMessage: (channel, id) => openConversation(channel, 'channel').then(() => focusMessage(id)).catch(fail),
+};
+
+// Scrolls to one message in the open transcript and flashes it briefly.
+function focusMessage(id) {
+  const node = document.querySelector(`#conv-log [data-id="${CSS.escape(id)}"]`);
+  if (!node) return;
+  node.scrollIntoView({ block: 'center' });
+  node.classList.add('chat-msg-flash');
+  setTimeout(() => node.classList.remove('chat-msg-flash'), 1600);
+}
+
 // The message page route for the open item. A private chat has its own route. Both return the same page shape.
 function messagesUrl(id, before = '') {
   const query = `limit=50${before ? `&before=${enc(before)}` : ''}`;
@@ -429,10 +551,17 @@ function messagesUrl(id, before = '') {
 
 // A time-of-day greeting with the user's name when known, and a garden line chosen at random.
 const GARDEN_LINES = ["What's growing today?", 'Plant a question.', 'What should we dig into?', 'Let an idea bloom.', 'What needs some sunlight?', 'Ready to sow something new?'];
-function heroGreeting() {
+function heroGreeting(line = GARDEN_LINES[Math.floor(Math.random() * GARDEN_LINES.length)]) {
   const hour = new Date().getHours(), part = hour < 5 ? 'Good evening' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
   const name = (state.me?.displayName || state.profile?.name || '').trim();
-  return `${name ? `${part}, ${name}` : part}. ${GARDEN_LINES[Math.floor(Math.random() * GARDEN_LINES.length)]}`;
+  return `${name ? `${part}, ${name}` : part}. ${line}`;
+}
+
+// The name arrives with the full snapshot, after the greeting is drawn. This adds it and keeps the same garden line.
+function refreshGreeting() {
+  const title = document.querySelector('.chat-hero-title');
+  const line = title && GARDEN_LINES.find(text => title.textContent.endsWith(text));
+  if (line) title.textContent = heroGreeting(line);
 }
 
 // The greeting of a new chat. The composer sits under it until the first message arrives.
@@ -467,6 +596,7 @@ function hideSlot() {
 // New chat shows a blank chat with the composer. Nothing is saved on the server until the first message is sent.
 // On a blank chat already, the button only focuses the composer.
 function newChat() {
+  if (conv.view !== 'chats') setView('chats');
   if (conv.blank) return focusComposer();
   openBlankChat();
 }
@@ -500,10 +630,25 @@ async function resumeAsk() {
     conv.ask = { server: state.server.id, chat: id, text };
     conv.chats = [{ id, title: '', updated: Date.now() }, ...conv.chats];
     history.replaceState(null, '', '#chat/' + encodeURIComponent(id));
-    tab = 'conversations'; viewAuto = false; render();
+    renderChat(true);
   } catch (error) {
     if (error.status === 401) { try { sessionStorage.setItem('slopbot-ask', text); } catch { } showScreen('login'); return; }
     notice(error.status === 404 ? 'Private chats are not available right now.' : error.message, true);
+  }
+}
+
+// The shared page's Continue button sends a signed-out viewer to sign in first. Its share ID waits in sessionStorage.
+// After the login, this copies the share into a new private chat and opens it.
+async function resumeShare() {
+  let id = '';
+  try { id = sessionStorage.getItem('slopbot-share') || ''; sessionStorage.removeItem('slopbot-share'); } catch { }
+  if (!/^[A-Za-z0-9_-]{22}$/.test(id)) return;
+  try {
+    const chat = await sendJson('POST', `/api/shares/${encodeURIComponent(id)}/continue`, {});
+    conv.chats = [{ id: chat.id, title: chat.title || '', updated: Date.now() }, ...conv.chats];
+    await openConversation(chat.id, 'chat', true);
+  } catch (error) {
+    notice(error.status === 404 ? 'That shared chat is no longer available.' : error.message, true);
   }
 }
 
@@ -1506,37 +1651,6 @@ function chatComposer(id) {
 function fitField(field) {
   field.style.height = 'auto';
   field.style.height = `${field.scrollHeight}px`;
-}
-
-async function searchConversations(text) {
-  const q = text.trim();
-  if (q.length < 2) { notice('Search needs at least 2 characters.'); return; }
-  closeStream();
-  conv.channel = null; conv.blank = false; drawList();
-  setConversationDrawer(false, true);
-  $('conv-status').hidden = true;
-  $('chat-private').hidden = true;
-  $('conv-share').hidden = true;
-  $('conv-share').replaceChildren();
-  setComposer(null);
-  setHeading(`Results for “${q}”`);
-  showView(busy('md', 'Searching…'));
-  try {
-    const result = await request(`/api/conversations/search?server=${enc(state.server.id)}&q=${enc(q)}`);
-    const names = new Map(result.channels.map(c => [c.id, c.name]));
-    const wrap = document.createElement('div');
-    wrap.className = 'chat-results';
-    if (!result.messages.length) wrap.append(textNode('p', 'No stored messages match in the conversations you can view.', 'small chat-none'));
-    for (const m of result.messages) {
-      const row = textNode('div', '', 'chat-hit');
-      const open = textNode('button', `${names.get(m.channel) || 'Conversation'} · ${timeLabel(m.timestamp)}`, 'chat-hit-open');
-      open.type = 'button';
-      open.onclick = () => openConversation(m.channel);
-      row.append(open, textNode('div', `${m.authorName}: ${m.text.slice(0, 280)}`, 'chat-hit-text'));
-      wrap.append(row);
-    }
-    showView(wrap);
-  } catch (error) { showView(textNode('p', error.message, 'small chat-none')); fail(error); }
 }
 
 // The usage meter in the composer. A ring fills to the larger window percent. The popover shows percents and reset times only.

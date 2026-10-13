@@ -15,6 +15,7 @@ import type { TaskContext } from "../context.js";
 import type { Job } from "../queue.js";
 import type { ToolArgs, ToolCall, ToolContext, ToolOperation } from "../tools.js";
 import type { HistoryQuery, HistoryPage } from '../search/history-search.js';
+import { FUZZY_SCAN, FUZZY_TERMS, fuzzyWords, likePattern, rankFuzzy, type FuzzyHit, type FuzzyQuery } from '../search/fuzzy.js';
 import type { AppRecord } from '../records.js';
 import type { ConversationEvent } from '../run-events.js';
 /** Rows deleted by one retention statement, so a large prune never holds locks for long. */
@@ -83,6 +84,28 @@ export class PostgresStore {
           .run(JSON.stringify(value), server, kind, id, expectedRevision)
       ).changes === 1
     );
+  }
+  /**
+   * Fuzzy search of one channel for the web console. The same plan as SQLite: the newest FUZZY_SCAN messages plus
+   * LIKE hits for the query words, then TypeScript scoring (search/fuzzy.ts). No pg_trgm, so no schema change.
+   */
+  async searchFuzzy(request: FuzzyQuery): Promise<FuzzyHit[]> {
+    const candidates = new Map<string, Message>();
+    const recent = await this.db
+      .prepare("SELECT m.body FROM messages m WHERE m.server=? AND m.channel=? ORDER BY json_extract(m.body,'$.timestamp') DESC,m.id DESC LIMIT ?")
+      .all(request.server, request.channel, FUZZY_SCAN);
+    const words = fuzzyWords(request.query).slice(0, FUZZY_TERMS);
+    const hits = words.length
+      ? await this.db
+          .prepare(`SELECT m.body FROM messages m WHERE m.server=? AND m.channel=? AND (${words.map(() => "lower(json_extract(m.body,'$.text')) LIKE ? ESCAPE '\\'").join(" OR ")}) ORDER BY json_extract(m.body,'$.timestamp') DESC,m.id DESC LIMIT 200`)
+          .all(request.server, request.channel, ...words.map(likePattern))
+      : [];
+    for (const row of [...recent, ...hits]) {
+      const message = parseMessage(JSON.parse(String(row.body)));
+      candidates.set(message.id, message);
+    }
+    const ranked = rankFuzzy(request.query, [...candidates.values()], request.limit);
+    return Promise.all(ranked.map(async (hit) => ({ message: await this.namedMessage(hit.message), score: hit.score })));
   }
   async searchHistory(request: HistoryQuery): Promise<HistoryPage> {
     const filters = ["m.server=?", "m.channel=?"];

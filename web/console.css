@@ -34,3 +34,52 @@
 .chat .chat-msg.chat-folded{display:none}
 .chat .chat-fold{display:block;width:min(760px,100%);margin:14px 0 0;padding:6px 10px;border:0;border-radius:8px;background:none;color:var(--muted);font-size:13px;text-align:left}
 .chat .chat-fold:hover{color:var(--text);background:var(--pill)}
+
+/* Settings modal (#settings in web/index.html, openSettings in web/app.js). The chat stays under it. Colors come from the tokens in style.css. */
+.settings-dialog{inset:0;width:min(1040px,calc(100% - 48px));height:min(760px,calc(var(--viewport-height) - 48px));max-width:none;max-height:none;margin:auto;padding:0;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--text);overflow:hidden}
+.settings-dialog::backdrop{background:rgb(0 0 0 / .5)}
+.settings-shell{display:flex;flex-direction:column;height:100%;min-height:0}
+.settings-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none;padding:10px 12px 10px 22px;border-bottom:1px solid var(--line)}
+.settings-head h2{margin:0;font:500 18px/1.2 'Source Serif 4',serif;color:var(--strong)}
+.settings-close{display:grid;place-items:center;width:36px;height:36px;padding:0;border:0;border-radius:8px;background:none;color:var(--muted)}
+.settings-close:hover{background:var(--pill);color:var(--strong)}
+.settings-body{display:grid;grid-template-columns:220px minmax(0,1fr);flex:1;min-height:0}
+.settings-side{min-width:0;padding:20px 16px;overflow-y:auto;border-right:1px solid var(--line)}
+.settings-side nav{display:grid;gap:4px;margin:20px 0}
+.settings-side nav button{text-align:left;border:0}
+.settings-side>.small{margin:0}
+.settings-main{min-width:0;padding:24px 32px;overflow-y:auto;overscroll-behavior:contain}
+.settings-main h1{margin-top:4px}
+.base-note{padding:28px 32px}
+@media(max-width:760px){
+ .settings-dialog{inset:0;width:100%;height:var(--viewport-height);margin:0;border:0;border-radius:0}
+ .settings-head{padding:6px 6px 6px 14px}
+ .settings-body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
+ .settings-side{padding:10px 12px;overflow:visible;border-right:0;border-bottom:1px solid var(--line)}
+ .settings-side nav{display:flex;gap:4px;margin:10px -12px 0;padding:0 12px 2px;overflow-x:auto;scrollbar-width:thin}
+ .settings-side nav button{flex:none;white-space:nowrap;min-height:40px}
+ .settings-side>.small{display:none}
+ .settings-main{padding:18px 12px}
+ .base-note{padding:18px 12px}
+}
+
+/* Command palette (web/palette.js). Colors come from the tokens in style.css. */
+.palette-dialog{margin:12vh auto auto;width:min(600px,calc(100% - 32px));max-height:min(520px,calc(var(--viewport-height) - 24vh));padding:0;border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--text);overflow:hidden;font:14px/1.5 Inter,sans-serif}
+.palette-dialog::backdrop{background:rgb(0 0 0 / .5)}
+.palette-shell{display:flex;flex-direction:column;max-height:inherit;min-height:0}
+.palette-input{display:block;flex:none;width:100%;margin:0;padding:14px 16px;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;color:var(--strong);font-size:16px}
+.palette-input:focus-visible{outline-offset:-2px}
+.palette-list{flex:1 1 auto;min-height:0;list-style:none;margin:0;padding:6px;overflow-y:auto;overscroll-behavior:contain}
+.palette-group{padding:10px 10px 4px;font-size:12px;color:var(--muted)}
+.palette-item{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:40px;padding:8px 10px;border-radius:8px;color:var(--text);cursor:pointer}
+.palette-item[aria-selected=true]{background:var(--pill);color:var(--strong)}
+.palette-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.palette-hint{flex:none;font-size:12px;color:var(--muted)}
+.palette-empty{margin:0;padding:16px;color:var(--muted)}
+.palette-status{padding:8px 10px;font-size:13px;color:var(--muted)}
+.palette-hit{display:grid;align-items:start;gap:4px;padding:8px 10px}
+.palette-hit-meta{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--muted)}
+.palette-hit-text{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;font-size:14px;color:var(--text);overflow-wrap:anywhere}
+.palette-hit-text p{margin:0}
+.palette-hit-text mark{background:none;color:var(--strong);font-weight:600;text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px}
+@media(max-width:760px){.palette-dialog{margin:8px auto auto;width:calc(100% - 16px)}.palette-item{min-height:44px}}

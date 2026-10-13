@@ -57,19 +57,21 @@ async function setup(t: TestContext): Promise<Fixture> {
     await store.saveSession({ id_hash: createHash("sha256").update(id).digest("hex"), user_id: user, csrf, expires: Date.now() + 86_400_000, created: Date.now() });
     logins[user] = { cookie: `slopbot_session=${id}`, csrf };
   }
+const shareService = new ShareService({
+    store, access: host.access, rule: { manager: async () => false }, now: () => shareNow.now,
+    async member(user: string, server: string) {
+      if (membership.fail) throw new Error("discord is down");
+      return server === SERVER && members.has(user);
+    },
+} as never);
   const web = createConsole({ origin: ORIGIN, host: "127.0.0.1", port: 3000, clientId: "id", clientSecret: "secret" }, {
     sessions: store, async canSignIn() { return true; },
     async snapshot() { return {}; },
     async invoke() { return {}; },
     chats: createChatRoutes(service),
     // The public share pages read the same store. Channel share writes are not used in these tests.
-    shares: new ShareService({
-      store, access: host.access, rule: { manager: async () => false }, now: () => shareNow.now,
-      async member(user: string, server: string) {
-        if (membership.fail) throw new Error("discord is down");
-        return server === SERVER && members.has(user);
-      },
-    } as never),
+    shares: shareService,
+    continueShare: (user, id) => service.continueShare(user, id, shareService),
     conversations: createTranscripts({ store, access: host.access, configured: () => [], channelName: async () => undefined, ownsPrivateChat: (server, channel, user) => service.owns(user, server, channel) }),
   });
   web.listen(0, "127.0.0.1");
@@ -428,4 +430,71 @@ test("a sent message carries the chat effort, else the server default, else medi
   await f.call(ALICE, "PATCH", `/api/chats/${id}`, { effort: "xhigh" });
   await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "four" });
   assert.equal(f.received.at(-1)!.effort, "xhigh", "the chat choice wins");
+});
+
+// Continue a shared chat: POST /api/shares/<id>/continue copies a live share into a new private chat of the viewer.
+const SHARE_ID = "AAAAAAAAAAAAAAAAAAAAAA";
+async function sharedChat(f: Fixture): Promise<{ shareId: string }> {
+  const id = await newChat(f, ALICE);
+  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "first private line" })).status, 201);
+  // A saved answer from Slopbot. It has no run here, so only its text is copied.
+  f.store.setSetting(SERVER, "context_bot_author", "bot-1");
+  await f.store.ingest({ id: "bot-answer-1", server: SERVER, channel: `web:${id}`, author: "bot-1", authorName: "Slopbot", isBot: true, text: "**Adapter** is ready.", timestamp: 2_000, addressed: false });
+  const shared = await f.call(ALICE, "POST", `/api/chats/${id}/shares`, {});
+  assert.equal(shared.status, 201);
+  return { shareId: shared.json.id as string };
+}
+
+test("a valid share is copied into a new private chat of the viewer, and the model reads the copy", async t => {
+  const f = await setup(t);
+  const { shareId } = await sharedChat(f);
+  const before = (await f.call(BOB, "GET", `/api/chats?server=${SERVER}`)).json.length;
+  const made = await f.call(BOB, "POST", `/api/shares/${shareId}/continue`, {});
+  assert.equal(made.status, 201);
+  assert.match(made.json.id, /^[0-9a-f]{32}$/);
+  assert.equal(made.json.title, "first private line");
+  assert.equal((await f.call(BOB, "GET", `/api/chats?server=${SERVER}`)).json.length, before + 1, "one new chat for the viewer");
+
+  const copied = await f.call(BOB, "GET", `/api/chats/${made.json.id}/messages`);
+  assert.equal(copied.status, 200);
+  assert.deepEqual(copied.json.messages.map((m: { text: string }) => m.text), ["first private line", "**Adapter** is ready."]);
+  assert.equal(copied.json.messages[0].slopbot, false);
+  assert.equal(copied.json.messages[1].slopbot, true, "the answer keeps the Slopbot author");
+
+  // The model input for a new message in the copy includes the copied history.
+  const sent = await f.call(BOB, "POST", `/api/chats/${made.json.id}/messages`, { text: "what did it say?" });
+  assert.equal(sent.status, 201);
+  const sentRow = await f.store.canonicalMessage(SERVER, sent.json.id);
+  assert.ok(sentRow);
+  const context = await f.store.context(sentRow, 10);
+  assert.deepEqual(context.map(m => m.text), ["first private line", "**Adapter** is ready."]);
+});
+
+test("a revoked or unknown share cannot be continued", async t => {
+  const f = await setup(t);
+  const { shareId } = await sharedChat(f);
+  assert.equal((await f.call(BOB, "POST", `/api/shares/${SHARE_ID}/continue`, {})).status, 404, "unknown");
+  const chat = (await f.call(ALICE, "GET", `/api/chats?server=${SERVER}`)).json[0].id as string;
+  assert.equal((await f.call(ALICE, "POST", `/api/chats/${chat}/shares/${shareId}/revoke`, {})).status, 200);
+  const before = (await f.call(BOB, "GET", `/api/chats?server=${SERVER}`)).json.length;
+  assert.equal((await f.call(BOB, "POST", `/api/shares/${shareId}/continue`, {})).status, 404, "revoked");
+  assert.equal((await f.call(BOB, "GET", `/api/chats?server=${SERVER}`)).json.length, before, "no chat is made");
+});
+
+test("a share of a chat whose owner left the server cannot be continued", async t => {
+  const f = await setup(t);
+  const { shareId } = await sharedChat(f);
+  f.members.delete(ALICE);
+  f.shareNow.now += 61_000;
+  assert.equal((await f.call(BOB, "POST", `/api/shares/${shareId}/continue`, {})).status, 404);
+});
+
+test("continuing needs a sign-in, the same origin and the CSRF token", async t => {
+  const f = await setup(t);
+  const { shareId } = await sharedChat(f);
+  assert.equal((await f.call(null, "POST", `/api/shares/${shareId}/continue`, {})).status, 401, "not signed in");
+  assert.equal((await f.call(BOB, "POST", `/api/shares/${shareId}/continue`, {}, { "X-CSRF-Token": "wrong" })).status, 403, "wrong CSRF token");
+  assert.equal((await f.call(BOB, "POST", `/api/shares/${shareId}/continue`, {}, { Origin: "https://evil.example" })).status, 403, "wrong origin");
+  assert.equal((await f.call(BOB, "GET", `/api/chats?server=${SERVER}`)).json.length, 0, "no chat is made by a refused request");
+  assert.equal((await fetch(`${f.base}/api/shares/${shareId}/continue`, { method: "POST", headers: { Cookie: f.cookie(BOB), Origin: ORIGIN, "X-CSRF-Token": "csrf-" + BOB } })).status, 201, "the same request with the token works");
 });
