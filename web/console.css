@@ -1,0 +1,36 @@
+/* Console rules for the channel list, the off state, the usage meter and the history settings. Colors come from the tokens in style.css. */
+
+/* Channels with web transcripts off */
+.chat .chat-item.off{color:var(--muted)}
+.chat .chat-item.off .chat-item-name{color:var(--muted)}
+.chat .chat-item-off{font-size:11px;color:var(--muted);background:var(--pill);border-radius:999px;padding:0 7px}
+.chat .chat-off-on{margin-top:14px;padding:8px 16px;border:1px solid var(--line);border-radius:8px;background:var(--pill);color:var(--strong);font-size:13px}
+
+/* Account menu: the avatar sits before the name */
+.topbar .account-name{display:flex;align-items:center;gap:10px}
+
+/* Usage meter in the composer */
+.chat .chat-usage{position:relative;flex:none;display:grid;place-items:center}
+.chat .chat-usage-button{display:grid;place-items:center;width:30px;height:30px;padding:0;border:0;border-radius:50%;background:none;color:var(--muted)}
+.chat .chat-usage-button:hover{background:var(--pill);color:var(--strong)}
+.chat .chat-usage-pop{position:absolute;right:0;bottom:calc(100% + 10px);z-index:20;width:260px;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--surface);box-shadow:0 8px 24px rgb(0 0 0 / .25);color:var(--text);font-size:13px;line-height:1.5;text-align:left}
+.chat .chat-usage-plan{margin:0 0 10px;color:var(--strong)}
+.chat .chat-usage-row{margin:0 0 12px}
+.chat .chat-usage-line{margin:0 0 6px}
+.chat .chat-usage-track{height:4px;border-radius:999px;background:var(--pill);overflow:hidden}
+.chat .chat-usage-fill{height:100%;background:var(--accent);border-radius:999px}
+.chat .chat-usage-fill[data-level=mid]{background:var(--usage-mid)}.chat .chat-usage-fill[data-level=high]{background:var(--usage-high)}
+.chat .chat-usage-button[data-level=mid] .chat-usage-arc{stroke:var(--usage-mid)}.chat .chat-usage-button[data-level=high] .chat-usage-arc{stroke:var(--usage-high)}
+.chat .chat-usage-note{margin:4px 0 0;font-size:12px;color:var(--muted)}
+
+/* Channels history: the Set note and the import progress */
+.chan-window .chan-note{flex-basis:100%;margin:0}
+.chan-progress{grid-column:1/-1;margin:4px 0 0}
+.chan-progress p{margin:6px 0 0}
+.progress{height:4px;border-radius:999px;background:var(--pill);overflow:hidden}
+.progress span{display:block;height:100%;background:var(--accent);border-radius:999px}
+
+/* Messages Slopbot did not read: one muted row that expands in place */
+.chat .chat-msg.chat-folded{display:none}
+.chat .chat-fold{display:block;width:min(760px,100%);margin:14px 0 0;padding:6px 10px;border:0;border-radius:8px;background:none;color:var(--muted);font-size:13px;text-align:left}
+.chat .chat-fold:hover{color:var(--text);background:var(--pill)}

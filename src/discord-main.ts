@@ -14,6 +14,7 @@ import { AdminPanel } from './admin-panel.js';
 import { createTranscripts } from './web-transcripts.js';
 import { configuredChannels } from './server-tools.js';
 import { startConversationEventRetention } from './run-events.js';
+import { createChatRoutes, WebChatService } from './web-chats.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -30,10 +31,11 @@ async function main(): Promise<void> {
   const discord = new DiscordAdapter(config, store, llm);
   // Embedding calls are charged through the same meter as model calls.
   embeddings?.attachUsage(discord.usage);
-  const panel = new AdminPanel(config, store, discord.usage.limiter);
+  const panel = new AdminPanel(config, store, discord.usage.limiter, discord.members);
   const admin: ConsoleAdmin = { role: user => discord.team.role(user), canEdit: user => discord.team.canEdit(user), servers: () => discord.adminServers(), setTranscript: (server, channel, enabled) => discord.adminSetTranscript(server, channel, enabled), rotateWebhook: (server, channel) => discord.adminRotateWebhook(server, channel), panel };
-  const conversations = createTranscripts({ store, access: discord.access, configured: server => configuredChannels(config, store, server), channelName: (server, channel) => discord.channelName(server, channel), shareRule: discord.shareRule });
-  const web = webOptions ? createConsole(webOptions, { snapshot: (user, server) => discord.consoleSnapshot(user, server), invoke: (user, server, channel, name, args) => discord.consoleInvoke(user, server, channel, name, args), mcp: (user, server, input) => discord.consoleMcp(user, server, input), transcripts: (user, server) => discord.consoleTranscripts(user, server), setTranscript: (user, server, channel, enabled) => discord.consoleSetTranscript(user, server, channel, enabled), access: discord.access, admin, conversations, reply: (user, server, channel, text) => discord.consoleReply(user, server, channel, text), shares: discord.shares }) : undefined;
+  const chats = new WebChatService(store, discord.chatHost());
+  const conversations = createTranscripts({ store, access: discord.access, configured: server => configuredChannels(config, store, server), channelName: (server, channel) => discord.channelName(server, channel), shareRule: discord.shareRule, members: discord.members, ownsPrivateChat: (server, channel, user) => chats.owns(user, server, channel) });
+  const web = webOptions ? createConsole(webOptions, { snapshot: (user, server) => discord.consoleSnapshot(user, server), usage: (user, server) => discord.consoleUsage(user, server), useReset: (user, server, kind) => discord.consoleUseReset(user, server, kind), invoke: (user, server, channel, name, args) => discord.consoleInvoke(user, server, channel, name, args), mcp: (user, server, input) => discord.consoleMcp(user, server, input), transcripts: (user, server) => discord.consoleTranscripts(user, server), setTranscript: (user, server, channel, enabled) => discord.consoleSetTranscript(user, server, channel, enabled), access: discord.access, admin, conversations, chats: createChatRoutes(chats), reply: (user, server, channel, text) => discord.consoleReply(user, server, channel, text), shares: discord.shares, sessions: store }) : undefined;
   const shutdown = async () => { retention(); if (web?.listening) await new Promise<void>((resolve, reject) => web.close(error => error ? reject(error) : resolve())); if (store instanceof PostgresStore) store.stopIndexing(); await discord.stop(); await store.finishIndexing(); await store.close(); process.exit(0); };
   process.once("SIGINT", () => { void shutdown().catch(error => { logError("shutdown_failed", error, { stage: "shutdown" }); process.exitCode = 1; }); });
   process.once("SIGTERM", () => { void shutdown().catch(error => { logError("shutdown_failed", error, { stage: "shutdown" }); process.exitCode = 1; }); });

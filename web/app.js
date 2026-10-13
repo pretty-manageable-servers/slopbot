@@ -1,13 +1,186 @@
-let state, csrf, tab = 'server';
+let state, csrf, tab = 'server', viewAuto = false, viewReady = false;
 const $ = id => document.getElementById(id);
 const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const recall = key => { try { return localStorage.getItem(key); } catch { return null; } };
 const remember = (key, value) => { try { localStorage.setItem(key, value); } catch { } };
-function theme(light) { document.documentElement.classList.toggle('light', light); document.querySelectorAll('img[src*="logo-"]').forEach(img => img.src = `/assets/logo-${light ? 'dark' : 'light'}.svg`); $('theme').textContent = light ? 'Dark theme' : 'Light theme'; remember('slopbot-theme', light ? 'light' : 'dark'); }
+function theme(light) { document.documentElement.classList.toggle('light', light); document.querySelectorAll('img[src*="logo-"]').forEach(img => img.src = `/assets/logo-${light ? 'dark' : 'light'}.svg`); const next = light ? 'Switch to dark theme' : 'Switch to light theme'; $('theme').setAttribute('aria-label', next); $('theme').title = next; $('theme-sun').hidden = light; $('theme-moon').hidden = !light; remember('slopbot-theme', light ? 'light' : 'dark'); }
 theme(recall('slopbot-theme') === 'light');
 $('theme').onclick = () => theme(!document.documentElement.classList.contains('light'));
-function notice(text) { $('notice').textContent = text; }
-function showScreen(name) { $('boot').hidden = name !== 'boot'; $('login').hidden = name !== 'login'; $('console').hidden = name !== 'console'; $('logout').hidden = name !== 'console'; }
+// Top bar: Chat or Settings, and the account menu. Chat is the default when the user can view a conversation.
+function setView(view) {
+  if (view === 'chat') tab = 'conversations';
+  else if (tab === 'conversations') tab = state.admin ? 'server' : 'profile';
+  viewAuto = false;
+  remember('slopbot-view', view);
+  history.replaceState(null, '', '#' + view);
+  render();
+}
+// The chat or channel named in the URL: #chat/<id> or #channel/<id>. Any other hash gives null.
+function takeHashItem() {
+  const match = /^#(chat|channel)\/(.+)$/.exec(location.hash);
+  if (!match) return null;
+  try { return { kind: match[1], id: decodeURIComponent(match[2]) }; } catch { return null; }
+}
+function chooseView() {
+  viewReady = true;
+  const hash = location.hash.slice(1), saved = recall('slopbot-view'), item = takeHashItem();
+  // A named item is checked against the lists later. An unknown id falls back to the default view, as no hash does.
+  const want = item ? 'chat' : ['chat', 'settings'].includes(hash) ? hash : ['chat', 'settings'].includes(saved) ? saved : '';
+  if (want === 'settings' || (!want && !state.server)) tab = state.admin ? 'server' : 'profile';
+  else { tab = 'conversations'; viewAuto = !want || Boolean(item); }
+}
+// Back and forward: the view follows the URL. A URL without a chat or channel opens the default view.
+window.addEventListener('popstate', () => {
+  if (!viewReady || !state) return;
+  const item = takeHashItem();
+  if (!item) conv.channel = null;
+  tab = location.hash === '#settings' ? (state.admin ? 'server' : 'profile') : 'conversations';
+  viewAuto = !item;
+  render();
+});
+// A server picker: a button and a menu. The hidden #server select keeps the value and the change handler.
+function serverPicker(slot) {
+  if (!slot) return;
+  const servers = state.servers || [], current = servers.find(s => s.id === state.server?.id) || servers[0];
+  const pick = document.createElement('button');
+  pick.type = 'button';
+  pick.className = 'pick';
+  pick.setAttribute('aria-label', 'Discord server');
+  pick.setAttribute('aria-haspopup', 'menu');
+  pick.setAttribute('aria-expanded', 'false');
+  const name = document.createElement('span');
+  name.className = 'pick-name';
+  name.textContent = current?.name || '';
+  pick.append(name);
+  pick.disabled = servers.length < 2;
+  const menu = document.createElement('div');
+  menu.className = 'pick-menu';
+  menu.setAttribute('role', 'menu');
+  menu.hidden = true;
+  const close = refocus => { menu.hidden = true; pick.setAttribute('aria-expanded', 'false'); if (refocus) pick.focus(); };
+  for (const s of servers) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'pick-item';
+    item.textContent = s.name;
+    item.setAttribute('role', 'menuitemradio');
+    item.setAttribute('aria-checked', String(s.id === current?.id));
+    item.onclick = () => {
+      close(true);
+      if (s.id === current?.id) return;
+      $('server').value = s.id;
+      $('server').dispatchEvent(new Event('change'));
+    };
+    menu.append(item);
+  }
+  pick.onclick = () => {
+    if (!menu.hidden) return close(true);
+    menu.hidden = false;
+    pick.setAttribute('aria-expanded', 'true');
+    menu.querySelector('[aria-checked=true]')?.focus();
+  };
+  slot.onkeydown = event => { if (event.key === 'Escape' && !menu.hidden) { event.preventDefault(); close(true); } };
+  slot.onfocusout = event => { if (!slot.contains(event.relatedTarget)) close(false); };
+  slot.replaceChildren(pick, menu);
+}
+// A click or tap outside an open server menu closes it.
+document.addEventListener('pointerdown', event => {
+  for (const menu of document.querySelectorAll('.pick-menu:not([hidden])')) {
+    if (!menu.parentElement.contains(event.target)) { menu.hidden = true; menu.parentElement.querySelector('.pick').setAttribute('aria-expanded', 'false'); }
+  }
+});
+// Used when the user has no conversation to view. The view then falls back to Settings.
+function fallbackToSettings() {
+  viewAuto = false;
+  tab = state.admin ? 'server' : 'profile';
+  history.replaceState(null, '', '#settings');
+  render();
+}
+document.querySelectorAll('[data-view]').forEach(button => { button.onclick = () => setView(button.dataset.view); });
+const accountButton = $('account-button'), accountMenu = $('account-menu');
+function setAccountMenu(open) { accountMenu.hidden = !open; accountButton.setAttribute('aria-expanded', String(open)); }
+accountButton.onclick = event => { event.stopPropagation(); setAccountMenu(accountMenu.hidden); };
+document.addEventListener('click', event => { if (!$('account').contains(event.target)) setAccountMenu(false); });
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && !accountMenu.hidden) { setAccountMenu(false); accountButton.focus(); } });
+// Avatars come only from Discord's CDN. Any other URL is dropped, and a letter pill shows instead.
+const AVATAR_HOST = 'https://cdn.discordapp.com/';
+// The signed-in user's avatar: the image when it loads, else a pill with the first letter of the name.
+function accountAvatar(url, name) {
+  const pill = () => Object.assign(document.createElement('span'), { className: 'avatar-pill', textContent: Array.from(String(name).trim())[0]?.toUpperCase() || '?' });
+  if (typeof url !== 'string' || !url.startsWith(AVATAR_HOST)) return pill();
+  const img = Object.assign(document.createElement('img'), { className: 'avatar-img', alt: '', width: 24, height: 24, src: url, referrerPolicy: 'no-referrer' });
+  img.onerror = () => img.replaceWith(pill());
+  return img;
+}
+function renderAccount() {
+  const name = state.me?.displayName || state.profile?.name || state.user || '';
+  const avatarUrl = state.me?.avatarUrl || state.profile?.avatarUrl;
+  accountButton.replaceChildren(accountAvatar(avatarUrl, name));
+  $('account-name').replaceChildren(accountAvatar(avatarUrl, name), document.createTextNode(name));
+}
+// The bottom toast. A normal notice hides itself after 5 seconds. A sticky notice (an error) stays until it is dismissed.
+// A new notice replaces the text and restarts the timer. The toast never takes focus.
+let noticeTimer = 0;
+function dismissNotice() {
+  clearTimeout(noticeTimer);
+  noticeTimer = 0;
+  $('notice').hidden = true;
+  $('notice-text').textContent = '';
+}
+function notice(text, sticky = false) {
+  clearTimeout(noticeTimer);
+  $('notice-text').textContent = text;
+  $('notice').hidden = !text;
+  noticeTimer = sticky || !text ? 0 : setTimeout(dismissNotice, 5000);
+}
+$('notice-close').onclick = dismissNotice;
+$('notice').addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); dismissNotice(); } });
+// Asks a yes or no question in a styled dialog. It resolves true only when the confirm button is used. Cancel, Escape and a click on the backdrop resolve false.
+// Text is set with textContent only. Clicks and keys inside the dialog do not reach page listeners, so an open usage popover stays open.
+function askConfirm({ title, body = '', confirmLabel = 'Confirm', danger = false }) {
+  return new Promise(resolve => {
+    const dialog = document.createElement('dialog');
+    dialog.className = 'confirm-dialog';
+    dialog.setAttribute('aria-labelledby', 'confirm-title');
+    const heading = document.createElement('h2');
+    heading.id = 'confirm-title';
+    heading.textContent = title;
+    dialog.append(heading);
+    if (body) {
+      const text = document.createElement('p');
+      text.id = 'confirm-body';
+      text.textContent = body;
+      dialog.setAttribute('aria-describedby', 'confirm-body');
+      dialog.append(text);
+    }
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Cancel';
+    const ok = document.createElement('button');
+    ok.type = 'button';
+    ok.className = danger ? 'confirm-ok danger' : 'confirm-ok';
+    ok.textContent = confirmLabel;
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+    actions.append(cancel, ok);
+    dialog.append(actions);
+    cancel.onclick = () => dialog.close();
+    ok.onclick = () => dialog.close('confirm');
+    // Escape closes the dialog through the native cancel. It does not reach the page, so a usage popover is not closed too.
+    dialog.addEventListener('keydown', event => { if (event.key === 'Escape') event.stopPropagation(); });
+    dialog.addEventListener('click', event => {
+      event.stopPropagation();
+      const box = dialog.getBoundingClientRect();
+      const outside = event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom;
+      if (event.target === dialog && outside) dialog.close();
+    });
+    dialog.addEventListener('close', () => { resolve(dialog.returnValue === 'confirm'); dialog.remove(); });
+    document.body.append(dialog);
+    dialog.showModal();
+    (danger ? cancel : ok).focus();
+  });
+}
+function showScreen(name) { $('top-tabs').hidden = name !== 'console'; $('boot').hidden = name !== 'boot'; $('login').hidden = name !== 'login'; $('console').hidden = name !== 'console'; $('account').hidden = name !== 'console'; }
 const loader = size => { const svg = $('loader').content.firstElementChild.cloneNode(true); if (size) svg.classList.add(size); return svg; };
 function busy(size, text) { const box = document.createElement('div'), label = document.createElement('p'); box.className = 'busy'; label.textContent = text; box.append(loader(size), label); return box; }
 async function request(path, body) {
@@ -17,11 +190,13 @@ async function request(path, body) {
   return data;
 }
 const settingsFor = id => request(id ? `/api/settings?server=${encodeURIComponent(id)}` : '/api/settings');
-function fail(error) { if (error.status === 401) showScreen('login'); else notice(error.message); }
+function fail(error) { if (error.status === 401) showScreen('login'); else notice(error.message, true); }
 async function run(button, task) {
   const label = button.textContent;
   button.disabled = true; button.setAttribute('aria-busy', 'true'); button.replaceChildren(loader('sm'));
-  try { await task(); await refresh(); } catch (error) { fail(error); }
+  // The settings are reloaded after the action, even when it failed, so the page shows what the server holds.
+  try { await task(); } catch (error) { fail(error); }
+  try { await refresh(); } catch (error) { fail(error); }
   finally { button.disabled = false; button.removeAttribute('aria-busy'); button.textContent = label; }
 }
 const refresh = async () => applySettings(await settingsFor(state.server.id));
@@ -38,26 +213,73 @@ function applySettings(result) {
   document.querySelector('nav').hidden = !state.server && !admin;
   $('server-pick').hidden = !list.length;
   $('server').innerHTML = list.map(s => `<option value="${esc(s.id)}"${s.id === state.server?.id ? ' selected' : ''}>${esc(s.name)}</option>`).join('');
+  serverPicker($('server-menu'));
   icon.hidden = !current?.icon; if (current?.icon) icon.src = current.icon;
   $('role').textContent = current ? (state.admin ? 'Admin' : 'Member') : '';
+  if (!viewReady) chooseView();
+  renderAccount();
   render();
 }
-function channelAction(button) {
+async function channelAction(button) {
   const { channel: id, action } = button.dataset;
-  if (action === 'remove' && !confirm('Stop monitoring this channel? This purges searchable content and dependent task context. Operational logs remain.')) return;
+  if (action === 'remove' && !(await askConfirm({ title: 'Stop monitoring this channel?', body: 'This purges searchable content and dependent task context. Operational logs remain.', confirmLabel: 'Stop monitoring', danger: true }))) return;
   run(button, () => (action === 'add' || action === 'remove') ? save('channels', { action, channel: id }, id) : save('index', { action }, id));
 }
+// The import progress of a running job. A window job shows the share of its time window it has reached.
+// The bar width is set after the rows are drawn, because the page allows no inline styles.
+function historyProgress(h) {
+  const job = h.job;
+  if (!job) return '';
+  const count = `${job.scanned.toLocaleString()} scanned · ${job.added.toLocaleString()} added`;
+  if (job.kind !== 'window') return `<p class="small chan-progress">Importing older messages… ${count}</p>`;
+  const span = job.started - job.cutoff, pct = job.reachedAt == null || span <= 0 ? 0 : Math.max(0, Math.min(100, Math.round((job.started - job.reachedAt) * 100 / span)));
+  return `<div class="chan-progress"><div class="progress" role="progressbar" aria-label="Import progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span data-pct="${pct}"></span></div><p class="small">Importing… ${pct}% · ${count}</p></div>`;
+}
 function channelRow(c) {
-  const h = c.history || {}, id = esc(c.id), importing = h.paused ? 'Paused' : h.job ? 'Importing' : 'Idle';
+  const h = c.history || {}, id = esc(c.id);
+  const status = h.error ? `Error: ${esc(h.errorReason || 'import failed')}` : h.paused ? 'Paused' : h.job ? 'Importing' : 'Idle';
   const actions = c.monitored
-    ? `<button type="button" data-channel="${id}" data-action="more">Import older</button><button type="button" data-channel="${id}" data-action="${h.paused ? 'resume' : 'pause'}">${h.paused ? 'Resume import' : 'Pause import'}</button><button type="button" data-channel="${id}" data-action="remove">Stop monitoring…</button>`
+    ? `<button type="button" data-channel="${id}" data-action="${h.paused ? 'resume' : 'pause'}">${h.paused ? 'Resume import' : 'Pause import'}</button><button type="button" data-channel="${id}" data-action="remove">Stop monitoring…</button>`
     : `<button type="button" data-channel="${id}" data-action="add">Start monitoring</button>`;
-  const chips = `<span class="chip${c.monitored ? ' on' : ''}">${c.monitored ? 'Monitored' : 'Not monitored'}</span>` + (c.monitored ? `<span class="chip">${importing}</span><span class="chip">${esc(h.days ?? '?')} days</span>` : '');
-  const windowForm = c.monitored ? `<form class="chan-window" data-channel="${id}"><label>History window<input name="days" type="number" min="1" max="3650" value="${esc(h.days ?? '')}" required></label><span class="small">days</span><button>Set</button></form>` : '';
+  const chips = `<span class="chip${c.monitored ? ' on' : ''}">${c.monitored ? 'Monitored' : 'Not monitored'}</span>` + (c.monitored ? `<span class="chip">${status}</span><span class="chip">${esc(h.days ?? '?')} days</span>` : '');
+  const windowForm = c.monitored ? `<form class="chan-window" data-channel="${id}"><label>History window<input name="days" type="number" min="1" max="3650" value="${esc(h.days ?? '')}" required></label><span class="small">days</span><button>Set</button><p class="small chan-note">Lowering the window deletes saved messages older than the new window.</p></form>${historyProgress(h)}` : '';
   return `<li class="chan" title="${id}"><div class="chan-info"><strong>#${esc(c.name)}</strong><span class="chips">${chips}</span></div><div class="chan-actions">${actions}</div>${windowForm}</li>`;
+}
+// Draws the channel rows from state.channels, with the filter text kept between redraws.
+let channelQuery = '', historyTimer = 0;
+function drawChannels() {
+  const list = $('channels');
+  if (!list) return;
+  const q = channelQuery.trim().toLowerCase();
+  const rows = state.channels.filter(c => c.name.toLowerCase().includes(q)).sort((a, b) => Number(b.monitored) - Number(a.monitored) || a.name.localeCompare(b.name));
+  list.innerHTML = !state.channels.length ? '<li class="small">No text channels are visible to both you and Slopbot.</li>' : (rows.map(channelRow).join('') || '<li class="small">No channels match this filter.</li>');
+  for (const bar of list.querySelectorAll('[data-pct]')) bar.style.width = `${bar.dataset.pct}%`;
+  scheduleHistoryPoll();
+}
+// While an import runs on the open Channels tab, the channel data is read again every 2 seconds.
+// The poll stops when no import runs or the tab changes.
+function scheduleHistoryPoll() {
+  clearTimeout(historyTimer); historyTimer = 0;
+  if (tab !== 'channels' || !state.channels.some(c => c.history?.job)) return;
+  historyTimer = setTimeout(pollChannels, 2000);
+}
+async function pollChannels() {
+  historyTimer = 0;
+  if (tab !== 'channels' || !state.server) return;
+  const id = state.server.id;
+  try {
+    const result = await settingsFor(id);
+    if (tab !== 'channels' || state.server?.id !== id) return;
+    csrf = result.csrf;
+    state.channels = result.data.channels;
+    drawChannels();
+  } catch (error) {
+    if (error.status === 401) fail(error); else scheduleHistoryPoll();
+  }
 }
 function render() {
   document.querySelectorAll('[data-tab]').forEach(button => { button.classList.toggle('selected', button.dataset.tab === tab); button.setAttribute('aria-current', button.dataset.tab === tab ? 'page' : 'false'); button.onclick = () => { tab = button.dataset.tab; render(); }; });
+  setChatMode(tab === 'conversations' && !!state.server);
   if (tab === 'admin' && admin) { renderAdmin(); return; }
   if (tab !== 'conversations') closeConversation();
   if (!state.server) { $('breadcrumb').textContent = 'Settings'; $('title').textContent = 'No servers yet.'; $('description').textContent = ''; $('content').innerHTML = '<section class="card"><h2>Slopbot is not in any of your servers yet.</h2><p class="small">A server admin must invite Slopbot to a server you are in.</p></section>'; return; }
@@ -78,15 +300,19 @@ function render() {
   } else if (tab === 'channels') {
     $('content').innerHTML = '<input id="filter" class="filter" type="search" placeholder="Filter channels" aria-label="Filter channels" hidden><ul id="channels" class="chan-list"></ul>';
     const list = $('channels'), filter = $('filter');
-    const draw = query => {
-      const q = query.trim().toLowerCase();
-      const rows = state.channels.filter(c => c.name.toLowerCase().includes(q)).sort((a, b) => Number(b.monitored) - Number(a.monitored) || a.name.localeCompare(b.name));
-      list.innerHTML = !state.channels.length ? '<li class="small">No text channels are visible to both you and Slopbot.</li>' : (rows.map(channelRow).join('') || '<li class="small">No channels match this filter.</li>');
-    };
+    filter.value = channelQuery;
     filter.hidden = state.channels.length <= 8;
-    filter.oninput = () => draw(filter.value);
+    filter.oninput = () => { channelQuery = filter.value; drawChannels(); };
     list.onclick = event => { const button = event.target.closest('button[data-channel]'); if (button) channelAction(button); };
-    list.onsubmit = event => { event.preventDefault(); const form = event.target; run(form.querySelector('button'), () => save('index',{action:'window',days:Number(new FormData(form).get('days'))},form.dataset.channel)); };
+    list.onsubmit = async event => {
+      event.preventDefault();
+      const form = event.target, id = form.dataset.channel, days = Number(new FormData(form).get('days'));
+      const channel = state.channels.find(c => c.id === id), current = channel?.history?.days;
+      // A shorter window deletes saved messages. The user must confirm first; Cancel changes nothing.
+      if (current !== undefined && days < current && !(await askConfirm({ title: 'Delete older messages?', body: `Delete saved messages older than ${days} days in #${channel.name}? This cannot be undone.`, confirmLabel: 'Delete', danger: true }))) return;
+      run(form.querySelector('button'), () => save('index', { action: 'window', days }, id));
+    };
+    drawChannels();
     draw('');
   } else if (tab === 'mcp') {
     renderMcp();
@@ -125,8 +351,8 @@ function renderMcp() {
   for (const connection of connections) bind(`mcp-${connection.id}`, f => configure({action:'save',id:connection.id,url:f.get('url'),transport:f.get('transport'),enabled:f.has('enabled'),timeoutMs:Number(f.get('timeoutMs')),concurrency:Number(f.get('concurrency')),
     ...(f.has('remove_token') ? {token:''} : f.get('token') ? {token:f.get('token')} : {}),
     tools:connection.tools.flatMap((tool,index) => f.has(`tool-${index}`) ? [{name:tool.name,schemaHash:tool.schemaHash,access:f.get(`access-${index}`),effect:f.get(`effect-${index}`)}] : [])}));
-  document.querySelectorAll('[data-mcp-action]').forEach(button => { button.onclick = () => {
-    if (button.dataset.mcpAction === 'remove' && !confirm('Remove this connection and its saved credential?')) return;
+  document.querySelectorAll('[data-mcp-action]').forEach(button => { button.onclick = async () => {
+    if (button.dataset.mcpAction === 'remove' && !(await askConfirm({ title: 'Remove this connection?', body: 'Its saved credential is removed too.', confirmLabel: 'Remove', danger: true }))) return;
     run(button, () => configure({action:button.dataset.mcpAction,id:button.dataset.mcpId}));
   }; });
 }
@@ -154,14 +380,52 @@ function adminPrices(prices, names, edit) {
   const row = model => { const price = prices.prices[model], saved = prices.saved_models.includes(model); return `<tr><td><code>${esc(model)}</code></td>${price ? `<td>$${priceText(price.input)}</td><td>$${priceText(price.cached_input)}</td><td>$${priceText(price.output)}</td>` : '<td colspan="3" class="small">Fallback price</td>'}<td>${edit ? `<div class="chan-actions"><button type="button" data-price="edit" data-model="${esc(model)}">Edit</button>${saved ? `<button type="button" data-price="remove" data-model="${esc(model)}">Remove</button>` : ''}</div>` : ''}</td></tr>`; };
   return `<section class="card"><h2>Model prices</h2><p class="scope">Dollars per 1 million tokens, for all servers. A model without a price uses the fallback: $${priceText(prices.fallback.input)} input, $${priceText(prices.fallback.cached_input)} cached input, $${priceText(prices.fallback.output)} output.</p><div class="table-wrap"><table><thead><tr><th>Model</th><th>Input</th><th>Cached input</th><th>Output</th><th></th></tr></thead><tbody>${names.map(row).join('')}</tbody></table></div>${edit ? '<form id="admin-price" class="price-form"><label>Model<input name="model" maxlength="200" required></label><div class="row"><label>Input ($ per 1M)<input name="input" type="number" min="0" max="1000" step="0.000001" required></label><label>Cached input ($ per 1M)<input name="cached" type="number" min="0" max="1000" step="0.000001" required></label></div><label>Output ($ per 1M)<input name="output" type="number" min="0" max="1000" step="0.000001" required></label><button class="primary">Save price</button></form>' : ''}</section>`;
 }
+function adminPerson(profile) {
+  const src = typeof profile.avatarUrl === 'string' && profile.avatarUrl.startsWith(AVATAR_HOST) ? esc(profile.avatarUrl) : '';
+  const letter = esc(String(profile.displayName || '?').trim().charAt(0).toUpperCase() || '?');
+  const avatar = src ? `<img class="admin-avatar" src="${src}" alt="" width="24" height="24" loading="lazy">` : `<span class="admin-avatar admin-avatar-blank" aria-hidden="true">${letter}</span>`;
+  return `<span class="admin-person" title="ID ${esc(profile.id)}">${avatar}<span class="admin-name">${esc(profile.displayName)}</span>${profile.username ? `<span class="admin-handle">@${esc(profile.username)}</span>` : ''}</span>`;
+}
 function adminUsage(users, name, off) {
   const row = item => {
     const pick = kind => item.windows.find(window => window.kind === kind) ?? { spent: 0, limit: 0, resetAt: null, banked: 0 };
     const line = (label, stat) => `<p class="small">${label}: ${money(stat.spent)} of ${stat.limit ? money(stat.limit) : 'no limit'}. ${stat.resetAt ? `Resets ${esc(when(stat.resetAt))}` : 'No window running'}. Banked resets: ${stat.banked}.</p>`;
-    const button = (action, kind, text) => `<button type="button" data-action="${action}" data-user="${esc(item.user)}" data-kind="${kind}"${off}>${text}</button>`;
-    return `<div class="admin-user"><strong>User ${esc(item.user)}</strong>${line('5 hours', pick('5h'))}${line('Week', pick('week'))}<div class="chan-actions">${button('reset', '5h', 'Reset 5h')}${button('reset', 'week', 'Reset week')}${button('grant', '5h', 'Grant 5h reset')}${button('grant', 'week', 'Grant week reset')}</div></div>`;
+    const button = (action, kind, text) => `<button type="button" data-action="${action}" data-user="${esc(item.user.id)}" data-kind="${kind}"${off}>${text}</button>`;
+    return `<div class="admin-user"><div class="admin-head">${adminPerson(item.user)}</div>${line('5 hours', pick('5h'))}${line('Week', pick('week'))}<div class="chan-actions">${button('reset', '5h', 'Reset 5h')}${button('reset', 'week', 'Reset week')}${button('grant', '5h', 'Grant 5h reset')}${button('grant', 'week', 'Grant week reset')}</div></div>`;
   };
-  return `<section class="card"><h2>Usage</h2><p class="scope">${adminUser ? 'One user.' : `The ${users.length} users with the highest 5-hour spend in ${esc(name)}.`}</p><form id="admin-find" class="chan-window"><label>Discord user ID<input name="user" inputmode="numeric" maxlength="20" placeholder="123456789012345678"></label><button>Find user</button>${adminUser ? '<button type="button" id="admin-all">Show all users</button>' : ''}</form><div id="admin-users">${users.map(row).join('') || '<p class="small">No users have spend or banked resets in this server yet.</p>'}</div></section>`;
+  return `<section class="card"><h2>Usage</h2><p class="scope">${adminUser ? 'One user.' : `The ${users.length} users with the highest 5-hour spend in ${esc(name)}.`}</p><div class="admin-search"><label>Find a member<input id="admin-search-input" type="search" maxlength="100" autocomplete="off" placeholder="Name or @username"></label>${adminUser ? '<button type="button" id="admin-all">Show all users</button>' : ''}<div id="admin-matches" class="admin-matches" hidden></div></div><div id="admin-users">${users.map(row).join('') || '<p class="small">No users have spend or banked resets in this server yet.</p>'}</div></section>`;
+}
+// Member picker: typing (250 ms pause) lists matching members. Choosing one loads that user's usage by ID.
+function wireAdminSearch(server) {
+  const input = $('admin-search-input'), list = $('admin-matches');
+  let timer = 0, latest = 0;
+  const hide = () => { latest++; list.hidden = true; list.replaceChildren(); };
+  const search = async query => {
+    const mine = ++latest;
+    try {
+      const result = await request(`/api/admin/members?server=${encodeURIComponent(server)}&q=${encodeURIComponent(query)}`);
+      if (mine !== latest || server !== adminServer) return;
+      list.innerHTML = result.members.map(item => `<button type="button" class="admin-match" data-user="${esc(item.id)}">${adminPerson(item)}</button>`).join('') || '<p class="small admin-none">No member matches.</p>';
+      list.hidden = false;
+    } catch (error) {
+      if (mine !== latest) return;
+      list.innerHTML = `<p class="small admin-none">${esc(error.message)}</p>`;
+      list.hidden = false;
+    }
+  };
+  input.oninput = () => {
+    clearTimeout(timer);
+    const query = input.value.trim();
+    if (!query) return hide();
+    timer = setTimeout(() => search(query), 250);
+  };
+  input.onkeydown = event => { if (event.key === 'Escape') { clearTimeout(timer); input.value = ''; hide(); } };
+  list.onclick = event => {
+    const button = event.target.closest('button[data-user]');
+    if (!button) return;
+    adminUser = button.dataset.user;
+    renderAdmin();
+  };
 }
 function adminTranscripts(servers, off) {
   return `<section class="card"><h2>Web transcripts</h2><p class="scope">Per channel, for every server. Off by default. Discord permissions still decide who can see a transcript.</p><div id="admin-transcripts">${servers.map(server => `<p class="eyebrow">${esc(server.name)}</p><ul class="chan-list">${server.channels.map(channel => `<li class="chan"><div class="chan-info"><strong>#${esc(channel.name)}</strong></div><div class="chan-actions"><label class="switch"><input type="checkbox" data-server="${esc(server.id)}" data-channel="${esc(channel.id)}"${channel.enabled ? ' checked' : ''}${off}><span>${channel.enabled ? 'On' : 'Off'}</span></label><button type="button" data-action="rotate" data-server="${esc(server.id)}" data-channel="${esc(channel.id)}" data-name="${esc(channel.name)}"${off}>Rotate webhook</button></div></li>`).join('') || '<li class="small">Slopbot serves no channels in this server yet.</li>'}</ul>`).join('') || '<p class="small">Slopbot is not running in any server yet.</p>'}</div></section>`;
@@ -210,18 +474,14 @@ async function renderAdmin() {
         form.elements.model.value = button.dataset.model; form.elements.input.value = priceText(price.input); form.elements.cached.value = priceText(price.cached_input); form.elements.output.value = priceText(price.output);
         form.scrollIntoView({ block: 'center' });
       }; });
-      document.querySelectorAll('[data-price="remove"]').forEach(button => { button.onclick = () => {
+      document.querySelectorAll('[data-price="remove"]').forEach(button => { button.onclick = async () => {
         const model = button.dataset.model;
-        if (confirm(`Remove the saved price for ${model}? The configured price applies again.`)) adminRun(button, async () => { await request('/api/admin/prices', { model, remove: true }); notice('Saved price removed.'); });
+        if (!await askConfirm({ title: 'Remove the saved price?', body: `The saved price for ${model} is removed. The configured price applies again.`, confirmLabel: 'Remove', danger: true })) return;
+        adminRun(button, async () => { await request('/api/admin/prices', { model, remove: true }); notice('Saved price removed.'); });
       }; });
     }
     if (adminServer) {
-      $('admin-find').onsubmit = event => {
-        event.preventDefault();
-        const user = new FormData(event.target).get('user').trim();
-        if (!/^\d{17,20}$/.test(user)) return notice('Enter a Discord user ID of 17 to 20 digits.');
-        adminUser = user; renderAdmin();
-      };
+      wireAdminSearch(adminServer);
       if ($('admin-all')) $('admin-all').onclick = () => { adminUser = ''; renderAdmin(); };
       $('admin-users').onclick = event => {
         const button = event.target.closest('button[data-action]');
@@ -233,11 +493,11 @@ async function renderAdmin() {
         });
       };
     }
-    $('admin-transcripts').onclick = event => {
+    $('admin-transcripts').onclick = async event => {
       const button = event.target.closest('button[data-action="rotate"]');
       if (!button || !edit) return;
       const { server, channel, name } = button.dataset;
-      if (!confirm(`Make a new web webhook for #${name}? The old webhook stops working at once.`)) return;
+      if (!await askConfirm({ title: 'Make a new web webhook?', body: `The old webhook for #${name} stops working at once.`, confirmLabel: 'Make new webhook', danger: true })) return;
       adminRun(button, async () => { await request('/api/admin/web-webhooks/rotate', { server, channel }); notice(`Web webhook rotated for #${name}.`); });
     };
     $('admin-transcripts').onchange = async event => {
@@ -259,7 +519,7 @@ $('server').onchange = async () => {
 };
 $('server-icon').onerror = () => { $('server-icon').hidden = true; };
 $('brand').onclick = event => { if ($('console').hidden) return; event.preventDefault(); tab = state.admin ? 'server' : 'profile'; render(); window.scrollTo(0, 0); };
-$('logout').onclick = async () => { try { await request('/api/logout',{}); location.reload(); } catch (error) { notice(error.message); } };
+$('logout').onclick = async () => { try { await request('/api/logout',{}); location.reload(); } catch (error) { notice(error.message, true); } };
 async function boot() {
   const remembered = recall('slopbot-server');
   let result;
@@ -268,7 +528,7 @@ async function boot() {
   applySettings(result);
   await loadAdmin();
 }
-boot().catch(error => { if (error.status === 401) showScreen('login'); else { showScreen('none'); notice(error.message); } });
+boot().catch(error => { if (error.status === 401) showScreen('login'); else { showScreen('none'); notice(error.message, true); } });
 
 // Reply box for one conversation. A transcript view calls renderReplyBox(container, server, channel).
 // The server sends the reply as the signed-in user through a channel webhook, or as Slopbot when the bot lacks Manage Webhooks.

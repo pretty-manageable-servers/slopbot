@@ -12,7 +12,7 @@ RUN npm run build
 RUN npm prune --omit=dev
 
 FROM tailscale/tailscale:stable AS tailscale
-FROM docker.io/searxng/searxng:latest AS runtime
+FROM docker.io/searxng/searxng:2026.10.11-ad46ebd7d@sha256:ddd642cae6eac75412938fd846ddbf440a2df029cfeae8a562b8b205f4e35e25 AS runtime
 USER root
 RUN mkdir -p /app /data && chown -R 1000:1000 /app /data /etc/searxng /var/cache/searxng
 COPY --from=build /usr/local/bin/node /usr/local/bin/node

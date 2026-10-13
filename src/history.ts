@@ -1,5 +1,6 @@
 import { errorSummary, logError } from "./errors.js";
 import type { Json, Message } from "./domain.js";
+import { isPrivateChannel } from "./private-chat.js";
 
 export interface HistoryState {
   days: number;
@@ -7,7 +8,7 @@ export interface HistoryState {
   exhausted: boolean;
   paused: boolean;
   oldest: { id: string; timestamp: number } | null;
-  job: null | { kind: "window" | "more"; before: string | null; cutoff: number; started: number; remaining: number | null; scanned: number; added: number };
+  job: null | { kind: "window" | "more"; before: string | null; cutoff: number; started: number; remaining: number | null; scanned: number; added: number; reachedAt: number | null };
   error: boolean;
   errorReason?: string;
 }
@@ -17,6 +18,8 @@ export interface HistoryStore {
   setSetting(server: string, key: string, value: Json): void | Promise<void>;
   ingest(message: Message): Promise<boolean>;
   finishIndexing(): Promise<void>;
+  /** Deletes the saved messages of one channel older than cutoff. Returns the oldest message left, or null. */
+  purgeChannelBefore(server: string, channel: string, cutoff: number): Promise<{ id: string; timestamp: number } | null>;
 }
 export interface HistorySource {
   // Return newest first, strictly before the cursor, up to limit messages.
@@ -40,13 +43,16 @@ export class HistoryImporter {
     await this.store.setSetting(this.server, `history:${channel}`, state as unknown as Json);
   }
   async start(channel: string, action: "window" | "more" | "resume" = "resume", days?: number): Promise<void> {
-    if (this.stopping || this.excluded.has(channel) || this.workers.has(channel)) return;
+    // A private chat is never imported. It is not a Discord channel, so the Discord fetch cannot read it anyway.
+    if (this.stopping || isPrivateChannel(channel) || this.excluded.has(channel) || this.workers.has(channel)) return;
     const state = this.state(channel);
     if (action !== "resume") state.paused = false;
     if (state.paused) return;
     if (days !== undefined) {
       if (!Number.isSafeInteger(days) || days < 1 || days > 3650) throw new Error("Window must be 1 to 3650 days");
       if (state.days !== days) state.syncedThrough = 0;
+      // A shorter window deletes the saved messages it no longer covers. A longer window deletes nothing.
+      if (days < state.days) state.oldest = await this.store.purgeChannelBefore(this.server, channel, this.now() - days * 86400000);
       state.days = days;
     }
     if (!state.job) {
@@ -56,7 +62,7 @@ export class HistoryImporter {
         kind: action === "more" ? "more" : "window",
         before: action === "more" ? (state.oldest?.id ?? null) : null,
         cutoff: action === "more" ? 0 : (state.syncedThrough || started - state.days * 86400000),
-        started, remaining: action === "more" ? 5000 : null, scanned: 0, added: 0,
+        started, remaining: action === "more" ? 5000 : null, scanned: 0, added: 0, reachedAt: null,
       };
     }
     state.error = false;
@@ -94,6 +100,8 @@ export class HistoryImporter {
         if (job.kind === "window" && message.timestamp < job.cutoff) { reachedCutoff = true; break; }
         if (await this.store.ingest(message)) job.added++;
         job.scanned++;
+        // The oldest timestamp this job has reached. The console uses it for the progress bar.
+        job.reachedAt = job.reachedAt === null ? message.timestamp : Math.min(job.reachedAt, message.timestamp);
         if (!state.oldest || message.timestamp < state.oldest.timestamp || (message.timestamp === state.oldest.timestamp && (message.id.length < state.oldest.id.length || (message.id.length === state.oldest.id.length && message.id < state.oldest.id)))) state.oldest = { id: message.id, timestamp: message.timestamp };
       }
       const exhausted = page.length < limit && !reachedCutoff;

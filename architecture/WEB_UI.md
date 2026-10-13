@@ -27,7 +27,7 @@ DISCORD_CLIENT_SECRET=your_oauth_client_secret
 
 In the Discord Developer Portal application's OAuth2 settings, register exactly `http://localhost:3000/auth/callback`. Run `npm run dev`, then open `http://localhost:3000`. This requires the existing bot/database configuration too. Obtain the OAuth client secret from the application settings; it is different from the bot token. Never put it in the frontend.
 
-Production uses an HTTPS origin and matching callback. The Slopbot console is served at `https://slopbot.pmservers.org/`, with the OAuth callback at `https://slopbot.pmservers.org/auth/callback`. Set `WEB_ORIGIN=https://slopbot.pmservers.org` and `WEB_HOST=0.0.0.0`. Sessions live in memory for one hour, so a restart signs users out. Run one bot process per database as before.
+Production uses an HTTPS origin and matching callback. The Slopbot console is served at `https://slopbot.pmservers.org/`, with the OAuth callback at `https://slopbot.pmservers.org/auth/callback`. Set `WEB_ORIGIN=https://slopbot.pmservers.org` and `WEB_HOST=0.0.0.0`. Sessions are stored in the database. Each login lasts 30 days from its last renewal, and a restart keeps users signed in. Run one bot process per database as before.
 
 ## Scopes
 

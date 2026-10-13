@@ -1,3 +1,4 @@
+import { isPrivateChannel } from "./private-chat.js";
 import type { Config } from "./config.js";
 import { selfKnowledgeTool } from "./self-knowledge.js";
 import type { Json, Message } from "./domain.js";
@@ -50,6 +51,8 @@ export function webTranscriptsEnabled(store: Pick<ServerToolStore, "setting">, s
 }
 /** The switch that applies to a channel or thread: a thread uses its parent's switch. */
 export function transcriptSwitchOn(store: Pick<ServerToolStore, "setting"> & { taskThreads(server: string): { thread: string; parent: string }[] }, server: string, channel: string): boolean {
+  // A private chat has no switch. Its stream is read only by its owner (see web-chats.ts).
+  if (isPrivateChannel(channel)) return true;
   const parent = store.taskThreads(server).find(task => task.thread === channel)?.parent ?? channel;
   return webTranscriptsEnabled(store, server, parent);
 }
@@ -140,7 +143,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
       else if (action === "window" || action === "more") await history.start(id, action, args.days === undefined ? undefined : Number(args.days));
       const state = history.state(id), stats = await store.indexStats(server, id);
       const usage = stats.usage.map(item => `${item.model} ${item.purpose}: ${item.requests} successful requests, ${item.tokens} reported tokens, ${item.unknown} requests without token counts`).join("\n") || "No embedding usage recorded yet.";
-      const result = `History window: ${state.days} days. Older imports are retained.\nImport: ${state.paused ? "paused" : state.error ? `failed; retries automatically (${state.errorReason ?? "reason unavailable for this older failure"})` : state.job ? `${state.job.kind}, ${state.job.scanned} scanned, ${state.job.added} added` : "idle"}\nReached beginning of channel: ${state.exhausted}\nStored: ${stats.messages} messages, ${stats.vectors} saved memory vectors for the current model\nStored dates: ${date(stats.oldest)} to ${date(stats.newest)}\nLast completed window scan: ${date(state.syncedThrough || null)}\n${usage}\nCosts are not estimated. Live ingestion continues during an import pause.`;
+      const result = `History window: ${state.days} days. Lowering the window deletes saved messages older than it.\nImport: ${state.paused ? "paused" : state.error ? `failed; retries automatically (${state.errorReason ?? "reason unavailable for this older failure"})` : state.job ? `${state.job.kind}, ${state.job.scanned} scanned, ${state.job.added} added` : "idle"}\nReached beginning of channel: ${state.exhausted}\nStored: ${stats.messages} messages, ${stats.vectors} saved memory vectors for the current model\nStored dates: ${date(stats.oldest)} to ${date(stats.newest)}\nLast completed window scan: ${date(state.syncedThrough || null)}\n${usage}\nCosts are not estimated. Live ingestion continues during an import pause.`;
       await store.setSetting(server, `index-operation:${context.operationId}`, result);
       return result;
     },

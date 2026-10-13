@@ -4,6 +4,7 @@ import {stableJson} from './prompt-cache.js';
 import { requestTimings } from "./request-timing.js";
 import { createHash } from "node:crypto";
 import type { Json, Message, ModelTool } from "./domain.js";
+import { isPrivateChannel } from "./private-chat.js";
 
 export interface ToolResult {
   text: string;
@@ -85,8 +86,8 @@ export interface ToolCall { name: string; arguments: ToolArgs; id?: string }
 export interface ToolExecutor {
   snapshot?(): ToolExecutor;
   suggest?(message: Message): ToolCall | undefined;
-  schemas?(): readonly ModelTool[];
-  catalog(): string;
+  schemas?(message?: Message): readonly ModelTool[];
+  catalog(message?: Message): string;
   execute(message: Message, call: ToolCall, operationId: string, expectedVersion?: number): Promise<ToolOutput>;
 }
 export { ToolError, UncertainActionError } from "./errors.js";
@@ -122,10 +123,10 @@ export class ToolRegistry {
     for (const [name, tool] of next) this.tools.set(name, tool);
   }
   capture() {
-    const selected = new Map(this.tools), catalog = this.catalog(), schemas = this.schemas();
+    const selected = new Map(this.tools), defs = sortedDefinitions(selected);
     return {
-      catalog: () => catalog,
-      schemas: () => schemas,
+      catalog: (message?: Message) => catalogOf(defs, message),
+      schemas: (message?: Message) => schemasOf(defs, message),
       suggest: (message: Message) => {
         const call = this.suggest(message);
         return call && selected.has(call.name) && selected.get(call.name) === this.tools.get(call.name) ? call : undefined;
@@ -135,7 +136,7 @@ export class ToolRegistry {
       },
     };
   }
-  definitions(): readonly ToolDefinition[] { return [...this.tools.values()].sort((a, b) => a.name.localeCompare(b.name)); }
+  definitions(): readonly ToolDefinition[] { return sortedDefinitions(this.tools); }
   async recordedResult(operationId: string): Promise<ToolResult | undefined> {
     const operation = await this.journal.operation(operationId);
     return operation?.status === "done" && operation.result ? decodeToolResult(operation.result) : undefined;
@@ -147,30 +148,9 @@ export class ToolRegistry {
     });
     return matches.length === 1 ? matches[0] : undefined;
   }
-  catalog(): string {
-    return stableJson(this.definitions().map(({ name, provider, description, fields, inputSchema, outputSchema, access, effect, execution, writes }) => ({ name, provider, description, fields, inputSchema, outputSchema, access, effect, execution, read_actions: writes ? fields.action?.choices?.filter(action => !writes({ action })) ?? [] : [] })));
-  }
-  schemas(): readonly ModelTool[] {
-    return this.definitions().map(tool => {
-      const properties: Record<string, Json> = {};
-      const required: string[] = [];
-      for (const [name, field] of Object.entries(tool.fields)) {
-        if (field.required) required.push(name);
-        properties[name] = field.schema ?? {
-          ...(field.type === 'json' ? {} : { type: field.type === 'channel' ? 'string' : field.type }),
-          description: field.description,
-          ...(field.choices ? { enum: [...field.choices] } : {}),
-          ...(field.type === 'integer' ? { minimum: field.min ?? 0, ...(field.max !== undefined ? { maximum: field.max } : {}) } : {}),
-          ...(field.type === 'string' || field.type === 'channel' ? { minLength: 1, maxLength: field.max ?? 4000 } : {}),
-          ...(field.type === 'channel' ? { pattern: '^\\d{17,20}$' } : {}),
-        };
-      }
-      return { type: 'function', function: { name: tool.name,
-        description: `${tool.description} Access: ${tool.access}. Effect: ${tool.effect}.${tool.writes ? ` Read actions: ${(tool.fields.action?.choices?.filter(action => !tool.writes!({ action })) ?? []).join(', ')}.` : ''}`,
-        parameters: tool.inputSchema ?? { type: 'object', properties, required, additionalProperties: false },
-      } };
-    });
-  }
+  /** The tools the model is offered for this message. A private chat gets read-only tools only. */
+  catalog(message?: Message): string { return catalogOf(this.definitions(), message); }
+  schemas(message?: Message): readonly ModelTool[] { return schemasOf(this.definitions(), message); }
   effect(name: string, args: ToolArgs): "read" | "write" { const tool = this.tools.get(name); return tool?.writes ? tool.writes(args) ? "write" : "read" : tool?.effect ?? "read"; }
   requiresThread(name: string, args: ToolArgs): boolean {
     return this.effect(name,args) === "write" && this.tools.get(name)?.execution !== "inline";
@@ -216,6 +196,8 @@ export class ToolRegistry {
   }
   async invokeResult(message: Message, name: string, input: unknown, operationId: string, source: "command" | "agent", expectedVersion?: number): Promise<ToolResult> {
     const args = this.validate(name, input), tool = this.tools.get(name)!;
+    // A private chat can only read. Writes would reach Discord or other channels.
+    if (isPrivateChannel(message.channel) && this.effect(name, args) !== "read") throw new ToolError("This action is not available in private chats.");
     if (this.effect(name, args) === "read") return this.perform(message, name, args, operationId, source, expectedVersion);
     const key = tool.resource?.(message, args) ?? `server:${message.server}:tool:${name}`;
     const previous = this.writers.get(key) ?? Promise.resolve();
@@ -263,6 +245,42 @@ export class ToolRegistry {
       throw error;
     }
   }
+}
+
+/** Tools sorted by name. */
+function sortedDefinitions(tools: ReadonlyMap<string, ToolDefinition>): readonly ToolDefinition[] {
+  return [...tools.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** A private chat is offered read-only tools. Other channels are offered every tool. */
+function offeredIn(tool: ToolDefinition, message?: Message): boolean {
+  return !message || !isPrivateChannel(message.channel) || (tool.effect === "read" && !tool.writes);
+}
+
+function catalogOf(definitions: readonly ToolDefinition[], message?: Message): string {
+  return stableJson(definitions.filter(tool => offeredIn(tool, message)).map(({ name, provider, description, fields, inputSchema, outputSchema, access, effect, execution, writes }) => ({ name, provider, description, fields, inputSchema, outputSchema, access, effect, execution, read_actions: writes ? fields.action?.choices?.filter(action => !writes({ action })) ?? [] : [] })));
+}
+
+function schemasOf(definitions: readonly ToolDefinition[], message?: Message): readonly ModelTool[] {
+  return definitions.filter(tool => offeredIn(tool, message)).map(tool => {
+    const properties: Record<string, Json> = {};
+    const required: string[] = [];
+    for (const [name, field] of Object.entries(tool.fields)) {
+      if (field.required) required.push(name);
+      properties[name] = field.schema ?? {
+        ...(field.type === 'json' ? {} : { type: field.type === 'channel' ? 'string' : field.type }),
+        description: field.description,
+        ...(field.choices ? { enum: [...field.choices] } : {}),
+        ...(field.type === 'integer' ? { minimum: field.min ?? 0, ...(field.max !== undefined ? { maximum: field.max } : {}) } : {}),
+        ...(field.type === 'string' || field.type === 'channel' ? { minLength: 1, maxLength: field.max ?? 4000 } : {}),
+        ...(field.type === 'channel' ? { pattern: '^\\d{17,20}$' } : {}),
+      };
+    }
+    return { type: 'function', function: { name: tool.name,
+      description: `${tool.description} Access: ${tool.access}. Effect: ${tool.effect}.${tool.writes ? ` Read actions: ${(tool.fields.action?.choices?.filter(action => !tool.writes!({ action })) ?? []).join(', ')}.` : ''}`,
+      parameters: tool.inputSchema ?? { type: 'object', properties, required, additionalProperties: false },
+    } };
+  });
 }
 
 function validJson(value: unknown, depth = 0): value is Json {

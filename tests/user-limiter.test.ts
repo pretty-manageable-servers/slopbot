@@ -9,7 +9,7 @@ import { loadConfig } from "../src/config.js";
 import type { Message, Prompt } from "../src/domain.js";
 import { TaskWorker } from "../src/queue.js";
 import { ToolRegistry } from "../src/tools.js";
-import { UserLimiter, UserLimitError, limitReply } from "../src/user-limiter.js";
+import { UserLimiter, UserLimitError, limitReply, usageView } from "../src/user-limiter.js";
 import { activePrices, DEFAULT_FALLBACK_PRICE, parseFallbackPrice, parseModelPrices, usageCostMicros } from "../src/usage-cost.js";
 import { registerUsageTool } from "../src/usage-tools.js";
 import { ProviderEmbeddings, embeddingPriceModel } from "../src/adapters/embeddings.js";
@@ -151,18 +151,22 @@ test("the limit reply shows the reset as a Discord relative time", () => {
   assert.equal(new UserLimitError(42).resetAt, 42);
 });
 
-test("the usage tool shows spend and uses a banked reset", async () => {
+test("the usage tool shows percents and uses a banked reset, with no dollar amounts", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100 * DOLLAR, 0);
   const registry = new ToolRegistry(store, async () => false);
   registerUsageTool(registry, limits);
   await limits.record("s", "alice", 100 * DOLLAR);
   await store.grantResets("s", "alice", "5h", 1);
   const shown = await registry.invokeResult(message("1"), "usage", {}, "usage-show-1", "command");
-  assert.match(shown.text, /^5h: \$100\.00 spent of \$100\.00, resets <t:\d+:R>\. Banked resets: 1\./m);
+  assert.match(shown.text, /^5h: 100% used, resets <t:\d+:R>\. Banked resets: 1\./m);
+  assert.match(shown.text, /^week: no limit, resets <t:\d+:R>\. Banked resets: 0\./m);
+  assert.doesNotMatch(shown.text, /\$/);
   const reset = await registry.invokeResult(message("2"), "usage", { action: "reset", window: "5h" }, "usage-reset-2", "command");
   assert.match(reset.text, /Used one 5h reset/);
+  assert.doesNotMatch(reset.text, /\$/);
   const after = await registry.invokeResult(message("3"), "usage", {}, "usage-show-3", "command");
-  assert.match(after.text, /^5h: \$0\.00 spent of \$100\.00\. Banked resets: 0\./m);
+  assert.match(after.text, /^5h: 0% used\. Banked resets: 0\./m);
+  assert.doesNotMatch(after.text, /\$/);
   store.close();
 });
 
@@ -240,6 +244,16 @@ test("entry points check the user limiter before work starts", () => {
   const discord = read("adapters/discord.ts");
   assert.match(discord, /this\.limiter\.check\(/);
   assert.ok(discord.indexOf("this.limiter.check(") < discord.indexOf("this.tools.invokeResult(message, name, args, `command:"), "slash commands must check before invoking the tool");
+  // /usage is the one exempt entry point: read-only, so it never checks the gate. Its reply builder must not either.
+  const usageStart = discord.indexOf("private async usageCommand(");
+  const usageBody = discord.slice(usageStart, discord.indexOf("private async command(", usageStart));
+  assert.ok(usageStart > 0 && usageBody.includes("usageReply(this.limiter"), "/usage must reply through usageReply");
+  assert.doesNotMatch(usageBody, /limiter\.check\(/, "/usage is exempt from the limiter gate");
+  assert.doesNotMatch(read("adapters/discord-commands.ts"), /limiter\.check\(/, "usageReply must not check the limiter gate");
+  // A private chat message is checked before it is saved, so a refused message never reaches the store.
+  const chats = read("web-chats.ts");
+  assert.match(chats, /this\.host\.limiter\.check\(/, "a private chat message must check the limiter");
+  assert.ok(chats.indexOf("this.host.limiter.check(") < chats.indexOf("await this.store.ingest(message)"), "the private chat limiter check must come before the message is saved");
   assert.match(read("agent-runner.ts"), /streamMetered\(this\.llm, prompt, \{ usage: this\.services\.usage, who: attribution\(message\)/);
   assert.match(read("participation.ts"), /streamMetered\(this\.llm, prompt, \{ usage: this\.usage, who: attribution\(message\) \}\)/);
   assert.match(read("files.ts"), /streamMetered\(options\.llm, prompt, \{ usage: options\.usage/);
@@ -395,5 +409,20 @@ test("resetUserUsage with a kind clears only that window", async () => {
   await limits.record("s", "u", 5, 0);
   await store.resetUserUsage("s", "u", "5h");
   assert.deepEqual((await store.userUsage("s", "u")).windows.map(window => window.kind), ["week"]);
+  store.close();
+});
+
+test("the usage meter view has percents and reset times only, with no cost or limit amounts", async () => {
+  const store = new SQLiteStore(":memory:");
+  const limiter = new UserLimiter(store, { fiveHourCostMicros: 1000000, weekCostMicros: 0, gracePercent: 10 });
+  await limiter.record("s", "u", 2500000, 1000);
+  const view = usageView(await limiter.usage("s", "u", 1000));
+  assert.equal(view.plan, "Seed");
+  // Over the 5-hour limit: capped at 100. No weekly limit: percent is null, not a number.
+  assert.deepEqual(view.windows.map(window => [window.kind, window.percent]), [["5h", 100], ["week", null]]);
+  assert.deepEqual(view.windows.map(window => window.resetAt), [1000 + 5 * 3600000, 1000 + 7 * 86400000]);
+  const keys = JSON.stringify(view);
+  assert.doesNotMatch(keys, /cost|spent|limit|micro|dollar|price|\$/i);
+  assert.equal(usageView([{ kind: "5h", spent: 333, limit: 1000, resetAt: null, banked: 0 }]).windows[0]!.percent, 33);
   store.close();
 });

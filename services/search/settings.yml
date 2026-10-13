@@ -1,5 +1,6 @@
 use_default_settings: true
 server:
+  # secret_key comes from the SEARXNG_SECRET environment variable. Do not set it here.
   limiter: false
   public_instance: false
 search:

@@ -13,16 +13,19 @@ import type { HistorySearch } from './search/history-search.js';
 import type { TranscriptStore } from './web-transcripts.js';
 import type { WebReplyStore } from './web-replies.js';
 import type { ShareStore } from './shares.js';
+import type { WebSessionStore } from './web-session-store.js';
 type Awaitable<T> = T | Promise<T>;
 
 // Settings and task listings are loaded at startup. Their writes are durable
 // before acknowledgement; all database-dependent operations are awaited.
-export interface RuntimeStore extends Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore, HarnessJournal, TaskRegistry, ServerToolStore, HistoryStore, HistorySearch, RecordStore, TranscriptStore, WebReplyStore, ShareStore {
+export interface RuntimeStore extends Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore, HarnessJournal, TaskRegistry, ServerToolStore, HistoryStore, HistorySearch, RecordStore, TranscriptStore, WebReplyStore, ShareStore, WebSessionStore {
   canonicalMessage(server: string, id: string): Awaitable<Message | undefined>;
   knownAuthors(server: string): Awaitable<{ author: string; named: boolean }[]>;
   identifyAuthor(server: string, author: string, names: readonly string[], bot?: boolean, identity?: Record<string,string>): Awaitable<void>;
   reindex(server: string, channels: readonly string[]): Awaitable<number>;
   purgeUnconfigured(server: string, allowed: readonly string[]): Awaitable<void>;
+  /** Channels of the live private chats of a server. Read at startup to reopen them. */
+  liveWebChatChannels(server: string): Promise<string[]>;
   revise(message: Message): Promise<void>;
   remove(server: string, channel: string, id: string): Promise<void>;
   delivery(id: string): Awaitable<{ message: Message; content: string; createdAt: number; result: Message | null } | undefined>;

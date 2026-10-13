@@ -22,7 +22,11 @@ const CONVERSATION_PRUNE_BATCH = 10000;
 
 import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
 import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, revokeShare, revokeAllShares } from '../share-store.js';
+import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../web-chat-store.js';
+import { isPrivateChannel } from '../private-chat.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
+import { getWebSession, saveWebSession, deleteWebSession, deleteExpiredWebSessions } from '../web-session-store.js';
+import type { WebSessionRow } from '../web-session-store.js';
 export class PostgresStore {
   async record(
     server: string,
@@ -295,7 +299,7 @@ export class PostgresStore {
         named: boolean;
     }[]> {
         return (await this.db.prepare(`SELECT DISTINCT json_extract(m.body,'$.author') AS author, d.author AS named FROM messages m
-      LEFT JOIN author_directory d ON d.server=m.server AND d.author=json_extract(m.body,'$.author') WHERE m.server=?`).all(server)).map(row => ({ author: String(row.author), named: row.named !== null }));
+      LEFT JOIN author_directory d ON d.server=m.server AND d.author=json_extract(m.body,'$.author') WHERE m.server=? AND m.channel NOT LIKE 'web:%'`).all(server)).map(row => ({ author: String(row.author), named: row.named !== null }));
     }
     async identifyAuthor(server: string, author: string, names: readonly string[], bot = false, identity: Record<string, string> = {}): Promise<void> {
         const previous = (await this.db.prepare("SELECT names,identity FROM author_directory WHERE server=? AND author=?").get(server, author));
@@ -409,6 +413,26 @@ export class PostgresStore {
     async listShares(server: string, limit: number) { return listShares(this.db, server, limit); }
     async revokeShare(server: string, id: string, at: number): Promise<boolean> { return revokeShare(this.db, server, id, at); }
     async revokeAllShares(server: string, at: number): Promise<number> { return revokeAllShares(this.db, server, at); }
+    async getSession(idHash: string): Promise<WebSessionRow | undefined> { return getWebSession(this.db, idHash); }
+    async insertWebChat(row: WebChatRow): Promise<void> { return insertWebChat(this.db, row); }
+    async webChat(id: string): Promise<WebChatRow | undefined> { return getWebChat(this.db, id); }
+    async webChats(server: string, owner: string): Promise<WebChatRow[]> { return listWebChats(this.db, server, owner); }
+    async liveWebChatChannels(server: string): Promise<string[]> { return liveWebChatChannels(this.db, server); }
+    async renameWebChat(id: string, title: string, updated: number): Promise<void> { return renameWebChat(this.db, id, title, updated); }
+    async touchWebChat(id: string, updated: number): Promise<void> { return touchWebChat(this.db, id, updated); }
+    /** Deletes a private chat: its runs, events and queue rows, then its messages. The row stays, marked deleted. */
+    async deleteWebChat(id: string, server: string, channel: string, at: number): Promise<void> {
+        await markWebChatDeleted(this.db, id, at);
+        await deleteChatRows(this.db, server, channel);
+        for (const row of await this.db.prepare("SELECT id FROM messages WHERE server=? AND channel=?").all(server, channel))
+            await this.invalidateSource(server, String(row.id));
+        await this.db.prepare("DELETE FROM messages WHERE server=? AND channel=?").run(server, channel);
+        await this.invalidate(server, channel, { reason: "channel_disabled" });
+        await this.db.prepare("DELETE FROM settings WHERE server=? AND key=?").run(server, `context_change:${channel}`);
+    }
+    async saveSession(row: WebSessionRow): Promise<void> { return saveWebSession(this.db, row); }
+    async deleteSession(idHash: string): Promise<void> { return deleteWebSession(this.db, idHash); }
+    async deleteExpiredSessions(now: number): Promise<number> { return deleteExpiredWebSessions(this.db, now); }
     async startRun(runId: string, message: Message, prompt: Prompt): Promise<void> {
         (await this.db.prepare("INSERT INTO runs(id,message,prompt,status,result,context_version) VALUES(?,?,?,?,NULL,?)")
             .run(runId, JSON.stringify(message), JSON.stringify(prompt), "running", await (await this.contextVersion(message.server, message.channel))));
@@ -470,7 +494,7 @@ export class PostgresStore {
     }
     // Web transcripts (read-only views and the live event store).
     async conversationActivity(server: string): Promise<{ channel: string; newest: number }[]> {
-        return (await this.db.prepare("SELECT channel, MAX(COALESCE(json_extract(body,'$.timestamp'),0)) AS newest FROM messages WHERE server=? GROUP BY channel")
+        return (await this.db.prepare("SELECT channel, MAX(COALESCE(json_extract(body,'$.timestamp'),0)) AS newest FROM messages WHERE server=? AND channel NOT LIKE 'web:%' GROUP BY channel")
             .all(server)).map(row => ({ channel: String(row.channel), newest: Number(row.newest) }));
     }
     async conversationMessages(server: string, channel: string, before: { time: number; id: string } | undefined, limit: number): Promise<Message[]> {
@@ -484,6 +508,14 @@ export class PostgresStore {
     async replyRunIds(server: string, messageId: string): Promise<string[]> {
         return (await this.db.prepare("SELECT r.run_id FROM reply_runs r LEFT JOIN runs u ON u.id=r.run_id WHERE r.server=? AND r.message_id=? ORDER BY u.rowid")
             .all(server, messageId)).map(row => String(row.run_id));
+    }
+    // The messages of one channel that a reply run used. Participation runs are not reply runs, so they do not count.
+    async usedSourceIds(server: string, channel: string, messageIds: readonly string[]): Promise<string[]> {
+        if (!messageIds.length) return [];
+        const marks = messageIds.map(() => "?").join(",");
+        return (await this.db.prepare(`SELECT DISTINCT s.message_id FROM run_sources s JOIN messages m ON m.server=s.server AND m.id=s.message_id
+            WHERE s.server=? AND m.channel=? AND s.message_id IN (${marks}) AND s.run_id IN (SELECT run_id FROM reply_runs WHERE server=?)`)
+            .all(server, channel, ...messageIds, server)).map(row => String(row.message_id));
     }
     async requestRunIds(server: string, requestId: string): Promise<string[]> {
         return (await this.db.prepare("SELECT id FROM runs WHERE json_extract(message,'$.server')=? AND json_extract(message,'$.id')=? AND COALESCE(json_extract(prompt,'$.purpose'),'reply')='reply' ORDER BY rowid")
@@ -702,18 +734,27 @@ export class PostgresStore {
     }
   async reindex(server: string, channels: readonly string[]): Promise<number> {
     if (!this.embeddings || !channels.length) return 0;
+    // Private chats are never indexed for search, even when a caller passes their channel.
     const rows = await this.db.prepare(`SELECT m.* FROM memories m WHERE m.server=?
-      AND m.status='active' AND m.channel IN (${channels.map(() => "?").join(",")}) AND NOT EXISTS
+      AND m.status='active' AND m.channel NOT LIKE 'web:%' AND m.channel IN (${channels.map(() => "?").join(",")}) AND NOT EXISTS
       (SELECT 1 FROM memory_embeddings e WHERE e.server=m.server AND e.memory_id=m.id AND e.model=?)`)
       .all(server, ...channels, this.embeddings.model);
     for (const row of rows) this.queueIndex({ server, channel: String(row.channel), author: String(row.author), id: String(row.id), text: String(row.content) }, false);
     return rows.length;
   }
 
+    // Deletes only saved messages. Memories and embeddings made from them are not changed.
+    async purgeChannelBefore(server: string, channel: string, cutoff: number): Promise<{ id: string; timestamp: number } | null> {
+        const time = "COALESCE(json_extract(body,'$.timestamp'),0)";
+        await this.db.prepare(`DELETE FROM messages WHERE server=? AND channel=? AND json_extract(body,'$.timestamp')<?`).run(server, channel, cutoff);
+        const row = await this.db.prepare(`SELECT id,${time} AS timestamp FROM messages WHERE server=? AND channel=? AND json_extract(body,'$.timestamp') IS NOT NULL ORDER BY ${time} ASC,length(id) ASC,id ASC LIMIT 1`).get(server, channel);
+        return row ? { id: String(row.id), timestamp: Number(row.timestamp) } : null;
+    }
     async purgeUnconfigured(server: string, allowed: readonly string[]): Promise<void> {
         const rows = (await this.db.prepare("SELECT id,channel FROM messages WHERE server=?").all(server));
         for (const row of rows) {
-            if (allowed.includes(String(row.channel)))
+            // Private chats are removed only by their owner, never by this cleanup.
+            if (allowed.includes(String(row.channel)) || isPrivateChannel(String(row.channel)))
                 continue;
             (await this.invalidateSource(server, String(row.id)));
             (await this.db.prepare("DELETE FROM messages WHERE server=? AND id=?").run(server, String(row.id)));
@@ -728,7 +769,7 @@ export class PostgresStore {
         }
         const jobs = (await this.db.prepare("SELECT id,channel FROM jobs WHERE server=? AND status NOT IN ('done','cancelled')").all(server));
         for (const row of jobs)
-            if (!allowed.includes(String(row.channel)))
+            if (!allowed.includes(String(row.channel)) && !isPrivateChannel(String(row.channel)))
                 (await this.db.prepare("UPDATE jobs SET status='cancelled',error='Channel disabled' WHERE id=?").run(String(row.id)));
     }
     // charge is false for an admin reindex: old messages are not charged to their authors again.

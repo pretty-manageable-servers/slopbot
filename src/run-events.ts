@@ -2,6 +2,7 @@ import { logError } from "./errors.js";
 import type { Json, Message, ModelEvent } from "./domain.js";
 import type { ToolActivity } from "./tool-activity.js";
 import { transcriptSwitchOn } from "./server-tools.js";
+import type { MemberDirectory, MemberProfile } from "./member-directory.js";
 
 /** Kinds of events a web transcript stream sends. */
 export type ConversationKind = "message" | "run.start" | "run.delta" | "run.tool" | "run.end";
@@ -59,18 +60,21 @@ export function startConversationEventRetention(store: ConversationEventRetentio
   return () => clearInterval(timer);
 }
 
-/** The message shape the web transcript shows. Avatars are not stored yet, so avatarUrl is always null. */
+/** The message shape the web transcript shows. Names and avatars come from the member directory at read time, never from the database. */
 export interface TranscriptMessage {
   id: string;
   channel: string;
   author: string;
   authorName: string;
-  avatarUrl: null;
+  username: string | null;
+  avatarUrl: string | null;
   text: string;
   timestamp: number | null;
   editedAt: number | null;
   slopbot: boolean;
   runIds: string[];
+  /** True for Slopbot's own messages, and for a person's message that a reply run used. Live messages start false. */
+  used: boolean;
 }
 
 /** The ID of Slopbot's own Discord user, saved when the bot becomes ready. */
@@ -79,21 +83,30 @@ export function slopbotId(store: Pick<ConversationEventStore, "setting">, server
   return typeof value === "string" ? value : undefined;
 }
 
-export function transcriptMessage(message: Message, slopbot: string | undefined, runIds: readonly string[] = []): TranscriptMessage {
+/** True when the author's Discord profile is shown: Slopbot itself and human authors. Webhook posts have no user to look up. */
+export function showsProfile(message: Message, slopbot: string | undefined): boolean {
+  return message.author === slopbot || !message.isBot;
+}
+
+export function transcriptMessage(message: Message, slopbot: string | undefined, runIds: readonly string[] = [], profile?: MemberProfile, used = false): TranscriptMessage {
   const timestamp = message.timestamp ?? null;
   const edited = message.revisionTimestamp !== undefined && message.revisionTimestamp > (message.timestamp ?? 0);
   const isSlopbot = slopbot !== undefined && message.author === slopbot;
+  // An unknown user keeps the name stored with the message and gets no avatar.
+  const named = profile && profile.username !== null ? profile : undefined;
   return {
     id: message.id,
     channel: message.channel,
     author: message.author,
-    authorName: message.authorName ?? message.author,
-    avatarUrl: null,
+    authorName: named?.displayName ?? message.authorName ?? message.author,
+    username: named?.username ?? null,
+    avatarUrl: named?.avatarUrl ?? null,
     text: message.text,
     timestamp,
     editedAt: edited ? message.revisionTimestamp! : null,
     slopbot: isSlopbot,
     runIds: isSlopbot ? [...runIds] : [],
+    used: isSlopbot || used,
   };
 }
 
@@ -211,10 +224,13 @@ export const runEvents = new RunEvents();
  * Sends a Discord message as an upsert. For a Slopbot message the run IDs come from the store
  * unless the caller passes them (a reply that is being delivered now).
  */
-export async function publishMessage(store: Pick<ConversationEventStore, "setting"> & { replyRunIds(server: string, messageId: string): Promise<string[]> }, message: Message, runIds?: readonly string[]): Promise<void> {
+export async function publishMessage(store: Pick<ConversationEventStore, "setting" | "taskThreads"> & { replyRunIds(server: string, messageId: string): Promise<string[]> }, message: Message, runIds?: readonly string[], directory?: Pick<MemberDirectory, "profiles">): Promise<void> {
   const slopbot = slopbotId(store, message.server);
   const ids = runIds ?? (slopbot !== undefined && message.author === slopbot ? await store.replyRunIds(message.server, message.id) : []);
-  const view = transcriptMessage(message, slopbot, ids);
+  // Only a conversation that is switched on is read, so a quiet channel costs no Discord lookups.
+  const profile = directory && showsProfile(message, slopbot) && transcriptSwitchOn(store, message.server, message.channel)
+    ? (await directory.profiles(message.server, [message.author])).get(message.author) : undefined;
+  const view = transcriptMessage(message, slopbot, ids, profile);
   runEvents.publish(message.server, message.channel, "message", message.id, { action: "upsert", message: view as unknown as Json });
 }
 

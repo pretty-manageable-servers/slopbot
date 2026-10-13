@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 // The console scripts are classic scripts and share one global scope, so a name declared twice stops a whole file.
 test("console scripts do not declare the same top-level name twice", () => {
   const seen = new Map<string, string>();
-  for (const file of ["web/shares.js", "web/conversations.js", "web/app.js"]) {
+  // web/markdown.js comes from another branch. It is skipped until it exists here.
+  for (const file of ["web/shares.js", "web/markdown.js", "web/conversations.js", "web/app.js"].filter(item => existsSync(item))) {
     for (const line of readFileSync(file, "utf8").split("\n")) {
       const match = line.match(/^(?:const|let|var|function|async function|class)\s+([^=(]+)/);
       if (!match) continue;

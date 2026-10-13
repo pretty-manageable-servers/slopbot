@@ -5,6 +5,8 @@ import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { RunEvents, publishMessage, publishMessageDelete, publishTool, reasoningText, runEvents, shortArgs, startConversationEventRetention, transcriptMessage, type ConversationEvent } from "../src/run-events.js";
 import { webTranscriptKey } from "../src/server-tools.js";
 import type { Message } from "../src/domain.js";
+import { MemberDirectory } from "../src/member-directory.js";
+import { fakeSource } from "./member-fakes.js";
 
 const server = "1528063444874432734", channel = "1528063444874432735", thread = "1528063444874432736", bot = "1528063444874432799";
 const user = "1514413259522838529";
@@ -131,6 +133,24 @@ test("the journal publishes reply runs live, keeps its own saves, and skips chec
   assert.equal((await saved(store)).filter(row => row.ref === "run-check").length, 0);
 });
 
+test("live messages carry the member's name and avatar from the directory, and webhook posts do not", async t => {
+  const { store } = setup(t);
+  runEvents.attach(store);
+  t.after(() => runEvents.attach(undefined as never));
+  store.setSetting(server, "context_bot_author", bot);
+  const directory = new MemberDirectory(fakeSource({ [user]: { username: "ada", nickname: "Ada L", serverAvatar: "https://cdn.discordapp.com/guilds/1/users/ada.png", inServer: true }, [bot]: { username: "slopbot", avatar: "https://cdn.discordapp.com/avatars/bot.png", inServer: true } }));
+  await publishMessage(store, message("user-2"), undefined, directory);
+  await publishMessage(store, { id: "bot-2", server, channel, author: bot, authorName: "Slopbot", text: "Hi", timestamp: 2_000, isBot: true }, [], directory);
+  await publishMessage(store, { id: "hook-1", server, channel, author: "1528063444874432888", authorName: "Web Ada", text: "From the web", timestamp: 3_000, isBot: true, source: "web" }, [], directory);
+  await runEvents.idle();
+  const views = (await saved(store)).filter(row => row.kind === "message").map(row => (row.data as { message: { id: string; authorName: string; username: string | null; avatarUrl: string | null } }).message);
+  assert.deepEqual(views.map(view => [view.id, view.authorName, view.username, view.avatarUrl]), [
+    ["user-2", "Ada L", "ada", "https://cdn.discordapp.com/guilds/1/users/ada.png"],
+    ["bot-2", "slopbot", "slopbot", "https://cdn.discordapp.com/avatars/bot.png"],
+    ["hook-1", "Web Ada", null, null],
+  ]);
+});
+
 test("messages carry the Slopbot flag and run IDs, and edits and deletes publish", async t => {
   const { store } = setup(t);
   runEvents.attach(store);
@@ -145,7 +165,7 @@ test("messages carry the Slopbot flag and run IDs, and edits and deletes publish
   await runEvents.idle();
   const rows = await saved(store);
   const upsertReply = rows.find(row => row.ref === "reply-1")!;
-  assert.deepEqual(upsertReply.data, { action: "upsert", message: { id: "reply-1", channel, author: bot, authorName: "Slopbot", avatarUrl: null, text: "Answer", timestamp: 2_000, editedAt: 2_500, slopbot: true, runIds: ["run-x"] } });
+  assert.deepEqual(upsertReply.data, { action: "upsert", message: { id: "reply-1", channel, author: bot, authorName: "Slopbot", username: null, avatarUrl: null, text: "Answer", timestamp: 2_000, editedAt: 2_500, slopbot: true, runIds: ["run-x"], used: true } });
   const userRow = rows.find(row => row.ref === "user-1" && (row.data as { action: string }).action === "upsert")!;
   assert.equal((userRow.data as { message: { slopbot: boolean; runIds: string[] } }).message.slopbot, false);
   assert.deepEqual((userRow.data as { message: { runIds: string[] } }).message.runIds, []);

@@ -30,7 +30,7 @@ import {
   MessageFlags, PermissionFlagsBits, ChannelType,
   type ChatInputCommandInteraction, type Interaction, type Message as DiscordMessage, type PartialMessage,
 } from "discord.js";
-import { buildToolCommands } from "./discord-commands.js";
+import { buildToolCommands, buildUsageCommand, usageReply } from "./discord-commands.js";
 import { registerProfileTools } from "../profiles.js";
 import { Application } from "../application.js";
 import { Bot, splitReply, type ChatGateway, type Incoming } from "../bot.js";
@@ -42,7 +42,7 @@ import { LLMClassifier, ParticipationGate } from "../participation.js";
 import { HistoryImporter } from "../history.js";
 import { DecisionClassifier } from "./decisions.js";
 import { TaskWorker } from "../queue.js";
-import { UserLimiter, UserLimitError, limitReply } from "../user-limiter.js";
+import { UserLimiter, UserLimitError, limitReply, usageView } from "../user-limiter.js";
 import { createUsageMeter, type UsageMeter } from "../usage-meter.js";
 import { registerUsageTool } from "../usage-tools.js";
 import { configuredChannels, registerServerTools, webTranscriptKey, webTranscriptsEnabled } from "../server-tools.js";
@@ -53,7 +53,10 @@ import { ShareService, type ShareRule } from "../shares.js";
 import { discordChannelAccessSource, wireChannelAccessEvents } from "./discord-channel-access.js";
 import { displayToolResult, ToolError, ToolRegistry, UncertainActionError, stableOperationId } from "../tools.js";
 import { WebReplies, asWebUser, webReplyKey } from "../web-replies.js";
+import { MemberDirectory, discordMemberSource } from "../member-directory.js";
 import { discordWebReplies } from "./discord-web-replies.js";
+import { isPrivateChannel } from "../private-chat.js";
+import { WebChatGateway, type ChatHost } from "../web-chats.js";
 
 /** Slopbot state and services for one Discord server. All servers share one client. */
 interface TranscriptChannel { id: string; name: string; enabled: boolean }
@@ -72,12 +75,15 @@ export class DiscordServer implements ChatGateway {
   private readonly limiter: UserLimiter;
   private readonly history: HistoryImporter;
   private readonly webReplies: WebReplies;
+  // Replies in private chats. They are saved in the database and never sent to Discord.
+  private readonly chatGateway: WebChatGateway;
   private channels: string[];
   private historyTimer: ReturnType<typeof setInterval> | undefined;
 
-  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client))) {
+  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">) {
     this.client = client;
     this.renderer = new ReplyRenderer(store, discordPresentation);
+    this.chatGateway = new WebChatGateway(store, guildId);
     this.channels = configuredChannels(config, store, guildId);
     this.history = new HistoryImporter(guildId, store, {
       fetch: async (channel, before, limit) => {
@@ -173,6 +179,7 @@ export class DiscordServer implements ChatGateway {
       const known = (await store.canonicalMessage(request.server, id));
       const parent = allowParent ? store.taskThreads(request.server).find(task => task.thread === request.channel)?.parent : undefined;
       if (!known || (known.channel !== request.channel && known.channel !== parent) || !this.bot.accepts(request.server, known.channel)) throw new ToolError("File source must be in this permitted channel or the task's permitted parent channel.");
+      if (isPrivateChannel(known.channel)) throw new ToolError("Files in private chats are not available yet.");
       await this.validateChannel(request, known.channel);
       const channel = await this.client.channels.fetch(known.channel);
       if (!channel || !channel.isTextBased() || !("messages" in channel)) throw new ToolError("Source channel unavailable");
@@ -217,13 +224,15 @@ export class DiscordServer implements ChatGateway {
     }, store, { usage, onToolActivity: async (message, activity) => {
       if (!this.bot.accepts(message.server, message.channel)) return;
       publishTool(message, activity);
+      // A private chat shows tool progress in its own stream, not in Discord.
+      if (isPrivateChannel(message.channel)) return;
       await this.toolProgress.update(JSON.stringify([message.server,message.channel,message.id]), activity, async content => {
         const channel = await this.client.channels.fetch(message.channel);
         if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Status channel unavailable");
         return channel.send({content,embeds:[{footer:{text:toolProgressFooter}}],...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? {reply:{messageReference:message.id,failIfNotExists:false}} : {}),allowedMentions:{parse:[],repliedUser:false}});
       });
     }, presentation: discordPresentation, profiles: store, harness: store, tools: {
-      catalog: () => this.tools.catalog(), schemas: () => this.tools.schemas(), suggest: message => this.tools.suggest(message),
+      catalog: message => this.tools.catalog(message), schemas: message => this.tools.schemas(message), suggest: message => this.tools.suggest(message),
       execute: (message, call, id, version) => this.bot.executeTool(message, call, id, version),
       snapshot: () => {
         const selected = this.tools.capture();
@@ -251,23 +260,33 @@ export class DiscordServer implements ChatGateway {
     });
     this.bot = new Bot(this.app, store, store, this, guildId, this.channels, { profiles: store, knowledge: store, participation, worker: this.worker, tools: this.tools, queueStore: store });
   }
+  /** Private chats: the chat service opens, closes and hands messages in through these. */
+  openChat(channel: string): void { this.bot.openPrivateChat(this.guildId, channel); }
+  closeChat(channel: string): void { this.bot.closePrivateChat(this.guildId, channel); }
+  async receiveChat(message: Message): Promise<void> {
+    // The chat service saves the message first, so the bot must not save it again.
+    await this.bot.receive({ ...message, botAuthor: false, mentionsBot: false, repliesToBot: false }, { ingested: true });
+  }
   /** Starts work for this server after the client is ready. */
   async ready(botUser: string): Promise<void> {
     await this.store.setSetting(this.guildId, "context_bot_author", botUser);
     if (!this.channels.length) console.warn(`No channels configured for server ${this.guildId}. Use /slopbot channels action:add channel:<channel> to enable replies.`);
     void this.purgeAndIndex().catch(error => logError("Database startup indexing failed", error, { server: this.guildId }));
     void this.hydrateAuthors().catch(error => logError("Author-name refresh unavailable; names will fill from new messages.", error, { server: this.guildId }));
+    // Reopens the private chats of this server, so a restart keeps them answering.
+    for (const channel of await this.store.liveWebChatChannels(this.guildId)) this.bot.openPrivateChat(this.guildId, channel);
     this.worker.start();
     const sync = () => { for (const channel of this.channels) void this.history.start(channel).catch(error => logError("History import startup failed", error, { server: this.guildId })); };
     this.reminders.start();
     sync(); this.historyTimer = setInterval(sync, 60000);
-    void this.registerCommands().catch(error => logError("Could not register /slopbot commands. Check application command permissions.", error, { server: this.guildId }));
+    void this.registerCommands().catch(error => logError("Could not register /slopbot and /usage commands. Check application command permissions.", error, { server: this.guildId }));
   }
   interaction(interaction: Interaction): void {
     if ((interaction.isButton() || interaction.isStringSelectMenu()) && interaction.customId.startsWith('slopui:')) {
       void handleDiscordUi(interaction,this.uiRuntime).catch(error => logError('UI interaction display failed.', error));
     }
     if (interaction.isChatInputCommand() && interaction.commandName === "slopbot") void this.command(interaction).catch(error => logError("Command failed.", error));
+    if (interaction.isChatInputCommand() && interaction.commandName === "usage") void this.usageCommand(interaction).catch(error => logError("Command failed.", error));
   }
   messageCreate(message: DiscordMessage): void { void this.receive(message).catch(error => logError("Discord event failed. Check channel permissions.", error)); }
   messageUpdate(updated: DiscordMessage | PartialMessage): void {
@@ -276,7 +295,7 @@ export class DiscordServer implements ChatGateway {
       const message = updated.partial ? await updated.fetch() : updated;
       const normalized = this.normalize(message);
       await this.store.revise(normalized);
-      if (!normalized.transient) await publishMessage(this.store, normalized).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
+      if (!normalized.transient) await publishMessage(this.store, normalized, undefined, this.members).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
     })().catch(error => logError("Could not update edited message context.", error));
   }
   messageDelete(message: { guildId: string | null; channelId: string; id: string }): void {
@@ -295,6 +314,11 @@ export class DiscordServer implements ChatGateway {
     for (const channel of channels) if (!previous.includes(channel)) await this.history.include(channel);
   }
   private async validateChannel(message: Message, channelId: string, parentOnly = false): Promise<void> {
+    // A private chat may use only its own channel. A Discord message may never use a private chat.
+    if (isPrivateChannel(channelId) || isPrivateChannel(message.channel)) {
+      if (channelId !== message.channel || !isPrivateChannel(channelId)) throw new ToolError("Choose a text channel in this server.");
+      return;
+    }
     const channel = await this.client.channels.fetch(channelId);
     if (!channel || !(channel.type === ChannelType.GuildText || (!parentOnly && channel.isThread())) || channel.guildId !== message.server || message.server !== this.guildId) throw new ToolError("Choose a text channel in this server.");
     const guild = await this.client.guilds.fetch(message.server);
@@ -307,6 +331,23 @@ export class DiscordServer implements ChatGateway {
     const guild = await this.client.guilds.fetch(this.guildId);
     const command = buildToolCommands(this.tools);
     await guild.commands.create(command.toJSON());
+    // A separate command, so /slopbot stays as it is.
+    await guild.commands.create(buildUsageCommand().toJSON());
+  }
+  /**
+   * The /usage command. Read-only, so it never checks the UserLimiter gate: a user over the limit
+   * still sees their usage and can use a banked reset. Do not add a limiter check here.
+   */
+  private async usageCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (interaction.guildId !== this.guildId) return;
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    try {
+      const reply = await usageReply(this.limiter, this.guildId, interaction.user.id, interaction.options.getString("reset"));
+      await interaction.editReply({ ...(reply.content ? { content: reply.content } : {}), embeds: reply.embeds, allowedMentions: { parse: [] } });
+    } catch (error) {
+      logError("command_failed", error, { stage: "usage command", server: this.guildId, messageId: interaction.id });
+      await interaction.editReply({ content: errorReply(error), allowedMentions: { parse: [] } });
+    }
   }
   private async command(interaction: ChatInputCommandInteraction): Promise<void> {
     if (interaction.guildId !== this.guildId) return;
@@ -393,7 +434,8 @@ export class DiscordServer implements ChatGateway {
     if (!message.guildId || !this.bot.accepts(message.guildId, message.channelId)) return;
     if (message.author.id === this.client.user?.id) return this.receiveOwn(message);
     const live = this.normalize(message);
-    if (!live.transient) await publishMessage(this.store, live).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
+    // Not awaited: a member lookup must not delay the reply.
+    if (!live.transient) void publishMessage(this.store, live, undefined, this.members).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
     const timingScope = { server: message.guildId, channel: message.channelId, id: message.id };
     requestTimings.begin(timingScope); requestTimings.start(timingScope, "references");
     await requestTimings.withScope(timingScope, () => this.receiveScoped(message, timingScope));
@@ -437,6 +479,7 @@ export class DiscordServer implements ChatGateway {
     await this.bot.receive(incoming);
   }
   async react(message: Message, emoji: string): Promise<void> {
+    if (isPrivateChannel(message.channel)) return this.chatGateway.react();
     if (!this.bot.accepts(message.server, message.channel)) return;
     const channel = await requestTimings.wait("reaction channel fetch", () => this.client.channels.fetch(message.channel));
     if (!channel || !channel.isTextBased() || !("messages" in channel)) return;
@@ -445,6 +488,7 @@ export class DiscordServer implements ChatGateway {
     await requestTimings.wait("Discord reaction", () => target.react(emoji));
   }
   async reply(message: Message, text: string, deliveryId?: string, activity: readonly ToolActivity[] = [], ui?: UiDocument): Promise<readonly Message[]> {
+    if (isPrivateChannel(message.channel)) return this.chatGateway.reply(message, text, deliveryId, activity, ui);
     requestTimings.begin(message, true);
     requestTimings.start(message, "delivery");
     let delivered = false;
@@ -490,7 +534,7 @@ export class DiscordServer implements ChatGateway {
     await requestTimings.wait("Discord status cleanup", () => this.toolProgress.finish(JSON.stringify([message.server,message.channel,message.id])));
     // Web transcripts: the reply's runs are already saved, so their IDs are known now.
     const runIds = await this.store.requestRunIds(message.server, message.id);
-    for (const output of outputs) await publishMessage(this.store, output, runIds).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
+    for (const output of outputs) await publishMessage(this.store, output, runIds, this.members).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
     delivered = true;
     return outputs;
     } finally {
@@ -504,6 +548,7 @@ export class DiscordServer implements ChatGateway {
     }
   }
   async createTaskThread(message: Message, name: string): Promise<string> {
+    if (isPrivateChannel(message.channel)) return this.chatGateway.createTaskThread();
     const channel = await this.client.channels.fetch(message.channel);
     if (channel?.type !== ChannelType.GuildText) throw new ToolError("Task parent must be a text channel");
     if (message.id.startsWith("command:")) {
@@ -519,6 +564,7 @@ export class DiscordServer implements ChatGateway {
     return (await source.startThread({ name, autoArchiveDuration: ThreadAutoArchiveDuration.OneDay })).id;
   }
   typing(channelId: string): () => void {
+    if (isPrivateChannel(channelId)) return this.chatGateway.typing();
     const pulse = async () => { const channel = await this.client.channels.fetch(channelId); if (channel?.isTextBased() && "sendTyping" in channel) await channel.sendTyping(); };
     const send = () => { void pulse().catch(error => logError("discord_typing_failed", error, { channel: channelId }, true)); }; send();
     const timer = setInterval(send, 8000); timer.unref(); return () => clearInterval(timer);
@@ -535,7 +581,10 @@ export class DiscordServer implements ChatGateway {
         channels.push({ id: channel.id, name: channel.name, monitored: this.channels.includes(channel.id), ...(admin ? { history: this.history.state(channel.id) } : {}) });
       } catch (error) { if (!(error instanceof ToolError)) throw error; }
     }
+    // The signed-in user's name and avatar for the account menu. The member directory gives the same avatar the chat shows.
+    const known = (await this.members?.profiles(guild.id, [user]))?.get(user);
     return { server: { id: guild.id, name: guild.name }, user, admin, channels,
+      me: { id: user, displayName: known?.displayName ?? member.displayName, avatarUrl: known?.avatarUrl ?? null },
       profile: await this.store.profile(guild.id, user),
       mcp: admin ? this.mcp.snapshot() : null,
       settings: admin ? {
@@ -550,6 +599,7 @@ export class DiscordServer implements ChatGateway {
       } : null };
   }
   async consoleInvoke(user: string, channel: string, name: string, args: import('../tools.js').ToolArgs): Promise<unknown> {
+    if (isPrivateChannel(channel)) throw new ToolError('Choose a text channel in this server.');
     const message: Message = { id: `command:web:${crypto.randomUUID()}`, server: this.guildId, channel, author: user, text: '' };
     await this.validateChannel(message, channel, true);
     if (name === 'profile') args = { ...args, user };
@@ -569,6 +619,7 @@ export class DiscordServer implements ChatGateway {
   }
   /** Posts a web reply as the user. Only the user's own permissions and limits apply. */
   async consoleReply(user: string, channel: string, text: string): Promise<unknown> {
+    if (isPrivateChannel(channel)) throw new ToolError('Private chats are not posted through Discord.');
     return this.webReplies.reply({ user, server: this.guildId, channel, text });
   }
   async consoleTranscripts(user: string): Promise<unknown> {
@@ -625,10 +676,13 @@ export class DiscordAdapter {
   readonly shareRule: ShareRule;
   /** Share links for the web console. */
   readonly shares: ShareService;
+  /** Discord names and avatars for the console and transcripts. One cache for every server. */
+  readonly members: MemberDirectory;
 
   constructor(private readonly config: Config, private readonly store: RuntimeStore, private readonly llm: LLM, client?: Client) {
     this.usage = createUsageMeter(config, store);
-    this.client = client ?? new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent], partials: [Partials.Message, Partials.Channel] });
+    this.client = client ?? new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent], partials: [Partials.Message, Partials.Channel] });
+    this.members = new MemberDirectory(discordMemberSource(this.client));
     this.team = new TeamAdmins(discordTeamSource(this.client));
     this.access = new ChannelAccess(discordChannelAccessSource(this.client));
     wireChannelAccessEvents(this.client, this.access);
@@ -657,7 +711,7 @@ export class DiscordAdapter {
     if (existing) return existing;
     if (!this.allowed(guildId)) return Promise.reject(new ToolError("Slopbot is not enabled for this server."));
     const opening = (async () => {
-      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage, this.access);
+      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage, this.access, this.members);
       await server.start();
       await server.ready(this.botUser!);
       return server;
@@ -676,6 +730,16 @@ export class DiscordAdapter {
     const server = this.servers.get(guildId);
     if (!server) return;
     try { handle(await server); } catch (error) { logError("discord_event_failed", error, { server: guildId }); }
+  }
+  /** What the private chat service needs from Discord: membership, the server's handle, limits and access. */
+  chatHost(): ChatHost {
+    return {
+      member: async (user, server) => this.servers.has(server) && (await this.consoleServers(user)).some(item => item.id === server),
+      handle: async server => { const opening = this.servers.get(server); return opening ? await opening.catch(() => undefined) : undefined; },
+      limiter: this.usage.limiter,
+      access: this.access,
+      members: this.members,
+    };
   }
   /** Servers that both Slopbot and the user are in. */
   async consoleServers(user: string): Promise<{ id: string; name: string; icon: string | null; admin: boolean }[]> {
@@ -709,8 +773,20 @@ export class DiscordAdapter {
   async consoleTranscripts(user: string, guildId: string): Promise<unknown> {
     return (await this.server(user, guildId)).consoleTranscripts(user);
   }
+  /** The signed-in user's own meter for one server. Only members of that server can read it. Percents only. */
+  async consoleUsage(user: string, guildId: string): Promise<unknown> {
+    await this.server(user, guildId);
+    return usageView(await this.usage.limiter.usage(guildId, user));
+  }
+  /** Uses one of the user's own banked resets on a window. Members only. The limiter refuses when none is banked. */
+  async consoleUseReset(user: string, guildId: string, kind: string): Promise<unknown> {
+    await this.server(user, guildId);
+    if (!await this.usage.limiter.useReset(guildId, user, kind)) throw new ToolError(`You have no banked ${kind === "5h" ? "5-hour" : "weekly"} reset.`);
+    return usageView(await this.usage.limiter.usage(guildId, user));
+  }
   /** The channel's name for the web transcript list. Undefined when the channel is not in the server. */
   async channelName(server: string, channel: string): Promise<string | undefined> {
+    if (isPrivateChannel(channel)) return undefined;
     const found = await this.client.channels.fetch(channel).catch(() => undefined);
     if (!found || !("guildId" in found) || found.guildId !== server || !("name" in found) || typeof found.name !== "string") return undefined;
     return found.name;

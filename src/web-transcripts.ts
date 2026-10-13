@@ -4,9 +4,11 @@ import type { Json, Message, ModelEvent } from "./domain.js";
 import type { ChannelAccess, ChannelAccessResult } from "./channel-access.js";
 import { parseToolCalls, toolResult, type ToolCall, type ToolOutput } from "./tools.js";
 import type { HistoryPage, HistoryQuery } from "./search/history-search.js";
-import { reasoningText, runEvents, shortArgs, slopbotId, transcriptMessage, type ConversationEvent, type ConversationEventStore, type RunEvents, type TranscriptMessage } from "./run-events.js";
+import { reasoningText, runEvents, shortArgs, showsProfile, slopbotId, transcriptMessage, type ConversationEvent, type ConversationEventStore, type RunEvents, type TranscriptMessage } from "./run-events.js";
+import type { MemberDirectory } from "./member-directory.js";
 import { transcriptSwitchOn } from "./server-tools.js";
 import { canCreateShare, type ShareRule } from "./shares.js";
+import { isPrivateChannel } from "./private-chat.js";
 
 export interface TranscriptRun { id: string; message: Message; purpose: string; status: string; result: string | null }
 export interface ToolTurn { calls: ToolCall[]; results: Record<string, ToolOutput> }
@@ -18,6 +20,8 @@ export interface TranscriptStore extends ConversationEventStore {
   conversationMessages(server: string, channel: string, before: { time: number; id: string } | undefined, limit: number): Promise<Message[]>;
   latestStreamId(server: string, channel: string): Promise<number>;
   replyRunIds(server: string, messageId: string): Promise<string[]>;
+  /** Which of these messages of one channel a reply run used. Participation runs do not count. */
+  usedSourceIds(server: string, channel: string, messageIds: readonly string[]): Promise<string[]>;
   requestRunIds(server: string, requestId: string): Promise<string[]>;
   runRecord(runId: string): Promise<TranscriptRun | undefined>;
   events(runId: string): ModelEvent[] | Promise<ModelEvent[]>;
@@ -33,6 +37,10 @@ export interface TranscriptHost {
   channelName(server: string, channel: string): Promise<string | undefined>;
   /** Who may share the channel. Without it, canShare is always false. */
   shareRule?: ShareRule;
+  /** Names and avatars of human authors. Without it, messages have no username or avatarUrl. */
+  members?: Pick<MemberDirectory, "profiles">;
+  /** True when the user owns this private chat and is in its server. A private chat has no Discord channel, so only its run view uses this. */
+  ownsPrivateChat?(server: string, channel: string, user: string): Promise<boolean>;
 }
 
 export interface TranscriptRoutes {
@@ -46,7 +54,8 @@ export type RunStep =
   | { type: "thinking"; text: string }
   | { type: "tool"; name: string; status: string; args: string; result?: string };
 
-export interface Conversation { id: string; name: string; kind: "channel" | "thread"; parent: string | null; newest: number | null; canSend: boolean }
+/** enabled is false for a channel whose web transcripts are off. Only channels are listed that way, never threads. */
+export interface Conversation { id: string; name: string; kind: "channel" | "thread"; parent: string | null; newest: number | null; canSend: boolean; enabled: boolean }
 
 const SNOWFLAKE = /^\d{17,20}$/;
 const ID = /^[\w:.-]{1,64}$/;
@@ -54,7 +63,10 @@ const RUN_ID = /^[\w:.-]{1,200}$/;
 const MAX_RESULT_CHARS = 500;
 const BACKLOG_PAGE = 200;
 
-/** Lists the channels and threads the user can view now and that are switched on, newest first. */
+/**
+ * Lists the channels Slopbot serves that the user can view now, newest first. A channel with its switch off is listed
+ * with enabled false. A thread is listed only when its switch is on. Reads check the switch again (see granted).
+ */
 export async function visibleConversations(host: TranscriptHost, server: string, user: string): Promise<Conversation[]> {
   const { store } = host;
   const newest = new Map((await store.conversationActivity(server)).map(item => [item.channel, item.newest]));
@@ -65,12 +77,14 @@ export async function visibleConversations(host: TranscriptHost, server: string,
   const seen = new Set<string>();
   const found: Conversation[] = [];
   for (const candidate of candidates) {
-    if (seen.has(candidate.id)) continue;
+    // Private chats are never listed here. They have their own list (web-chats.ts).
+    if (isPrivateChannel(candidate.id) || seen.has(candidate.id)) continue;
     seen.add(candidate.id);
-    if (!transcriptSwitchOn(store, server, candidate.id)) continue;
+    const enabled = transcriptSwitchOn(store, server, candidate.id);
+    if (!enabled && candidate.kind === "thread") continue;
     const access = await host.access.check(server, candidate.id, user);
     if (!access.view) continue;
-    found.push({ ...candidate, name: (await host.channelName(server, candidate.id)) ?? candidate.id, newest: newest.get(candidate.id) ?? null, canSend: access.send });
+    found.push({ ...candidate, name: (await host.channelName(server, candidate.id)) ?? candidate.id, newest: newest.get(candidate.id) ?? null, canSend: enabled && access.send, enabled });
   }
   return found.sort((a, b) => (b.newest ?? 0) - (a.newest ?? 0) || a.name.localeCompare(b.name));
 }
@@ -227,6 +241,20 @@ export function openStream(options: StreamOptions): () => void {
   return () => stop();
 }
 
+export async function messageViews(store: TranscriptStore, members: Pick<MemberDirectory, "profiles"> | undefined, server: string, messages: readonly Message[]): Promise<TranscriptMessage[]> {
+  const slopbot = slopbotId(store, server);
+  // One directory call per page. The directory caches each user for 10 minutes.
+  const authors = [...new Set(messages.filter(message => showsProfile(message, slopbot)).map(message => message.author))];
+  const profiles = members && authors.length ? await members.profiles(server, authors) : new Map();
+  // One query for each channel on the page. Only messages that a reply run used are marked.
+  const used = new Set<string>();
+  const people = messages.filter(message => message.author !== slopbot);
+  for (const channel of new Set(people.map(message => message.channel))) {
+    for (const id of await store.usedSourceIds(server, channel, people.filter(message => message.channel === channel).map(message => message.id))) used.add(id);
+  }
+  return Promise.all(messages.map(async message => transcriptMessage(message, slopbot, message.author === slopbot ? await store.replyRunIds(server, message.id) : [], profiles.get(message.author), used.has(message.id))));
+}
+
 export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
   const { store } = host;
   const json = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
@@ -235,10 +263,7 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
     const value = Number(raw);
     return Number.isSafeInteger(value) && value >= 1 && value <= max ? value : undefined;
   };
-  const views = async (server: string, messages: readonly Message[]): Promise<TranscriptMessage[]> => {
-    const slopbot = slopbotId(store, server);
-    return Promise.all(messages.map(async message => transcriptMessage(message, slopbot, message.author === slopbot ? await store.replyRunIds(server, message.id) : [])));
-  };
+  const views = (server: string, messages: readonly Message[]) => messageViews(store, host.members, server, messages);
   const parentOf = async (server: string, channel: string): Promise<string | null> =>
     store.taskThreads(server).find(task => task.thread === channel)?.parent ?? null;
 
@@ -273,7 +298,9 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
     const record = await store.runRecord(runId);
     if (!record || record.purpose !== "reply") return json(res, 404, { error: "Run not found." });
     const { server, channel } = record.message;
-    if (!(await granted(host, server, channel, user))) return json(res, 403, { error: "You cannot view this run." });
+    // A private chat has no Discord channel, so the owner check replaces the channel access check.
+    const visible = isPrivateChannel(channel) ? await host.ownsPrivateChat?.(server, channel, user) === true : Boolean(await granted(host, server, channel, user));
+    if (!visible) return json(res, 403, { error: "You cannot view this run." });
     const events = await store.events(runId);
     const turns = await store.toolTurns(server, record.message.id);
     const fallback = record.status === "tool_calls" ? textCalls(record.result) : [];
@@ -284,12 +311,21 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
     });
   }
 
+  // Which of the given messages a reply run used. The same access check as the messages route.
+  async function used(res: ServerResponse, url: URL, server: string, channel: string, user: string): Promise<void> {
+    if (!(await granted(host, server, channel, user))) return json(res, 403, { error: "You cannot view this conversation." });
+    const ids = (url.searchParams.get("ids") ?? "").split(",").filter(id => id !== "");
+    if (ids.length > 200 || ids.some(id => !ID.test(id))) return json(res, 400, { error: "Invalid message IDs." });
+    json(res, 200, { used: ids.length ? await store.usedSourceIds(server, channel, ids) : [] });
+  }
+
   async function search(res: ServerResponse, url: URL, server: string, user: string): Promise<void> {
     const query = (url.searchParams.get("q") ?? "").trim();
     if (query.length < 2 || query.length > 200) return json(res, 400, { error: "Search needs 2 to 200 characters." });
     const mode = url.searchParams.get("mode") ?? "keyword";
     if (!["keyword", "exact", "hybrid", "semantic"].includes(mode)) return json(res, 400, { error: "Invalid search mode." });
-    const visible = (await visibleConversations(host, server, user)).slice(0, 40);
+    // Search reads messages, so it covers only channels whose switch is on.
+    const visible = (await visibleConversations(host, server, user)).filter(item => item.enabled).slice(0, 40);
     const found: Message[] = [];
     for (const conversation of visible) {
       const page = await store.searchHistory({ server, channel: conversation.id, query, mode: mode as HistoryQuery["mode"], limit: 10, requester: user });
@@ -337,6 +373,7 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
         const channel = parts[1] ?? "";
         if (!SNOWFLAKE.test(channel)) return json(res, 400, { error: "Invalid conversation." });
         if (parts.length === 3 && parts[2] === "messages") return await messages(res, url, server, channel, user);
+        if (parts.length === 3 && parts[2] === "used") return await used(res, url, server, channel, user);
         if (parts.length === 3 && parts[2] === "stream") return await stream(req, res, url, server, channel, user);
         return json(res, 404, { error: "Not found." });
       } catch (error) {

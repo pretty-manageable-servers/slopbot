@@ -61,6 +61,8 @@ test("failed imports retain a cursor, pause blocks work, and a new worker resume
   assert.equal(importer.state("c").error, true);
   assert.match(importer.state("c").errorReason ?? "", /UNEXPECTED_ERROR/);
   assert.equal(importer.state("c").job?.before, "151");
+  // The first page reached the 100th newest message, so the job's oldest reached time is that message's time.
+  assert.equal(importer.state("c").job?.reachedAt, now - 99);
   await importer.pause("c");
   const resumed = new HistoryImporter("s", store, healthy, 7, () => now);
   await resumed.start("c"); await resumed.idle();
@@ -87,4 +89,27 @@ test("only saved memories generate embedding usage; backfill reuses vectors", as
   assert.equal(calls, 2);
   assert.equal(store.indexStats("s", "c").vectors, 2);
   assert.deepEqual(store.indexStats("s", "c").usage, [{ model: "test", purpose: "memory_index", requests: 2, tokens: 12, unknown: 1 }]);
+});
+
+test("lowering the window deletes only older messages of that channel and server; raising deletes nothing", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const rows = messages(20);
+  const importer = new HistoryImporter("s", store, source(rows), 30, () => now);
+  await importer.start("c"); await importer.idle();
+  assert.equal(store.indexStats("s", "c").messages, 20);
+  const other = (id: string, server: string, channel: string) => ({ id, server, channel, author: "a", text: id, timestamp: now - 19 * day });
+  await store.ingest(other("x1", "s", "d"));
+  await store.ingest(other("x2", "t", "c"));
+
+  await importer.start("c", "window", 40); await importer.idle();
+  assert.equal(store.indexStats("s", "c").messages, 20);
+  assert.equal(importer.state("c").days, 40);
+
+  // Keeps the messages from the last 5 days, so ids 15 to 20 remain and 14 are deleted.
+  await importer.start("c", "window", 5); await importer.idle();
+  assert.equal(importer.state("c").days, 5);
+  assert.equal(store.indexStats("s", "c").messages, 6);
+  assert.equal(importer.state("c").oldest?.id, "15");
+  assert.equal(store.indexStats("s", "d").messages, 1);
+  assert.equal(store.indexStats("t", "c").messages, 1);
 });

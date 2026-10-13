@@ -93,3 +93,22 @@ export class UserLimiter {
 export function savedLimit(value: unknown, fallback: number, max = 1000000000000): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= max ? value : fallback;
 }
+
+/** The plan every user is on for now. Change it here only. */
+export const PLAN_NAME = "Seed";
+
+/** What the console meter and the Discord /usage command show. Percents only: no costs, spend or limit amounts. percent is null when no limit is set. */
+export interface UsageView { plan: string; windows: { kind: string; percent: number | null; resetAt: number | null; banked: number }[] }
+
+/** Builds the meter view from the windows of UserLimiter.usage. Percent is rounded and capped at 100. */
+export function usageView(windows: readonly UserUsageWindow[], plan = PLAN_NAME): UsageView {
+  return {
+    plan,
+    windows: windows.map(window => ({
+      kind: window.kind,
+      percent: window.limit > 0 ? Math.min(100, Math.round(window.spent * 100 / window.limit)) : null,
+      resetAt: window.resetAt,
+      banked: window.banked,
+    })),
+  };
+}

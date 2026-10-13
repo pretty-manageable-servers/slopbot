@@ -9,6 +9,8 @@ import { webTranscriptKey, transcriptSwitchOn } from "../src/server-tools.js";
 import { createTranscripts, openStream, runSteps, type TranscriptHost } from "../src/web-transcripts.js";
 import { createConsole } from "../src/web-console.js";
 import type { Message, ModelEvent } from "../src/domain.js";
+import { MemberDirectory } from "../src/member-directory.js";
+import { fakeSource } from "./member-fakes.js";
 
 const SERVER = "1528063444874432734", CHANNEL = "1528063444874432735", THREAD = "1528063444874432736", OTHER = "1528063444874432737";
 const USER = "1514413259522838529", STRANGER = "1514413259522838530", BOT = "1528063444874432799", VIEWER = "1514413259522838531";
@@ -24,7 +26,7 @@ interface Fixture {
 }
 
 /** A store with a channel, a thread, a switched-off channel and some runs. Discord facts are fake. */
-async function fixture(t: { after(fn: () => unknown): void }): Promise<Fixture> {
+async function fixture(t: { after(fn: () => unknown): void }, members?: MemberDirectory): Promise<Fixture> {
   const store = new SQLiteStore(":memory:");
   const hidden = new Set<string>();
   const source = {
@@ -35,7 +37,7 @@ async function fixture(t: { after(fn: () => unknown): void }): Promise<Fixture> 
   };
   const access = new ChannelAccess(source);
   const names: Record<string, string> = { [CHANNEL]: "general", [OTHER]: "secret", [THREAD]: "task-1" };
-  const host: TranscriptHost = { store, access, configured: () => [CHANNEL, OTHER], channelName: async (_server, channel) => names[channel], shareRule: { manager: async () => false, teamAdmin: async user => user === USER } };
+  const host: TranscriptHost = { store, access, configured: () => [CHANNEL, OTHER], channelName: async (_server, channel) => names[channel], shareRule: { manager: async () => false, teamAdmin: async user => user === USER }, ...(members ? { members } : {}) };
   const routes = createTranscripts(host);
   const http = createServer((req, res) => {
     const user = req.headers["x-user"] ? String(req.headers["x-user"]) : undefined;
@@ -116,7 +118,7 @@ function keysOf(value: unknown, found: string[] = []): string[] {
 
 test("transcript routes answer 403 without a session", async t => {
   const f = await fixture(t);
-  const web = createConsole({ origin: "http://localhost:3000", host: "127.0.0.1", port: 3000, clientId: "id", clientSecret: "secret" }, {
+  const web = createConsole({ origin: "http://localhost:3000", host: "127.0.0.1", port: 3000, clientId: "id", clientSecret: "secret" }, { sessions: new SQLiteStore(),
     async snapshot() { return {}; },
     async invoke() { return {}; },
     conversations: createTranscripts(f.host),
@@ -133,14 +135,17 @@ test("transcript routes answer 403 without a session", async t => {
   assert.equal((await get(f, `/api/conversations/${CHANNEL}/messages?server=${SERVER}`, null)).status, 403);
 });
 
-test("the list has switched-on channels and threads the user can view, newest first", async t => {
+test("the list has the channels and threads the user can view, newest first, with enabled marking the switch", async t => {
   const f = await fixture(t);
   const list = await get(f, `/api/conversations?server=${SERVER}`);
   assert.equal(list.status, 200);
-  assert.deepEqual(list.body.conversations.map((item: { id: string }) => item.id), [THREAD, CHANNEL]);
-  assert.deepEqual(list.body.conversations.map((item: { kind: string }) => item.kind), ["thread", "channel"]);
+  assert.deepEqual(list.body.conversations.map((item: { id: string }) => item.id), [THREAD, OTHER, CHANNEL]);
+  assert.deepEqual(list.body.conversations.map((item: { kind: string }) => item.kind), ["thread", "channel", "channel"]);
+  assert.deepEqual(list.body.conversations.map((item: { enabled: boolean }) => item.enabled), [true, false, true]);
   assert.equal(list.body.conversations[0].name, "task-1");
-  assert.equal(list.body.conversations[1].canSend, true);
+  assert.equal(list.body.conversations[2].canSend, true);
+  // A switched-off channel never offers to send.
+  assert.equal(list.body.conversations[1].canSend, false);
   // A stranger is not in the server, so the list is empty and reads are refused.
   assert.deepEqual((await get(f, `/api/conversations?server=${SERVER}`, STRANGER)).body.conversations, []);
 });
@@ -155,12 +160,34 @@ test("the messages response says who may send and who may share", async t => {
   assert.deepEqual([viewer.body.canSend, viewer.body.canShare], [true, false]);
 });
 
-test("a switched-off channel is 403 and never listed", async t => {
+test("a switched-off channel is listed as off, and its messages, stream and runs stay 403", async t => {
   const f = await fixture(t);
   assert.equal((await get(f, `/api/conversations/${OTHER}/messages?server=${SERVER}`)).status, 403);
   assert.equal((await get(f, `/api/conversations/${OTHER}/messages?server=${SERVER}`, STRANGER)).status, 403);
+  const stream = await fetch(`${f.base}/api/conversations/${OTHER}/stream?server=${SERVER}`, { headers: { "x-user": USER } });
+  assert.equal(stream.status, 403);
+  await stream.body?.cancel();
+  assert.equal((await get(f, `/api/runs/run-3`)).status, 403);
+  const list = await get(f, `/api/conversations?server=${SERVER}`);
+  const off = list.body.conversations.find((item: { id: string }) => item.id === OTHER);
+  assert.equal(off.enabled, false);
+  assert.equal(off.canSend, false);
+});
+
+test("a switched-off channel the user cannot view is not listed", async t => {
+  const f = await fixture(t);
+  f.hidden.add(`${OTHER}:${USER}`);
   const list = await get(f, `/api/conversations?server=${SERVER}`);
   assert.ok(!list.body.conversations.some((item: { id: string }) => item.id === OTHER));
+  assert.deepEqual(list.body.conversations.map((item: { id: string }) => item.id), [THREAD, CHANNEL]);
+});
+
+test("search never reads messages of a switched-off channel", async t => {
+  const f = await fixture(t);
+  const found = await get(f, `/api/conversations/search?server=${SERVER}&q=secret`);
+  assert.equal(found.status, 200);
+  assert.deepEqual(found.body.messages, []);
+  assert.ok(!found.body.channels.some((item: { id: string }) => item.id === OTHER));
 });
 
 test("a user without live View Channel gets 403 on reads, the stream and runs", async t => {
@@ -171,7 +198,7 @@ test("a user without live View Channel gets 403 on reads, the stream and runs", 
   const stream = await fetch(`${f.base}/api/conversations/${CHANNEL}/stream?server=${SERVER}`, { headers: { "x-user": USER } });
   assert.equal(stream.status, 403);
   const list = await get(f, `/api/conversations?server=${SERVER}`);
-  assert.deepEqual(list.body.conversations.map((item: { id: string }) => item.id), [THREAD]);
+  assert.deepEqual(list.body.conversations.map((item: { id: string }) => item.id), [THREAD, OTHER]);
 });
 
 test("a thread uses its parent channel's switch", async t => {
@@ -180,10 +207,27 @@ test("a thread uses its parent channel's switch", async t => {
   f.store.setSetting(SERVER, webTranscriptKey(CHANNEL), false);
   assert.equal((await get(f, `/api/conversations/${THREAD}/messages?server=${SERVER}`)).status, 403);
   assert.equal(transcriptSwitchOn(f.store, SERVER, THREAD), false);
+  // A switched-off thread is not listed. Its parent channel is listed as off.
   const list = await get(f, `/api/conversations?server=${SERVER}`);
-  assert.deepEqual(list.body.conversations, []);
+  assert.deepEqual(list.body.conversations.map((item: { id: string; enabled: boolean }) => [item.id, item.enabled]), [[OTHER, false], [CHANNEL, false]]);
   f.store.setSetting(SERVER, webTranscriptKey(CHANNEL), true);
   assert.equal((await get(f, `/api/conversations/${THREAD}/messages?server=${SERVER}`)).status, 200);
+});
+
+test("messages show the member's name, @username and avatar, and Slopbot's own avatar", async t => {
+  const people = fakeSource({
+    [USER]: { username: "ada", nickname: "Ada L", serverAvatar: "https://cdn.discordapp.com/guilds/1/users/ada.png", inServer: true, email: "ada@example.com" },
+    [BOT]: { username: "slopbot", avatar: "https://cdn.discordapp.com/avatars/slop.png", inServer: true },
+  });
+  const f = await fixture(t, new MemberDirectory(people));
+  const page = await get(f, `/api/conversations/${CHANNEL}/messages?server=${SERVER}&limit=2`);
+  const [bot, human] = page.body.messages as { id: string; authorName: string; username: string | null; avatarUrl: string | null }[];
+  assert.deepEqual([bot!.id, bot!.username, bot!.avatarUrl], ["bot-1", "slopbot", "https://cdn.discordapp.com/avatars/slop.png"]);
+  assert.deepEqual([human!.id, human!.authorName, human!.username, human!.avatarUrl], ["m4", "Ada L", "ada", "https://cdn.discordapp.com/guilds/1/users/ada.png"]);
+  assert.doesNotMatch(JSON.stringify(page.body), /example\.com|"email"/);
+  // Without a directory the fields are null, as before.
+  const plain = await get(await fixture(t), `/api/conversations/${CHANNEL}/messages?server=${SERVER}&limit=2`);
+  assert.deepEqual(plain.body.messages.map((item: { username: unknown; avatarUrl: unknown }) => [item.username, item.avatarUrl]), [[null, null], [null, null]]);
 });
 
 test("messages page backwards in chronological order, with Slopbot run IDs", async t => {
@@ -255,6 +299,48 @@ test("search covers only conversations the user can view and that are switched o
   assert.equal(found.body.messages[0].channel, CHANNEL);
   assert.equal((await get(f, `/api/conversations/search?server=${SERVER}&q=x`)).status, 400);
   assert.equal((await get(f, `/api/conversations/search?server=${SERVER}&q=lighthouse&mode=bogus`)).status, 400);
+});
+
+test("used is true only for messages a reply run used, not for participation sources", async t => {
+  const f = await fixture(t);
+  // run-1 is a reply run (linked to Slopbot's reply). run-part has no reply link, like a participation run.
+  await f.store.recordSources("run-1", SERVER, ["m1"]);
+  await f.store.recordSources("run-part", SERVER, ["m2"]);
+  const page = await get(f, `/api/conversations/${CHANNEL}/messages?server=${SERVER}`);
+  const used = Object.fromEntries(page.body.messages.map((item: { id: string; used: boolean }) => [item.id, item.used]));
+  assert.equal(used.m1, true);
+  assert.equal(used.m2, false);
+  assert.equal(used.m4, false);
+  // Slopbot's own messages are always used.
+  assert.equal(used["bot-1"], true);
+  const route = await get(f, `/api/conversations/${CHANNEL}/used?server=${SERVER}&ids=m1,m2,m4`);
+  assert.equal(route.status, 200);
+  assert.deepEqual(route.body.used, ["m1"]);
+});
+
+test("the used route refuses users and channels the messages route refuses", async t => {
+  const f = await fixture(t);
+  await f.store.recordSources("run-1", SERVER, ["m1"]);
+  const path = `/api/conversations/${CHANNEL}/used?server=${SERVER}&ids=m1`;
+  assert.equal((await get(f, path, null)).status, 403);
+  assert.equal((await get(f, path, STRANGER)).status, 403);
+  assert.equal((await get(f, `/api/conversations/${OTHER}/used?server=${SERVER}&ids=o1`)).status, 403);
+  assert.equal((await get(f, `/api/conversations/${OTHER}/messages?server=${SERVER}`)).status, 403);
+  assert.equal((await get(f, path)).status, 200);
+});
+
+test("the used route refuses a user without live View Channel, and bad IDs", async t => {
+  const f = await fixture(t);
+  f.hidden.add(`${CHANNEL}:${USER}`);
+  assert.equal((await get(f, `/api/conversations/${CHANNEL}/used?server=${SERVER}&ids=m1`)).status, 403);
+  assert.equal((await get(f, `/api/conversations/${CHANNEL}/messages?server=${SERVER}`)).status, 403);
+});
+
+test("the used route rejects more than 200 IDs and IDs with spaces", async t => {
+  const f = await fixture(t);
+  const many = Array.from({ length: 201 }, (_, i) => `x${i}`).join(",");
+  assert.equal((await get(f, `/api/conversations/${CHANNEL}/used?server=${SERVER}&ids=${many}`)).status, 400);
+  assert.equal((await get(f, `/api/conversations/${CHANNEL}/used?server=${SERVER}&ids=a%20b`)).status, 400);
 });
 
 test("saved run steps: failed and delegated results, and text-protocol tool requests", () => {

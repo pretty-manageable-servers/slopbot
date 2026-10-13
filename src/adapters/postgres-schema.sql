@@ -111,6 +111,10 @@ CREATE INDEX IF NOT EXISTS messages_fulltext ON messages USING gin(to_tsvector('
 
 CREATE TABLE IF NOT EXISTS shares (id TEXT PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, created_by TEXT NOT NULL, created_at BIGINT NOT NULL, revoked_at BIGINT, body TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS shares_server ON shares(server,created_at);
+CREATE TABLE IF NOT EXISTS web_sessions (id_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, csrf TEXT NOT NULL, expires BIGINT NOT NULL, created BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS web_sessions_expires ON web_sessions(expires);
+CREATE TABLE IF NOT EXISTS web_chats (id TEXT PRIMARY KEY, server TEXT NOT NULL, owner TEXT NOT NULL, title TEXT NOT NULL, created BIGINT NOT NULL, updated BIGINT NOT NULL, deleted BIGINT NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS web_chats_owner ON web_chats(server,owner,updated);
 
 -- Remove legacy chat vectors only in this schema; chat history stays in messages.
 DO $$ BEGIN
