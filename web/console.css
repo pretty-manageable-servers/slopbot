@@ -5,3 +5,6 @@
 .chat .chat-item.off .chat-item-name{color:var(--muted)}
 .chat .chat-item-off{font-size:11px;color:var(--muted);background:var(--pill);border-radius:999px;padding:0 7px}
 .chat .chat-off-on{margin-top:14px;padding:8px 16px;border:1px solid var(--line);border-radius:8px;background:var(--pill);color:var(--strong);font-size:13px}
+
+/* Account menu: the avatar sits before the name */
+.topbar .account-name{display:flex;align-items:center;gap:10px}

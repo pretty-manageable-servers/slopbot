@@ -286,7 +286,8 @@ function messageNode(m) {
 function avatarNode(m) {
   const name = String(m.authorName || m.author || '').trim();
   const pill = () => textNode('span', Array.from(name)[0]?.toUpperCase() || '?', 'chat-avatar chat-avatar-pill');
-  if (typeof m.avatarUrl !== 'string' || !m.avatarUrl) return pill();
+  // Only Discord's CDN is accepted, the same rule as the account avatar.
+  if (typeof m.avatarUrl !== 'string' || !m.avatarUrl.startsWith(AVATAR_HOST)) return pill();
   const img = document.createElement('img');
   img.className = 'chat-avatar';
   img.width = 28; img.height = 28; img.alt = ''; img.loading = 'lazy'; img.referrerPolicy = 'no-referrer';

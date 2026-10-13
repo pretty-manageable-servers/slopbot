@@ -35,14 +35,21 @@ function setAccountMenu(open) { accountMenu.hidden = !open; accountButton.setAtt
 accountButton.onclick = event => { event.stopPropagation(); setAccountMenu(accountMenu.hidden); };
 document.addEventListener('click', event => { if (!$('account').contains(event.target)) setAccountMenu(false); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && !accountMenu.hidden) { setAccountMenu(false); accountButton.focus(); } });
+// Avatars come only from Discord's CDN. Any other URL is dropped, and a letter pill shows instead.
+const AVATAR_HOST = 'https://cdn.discordapp.com/';
+// The signed-in user's avatar: the image when it loads, else a pill with the first letter of the name.
+function accountAvatar(url, name) {
+  const pill = () => Object.assign(document.createElement('span'), { className: 'avatar-pill', textContent: Array.from(String(name).trim())[0]?.toUpperCase() || '?' });
+  if (typeof url !== 'string' || !url.startsWith(AVATAR_HOST)) return pill();
+  const img = Object.assign(document.createElement('img'), { className: 'avatar-img', alt: '', width: 24, height: 24, src: url, referrerPolicy: 'no-referrer' });
+  img.onerror = () => img.replaceWith(pill());
+  return img;
+}
 function renderAccount() {
-  const name = state.profile?.name || state.user || '';
-  const avatarUrl = state.profile?.avatarUrl;
-  $('account-name').textContent = name;
-  const node = typeof avatarUrl === 'string' && avatarUrl
-    ? Object.assign(document.createElement('img'), { className: 'avatar-img', alt: '', src: avatarUrl, referrerPolicy: 'no-referrer' })
-    : Object.assign(document.createElement('span'), { className: 'avatar-pill', textContent: Array.from(String(name))[0]?.toUpperCase() || '?' });
-  accountButton.replaceChildren(node);
+  const name = state.me?.displayName || state.profile?.name || state.user || '';
+  const avatarUrl = state.me?.avatarUrl || state.profile?.avatarUrl;
+  accountButton.replaceChildren(accountAvatar(avatarUrl, name));
+  $('account-name').replaceChildren(accountAvatar(avatarUrl, name), document.createTextNode(name));
 }
 function notice(text) { $('notice').textContent = text; }
 function showScreen(name) { $('boot').hidden = name !== 'boot'; $('login').hidden = name !== 'login'; $('console').hidden = name !== 'console'; $('account').hidden = name !== 'console'; }
@@ -195,10 +202,8 @@ function adminPrices(prices, names, edit) {
   const row = model => { const price = prices.prices[model], saved = prices.saved_models.includes(model); return `<tr><td><code>${esc(model)}</code></td>${price ? `<td>$${priceText(price.input)}</td><td>$${priceText(price.cached_input)}</td><td>$${priceText(price.output)}</td>` : '<td colspan="3" class="small">Fallback price</td>'}<td>${edit ? `<div class="chan-actions"><button type="button" data-price="edit" data-model="${esc(model)}">Edit</button>${saved ? `<button type="button" data-price="remove" data-model="${esc(model)}">Remove</button>` : ''}</div>` : ''}</td></tr>`; };
   return `<section class="card"><h2>Model prices</h2><p class="scope">Dollars per 1 million tokens, for all servers. A model without a price uses the fallback: $${priceText(prices.fallback.input)} input, $${priceText(prices.fallback.cached_input)} cached input, $${priceText(prices.fallback.output)} output.</p><div class="table-wrap"><table><thead><tr><th>Model</th><th>Input</th><th>Cached input</th><th>Output</th><th></th></tr></thead><tbody>${names.map(row).join('')}</tbody></table></div>${edit ? '<form id="admin-price" class="price-form"><label>Model<input name="model" maxlength="200" required></label><div class="row"><label>Input ($ per 1M)<input name="input" type="number" min="0" max="1000" step="0.000001" required></label><label>Cached input ($ per 1M)<input name="cached" type="number" min="0" max="1000" step="0.000001" required></label></div><label>Output ($ per 1M)<input name="output" type="number" min="0" max="1000" step="0.000001" required></label><button class="primary">Save price</button></form>' : ''}</section>`;
 }
-// Avatars come only from Discord's CDN. Any other URL is dropped, and the first letter shows instead.
-const ADMIN_AVATAR_HOST = 'https://cdn.discordapp.com/';
 function adminPerson(profile) {
-  const src = typeof profile.avatarUrl === 'string' && profile.avatarUrl.startsWith(ADMIN_AVATAR_HOST) ? esc(profile.avatarUrl) : '';
+  const src = typeof profile.avatarUrl === 'string' && profile.avatarUrl.startsWith(AVATAR_HOST) ? esc(profile.avatarUrl) : '';
   const letter = esc(String(profile.displayName || '?').trim().charAt(0).toUpperCase() || '?');
   const avatar = src ? `<img class="admin-avatar" src="${src}" alt="" width="24" height="24" loading="lazy">` : `<span class="admin-avatar admin-avatar-blank" aria-hidden="true">${letter}</span>`;
   return `<span class="admin-person" title="ID ${esc(profile.id)}">${avatar}<span class="admin-name">${esc(profile.displayName)}</span>${profile.username ? `<span class="admin-handle">@${esc(profile.username)}</span>` : ''}</span>`;
