@@ -4,6 +4,7 @@ import { requestTimings } from "./request-timing.js";
 import type { Message, Reply } from "./domain.js";
 import { ProviderError } from "./adapters/chat-completions.js";
 import { UncertainActionError } from "./tools.js";
+import { UserLimitError, type UserLimiter } from "./user-limiter.js";
 
 export interface Job {
   id: string; message: Message; status: "pending" | "running" | "ready" | "sending" | "done" | "failed" | "blocked" | "cancelled";
@@ -32,7 +33,7 @@ export class TaskWorker {
   private started = false;
   private pumping = false;
   private ticking = false;
-  constructor(private readonly server: string, private readonly store: QueueStore,
+  constructor(private readonly server: string, private readonly store: QueueStore, private readonly limiter: UserLimiter,
     private readonly run: (message: Message) => Promise<Reply | undefined>,
     private readonly deliver: (message: Message, reply: Reply, deliveryId: string) => Promise<void>,
     private readonly accepts: (message: Message) => boolean, private readonly concurrency = 3, private readonly onFailure: (job: Job, error: unknown) => Promise<void> = async () => {}) {}
@@ -50,7 +51,11 @@ export class TaskWorker {
     };
     void tick();this.timer=setInterval(()=>{void tick();},1000);this.timer.unref();
   }
-  async enqueue(message: Message): Promise<Job> { requestTimings.start(message, "queue"); const job=await this.store.enqueueJob(message);await this.pump();return job; }
+  async enqueue(message: Message): Promise<Job> {
+    // Bot messages are not user input. A task seed is covered by the request that created it. Model cost is recorded during the run.
+    if (!message.isBot && !message.id.startsWith("task-seed:")) { const limit = await this.limiter.check(message.server, message.author); if (!limit.allowed) throw new UserLimitError(limit.resetAt); }
+    requestTimings.start(message, "queue"); const job=await this.store.enqueueJob(message);await this.pump();return job;
+  }
   wake(): void { void this.pump().catch(error => logError("worker_pump_failed", error, { server: this.server })); }
   private async pump(): Promise<void> {
     return requestTimings.withoutScope(() => this.pumpUnscoped());

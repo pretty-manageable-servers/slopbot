@@ -7,6 +7,7 @@ import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { Application } from "../src/application.js";
 import { FakeLLM } from "../src/adapters/fake-llm.js";
 import { TaskWorker } from "../src/queue.js";
+import { UserLimiter } from "../src/user-limiter.js";
 import { UncertainActionError } from "../src/tools.js";
 import type { Message } from "../src/domain.js";
 
@@ -24,7 +25,7 @@ test("restart publishes an already committed answer without running the model or
   store.close();
   const reopened = new SQLiteStore(path);
   let generations = 0, deliveries = 0;
-  const worker = new TaskWorker("s", reopened, async () => { generations++; throw new Error("must reuse answer"); }, async (_message, reply, id) => {
+  const worker = new TaskWorker("s", reopened, new UserLimiter(reopened, { fiveHourCostMicros: 0, weekCostMicros: 0, gracePercent: 10 }), async () => { generations++; throw new Error("must reuse answer"); }, async (_message, reply, id) => {
     assert.equal(id, job.id); assert.ok(reply.text.includes("request 1")); deliveries++;
   }, () => true);
   try {
@@ -44,7 +45,7 @@ test("task order includes publication, while other channels can run independentl
   const wait = new Promise<void>(resolve => { release = resolve; });
   const started = new Promise<void>(resolve => { deliveryStarted = resolve; });
   const delivered: string[] = [];
-  const worker = new TaskWorker("s", store, message => app.handle(message, true), async message => {
+  const worker = new TaskWorker("s", store, new UserLimiter(store, { fiveHourCostMicros: 0, weekCostMicros: 0, gracePercent: 10 }), message => app.handle(message, true), async message => {
     if (message.id === "1") { deliveryStarted(); await wait; }
     delivered.push(message.id);
   }, () => true);
@@ -65,7 +66,7 @@ test("uncertain delivery is blocked and a retry reuses the saved answer", async 
   const store = new SQLiteStore(), llm = new FakeLLM();
   const app = new Application(store, llm, { allowedChannels: scopes });
   let attempts = 0, actualWrites = 0;
-  const worker = new TaskWorker("s", store, message => app.handle(message, true), async () => {
+  const worker = new TaskWorker("s", store, new UserLimiter(store, { fiveHourCostMicros: 0, weekCostMicros: 0, gracePercent: 10 }), message => app.handle(message, true), async () => {
     if (++attempts === 1) actualWrites++;
     throw new UncertainActionError("send result cannot be verified");
   }, () => true);
@@ -93,7 +94,7 @@ test("job errors and logs include the real cause, stage and job ID even if notic
   const store = new SQLiteStore(); t.after(() => store.close());
   const logs: string[] = []; t.mock.method(console, 'error', (line: string) => logs.push(line));
   let notice: unknown;
-  const worker = new TaskWorker('s', store, async () => { throw new Error('Tool round limit reached; progress retained'); }, async () => {}, () => true, 3,
+  const worker = new TaskWorker('s', store, new UserLimiter(store, { fiveHourCostMicros: 0, weekCostMicros: 0, gracePercent: 10 }), async () => { throw new Error('Tool round limit reached; progress retained'); }, async () => {}, () => true, 3,
     async (_job, error) => { notice = error; throw new Error('Discord notice denied'); });
   worker.start(); const job = await worker.enqueue(message('failure')); await worker.idle(); await worker.stop();
   assert.ok(notice instanceof Error);

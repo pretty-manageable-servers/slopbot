@@ -29,7 +29,18 @@ export interface Store {
   appendEvents?(runId: string, startSequence: number, events: readonly ModelEvent[]): Promise<void>;
   complete(runId: string, taskKey: string | undefined, inputs: readonly PromptItem[], text: string): Promise<void>;
   fail(runId: string, error: string): Promise<void>;
+  userUsage(server: string, user: string): Promise<UserLimitState>;
+  // Changes run in one transaction per user, so every window is read and written together.
+  updateUserLimits<T>(server: string, user: string, change: (windows: readonly UserLimitWindow[]) => { windows?: readonly UserLimitWindow[]; result: T }): Promise<T>;
+  resetUserUsage(server: string, user: string): Promise<void>;
+  grantResets(server: string, user: string, kind: string, count: number): Promise<void>;
+  // Uses one banked reset and clears that window in the same transaction.
+  useReset(server: string, user: string, kind: string): Promise<boolean>;
 }
+
+/** Spend in micro-dollars for one window kind, starting at windowStart. */
+export interface UserLimitWindow { kind: string; windowStart: number; spent: number }
+export interface UserLimitState { windows: readonly UserLimitWindow[]; resets: Readonly<Record<string, number>> }
 
 export interface Transport {
   send(message: Message, reply: Reply): Promise<void>;

@@ -42,6 +42,9 @@ import { LLMClassifier, ParticipationGate } from "../participation.js";
 import { HistoryImporter } from "../history.js";
 import { DecisionClassifier } from "./decisions.js";
 import { TaskWorker } from "../queue.js";
+import { UserLimiter, UserLimitError, limitReply } from "../user-limiter.js";
+import { activePrices, GLOBAL_SETTINGS_SCOPE, usageCostMicros } from "../usage-cost.js";
+import { registerUsageTool } from "../usage-tools.js";
 import { configuredChannels, registerServerTools } from "../server-tools.js";
 import { displayToolResult, ToolError, ToolRegistry, UncertainActionError, stableOperationId } from "../tools.js";
 
@@ -57,6 +60,7 @@ export class DiscordServer implements ChatGateway {
   private readonly tools: ToolRegistry;
   private readonly mcp: McpManager;
   private readonly worker: TaskWorker;
+  private readonly limiter: UserLimiter;
   private readonly history: HistoryImporter;
   private channels: string[];
   private historyTimer: ReturnType<typeof setInterval> | undefined;
@@ -188,12 +192,17 @@ export class DiscordServer implements ChatGateway {
         },
       } } : {}),
     }));
+    this.limiter = new UserLimiter(store, { fiveHourCostMicros: config.userLimit5hCostMicros, weekCostMicros: config.userLimitWeekCostMicros, gracePercent: config.userLimitGracePercent });
+    registerUsageTool(this.tools, this.limiter);
     this.app = new Application(store, llm, {
       allowedChannels: this.channels.map(channel => ({ server: guildId, channel })),
       recentMessages: savedLimit("reply_context", config.replyContextMessages, 100),
       maxContextTokens: config.contextTokens, maxInputChars: config.contextTokens,
       maxOutputTokens: config.outputTokens, checkpointTokens: config.checkpointTokens, maxToolRounds: config.maxToolRounds,
-    }, store, { onToolActivity: async (message, activity) => {
+    }, store, { usage: {
+      record: async (message, payload) => { await this.limiter.record(message.server, message.author, usageCostMicros(payload, config.model, activePrices(store.setting(GLOBAL_SETTINGS_SCOPE, "model_prices"), config.modelPrices), config.fallbackPrice)); },
+      overGrace: message => this.limiter.overGrace(message.server, message.author),
+    }, onToolActivity: async (message, activity) => {
       if (!this.bot.accepts(message.server, message.channel)) return;
       await this.toolProgress.update(JSON.stringify([message.server,message.channel,message.id]), activity, async content => {
         const channel = await this.client.channels.fetch(message.channel);
@@ -211,7 +220,7 @@ export class DiscordServer implements ChatGateway {
         } };
       },
     } });
-    this.worker = new TaskWorker(guildId, store, async message => {
+    this.worker = new TaskWorker(guildId, store, this.limiter, async message => {
       const source = (await store.canonicalMessage(message.server, message.id));
       if (!source || source.text !== message.text || source.author !== message.author) throw new Error("Source changed while queued; submit a new request");
       if (!message.taskId && /^!task(?:\s|$)/i.test(message.text)) {
@@ -300,6 +309,8 @@ export class DiscordServer implements ChatGateway {
       const name = subcommand === "run" ? interaction.options.getString("tool", true) : subcommand;
       const definition = this.tools.definitions().find(tool => tool.name === name);
       if (!definition) throw new ToolError("Unknown Slopbot tool");
+      // The usage tool stays available over the limit, so a user can see their spend and use a reset.
+      if (name !== "usage") { const limit = await this.limiter.check(this.guildId, interaction.user.id); if (!limit.allowed) throw new UserLimitError(limit.resetAt); }
       let args: Record<string, unknown> = {};
       if (subcommand === "run") {
         let parsed: unknown;
@@ -326,6 +337,7 @@ export class DiscordServer implements ChatGateway {
       for (const content of parts.slice(1)) await interaction.followUp({ content, flags: previewFlags | (ephemeral ? MessageFlags.Ephemeral : 0), allowedMentions: { parse: [] } });
       if(output.ui){const state=await this.uiRuntime.prepare(message,output.ui,interaction.id);const payload=discordUi(output.ui,state.id,state.revision);await interaction.followUp({...payload,flags:[...('flags' in payload?payload.flags:[]),...(ephemeral?['Ephemeral' as const]:[])],allowedMentions:{parse:[]}});}
     } catch (error) {
+      if (error instanceof UserLimitError) { await interaction.editReply({ content: limitReply(error.resetAt), allowedMentions: { parse: [] } }); return; }
       logError("command_failed", error, { stage: "slash command", server: this.guildId, messageId: interaction.id });
       await interaction.editReply({content: errorReply(error), allowedMentions: {parse: []}});
     }

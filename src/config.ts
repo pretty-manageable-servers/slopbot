@@ -1,5 +1,6 @@
 import { DEFAULT_MAX_TOOL_ROUNDS } from "./errors.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, modelTokenLimits } from "./context.js";
+import { parseFallbackPrice, parseModelPrices, type ModelPrice, type PriceTable } from "./usage-cost.js";
 
 export interface Config {
   objectStorage?: import("./adapters/s3-storage.js").S3StorageOptions;
@@ -35,6 +36,11 @@ export interface Config {
   outputTokens: number;
   checkpointTokens: number;
   maxToolRounds: number;
+  userLimit5hCostMicros: number;
+  userLimitWeekCostMicros: number;
+  userLimitGracePercent: number;
+  modelPrices: PriceTable;
+  fallbackPrice: ModelPrice;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -123,5 +129,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     checkpointTokens,
     maxToolRounds: integer("MAX_TOOL_ROUNDS", DEFAULT_MAX_TOOL_ROUNDS, 1000, 1),
     historyWindowDays: integer("HISTORY_WINDOW_DAYS", 7, 3650, 1),
+    userLimit5hCostMicros: integer("USER_LIMIT_5H_COST_MICROS", 2000000, 1000000000000), userLimitWeekCostMicros: integer("USER_LIMIT_WEEK_COST_MICROS", 20000000, 1000000000000),
+    userLimitGracePercent: integer("USER_LIMIT_GRACE_PERCENT", 10, 1000),
+    modelPrices: parseModelPrices(env.MODEL_PRICES, "MODEL_PRICES"), fallbackPrice: parseFallbackPrice(env.MODEL_FALLBACK_PRICE, "MODEL_FALLBACK_PRICE"),
   };
 }

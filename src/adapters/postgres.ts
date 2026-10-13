@@ -6,7 +6,7 @@ import type { ToolOutput } from "../tools.js";
 import { PostgresDatabase, serializeStore } from "./postgres-database.js";
 import { randomUUID } from "node:crypto";
 import { parseMessage, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
-import type { AgentTurn } from "../ports.js";
+import type { AgentTurn, UserLimitWindow, UserLimitState } from "../ports.js";
 import { searchTerms, type Embeddings, type Evidence, type MemoryRecord } from "../memory.js";
 import { ToolError } from "../tools.js";
 import type { ProfileField, UserProfile } from "../profiles.js";
@@ -591,6 +591,47 @@ export class PostgresStore {
     async setSetting(server: string, key: string, value: Json): Promise<void> {
         (await this.db.prepare("INSERT OR REPLACE INTO settings VALUES(?,?,?)").run(server, key, JSON.stringify(value)));
         this.settingsCache.set(JSON.stringify([server,key]),structuredClone(value));
+    }
+    private async userWindows(server: string, user: string): Promise<UserLimitWindow[]> {
+        return (await this.db.prepare("SELECT kind, window_start, spent FROM user_limit_counters WHERE server=? AND user_id=?").all(server, user))
+            .map(row => ({ kind: String(row.kind), windowStart: Number(row.window_start), spent: Number(row.spent) }));
+    }
+    async userUsage(server: string, user: string): Promise<UserLimitState> {
+        const resets = Object.fromEntries((await this.db.prepare("SELECT kind, count FROM user_limit_resets WHERE server=? AND user_id=?").all(server, user)).map(row => [String(row.kind), Number(row.count)]));
+        return { windows: await this.userWindows(server, user), resets };
+    }
+    // Every change to one user's limits takes the same advisory lock, which also works across server processes.
+    private async lockUser(server: string, user: string): Promise<void> {
+        (await this.db.prepare("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))").get(`${server}:${user}`));
+    }
+    async updateUserLimits<T>(server: string, user: string, change: (windows: readonly UserLimitWindow[]) => { windows?: readonly UserLimitWindow[]; result: T }): Promise<T> {
+        (await this.db.exec("BEGIN IMMEDIATE"));
+        try {
+            await this.lockUser(server, user);
+            const next = change(await this.userWindows(server, user));
+            for (const window of next.windows ?? []) (await this.db.prepare("INSERT INTO user_limit_counters VALUES(?,?,?,?,?) ON CONFLICT(server,user_id,kind) DO UPDATE SET window_start=excluded.window_start,spent=excluded.spent").run(server, user, window.kind, window.windowStart, window.spent));
+            (await this.db.exec("COMMIT"));
+            return next.result;
+        } catch (error) { (await this.db.exec("ROLLBACK")); throw error; }
+    }
+    async resetUserUsage(server: string, user: string): Promise<void> {
+        (await this.db.prepare("DELETE FROM user_limit_counters WHERE server=? AND user_id=?").run(server, user));
+    }
+    async grantResets(server: string, user: string, kind: string, count: number): Promise<void> {
+        if (!Number.isSafeInteger(count) || count < 1) throw new Error("Reset count must be a positive integer");
+        (await this.db.prepare("INSERT INTO user_limit_resets VALUES(?,?,?,?) ON CONFLICT(server,user_id,kind) DO UPDATE SET count=user_limit_resets.count+excluded.count").run(server, user, kind, count));
+    }
+    async useReset(server: string, user: string, kind: string): Promise<boolean> {
+        (await this.db.exec("BEGIN IMMEDIATE"));
+        try {
+            await this.lockUser(server, user);
+            const row = await this.db.prepare("SELECT count FROM user_limit_resets WHERE server=? AND user_id=? AND kind=?").get(server, user, kind);
+            if (!row || Number(row.count) < 1) { (await this.db.exec("COMMIT")); return false; }
+            (await this.db.prepare("UPDATE user_limit_resets SET count=count-1 WHERE server=? AND user_id=? AND kind=?").run(server, user, kind));
+            (await this.db.prepare("DELETE FROM user_limit_counters WHERE server=? AND user_id=? AND kind=?").run(server, user, kind));
+            (await this.db.exec("COMMIT"));
+            return true;
+        } catch (error) { (await this.db.exec("ROLLBACK")); throw error; }
     }
     async reindex(server: string, channels: readonly string[]): Promise<number> {
         if (!this.embeddings || !channels.length)

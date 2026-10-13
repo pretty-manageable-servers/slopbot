@@ -5,7 +5,7 @@ import type { ToolOutput } from "../tools.js";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { parseMessage, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
-import type { Store, AgentTurn } from "../ports.js";
+import type { Store, AgentTurn, UserLimitWindow, UserLimitState } from "../ports.js";
 import { cosine, searchTerms, type Embeddings, type Evidence, type Knowledge, type MemoryRecord, type Recall } from "../memory.js";
 
 import { ToolError } from "../tools.js";
@@ -353,6 +353,8 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY, message TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL, result TEXT);
       CREATE INDEX IF NOT EXISTS jobs_ready ON jobs(server,status,sequence);
       CREATE TABLE IF NOT EXISTS settings (server TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(server,key));
+      CREATE TABLE IF NOT EXISTS user_limit_counters (server TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, window_start INTEGER NOT NULL, spent INTEGER NOT NULL, PRIMARY KEY(server,user_id,kind));
+      CREATE TABLE IF NOT EXISTS user_limit_resets (server TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(server,user_id,kind));
     `);
     const operationColumns = this.db.prepare("PRAGMA table_info(tool_operations)").all();
     if (!operationColumns.some(column => column.name === "resource")) this.db.exec("ALTER TABLE tool_operations ADD COLUMN resource TEXT");
@@ -683,6 +685,42 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
 
   setSetting(server: string, key: string, value: Json): void {
     this.db.prepare("INSERT OR REPLACE INTO settings VALUES(?,?,?)").run(server, key, JSON.stringify(value));
+  }
+
+  private userWindows(server: string, user: string): UserLimitWindow[] {
+    return this.db.prepare("SELECT kind, window_start, spent FROM user_limit_counters WHERE server=? AND user_id=?").all(server, user)
+      .map(row => ({ kind: String(row.kind), windowStart: Number(row.window_start), spent: Number(row.spent) }));
+  }
+  async userUsage(server: string, user: string): Promise<UserLimitState> {
+    const resets = Object.fromEntries(this.db.prepare("SELECT kind, count FROM user_limit_resets WHERE server=? AND user_id=?").all(server, user).map(row => [String(row.kind), Number(row.count)]));
+    return { windows: this.userWindows(server, user), resets };
+  }
+  async updateUserLimits<T>(server: string, user: string, change: (windows: readonly UserLimitWindow[]) => { windows?: readonly UserLimitWindow[]; result: T }): Promise<T> {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const next = change(this.userWindows(server, user));
+      for (const window of next.windows ?? []) this.db.prepare("INSERT INTO user_limit_counters VALUES(?,?,?,?,?) ON CONFLICT(server,user_id,kind) DO UPDATE SET window_start=excluded.window_start,spent=excluded.spent").run(server, user, window.kind, window.windowStart, window.spent);
+      this.db.exec("COMMIT");
+      return next.result;
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+  async resetUserUsage(server: string, user: string): Promise<void> {
+    this.db.prepare("DELETE FROM user_limit_counters WHERE server=? AND user_id=?").run(server, user);
+  }
+  async grantResets(server: string, user: string, kind: string, count: number): Promise<void> {
+    if (!Number.isSafeInteger(count) || count < 1) throw new Error("Reset count must be a positive integer");
+    this.db.prepare("INSERT INTO user_limit_resets VALUES(?,?,?,?) ON CONFLICT(server,user_id,kind) DO UPDATE SET count=user_limit_resets.count+excluded.count").run(server, user, kind, count);
+  }
+  async useReset(server: string, user: string, kind: string): Promise<boolean> {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare("SELECT count FROM user_limit_resets WHERE server=? AND user_id=? AND kind=?").get(server, user, kind);
+      if (!row || Number(row.count) < 1) { this.db.exec("COMMIT"); return false; }
+      this.db.prepare("UPDATE user_limit_resets SET count=count-1 WHERE server=? AND user_id=? AND kind=?").run(server, user, kind);
+      this.db.prepare("DELETE FROM user_limit_counters WHERE server=? AND user_id=? AND kind=?").run(server, user, kind);
+      this.db.exec("COMMIT");
+      return true;
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
 
   reindex(server: string, channels: readonly string[]): number {
