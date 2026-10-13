@@ -24,6 +24,8 @@ export interface RuntimeStore extends Store, Knowledge, Recall, QueueStore, Tool
   identifyAuthor(server: string, author: string, names: readonly string[], bot?: boolean, identity?: Record<string,string>): Awaitable<void>;
   reindex(server: string, channels: readonly string[]): Awaitable<number>;
   purgeUnconfigured(server: string, allowed: readonly string[]): Awaitable<void>;
+  /** Channels of the live private chats of a server. Read at startup to reopen them. */
+  liveWebChatChannels(server: string): Promise<string[]>;
   revise(message: Message): Promise<void>;
   remove(server: string, channel: string, id: string): Promise<void>;
   delivery(id: string): Awaitable<{ message: Message; content: string; createdAt: number; result: Message | null } | undefined>;

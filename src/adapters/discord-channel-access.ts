@@ -1,10 +1,13 @@
 import { ChannelType, Events, PermissionFlagsBits, type Client } from "discord.js";
 import type { ChannelAccess, ChannelAccessSource } from "../channel-access.js";
+import { isPrivateChannel } from "../private-chat.js";
 
 /** Reads live permissions through the bot's discord.js client: guild member, then channel.permissionsFor(member). */
 export function discordChannelAccessSource(client: Client): ChannelAccessSource {
   return {
     async facts(server, channelId, user) {
+      // A private chat ID is not a Discord channel. It never reaches the Discord API.
+      if (isPrivateChannel(channelId)) return undefined;
       const guild = await client.guilds.fetch(server).catch(() => undefined);
       const member = await guild?.members.fetch({ user, force: true }).catch(() => undefined);
       if (!member) return undefined;

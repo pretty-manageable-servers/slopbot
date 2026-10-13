@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { Json, Message } from "./domain.js";
 import { webTranscriptsEnabled } from "./server-tools.js";
+import { isPrivateChannel } from "./private-chat.js";
 
 /** One share link. The body is a frozen snapshot, stored as JSON text. */
 export interface ShareRow { id: string; server: string; channel: string; created_by: string; created_at: number; revoked_at: number | null; body: string }
@@ -160,6 +161,7 @@ export class ShareService {
     const from = optionalId(input.from, "message"), to = optionalId(input.to, "message");
     const options = { show_avatars: optionalFlag(input.show_avatars, "show_avatars"), show_thinking: optionalFlag(input.show_thinking, "show_thinking") };
     await this.requireManager(user, server);
+    if (isPrivateChannel(channel)) throw new ShareError(403, "Private chats cannot be shared.");
     if (!(await this.deps.access.check(server, channel, user)).view) throw new ShareError(403, "You cannot view that channel.");
     const parent = this.deps.store.taskThreads(server).find(task => task.thread === channel)?.parent ?? channel;
     if (!webTranscriptsEnabled(this.deps.store, server, parent)) throw new ShareError(403, "Web transcripts are off for this channel.");

@@ -11,6 +11,8 @@ import type { TranscriptRoutes } from './web-transcripts.js';
 import { WebReplyError } from './web-replies.js';
 import { ShareError, isShareWrite, type ShareService } from './shares.js';
 import type { WebSessionStore } from './web-session-store.js';
+import type { ChatRoutes } from './web-chats.js';
+import { ChatError } from './web-chats.js';
 
 /** Team admin backend. Roles come from the Developer Portal team; panel holds the limits, prices and usage. */
 export interface ConsoleAdmin {
@@ -36,6 +38,8 @@ export interface ConsoleBackend {
   admin?: ConsoleAdmin;
   /** Read-only conversation transcripts, runs, search and the live stream. */
   conversations?: TranscriptRoutes;
+  /** Private chats: list, create, rename, delete, messages, stream and send. Owner only. */
+  chats?: ChatRoutes;
   /** Posts a web reply as the signed-in user. Errors with a WebReplyError keep their status. */
   reply?(user: string, server: string | undefined, channel: string, text: string): Promise<unknown>;
   /** Login sessions. The database is the source of truth, so logins survive restarts. */
@@ -168,6 +172,18 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         // Transcript routes answer 403 without a session; their streams must not get a login redirect.
         if (req.method === 'GET' && backend.conversations?.handles(routePath)) return void await backend.conversations.handle(req, res, url, session?.user);
         if (!session) return send(res, 401, { error: 'Sign in with Discord to continue.' });
+        // Private chats. The stream is GET. Writes need the same origin and CSRF checks as the other writes.
+        if (backend.chats?.handles(routePath)) {
+          if (req.method === 'GET') return void await backend.chats.handle(req, res, url, session.user, undefined);
+          if (!['POST', 'PATCH', 'DELETE'].includes(req.method ?? '') || req.headers.origin !== new URL(options.origin).origin || req.headers['x-csrf-token'] !== session.csrf) return send(res, 403, { error: 'Invalid request.' });
+          let chatBody: unknown;
+          if (req.method !== 'DELETE') {
+            if (!req.headers['content-type']?.startsWith('application/json')) return send(res, 415, { error: 'Send JSON.' });
+            let text = ''; for await (const chunk of req) { text += chunk; if (Buffer.byteLength(text) > 65536) return send(res, 413, { error: 'Request too large.' }); }
+            try { chatBody = text ? JSON.parse(text) : {}; } catch { return send(res, 400, { error: 'Invalid JSON.' }); }
+          }
+          return void await backend.chats.handle(req, res, url, session.user, chatBody);
+        }
         if (req.method === 'GET' && routePath === '/api/settings') {
           const server = url.searchParams.get('server') ?? undefined;
           if (server !== undefined && !/^\d{17,20}$/.test(server)) return send(res, 400, { error: 'Invalid server.' });
@@ -241,6 +257,7 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
       res.end(content);
     } catch (error) {
       if (error instanceof AdminInputError) return send(res, 400, { error: error.message });
+      if (error instanceof ChatError) return send(res, error.status, { error: error.message, ...(error.resetAt !== undefined ? { resetAt: error.resetAt } : {}) });
       if (error instanceof ShareError) return send(res, error.status, { error: error.message });
       logError('web_console_failed', error, { stage: 'web console' });
       const info = describeError(error);
