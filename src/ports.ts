@@ -51,6 +51,8 @@ export interface Store extends ProviderKeyStore {
   listKnownUsers(search: string, limit: number, offset: number): Promise<KnownUserPage>;
   /** Lifetime totals of one user in every server, by server then model. */
   userTokenTotalsByServer(user: string): Promise<(UserTokenTotalRow & { server: string })[]>;
+  // Replies sent since a time (ms), across all servers. Each triggering message counts once.
+  countRepliesSince(since: number): Promise<number>;
 }
 
 /** Spend in micro-dollars for one window kind, starting at windowStart. */

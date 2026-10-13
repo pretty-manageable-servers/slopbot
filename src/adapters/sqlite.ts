@@ -355,6 +355,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       );
       CREATE TABLE IF NOT EXISTS worker_leases (server TEXT PRIMARY KEY, owner TEXT NOT NULL, expires INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY, message TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL, result TEXT);
+      CREATE INDEX IF NOT EXISTS deliveries_created ON deliveries(created_at);
       CREATE INDEX IF NOT EXISTS jobs_ready ON jobs(server,status,sequence);
       CREATE TABLE IF NOT EXISTS settings (server TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(server,key));
       CREATE TABLE IF NOT EXISTS user_limit_counters (server TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, window_start INTEGER NOT NULL, spent INTEGER NOT NULL, PRIMARY KEY(server,user_id,kind));
@@ -817,6 +818,9 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   jobs(server: string, channel: string): Job[] {
     return this.db.prepare("SELECT * FROM jobs WHERE server=? AND channel=? ORDER BY sequence DESC LIMIT 20").all(server, channel).map(row => this.job(row));
   }
+  cancelJob(id: string): boolean {
+    return this.db.prepare("UPDATE jobs SET status='cancelled',error='Stopped' WHERE id=? AND status IN ('pending','ready','running','sending')").run(id).changes === 1;
+  }
   retryJob(server: string, channel: string, id: string): boolean {
     return this.db.prepare("UPDATE jobs SET status=CASE WHEN reply IS NULL THEN 'pending' ELSE 'ready' END,error=NULL WHERE server=? AND channel=? AND id=? AND status IN ('failed','blocked')").run(server, channel, id).changes === 1;
   }
@@ -847,6 +851,10 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     this.db.prepare("INSERT OR IGNORE INTO deliveries VALUES(?,?,?,?,NULL)").run(id, JSON.stringify(message), content, Date.now());
   }
   finishDelivery(id: string, result: Message): void { this.db.prepare("UPDATE deliveries SET result=? WHERE id=?").run(JSON.stringify(result), id); }
+  async countRepliesSince(since: number): Promise<number> {
+    const row = this.db.prepare("SELECT COUNT(DISTINCT json_extract(message,'$.server')||':'||json_extract(message,'$.id')) AS n FROM deliveries WHERE result IS NOT NULL AND created_at>=?").get(since);
+    return Number(row?.n ?? 0);
+  }
 
   setting(server: string, key: string): unknown {
     const row = this.db.prepare("SELECT value FROM settings WHERE server=? AND key=?").get(server, key);

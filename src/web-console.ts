@@ -13,6 +13,7 @@ import { ShareError, isShareWrite, type ShareService } from './shares.js';
 import type { WebSessionStore } from './web-session-store.js';
 import type { ChatRoutes } from './web-chats.js';
 import { ChatError } from './web-chats.js';
+import { runtimeVersion } from './operations-config.js';
 
 /** Team admin backend. Roles come from the Developer Portal team; panel holds the limits, prices and usage. */
 export interface ConsoleAdmin {
@@ -69,6 +70,11 @@ export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOpt
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid WEB_PORT');
   if (!env.DISCORD_CLIENT_ID || !env.DISCORD_CLIENT_SECRET) throw new Error('Set DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET for web login');
   return { origin: origin.origin, port, host: env.WEB_HOST || '127.0.0.1', clientId: env.DISCORD_CLIENT_ID, clientSecret: env.DISCORD_CLIENT_SECRET };
+}
+/** Build version for the console footer. The sha is null unless the image set a valid full git sha. */
+export function consoleVersion(env: NodeJS.ProcessEnv = process.env) {
+  const { commit, builtAt } = runtimeVersion(env);
+  return { sha: commit ? commit.slice(0, 7).toLowerCase() : null, time: builtAt ? new Date(builtAt).toISOString() : null, url: commit ? `https://github.com/pretty-manageable-servers/slopbot/commit/${commit.toLowerCase()}` : null };
 }
 const token = () => randomBytes(32).toString('hex');
 /** A login lasts 30 days after its last renewal. A request renews it once less than 29 days remain. */
@@ -210,6 +216,8 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         await sessions.saveSession({ id_hash: sessionHash(id), user_id: user.id, csrf: token(), expires: now + SESSION_MS, created: now });
         res.writeHead(302, { Location: '/console', 'Set-Cookie': [cookie('slopbot_session', id, SESSION_AGE), cookie('slopbot_state', '', 0)] }); res.end(); return;
       }
+      // Build version for the footer. Public: it needs no login and holds no secrets.
+      if (req.method === 'GET' && routePath === '/api/version') return send(res, 200, consoleVersion());
       // Public share pages and snapshots. They never need a login and are never indexed.
       const shareImage = req.method === 'GET' && backend.shares ? routePath.match(/^\/s\/([A-Za-z0-9_-]{22})\/images\/([0-9a-f]{32}\.(?:png|jpg|gif|webp))$/) : null;
       if (shareImage && backend.shares) {

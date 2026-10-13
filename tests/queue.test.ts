@@ -104,3 +104,14 @@ test("job errors and logs include the real cause, stage and job ID even if notic
   assert.equal(events[0].message, 'Tool round limit reached; progress retained');
   assert.equal(events[1].event, 'task_failure_notice_failed');
 });
+
+test("a cancelled job is not claimed and does not finish later", () => {
+  const store = new SQLiteStore();
+  const job = store.enqueueJob(message("1"));
+  assert.equal(store.cancelJob(job.id), true);
+  assert.equal(store.cancelJob(job.id), false);
+  assert.equal(store.claimJob("s"), undefined);
+  store.finishJob(job.id);
+  assert.equal(store.jobs("s", "t")[0]?.status, "cancelled");
+  store.close();
+});
