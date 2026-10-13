@@ -22,7 +22,7 @@ export async function shareMessages(db: ShareDb, server: string, channel: string
   const rows = await db.prepare(`SELECT body FROM messages WHERE server=? AND channel=?
       AND ${moment} >= ? AND ${moment} <= ?
       AND NOT EXISTS (SELECT 1 FROM message_tombstones t WHERE t.server=messages.server AND t.id=messages.id)
-      ORDER BY ${moment} DESC LIMIT ?`).all(server, channel, low, high, range.limit + 1) as { body: string }[];
+      ORDER BY ${moment} DESC, id DESC LIMIT ?`).all(server, channel, low, high, range.limit + 1) as { body: string }[];
   const kept = rows.slice(0, range.limit).reverse();
   return { messages: kept.map(row => parseMessage(JSON.parse(String(row.body)))), more: rows.length > range.limit };
 }
@@ -53,7 +53,7 @@ export async function getShare(db: ShareDb, id: string): Promise<ShareRow | unde
 }
 
 export async function listShares(db: ShareDb, server: string, limit: number): Promise<ShareListRow[]> {
-  const rows = await db.prepare("SELECT id,channel,created_at,revoked_at FROM shares WHERE server=? ORDER BY created_at DESC LIMIT ?").all(server, limit) as Record<string, unknown>[];
+  const rows = await db.prepare("SELECT id,channel,created_at,revoked_at FROM shares WHERE server=? ORDER BY created_at DESC, id DESC LIMIT ?").all(server, limit) as Record<string, unknown>[];
   return rows.map(row => ({ id: String(row.id), channel: String(row.channel), created_at: Number(row.created_at),
     revoked_at: row.revoked_at === null || row.revoked_at === undefined ? null : Number(row.revoked_at) }));
 }
