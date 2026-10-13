@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { parseMessage, type Effort, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
 import type { Store, AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow, TokenTotals, UserTokenTotalRow, TokenTotalsSummary } from "../ports.js";
+import type { KeyedProvider, ProviderKeyRow, ProviderKeyUsage } from "../web-providers.js";
 import { cosine, searchTerms, type Embeddings, type Evidence, type Knowledge, type MemoryRecord, type Recall } from "../memory.js";
 import { attribution, type Attribution } from "../usage-meter.js";
 
@@ -31,6 +32,9 @@ import { isPrivateChannel } from '../private-chat.js';
 import type { WebSessionRow } from '../web-session-store.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
 import { promptInventory, saveRunRuntime } from '../run-diagnostics.js';
+function providerKeyRow(row: Record<string, unknown>): ProviderKeyRow {
+  return { id: String(row.id), provider: String(row.provider) as KeyedProvider, owner: String(row.owner), label: String(row.label), last4: String(row.last4), secretEncrypted: String(row.secret_encrypted), createdAt: Number(row.created_at) };
+}
 export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore {
   async record(
     server: string,
@@ -374,6 +378,8 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       CREATE INDEX IF NOT EXISTS web_sessions_expires ON web_sessions(expires);
       CREATE TABLE IF NOT EXISTS web_chats (id TEXT PRIMARY KEY, server TEXT NOT NULL, owner TEXT NOT NULL, title TEXT NOT NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL, deleted INTEGER NOT NULL DEFAULT 0);
       CREATE INDEX IF NOT EXISTS web_chats_owner ON web_chats(server,owner,updated);
+      CREATE TABLE IF NOT EXISTS web_provider_keys (id TEXT PRIMARY KEY, provider TEXT NOT NULL, owner TEXT NOT NULL, label TEXT NOT NULL, last4 TEXT NOT NULL, secret_encrypted TEXT NOT NULL, created_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS web_provider_usage (key_id TEXT NOT NULL, month TEXT NOT NULL, used INTEGER NOT NULL, exhausted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(key_id, month));
     `);
     if (!this.db.prepare("PRAGMA table_info(web_replies)").all().some(column => column.name === "via")) this.db.exec("ALTER TABLE web_replies ADD COLUMN via TEXT NOT NULL DEFAULT 'webhook'");
     if (!this.db.prepare("PRAGMA table_info(web_chats)").all().some(column => column.name === "effort")) this.db.exec("ALTER TABLE web_chats ADD COLUMN effort TEXT");
@@ -923,6 +929,45 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       this.db.exec("COMMIT");
       return true;
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  async listProviderKeys(): Promise<ProviderKeyRow[]> {
+    return this.db.prepare("SELECT id,provider,owner,label,last4,secret_encrypted,created_at FROM web_provider_keys ORDER BY created_at,id").all().map(providerKeyRow);
+  }
+  async addProviderKey(row: ProviderKeyRow): Promise<void> {
+    this.db.prepare("INSERT INTO web_provider_keys (id,provider,owner,label,last4,secret_encrypted,created_at) VALUES(?,?,?,?,?,?,?)").run(row.id, row.provider, row.owner, row.label, row.last4, row.secretEncrypted, row.createdAt);
+  }
+  async deleteProviderKey(id: string): Promise<boolean> {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare("DELETE FROM web_provider_usage WHERE key_id=?").run(id);
+      const changes = this.db.prepare("DELETE FROM web_provider_keys WHERE id=?").run(id).changes;
+      this.db.exec("COMMIT");
+      return Number(changes) === 1;
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+  // Picks the key in one transaction. BEGIN IMMEDIATE takes the write lock, so no other write runs between the read and the upsert.
+  async reserveProviderCredits(provider: KeyedProvider, month: string, credits: number, cap: number): Promise<ProviderKeyRow | undefined> {
+    if (!Number.isSafeInteger(credits) || credits < 1) throw new Error("Provider credits must be a positive integer");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare(`SELECT k.id,k.provider,k.owner,k.label,k.last4,k.secret_encrypted,k.created_at FROM web_provider_keys k
+        LEFT JOIN web_provider_usage u ON u.key_id=k.id AND u.month=?
+        WHERE k.provider=? AND COALESCE(u.exhausted,0)=0 AND COALESCE(u.used,0)+?<=?
+        ORDER BY COALESCE(u.used,0), k.created_at, k.id LIMIT 1`).get(month, provider, credits, cap);
+      if (!row) { this.db.exec("COMMIT"); return undefined; }
+      const picked = providerKeyRow(row);
+      this.db.prepare("INSERT INTO web_provider_usage (key_id,month,used,exhausted) VALUES(?,?,?,0) ON CONFLICT(key_id,month) DO UPDATE SET used=web_provider_usage.used+excluded.used").run(picked.id, month, credits);
+      this.db.exec("COMMIT");
+      return picked;
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+  async exhaustProviderKey(id: string, month: string): Promise<void> {
+    this.db.prepare("INSERT INTO web_provider_usage (key_id,month,used,exhausted) VALUES(?,?,0,1) ON CONFLICT(key_id,month) DO UPDATE SET exhausted=1").run(id, month);
+  }
+  async providerKeyUsage(month: string): Promise<ProviderKeyUsage[]> {
+    return this.db.prepare("SELECT key_id,month,used,exhausted FROM web_provider_usage WHERE month=? ORDER BY key_id").all(month)
+      .map(row => ({ keyId: String(row.key_id), month: String(row.month), used: Number(row.used), exhausted: Number(row.exhausted) !== 0 }));
   }
 
   reindex(server: string, channels: readonly string[]): number {

@@ -140,7 +140,11 @@ The core module boundaries and prioritized follow-up work are documented in [arc
 
 ### Web search
 
-`web_search` is shared by the model and `/slopbot web_search query:<query>`. It returns titles, URLs and snippets. The implementation uses SearXNG, matching [Housebot's current search adapter](https://github.com/bushshrub/housebot/blob/master/crates/tools/src/searxng.rs). It does not fetch full pages.
+`web_search` is shared by the model and `/slopbot web_search query:<query>`. It returns titles, URLs and snippets. Order: SearXNG first. If SearXNG fails (not when it finds nothing), Tavily. If Tavily fails or finds nothing, Firecrawl search (no page content).
+
+`web_fetch` reads one public page as text, cut to 8,000 characters. Order: a plain fetch with [Defuddle](https://github.com/kepano/defuddle), then a Firecrawl scrape (markdown only, basic proxy, no PDF parsing: 1 credit). Private, internal and non-standard-port addresses are refused before any paid step.
+
+Tavily and Firecrawl use team keys that team members add in the admin panel (Bot admin, Web search keys). Keys are sealed with `WEB_KEYS_SECRET` (32 bytes, base64) and only the last four characters are shown. Each search picks the key with the most credits left this month, under its cap (default 950). A key that answers "out of credits" or "invalid" is skipped until the month ends. Every call costs the user a fixed amount on their 5-hour and weekly limits (`web_costs_micros` setting): SearXNG and plain fetch $0.001, Tavily and Firecrawl search $0.01, Firecrawl scrape $0.005.
 
 If you already have an instance, set `SEARXNG_URL` in `.env`; enable JSON in its search formats. Without an instance, start Docker Desktop and run:
 

@@ -23,7 +23,13 @@ import { toolFooter, toolDisplayMode } from '../presentation/tool-activity.js';
 import type { ToolActivity } from '../tool-activity.js';
 import { discordPresentation, suppressLinkPreviews } from '../presentation/discord.js';
 import { registerHistoryTools } from '../search/history-search.js';
-import { registerWebSearch, UnconfiguredSearch } from "../web-search.js";
+import { registerWebSearch } from "../web-search.js";
+import { registerWebFetch } from "../web-fetch.js";
+import { FallbackFetch, FallbackSearch, LimiterWebCharge, StoreKeyPool } from "../web-chain.js";
+import { WebKeySecrets } from "../web-keys.js";
+import { TavilySearch } from "./tavily.js";
+import { FirecrawlScrape, FirecrawlSearch } from "./firecrawl.js";
+import { PlainFetch } from "./plain-fetch.js";
 import { SearxNGSearch } from "./searxng.js";
 import { ReplyRenderer } from "../reply-renderer.js";
 import { registerFileTool, inspectFile } from '../files.js';
@@ -187,7 +193,12 @@ export class DiscordServer implements ChatGateway {
     this.reminders=new ReminderWorker(guildId,store,async(message,text,id)=>{await this.reply(message,text,id);},authorizeFeature);
     registerUiTool(this.tools);
     registerProfileTools(this.tools, store);
-    registerWebSearch(this.tools, config.searxngUrl ? new SearxNGSearch(config.searxngUrl, fetch, Date.now, config.searxngAccess) : new UnconfiguredSearch());
+    // Free steps first. Team keys from the admin panel are used only when the free step fails.
+    const webKeys = new WebKeySecrets();
+    const pool = webKeys.enabled ? new StoreKeyPool(store, row => webKeys.open(row.secretEncrypted, row.id)) : undefined;
+    const charge = new LimiterWebCharge(usage.limiter, store);
+    registerWebSearch(this.tools, new FallbackSearch({ ...(config.searxngUrl ? { searxng: new SearxNGSearch(config.searxngUrl, fetch, Date.now, config.searxngAccess) } : {}), ...(pool ? { pool, tavily: new TavilySearch(), firecrawl: new FirecrawlSearch() } : {}), charge }));
+    registerWebFetch(this.tools, new FallbackFetch({ plain: new PlainFetch(), ...(pool ? { pool, firecrawl: new FirecrawlScrape() } : {}), charge }));
     const resolveAttachment = async (request: Message, requestedId: string | undefined, allowParent = false): Promise<Message> => {
       const id = requestedId ?? (request.attachments?.length ? request.id : request.replyTo);
       if (!id) throw new ToolError("Reply to a message with a file attached.");

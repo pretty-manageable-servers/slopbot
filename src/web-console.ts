@@ -79,12 +79,15 @@ const SESSION_SWEEP_MS = 3_600_000;
 /** The database stores only this hash of the cookie value. */
 const sessionHash = (id: string) => createHash('sha256').update(id).digest('hex');
 const allowed = new Set(['monitoring', 'context', 'cooldown', 'channels', 'index', 'profile', 'timing', 'tool_display', 'default_effort']);
-/** Team admin routes. Every one needs team membership; POST also needs an editing role. */
+/** Team admin routes. Every one needs team membership; POST also needs an editing role, except the web key add and delete routes. */
 async function adminRoute(admin: ConsoleAdmin, user: string, method: string, path: string, query: URLSearchParams, body: unknown): Promise<unknown> {
   const role = await admin.role(user);
   if (!role) throw new ToolError('Team membership is required.');
-  if (method === 'POST' && !await admin.canEdit(user)) throw new ToolError('Team editor role is required.');
   const { panel } = admin;
+  // Any team member can add and remove web search keys. Removing someone else's key needs an editor; the panel checks that.
+  if (method === 'POST' && path === '/api/admin/web-keys/add') return panel.addWebKey(user, body);
+  if (method === 'POST' && path === '/api/admin/web-keys/delete') return panel.deleteWebKey(user, await admin.canEdit(user), body);
+  if (method === 'POST' && !await admin.canEdit(user)) throw new ToolError('Team editor role is required.');
   if (method === 'GET') {
     if (path === '/api/admin/me') return { role, canEdit: await admin.canEdit(user) };
     if (path === '/api/admin/limits') return panel.limits(query.get('server'));
@@ -96,9 +99,11 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
     if (path === '/api/admin/servers/channels') return admin.serverChannels(snowflake(query.get('server'), 'server'));
     if (path === '/api/admin/usage/total') return panel.totalUsage(id => admin.serverInfo(id));
     if (path === '/api/admin/system-prompt/full') return panel.fullSystemPrompt();
+    if (path === '/api/admin/web-keys') return panel.webKeys(user);
     return undefined;
   }
   if (path === '/api/admin/limits') return panel.saveLimits(body);
+  if (path === '/api/admin/web-keys/caps') return panel.saveKeyCaps(body);
   if (path === '/api/admin/prices') return panel.savePrice(body);
   if (path === '/api/admin/system-prompt') return panel.saveSystemPrompt(body);
   if (path === '/api/admin/usage/reset') return panel.resetUsage(body);

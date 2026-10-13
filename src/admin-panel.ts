@@ -7,6 +7,8 @@ import { modelsInUse } from "./usage-meter.js";
 import type { MemberDirectory, MemberProfile } from "./member-directory.js";
 import { DEFAULT_INSTRUCTIONS, fullSystemText } from "./agent-runner.js";
 import type { PresentationPolicy } from "./presentation/policy.js";
+import { newProviderKeyRow, WebKeySecrets } from "./web-keys.js";
+import { DEFAULT_KEY_CAPS, KEY_CAPS_SETTING, KEYED_PROVIDERS, usageMonth, type KeyedProvider } from "./web-providers.js";
 
 /** A bad value sent by a team admin. The console answers 400 with the message. */
 export class AdminInputError extends Error { override name = "AdminInputError"; }
@@ -26,9 +28,11 @@ const SYSTEM_PROMPT_KEY = "system_prompt";
 const SERVER_PAGE_DEFAULT = 20;
 const SERVER_PAGE_MAX = 50;
 const TOTAL_TOP = 10;
+const MAX_KEYS_PER_OWNER = 10;
+const MAX_KEY_CAP = 100000;
 
 export type AdminConfig = Pick<Config, "model" | "jevModel" | "embeddingModel" | "baseUrl" | "modelPrices" | "fallbackPrice" | "userLimit5hCostMicros" | "userLimitWeekCostMicros" | "userLimitGracePercent">;
-export type AdminStore = Pick<Store, "listUserUsage" | "resetUserUsage" | "grantResets" | "tokenTotalsSummary"> & { setting(server: string, key: string): unknown; setSetting(server: string, key: string, value: Json): void | Promise<void> };
+export type AdminStore = Pick<Store, "listUserUsage" | "resetUserUsage" | "grantResets" | "tokenTotalsSummary" | "listProviderKeys" | "addProviderKey" | "deleteProviderKey" | "providerKeyUsage"> & { setting(server: string, key: string): unknown; setSetting(server: string, key: string, value: Json): void | Promise<void> };
 export type WindowKind = "5h" | "week";
 export interface LimitValues { five_hour_cost_micros: number; week_cost_micros: number; grace_percent: number }
 export interface LimitsView extends LimitValues { server: string; defaults: LimitValues }
@@ -50,6 +54,10 @@ export interface TotalUsageView {
 export interface ServerPage { q: string; offset: number; limit: number }
 /** One row of the server list. transcriptsOn counts the channels with web transcripts on. */
 export interface ServerListRow { id: string; name: string; icon?: string | null; channelCount: number; transcriptsOn: number }
+/** One team key. Never holds the secret. owner is the Discord user ID of the member who added it; mine is true for the signed-in member. */
+export interface WebKeyView { id: string; provider: KeyedProvider; label: string; last4: string; owner: string; createdAt: number; used: number; exhausted: boolean; mine: boolean }
+/** The team web search keys. enabled is false when WEB_KEYS_SECRET is not set. caps is the monthly credit cap of each key. */
+export interface WebKeysView { enabled: boolean; month: string; caps: Record<KeyedProvider, number>; keys: WebKeyView[] }
 
 export function snowflake(value: unknown, what: string): string {
   if (typeof value !== "string" || !SNOWFLAKE.test(value)) throw new AdminInputError(`Invalid ${what}.`);
@@ -102,7 +110,8 @@ function usageRow(sums: TokenSums): UsageRow {
 /** Limits, model prices and user usage for the team admin panel. Every change is validated before it is saved. */
 export class AdminPanel {
   /** presentation is the same rule set the runs use, so the full prompt view matches a real run. */
-  constructor(private readonly config: AdminConfig, private readonly store: AdminStore, private readonly limiter: UserLimiter, private readonly directory: Pick<MemberDirectory, "profiles" | "search">, private readonly presentation?: PresentationPolicy) {}
+  /** secrets seals the team keys. It reads WEB_KEYS_SECRET unless a value is given. */
+  constructor(private readonly config: AdminConfig, private readonly store: AdminStore, private readonly limiter: UserLimiter, private readonly directory: Pick<MemberDirectory, "profiles" | "search">, private readonly presentation?: PresentationPolicy, private readonly secrets: WebKeySecrets = new WebKeySecrets()) {}
 
   /** Lifetime token totals over all servers, with the top servers and models by cost. Server name and icon come from info. */
   async totalUsage(info: (server: string) => ServerInfo): Promise<TotalUsageView> {
@@ -244,5 +253,79 @@ export class AdminPanel {
     if (count < 1) throw new AdminInputError("Grant between 1 and 100 resets.");
     await this.store.grantResets(server, user, kind, count);
     return { server, user, kind, granted: count, windows: await this.limiter.usage(server, user) };
+  }
+
+  /** The team web search keys with this month's use. Any team member may read them. Never includes a secret. */
+  async webKeys(user: string): Promise<WebKeysView> {
+    const month = usageMonth();
+    const [rows, usage] = await Promise.all([this.store.listProviderKeys(), this.store.providerKeyUsage(month)]);
+    const useOf = new Map(usage.map(row => [row.keyId, row]));
+    return {
+      enabled: this.secrets.enabled,
+      month,
+      caps: this.keyCaps(),
+      keys: rows.map((row): WebKeyView => {
+        const use = useOf.get(row.id);
+        return { id: row.id, provider: row.provider, label: row.label, last4: row.last4, owner: row.owner, createdAt: row.createdAt, used: use?.used ?? 0, exhausted: use?.exhausted ?? false, mine: row.owner === user };
+      }),
+    };
+  }
+
+  /** Saves one key for the signed-in member. The secret is sealed before it is stored. Each member keeps at most 10 keys per provider. */
+  async addWebKey(user: string, body: unknown): Promise<WebKeysView> {
+    const input = object(body, "Send a key as an object.");
+    if (!this.secrets.enabled) throw new AdminInputError("Web search keys are off. The operator must set WEB_KEYS_SECRET to a base64 32-byte key, then restart Slopbot.");
+    if (typeof input.provider !== "string" || !(KEYED_PROVIDERS as readonly string[]).includes(input.provider)) throw new AdminInputError(`Provider must be one of: ${KEYED_PROVIDERS.join(", ")}.`);
+    const label = input.label === undefined ? "" : input.label;
+    if (typeof label !== "string") throw new AdminInputError("The label must be text.");
+    if (typeof input.secret !== "string") throw new AdminInputError("The key must be text.");
+    const provider = input.provider as KeyedProvider;
+    const owned = (await this.store.listProviderKeys()).filter(row => row.owner === user && row.provider === provider).length;
+    if (owned >= MAX_KEYS_PER_OWNER) throw new AdminInputError(`You can save up to ${MAX_KEYS_PER_OWNER} ${provider} keys. Remove one first.`);
+    let row;
+    try { row = newProviderKeyRow(this.secrets, provider, user, label.trim(), input.secret.trim(), Date.now()); }
+    catch (error) { throw new AdminInputError(error instanceof Error ? error.message : "The key is not valid."); }
+    await this.store.addProviderKey(row);
+    return this.webKeys(user);
+  }
+
+  /** Removes one key. The owner may remove it; a team editor may remove any key. */
+  async deleteWebKey(user: string, canEdit: boolean, body: unknown): Promise<WebKeysView> {
+    const input = object(body, "Send a key as an object.");
+    const row = typeof input.id === "string" ? (await this.store.listProviderKeys()).find(item => item.id === input.id) : undefined;
+    if (!row) throw new AdminInputError("That key does not exist. It may already be removed.");
+    if (row.owner !== user && !canEdit) throw new AdminInputError("Only the key owner or a team editor can remove this key.");
+    if (!await this.store.deleteProviderKey(row.id)) throw new AdminInputError("That key does not exist. It may already be removed.");
+    return this.webKeys(user);
+  }
+
+  /** Saves the monthly credit cap of one or both providers. Each cap is a whole number from 1 to 100000. Caps not sent keep their value. */
+  async saveKeyCaps(body: unknown): Promise<Record<KeyedProvider, number>> {
+    const input = object(body, "Send the caps as an object.");
+    const table = this.savedCaps();
+    for (const provider of KEYED_PROVIDERS) {
+      const value = input[provider];
+      if (value === undefined) continue;
+      if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > MAX_KEY_CAP) throw new AdminInputError(`Each key cap must be a whole number from 1 to ${MAX_KEY_CAP}.`);
+      table[provider] = value;
+    }
+    await this.store.setSetting(GLOBAL_SETTINGS_SCOPE, KEY_CAPS_SETTING, table as Json);
+    return this.keyCaps();
+  }
+
+  /** The cap in use for each provider: the saved value, or the default when none is saved or it is not a positive whole number. */
+  private keyCaps(): Record<KeyedProvider, number> {
+    const saved = this.savedCaps();
+    const caps = {} as Record<KeyedProvider, number>;
+    for (const provider of KEYED_PROVIDERS) {
+      const value = saved[provider];
+      caps[provider] = typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_KEY_CAPS[provider];
+    }
+    return caps;
+  }
+
+  private savedCaps(): Record<string, Json> {
+    const saved = this.store.setting(GLOBAL_SETTINGS_SCOPE, KEY_CAPS_SETTING);
+    return saved && typeof saved === "object" && !Array.isArray(saved) ? { ...saved } as Record<string, Json> : {};
   }
 }

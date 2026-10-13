@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { consoleOptions, createConsole } from '../src/web-console.js';
 import { ToolError } from '../src/tools.js';
+import { WebKeySecrets } from '../src/web-keys.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { AdminInputError, AdminPanel, pageItems, serverPage } from '../src/admin-panel.js';
 import { DEFAULT_INSTRUCTIONS, fullSystemText, systemText } from '../src/agent-runner.js';
@@ -277,6 +278,84 @@ test('team admin routes need team membership, and only editors can change settin
   // Losing the role takes effect after the team reload.
   members = [];
   assert.equal((await get('/api/admin/me', developer)).status, 200, 'the cache still holds the old team');
+});
+test('web search keys: any team member adds and removes keys, only editors set caps', async t => {
+  const store = new SQLiteStore(), OWNER = '100000000000000001', DEVELOPER = '100000000000000003', READER = '100000000000000004', OUTSIDER = '100000000000000005';
+  const members: TeamSnapshot['members'] = [{ id: DEVELOPER, role: 'developer', accepted: true }, { id: READER, role: 'read_only', accepted: true }];
+  const teams = new TeamAdmins({ async load() { return { ownerId: OWNER, members: [...members] }; } });
+  const limiter = new UserLimiter(store, { fiveHourCostMicros: 100, weekCostMicros: 0, gracePercent: 10 });
+  const secrets = new WebKeySecrets('MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=');
+  const panel = new AdminPanel({ model: 'nimbus', jevModel: 'cirrus', embeddingModel: 'embed', baseUrl: 'https://models.example.com/v1', modelPrices: {}, fallbackPrice: { input: 1, cached_input: 1, output: 1 }, userLimit5hCostMicros: 100, userLimitWeekCostMicros: 0, userLimitGracePercent: 10 }, store, limiter, new MemberDirectory(fakeSource({})), undefined, secrets);
+  const admin: ConsoleAdmin = { role: id => teams.role(id), canEdit: id => teams.canEdit(id), servers: async () => ({ servers: [], total: 0 }), serverChannels: async server => ({ server, channels: [] }), serverInfo: id => ({ name: id, icon: null }), setTranscript: async (server, channel, enabled) => ({ server, channel, enabled }), rotateWebhook: async () => ({}), panel };
+  const server = createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'}, { sessions: new SQLiteStore(), async canSignIn() { return true; },
+    async snapshot() { return {}; }, async invoke() { return {}; }, admin,
+  });
+  server.listen(0,'127.0.0.1'); await once(server,'listening');
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  t.after(() => store.close());
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  const base = `http://127.0.0.1:${address.port}`, originalFetch = globalThis.fetch;
+  let identity = '';
+  t.mock.method(globalThis,'fetch',async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url) === 'https://discord.com/api/oauth2/token') return Response.json({access_token:'oauth-secret'});
+    if (String(url) === 'https://discord.com/api/users/@me') return Response.json({id: identity});
+    return originalFetch(url, init);
+  });
+  const login = async (id: string) => {
+    identity = id;
+    const start = await originalFetch(base + '/auth/login', { redirect: 'manual' });
+    const state = new URL(start.headers.get('location')!).searchParams.get('state')!;
+    const callback = await originalFetch(base + `/auth/callback?state=${state}&code=x`, { redirect: 'manual', headers: { Cookie: `slopbot_state=${state}` } });
+    const cookie = callback.headers.getSetCookie()[0]!.split(';')[0]!;
+    const { csrf } = await (await originalFetch(base + '/api/settings', { headers: { Cookie: cookie } })).json() as { csrf: string };
+    return { Cookie: cookie, Origin: 'http://localhost:3000', 'X-CSRF-Token': csrf };
+  };
+  const get = (path: string, session: Record<string, string>) => originalFetch(base + path, { headers: session });
+  const post = (path: string, body: unknown, session: Record<string, string>) => originalFetch(base + path, { method: 'POST', headers: { ...session, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const outsider = await login(OUTSIDER), reader = await login(READER), developer = await login(DEVELOPER);
+  const SECRET = 'tvly-reader-9999', OTHER_SECRET = 'tvly-developer-8888';
+
+  // Not a member: no list, no add, no remove.
+  assert.equal((await get('/api/admin/web-keys', outsider)).status, 403);
+  assert.equal((await post('/api/admin/web-keys/add', { provider: 'tavily', secret: SECRET }, outsider)).status, 403);
+  assert.equal((await post('/api/admin/web-keys/delete', { id: 'x' }, outsider)).status, 403);
+
+  // Read-only member: can add and remove their own keys, but not set caps.
+  const empty = await get('/api/admin/web-keys', reader);
+  assert.equal(empty.status, 200);
+  assert.deepEqual(await empty.json(), { enabled: true, month: new Date().toISOString().slice(0, 7), caps: { tavily: 950, firecrawl: 950 }, keys: [] });
+  const added = await post('/api/admin/web-keys/add', { provider: 'tavily', label: 'reader key', secret: SECRET }, reader);
+  assert.equal(added.status, 200);
+  const addedText = await added.text();
+  assert.doesNotMatch(addedText, /tvly-reader-9999|secretEncrypted/);
+  const readerKey = (JSON.parse(addedText) as { keys: { id: string; mine: boolean; last4: string }[] }).keys[0]!;
+  assert.equal(readerKey.mine, true);
+  assert.equal(readerKey.last4, '9999');
+  assert.equal((await post('/api/admin/web-keys/add', { provider: 'serper', secret: SECRET }, reader)).status, 400);
+  assert.equal((await post('/api/admin/web-keys/add', { provider: 'tavily', secret: 'has space' }, reader)).status, 400);
+  assert.equal((await post('/api/admin/web-keys/caps', { tavily: 500 }, reader)).status, 403);
+
+  // Developer (an editor): adds a key, sets caps, and removes the reader's key.
+  const devAdded = await (await post('/api/admin/web-keys/add', { provider: 'firecrawl', secret: OTHER_SECRET }, developer)).json() as { keys: { id: string; mine: boolean }[] };
+  assert.deepEqual(devAdded.keys.map(key => key.mine), [false, true], 'the developer sees the reader key as not mine');
+  const reader2 = await (await get('/api/admin/web-keys', reader)).json() as { keys: { id: string; mine: boolean }[] };
+  assert.deepEqual(reader2.keys.map(key => key.mine), [true, false]);
+  const caps = await post('/api/admin/web-keys/caps', { tavily: 500 }, developer);
+  assert.equal(caps.status, 200);
+  assert.deepEqual(await caps.json(), { tavily: 500, firecrawl: 950 });
+  assert.equal((await post('/api/admin/web-keys/caps', { tavily: 0 }, developer)).status, 400);
+  assert.equal((await post('/api/admin/web-keys/caps', { tavily: 100001 }, developer)).status, 400);
+  assert.equal((await get('/api/admin/web-keys', reader)).status, 200);
+  assert.equal(((await (await get('/api/admin/web-keys', reader)).json()) as { caps: { tavily: number } }).caps.tavily, 500, 'every member sees the cap');
+
+  // A member cannot remove someone else's key. The owner can, and so can an editor.
+  const readerKeyId = readerKey.id;
+  assert.equal((await post('/api/admin/web-keys/delete', { id: readerKeyId }, developer)).status, 200, 'an editor removes any key');
+  assert.equal((await post('/api/admin/web-keys/delete', { id: devAdded.keys[1]!.id }, reader)).status, 400, 'a non-editor cannot remove the developer key');
+  assert.equal((await post('/api/admin/web-keys/delete', { id: 'no-such-key' }, reader)).status, 400);
+  assert.equal((await post('/api/admin/web-keys/delete', { id: 'no-such-key' }, developer)).status, 400);
+  assert.equal((await post('/api/admin/web-keys/delete', { id: devAdded.keys[1]!.id }, developer)).status, 200, 'the owner removes her own key');
+  assert.deepEqual(((await (await get('/api/admin/web-keys', reader)).json()) as { keys: unknown[] }).keys, []);
 });
 test('team system prompt is saved for all servers, cleared by empty text, and bounded', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
