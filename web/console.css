@@ -27,3 +27,8 @@
 .chan-progress p{margin:6px 0 0}
 .progress{height:4px;border-radius:999px;background:var(--pill);overflow:hidden}
 .progress span{display:block;height:100%;background:var(--accent);border-radius:999px}
+
+/* Messages Slopbot did not read: one muted row that expands in place */
+.chat .chat-msg.chat-folded{display:none}
+.chat .chat-fold{display:block;width:min(760px,100%);margin:14px 0 0;padding:6px 10px;border:0;border-radius:8px;background:none;color:var(--muted);font-size:13px;text-align:left}
+.chat .chat-fold:hover{color:var(--text);background:var(--pill)}

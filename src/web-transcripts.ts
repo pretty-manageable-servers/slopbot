@@ -303,6 +303,14 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
     });
   }
 
+  // Which of the given messages a reply run used. The same access check as the messages route.
+  async function used(res: ServerResponse, url: URL, server: string, channel: string, user: string): Promise<void> {
+    if (!(await granted(host, server, channel, user))) return json(res, 403, { error: "You cannot view this conversation." });
+    const ids = (url.searchParams.get("ids") ?? "").split(",").filter(id => id !== "");
+    if (ids.length > 200 || ids.some(id => !ID.test(id))) return json(res, 400, { error: "Invalid message IDs." });
+    json(res, 200, { used: ids.length ? await store.usedSourceIds(server, channel, ids) : [] });
+  }
+
   async function search(res: ServerResponse, url: URL, server: string, user: string): Promise<void> {
     const query = (url.searchParams.get("q") ?? "").trim();
     if (query.length < 2 || query.length > 200) return json(res, 400, { error: "Search needs 2 to 200 characters." });
@@ -357,6 +365,7 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
         const channel = parts[1] ?? "";
         if (!SNOWFLAKE.test(channel)) return json(res, 400, { error: "Invalid conversation." });
         if (parts.length === 3 && parts[2] === "messages") return await messages(res, url, server, channel, user);
+        if (parts.length === 3 && parts[2] === "used") return await used(res, url, server, channel, user);
         if (parts.length === 3 && parts[2] === "stream") return await stream(req, res, url, server, channel, user);
         return json(res, 404, { error: "Not found." });
       } catch (error) {

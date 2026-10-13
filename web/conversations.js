@@ -1,6 +1,6 @@
 // Conversations tab: a chat view of channel and thread transcripts, Slopbot runs, the live stream and the reply box.
 // Uses globals from app.js: $, request, busy, fail, notice, state, csrf, showScreen.
-const conv = { server: '', list: [], channel: null, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, composer: null, noted: new Set() };
+const conv = { server: '', list: [], channel: null, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0, composer: null, noted: new Set(), folded: new Set() };
 const enc = encodeURIComponent;
 const GROUP_MS = 5 * 60 * 1000;
 const DONE_STATUS = /^(completed|delegated|done|ok)$/;
@@ -263,6 +263,8 @@ function messageNode(m) {
   article.className = `chat-msg ${kind}`;
   article.dataset.id = m.id;
   article.dataset.kind = kind;
+  // A live message is not known to be used until the run ends. Only an explicit false folds it.
+  article.dataset.used = m.used === false ? 'false' : 'true';
   article.dataset.author = m.author || m.authorName || '';
   if (m.timestamp) article.dataset.time = String(m.timestamp);
   if (kind === 'mine') {
@@ -345,6 +347,56 @@ function regroup(log) {
     node.classList.toggle('cont', Boolean(same));
     prev = node;
   }
+  foldUnused(log);
+}
+
+// Messages from other people that no reply used fold into one row. A click shows them, and a second click folds them again.
+// Nothing folds from the trigger message of a live run onward.
+function foldUnused(log) {
+  for (const old of log.querySelectorAll('.chat-fold')) old.remove();
+  const nodes = [...log.querySelectorAll('.chat-msg')];
+  let guard = nodes.length;
+  for (const card of conv.live.values()) guard = Math.min(guard, Math.max(0, nodes.findIndex(node => node.dataset.id === card.requestId)));
+  let run = [];
+  const flush = () => { if (run.length) placeFold(run); run = []; };
+  nodes.forEach((node, index) => {
+    node.classList.remove('chat-folded');
+    if (index < guard && node.dataset.kind === 'human' && node.dataset.used === 'false') run.push(node);
+    else flush();
+  });
+  flush();
+}
+
+function placeFold(run) {
+  const key = run[0].dataset.id;
+  const open = conv.folded.has(key);
+  const button = textNode('button', `${run.length} ${run.length === 1 ? 'message' : 'messages'} Slopbot did not read ›`, 'chat-fold');
+  button.type = 'button';
+  button.setAttribute('aria-expanded', String(open));
+  button.onclick = () => {
+    const show = !conv.folded.has(key);
+    if (show) conv.folded.add(key); else conv.folded.delete(key);
+    button.setAttribute('aria-expanded', String(show));
+    for (const node of run) node.classList.toggle('chat-folded', !show);
+  };
+  for (const node of run) node.classList.toggle('chat-folded', !open);
+  run[0].before(button);
+}
+
+// After a run ends, the visible messages of other people are checked again. A reply run may have used them now.
+async function refreshUsed(channel) {
+  const log = $('conv-log');
+  if (!log || conv.channel !== channel) return;
+  const people = [...log.querySelectorAll('.chat-msg[data-kind="human"]')];
+  const ids = people.slice(-200).map(node => node.dataset.id);
+  if (!ids.length) return;
+  try {
+    const result = await request(`/api/conversations/${enc(channel)}/used?server=${enc(state.server.id)}&ids=${enc(ids.join(','))}`);
+    if (conv.channel !== channel || $('conv-log') !== log) return;
+    const found = new Set(result.used);
+    for (const node of people) if (found.has(node.dataset.id)) node.dataset.used = 'true';
+    regroup(log);
+  } catch (error) { fail(error); }
 }
 
 function syncJump() {
@@ -495,7 +547,7 @@ function openStream(id) {
   on('run.start', data => startLive(data.ref, data.requestId));
   on('run.delta', data => delta(data.ref, data.part, data.text));
   on('run.tool', data => tool(data));
-  on('run.end', data => { endLive(data.ref); refreshUsage(); });
+  on('run.end', data => { endLive(data.ref); refreshUsage(); refreshUsed(id); });
   // The server pruned events after this stream's position. Reload the messages from the newest page.
   es.addEventListener('reset', () => {
     if (conv.source !== es) return;

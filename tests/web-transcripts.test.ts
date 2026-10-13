@@ -301,6 +301,48 @@ test("search covers only conversations the user can view and that are switched o
   assert.equal((await get(f, `/api/conversations/search?server=${SERVER}&q=lighthouse&mode=bogus`)).status, 400);
 });
 
+test("used is true only for messages a reply run used, not for participation sources", async t => {
+  const f = await fixture(t);
+  // run-1 is a reply run (linked to Slopbot's reply). run-part has no reply link, like a participation run.
+  await f.store.recordSources("run-1", SERVER, ["m1"]);
+  await f.store.recordSources("run-part", SERVER, ["m2"]);
+  const page = await get(f, `/api/conversations/${CHANNEL}/messages?server=${SERVER}`);
+  const used = Object.fromEntries(page.body.messages.map((item: { id: string; used: boolean }) => [item.id, item.used]));
+  assert.equal(used.m1, true);
+  assert.equal(used.m2, false);
+  assert.equal(used.m4, false);
+  // Slopbot's own messages are always used.
+  assert.equal(used["bot-1"], true);
+  const route = await get(f, `/api/conversations/${CHANNEL}/used?server=${SERVER}&ids=m1,m2,m4`);
+  assert.equal(route.status, 200);
+  assert.deepEqual(route.body.used, ["m1"]);
+});
+
+test("the used route refuses users and channels the messages route refuses", async t => {
+  const f = await fixture(t);
+  await f.store.recordSources("run-1", SERVER, ["m1"]);
+  const path = `/api/conversations/${CHANNEL}/used?server=${SERVER}&ids=m1`;
+  assert.equal((await get(f, path, null)).status, 403);
+  assert.equal((await get(f, path, STRANGER)).status, 403);
+  assert.equal((await get(f, `/api/conversations/${OTHER}/used?server=${SERVER}&ids=o1`)).status, 403);
+  assert.equal((await get(f, `/api/conversations/${OTHER}/messages?server=${SERVER}`)).status, 403);
+  assert.equal((await get(f, path)).status, 200);
+});
+
+test("the used route refuses a user without live View Channel, and bad IDs", async t => {
+  const f = await fixture(t);
+  f.hidden.add(`${CHANNEL}:${USER}`);
+  assert.equal((await get(f, `/api/conversations/${CHANNEL}/used?server=${SERVER}&ids=m1`)).status, 403);
+  assert.equal((await get(f, `/api/conversations/${CHANNEL}/messages?server=${SERVER}`)).status, 403);
+});
+
+test("the used route rejects more than 200 IDs and IDs with spaces", async t => {
+  const f = await fixture(t);
+  const many = Array.from({ length: 201 }, (_, i) => `x${i}`).join(",");
+  assert.equal((await get(f, `/api/conversations/${CHANNEL}/used?server=${SERVER}&ids=${many}`)).status, 400);
+  assert.equal((await get(f, `/api/conversations/${CHANNEL}/used?server=${SERVER}&ids=a%20b`)).status, 400);
+});
+
 test("saved run steps: failed and delegated results, and text-protocol tool requests", () => {
   const steps = runSteps(
     [{ kind: "text", payload: { text: '{"tool_calls":[{"name":"status","arguments":{}}]}' } }],
