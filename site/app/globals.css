@@ -59,7 +59,7 @@ h1 { font: 500 clamp(40px, 6vw, 64px)/1.05 var(--serif); color: var(--strong); m
 .lead { font-size: 18px; color: var(--muted); max-width: 30em; }
 .ask { display: flex; margin: 28px 0 16px; border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 6px; }
 .ask input { flex: 1; background: none; border: 0; color: var(--strong); font: inherit; padding: 8px 10px; outline: none; min-width: 0; }
-.ask :disabled { opacity: 0.5; cursor: not-allowed; }
+.ask button:disabled { opacity: 0.5; cursor: not-allowed; }
 .ask-note { color: var(--muted); font-size: 14px; margin: 0 0 24px; }
 
 /* Discord demo */

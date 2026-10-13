@@ -521,14 +521,16 @@ $('server-icon').onerror = () => { $('server-icon').hidden = true; };
 $('brand').onclick = event => { if ($('console').hidden) return; event.preventDefault(); tab = state.admin ? 'server' : 'profile'; render(); window.scrollTo(0, 0); };
 $('logout').onclick = async () => { try { await request('/api/logout',{}); location.reload(); } catch (error) { notice(error.message, true); } };
 async function boot() {
+  if (/^#ask=/.test(location.hash)) takeAsk();
   const remembered = recall('slopbot-server');
   let result;
   try { result = await settingsFor(remembered); }
   catch (error) { if (!remembered || error.status === 401) throw error; result = await settingsFor(); }
   applySettings(result);
   await loadAdmin();
+  await resumeAsk();
 }
-boot().catch(error => { if (error.status === 401) showScreen('login'); else { showScreen('none'); notice(error.message, true); } });
+boot().catch(error => { if (error.status === 401) { showScreen('login'); if (takeAsk()) notice('Sign in with Discord to send your question to Slopbot.'); } else { showScreen('none'); notice(error.message, true); } });
 
 // Reply box for one conversation. A transcript view calls renderReplyBox(container, server, channel).
 // The server sends the reply as the signed-in user through a channel webhook, or as Slopbot when the bot lacks Manage Webhooks.

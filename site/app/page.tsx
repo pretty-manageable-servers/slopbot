@@ -1,3 +1,4 @@
+import { AskForm } from '@/components/ask-form'
 import { Logo } from '@/components/logo'
 import { Pricing } from '@/components/pricing'
 import { Topbar } from '@/components/topbar'
@@ -33,13 +34,7 @@ export default function Home() {
             <div className="label">Slopbot · by PMServers</div>
             <h1>Where ideas bloom.</h1>
             <p className="lead">An AI agent that lives in your Discord. Always in the chat, ready when you ask.</p>
-            {/* The docs send ?q=<prompt> here. See SLOPBOT_URL in pmservers-docs. */}
-            {/* The form will post to /chat later, when the web chat is built. Until then it is disabled. */}
-            <form className="ask" action={links.addToDiscord}>
-              <input name="q" placeholder="Plant a question…" aria-label="Your question" disabled />
-              <button className="btn solid" type="submit" disabled>Ask</button>
-            </form>
-            <p className="ask-note">Web chat is coming soon. It will open at /chat after you sign in with Discord.</p>
+            <AskForm />
             <div className="row">
               <a className="btn solid" href={links.addToDiscord}>Add to Discord</a>
               <a className="btn" href={links.docs}>Read the docs</a>
