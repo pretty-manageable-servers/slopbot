@@ -1,6 +1,6 @@
 /* Conversations tab: a chat view. Colors come from the tokens in style.css. Every rule is scoped under .chat. */
 :root{--chat-code:#E8917A;--chat-online:#4CAF7A}
-html.light{--chat-code:#B4432B;--chat-online:#2E8B57}
+html.light{--chat-code:#A2533F;--chat-online:#2E8B57}
 .layout>main.chat-mode{padding:0;max-width:none;min-width:0}
 
 .chat{display:grid;position:relative;grid-template-columns:240px minmax(0,1fr);height:calc(var(--viewport-height) - var(--header-height));min-height:0}
@@ -39,16 +39,14 @@ html.light{--chat-code:#B4432B;--chat-online:#2E8B57}
 .chat .chat-older:hover{background:var(--pill)}
 .chat .chat-jump{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);width:36px;height:36px;padding:0;border:1px solid var(--line);border-radius:50%;background:var(--surface);color:var(--text);font-size:16px;line-height:1;box-shadow:0 2px 8px rgb(0 0 0 / .25)}
 .chat .chat-jump:hover{background:var(--pill)}
-.chat .chat-results{flex:1;min-height:0;overflow-y:auto;width:min(760px,100%);margin:0 auto;padding:24px}
-.chat .chat-hit{border-top:1px solid var(--line);padding:12px 0}
-.chat .chat-hit-open{padding:0;border:0;background:none;color:var(--accent);font-size:12px}
-.chat .chat-hit-text{margin-top:4px;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--text)}
 .chat .chat-empty{margin:auto;padding:40px 24px;text-align:center}
 .chat .chat-empty-title{margin:0 0 8px;font:500 26px/1.2 'Source Serif 4',serif;color:var(--strong)}
 .chat .chat-empty-hint{margin:0;color:var(--muted)}
 
 /* Messages */
 .chat .chat-msg{width:min(760px,100%);padding-top:14px}
+.chat .chat-msg.chat-msg-flash{outline:2px solid var(--accent);outline-offset:4px;border-radius:10px;transition:outline-color .6s}
+@media (prefers-reduced-motion: reduce){.chat .chat-msg.chat-msg-flash{transition:none}}
 .chat .chat-msg.cont{padding-top:4px}
 .chat .chat-msg-head{display:flex;align-items:center;gap:8px;min-width:0;height:auto;margin-bottom:4px;padding:0;border:0;flex-wrap:wrap}
 .chat .chat-msg.cont .chat-msg-head{display:none}
@@ -78,7 +76,7 @@ html.light{--chat-code:#B4432B;--chat-online:#2E8B57}
 .chat .chat-text a:hover{text-decoration:underline}
 .chat .chat-text code{font-family:'JetBrains Mono',monospace;font-size:.88em;color:var(--chat-code);background:var(--pill);border-radius:6px;padding:.1em .35em}
 .chat .chat-text .md-code{margin:.6em 0;border:1px solid var(--line);border-radius:12px;background:var(--surface);overflow:hidden}
-.chat .chat-text .md-code .md-lang{display:block;padding:8px 14px 0;font-size:12px;color:var(--muted)}
+.chat .chat-text .md-code .md-code-lang{display:block;padding:8px 14px 0;font-size:12px;color:var(--muted)}
 .chat .chat-text .md-code pre{margin:0;padding:10px 14px 14px;overflow-x:auto;white-space:pre;font:13px/1.55 'JetBrains Mono',monospace;color:var(--text)}
 .chat .chat-text .md-code code{padding:0;border-radius:0;background:none;color:inherit;font-size:inherit}
 .chat .chat-text .md-mention{color:var(--accent);background:var(--pill);border-radius:4px;padding:0 .25em}
@@ -139,10 +137,26 @@ html.light{--chat-code:#B4432B;--chat-online:#2E8B57}
 .chat .chat-server .pick{padding:7px 10px;border-radius:10px;font-size:14px}
 
 /* Top bar: Chat and Settings tabs, Docs, theme icon and the account menu */
-.topbar .top-tabs{display:flex;gap:4px}
-.topbar .top-tab{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:0;border-radius:7px;background:none;color:var(--muted);font-size:14px}
+.topbar .top-tabs{display:flex;gap:4px;position:relative}
+.topbar .top-tab{position:relative;z-index:1;display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:0;border-radius:7px;background:none;color:var(--muted);font-size:14px}
 .topbar .top-tab:hover{color:var(--strong)}
-.topbar .top-tab.selected{background:var(--pill);color:var(--strong)}
+.topbar .top-tab.selected{color:var(--strong)}
+/* The pill behind the active tab. conversations.js sets its width and position (placeTabPill). */
+.topbar .top-tab-pill{position:absolute;left:0;top:0;height:100%;border-radius:7px;background:var(--pill);pointer-events:none;transition:transform .2s ease-out,width .2s ease-out}
+@media (prefers-reduced-motion:reduce){.topbar .top-tab-pill{transition:none}}
+/* View switch (Chats and Servers): the sidebar and the main pane slide and cross-fade. animateViews in conversations.js sets data-view-dir on html. */
+.chat .chat-side{view-transition-name:chat-side}
+.chat .chat-pane{view-transition-name:chat-main}
+::view-transition-old(root),::view-transition-new(root){animation:none}
+::view-transition-old(chat-side),::view-transition-old(chat-main){animation:200ms ease-out both view-out-left}
+::view-transition-new(chat-side),::view-transition-new(chat-main){animation:200ms ease-out both view-in-left}
+html[data-view-dir=back]::view-transition-old(chat-side),html[data-view-dir=back]::view-transition-old(chat-main){animation-name:view-out-right}
+html[data-view-dir=back]::view-transition-new(chat-side),html[data-view-dir=back]::view-transition-new(chat-main){animation-name:view-in-right}
+@keyframes view-out-left{to{opacity:0;transform:translateX(-24px)}}
+@keyframes view-in-left{from{opacity:0;transform:translateX(24px)}}
+@keyframes view-out-right{to{opacity:0;transform:translateX(24px)}}
+@keyframes view-in-right{from{opacity:0;transform:translateX(-24px)}}
+@media (prefers-reduced-motion:reduce){::view-transition-old(chat-side),::view-transition-old(chat-main),::view-transition-new(chat-side),::view-transition-new(chat-main){animation:none}}
 .topbar .top-link{display:inline-flex;align-items:center;gap:8px;color:var(--text);font-size:14px}
 .topbar .top-link:hover{color:var(--strong)}
 .topbar .icon-button{display:inline-grid;place-items:center;width:34px;height:34px;padding:0;border:1px solid var(--line);border-radius:8px;background:none;color:var(--text)}
@@ -163,7 +177,6 @@ html.light{--chat-code:#B4432B;--chat-online:#2E8B57}
 
 @media (max-width:760px){
   .topbar .top-tab{padding:8px}
-  .topbar .top-tab span{display:none}
 }
 
 /* Private chats: the New chat button, the rows with a lock and the options menu, the rename box */
@@ -229,15 +242,33 @@ html.light{--chat-code:#B4432B;--chat-online:#2E8B57}
 .chat .chat-hero{gap:12px;padding:20px 0}.chat .chat-hero-logo{width:40px;height:40px}.chat .chat-hero-title{font-size:26px}
 @media(max-width:760px){
  .chat{grid-template-columns:minmax(0,1fr);height:calc(var(--viewport-height) - var(--header-height));overflow:hidden}
- .chat .chat-side{display:none;position:absolute;inset:0 auto 0 0;z-index:42;width:min(300px,calc(100% - 40px));padding:12px;background:var(--bg);border-right:1px solid var(--line)}
- .chat.drawer-open .chat-side{display:flex}.chat.drawer-open .chat-backdrop{display:block;position:absolute;inset:0;z-index:41;width:100%;height:100%;border:0;border-radius:0;background:rgb(0 0 0 / .55)}
+ .chat .chat-side{display:flex;position:absolute;inset:0 auto 0 0;z-index:42;width:min(300px,calc(100% - 40px));padding:12px;background:var(--bg);border-right:1px solid var(--line);transform:translateX(-100%);visibility:hidden;transition:transform .22s ease-out,visibility 0s linear .22s}
+ .chat.drawer-open .chat-side{transform:none;visibility:visible;transition:transform .22s ease-out,visibility 0s}
+ .chat .chat-backdrop{display:block;position:absolute;inset:0;z-index:41;width:100%;height:100%;border:0;border-radius:0;background:rgb(0 0 0 / .55);opacity:0;visibility:hidden;transition:opacity .22s ease-out,visibility 0s linear .22s}
+ .chat.drawer-open .chat-backdrop{opacity:1;visibility:visible;transition:opacity .22s ease-out,visibility 0s}
  .chat .chat-drawer-close{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;min-height:40px;font-size:13px}
  .chat .chat-drawer{display:grid;place-items:center;flex:none;width:40px;height:40px;min-height:40px;padding:0;border:0;background:none}
  .chat .chat-pane{height:100%;min-height:0}.chat .chat-head{height:48px;gap:6px;padding:0 8px;flex-wrap:nowrap}.chat .chat-title{font-size:14px}.chat .chat-tools{gap:6px}.chat .chat-private span{display:none}.chat .chat-status{font-size:0;gap:0}.chat .chat-status::before{width:6px;height:6px}
- .chat .chat-share button{min-height:40px;padding:6px 8px}.chat .chat-log{padding:4px 12px 12px}.chat .chat-older{width:calc(100% - 24px);min-height:40px;margin-top:8px}.chat .chat-results{padding:12px}
+ .chat .chat-share button{min-height:40px;padding:6px 8px}.chat .chat-log{padding:4px 12px 12px}.chat .chat-older{width:calc(100% - 24px);min-height:40px;margin-top:8px}
  .chat .chat-msg.mine .chat-text{max-width:92%;padding:8px 12px;border-radius:12px}.chat .chat-msg.human .chat-text{padding-left:0}.chat .chat-msg-head strong{font-size:13px}.chat .chat-avatar{width:22px;height:22px}
  .chat .chat-composer{padding:6px 12px max(8px,env(safe-area-inset-bottom))}.chat .chat-input textarea{font-size:16px;max-height:25dvh}.chat .chat-foot{margin-top:4px}.chat .chat-readonly{padding:8px 12px max(8px,env(safe-area-inset-bottom))}
  .chat .chat-item,.chat .chat-new,.chat .chat-more,.chat .chat-menu-item,.chat .effort-item{min-height:40px}.chat .chat-more{width:36px}.chat .chat-search{font-size:16px}.chat .chat-empty{padding:24px 12px}.chat .chat-empty-title{font-size:22px}.chat .chat-run-sum{min-height:36px;flex-wrap:wrap}.chat .chat-tool-name{flex-shrink:1;overflow-wrap:anywhere}.chat .chat-tool-line{min-height:40px}
  .topbar .top-link span{display:none}.topbar .top-link{width:32px;justify-content:center}.topbar .top-tabs{gap:2px}.topbar .top-tab{min-width:36px;padding:8px}.topbar .account-menu{max-width:calc(100vw - 24px)}
+ /* New chat on mobile: the greeting sits centered in the free space, and the composer is pinned to the bottom. */
+ .chat .chat-hero{width:100%;flex:1 1 auto;margin:0;padding:12px 4px max(0px,env(safe-area-inset-bottom));box-sizing:border-box}
+ .chat .chat-hero-logo,.chat .chat-hero-composer{margin-top:auto}
 }
-@media(prefers-reduced-motion:reduce){.chat .chat-chev,.chat .chat-status-line{transition:none}}
+@media(prefers-reduced-motion:reduce){.chat .chat-chev,.chat .chat-status-line,.chat .chat-side,.chat.drawer-open .chat-side,.chat .chat-backdrop,.chat.drawer-open .chat-backdrop{transition:none}}
+/* Conversations under a channel row. The list opens with a grid row, so its height is never measured. */
+.chat .chat-chevron{flex:none;display:flex;align-items:center;justify-content:center;width:28px;min-height:32px;padding:0;border:0;border-radius:8px;background:none;color:var(--muted)}
+.chat .chat-chevron:hover{background:var(--surface)}
+.chat .chat-chevron svg{transition:transform .2s ease}
+.chat .chat-tree.open>.chat-row .chat-chevron svg{transform:rotate(90deg)}
+.chat .chat-sub{display:grid;grid-template-rows:0fr;transition:grid-template-rows .2s ease}
+.chat .chat-tree.open>.chat-sub{grid-template-rows:1fr}
+.chat .chat-sub-inner{min-height:0;overflow:hidden;padding-left:18px}
+.chat .chat-run{font-size:14px}
+.chat .chat-run-all .chat-item-name{color:var(--muted)}
+.chat .chat-sub-note{margin:4px 10px 6px;font-size:13px;color:var(--muted)}
+.chat .chat-sub-more{justify-content:center;font-size:13px;color:var(--muted)}
+@media(prefers-reduced-motion:reduce){.chat .chat-chevron svg,.chat .chat-sub{transition:none}}

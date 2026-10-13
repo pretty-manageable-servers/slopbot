@@ -18,7 +18,11 @@
   async function request(path, options) {
     const response = await fetch(path, options);
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || 'Request failed.');
+    if (!response.ok) {
+      const error = new Error(data.error || 'Request failed.');
+      error.status = response.status;
+      throw error;
+    }
     return data;
   }
 
@@ -216,5 +220,104 @@
     try { await load(); } catch (failure) { status.textContent = failure.message; }
   }
 
+  /* ---- Shared conversation page (/s/<id>). The page data is in #share-data, as JSON. ---- */
+
+  const LOGO = { light: '/console/assets/logo-light.svg', dark: '/console/assets/logo-dark.svg' };
+  const isLight = () => document.documentElement.classList.contains('light');
+
+  function readTheme() {
+    try { return localStorage.getItem('slopbot-theme') === 'light'; } catch { return false; }
+  }
+
+  function applyTheme(light) {
+    document.documentElement.classList.toggle('light', light);
+    const button = document.getElementById('share-theme');
+    if (!button) return;
+    button.textContent = light ? 'Dark' : 'Light';
+    button.setAttribute('aria-label', light ? 'Switch to dark theme' : 'Switch to light theme');
+  }
+
+  // Markdown from web/markdown.js. It escapes all text before it adds tags, the same as in the chat.
+  function setMarkdown(node, text) {
+    const api = window.SlopbotMarkdown;
+    if (api && typeof api.renderMarkdown === 'function') node.innerHTML = api.renderMarkdown(text);
+    else node.textContent = text;
+  }
+
+  function shareMessage(message) {
+    const bot = message.bot === true;
+    const article = el('article', { class: `chat-msg ${bot ? 'bot' : 'mine'}` });
+    if (bot) {
+      // Slopbot's own line: one petal mark and the name, once.
+      article.append(el('header', { class: 'chat-msg-head' },
+        el('img', { class: 'chat-mark still', src: isLight() ? LOGO.dark : LOGO.light, alt: '', width: 18, height: 18 }),
+        el('strong', {}, 'Slopbot'), messageTime(message.at)));
+      if (message.tools.length) article.append(el('ul', { class: 'share-tools' }, ...message.tools.map(line => el('li', {}, line))));
+      if (message.thinking) article.append(el('details', { class: 'share-thinking' }, el('summary', {}, 'Thinking'), el('div', { class: 'share-thinking-text' }, message.thinking)));
+    } else {
+      // Other people's messages keep their name above the bubble.
+      article.append(el('header', { class: 'chat-msg-head' }, el('strong', {}, message.author), messageTime(message.at)));
+    }
+    if (message.images.length) {
+      article.append(el('div', { class: 'chat-images' }, ...message.images.map(image => el('img', { src: image.src, alt: image.name, title: image.name, loading: 'lazy' }))));
+    }
+    if (message.text) {
+      const body = el('div', { class: 'chat-text' });
+      setMarkdown(body, message.text);
+      article.append(body);
+    }
+    if (message.other) article.append(el('p', { class: 'share-att' }, `${message.other} attachment${message.other === 1 ? '' : 's'} not shown`));
+    return article;
+  }
+
+  function messageTime(at) {
+    if (!at) return el('time');
+    const when = new Date(at);
+    return el('time', { datetime: when.toISOString(), title: when.toLocaleString() }, when.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }));
+  }
+
+  // Copies the share into a new private chat of the signed-in user, then opens it. Signed-out users sign in first; the share ID waits in sessionStorage.
+  async function continueShare(id, button) {
+    const status = document.getElementById('share-status');
+    const show = text => { status.textContent = text; status.hidden = !text; };
+    button.disabled = true;
+    show('');
+    try {
+      let session = null;
+      try { session = await request('/api/session'); }
+      catch (failure) { if (failure.status !== 401) throw failure; }
+      if (!session) {
+        try { sessionStorage.setItem('slopbot-share', id); } catch { }
+        location.href = '/auth/login';
+        return;
+      }
+      const chat = await request(`/api/shares/${encodeURIComponent(id)}/continue`, { method: 'POST', headers: { 'X-CSRF-Token': session.csrf } });
+      location.href = `/console#chat/${encodeURIComponent(chat.id)}`;
+    } catch (failure) {
+      show(failure.status === 404 ? 'This shared chat is no longer available.' : failure.message);
+      button.disabled = false;
+    }
+  }
+
+  function startSharePage() {
+    const node = document.getElementById('share-data');
+    if (!node) return;
+    let data;
+    try { data = JSON.parse(node.textContent); } catch { return; }
+    applyTheme(readTheme());
+    document.getElementById('share-theme').addEventListener('click', () => {
+      const light = !isLight();
+      try { localStorage.setItem('slopbot-theme', light ? 'light' : 'dark'); } catch { }
+      if (document.startViewTransition && !matchMedia("(prefers-reduced-motion: reduce)").matches) document.startViewTransition(() => applyTheme(light)); else applyTheme(light);
+      document.querySelectorAll('img.chat-mark').forEach(img => { img.src = light ? LOGO.dark : LOGO.light; });
+    });
+    document.getElementById('share-log').replaceChildren(...data.messages.map(shareMessage));
+    const status = document.getElementById('share-status');
+    if (data.messages.some(message => message.images.length)) { status.textContent = 'Images are not copied when you continue.'; status.hidden = false; }
+    const button = document.getElementById('share-continue');
+    button.addEventListener('click', () => continueShare(data.id, button));
+  }
+
   window.SlopbotShares = { renderShareButton, renderShareList, renderChatShare };
+  startSharePage();
 })();

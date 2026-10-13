@@ -1,4 +1,4 @@
-let state, csrf, tab = 'server', viewAuto = false, viewReady = false;
+let state, csrf, tab = 'server', settingsOpen = false, settingsReturn = null, viewReady = false;
 const $ = id => document.getElementById(id);
 // The browser tab title follows the view: "<name> · Slopbot".
 function setPageTitle(name) { document.title = `${name} · Slopbot`; }
@@ -14,38 +14,39 @@ function sizeConsoleViewport() {
 sizeConsoleViewport();
 window.visualViewport?.addEventListener('resize', sizeConsoleViewport);
 window.addEventListener('resize', sizeConsoleViewport);
-$('theme').onclick = () => theme(!document.documentElement.classList.contains('light'));
-// Top bar: Chat or Settings, and the account menu. Chat is the default when the user can view a conversation.
-function setView(view) {
-  if (view === 'chat') tab = 'conversations';
-  else if (tab === 'conversations') tab = state.admin ? 'server' : 'profile';
-  viewAuto = false;
-  remember('slopbot-view', view);
-  history.replaceState(null, '', '#' + view);
-  render();
+// The switch cross-fades when the browser has View Transitions and motion is allowed.
+function switchTheme() {
+  const next = !document.documentElement.classList.contains('light');
+  if (!document.startViewTransition || matchMedia('(prefers-reduced-motion: reduce)').matches) { theme(next); return; }
+  document.startViewTransition(() => theme(next));
+}
+$('theme').onclick = switchTheme;
+// Settings is a modal over the chat. Its section comes from the caller, else from the URL (#settings/<section> or ?tab=<section>).
+const SECTIONS = ['server', 'channels', 'mcp', 'profile', 'admin'];
+function settingsFromUrl() {
+  const params = new URLSearchParams(location.search), match = /^#settings(?:\/([a-z]+))?$/.exec(location.hash);
+  if (params.has('tab')) return { section: params.get('tab') };
+  return match ? { section: match[1] || null } : null;
 }
 // The chat or channel named in the URL: #chat/<id> or #channel/<id>. Any other hash gives null.
 function takeHashItem() {
-  const match = /^#(chat|channel)\/(.+)$/.exec(location.hash);
+  // #channel/<id>/run/<runId> opens one conversation of the channel. The run part is optional.
+  const match = /^#(chat|channel)\/(.+?)(?:\/run\/([^/]+))?$/.exec(location.hash);
   if (!match) return null;
-  try { return { kind: match[1], id: decodeURIComponent(match[2]) }; } catch { return null; }
+  try { return { kind: match[1], id: decodeURIComponent(match[2]), run: match[3] ? decodeURIComponent(match[3]) : null }; } catch { return null; }
 }
+// The chat is always the base view. A settings link in the URL opens the modal on that section.
 function chooseView() {
   viewReady = true;
-  const hash = location.hash.slice(1), saved = recall('slopbot-view'), item = takeHashItem();
-  // A named item is checked against the lists later. An unknown id falls back to the default view, as no hash does.
-  const want = item ? 'chat' : ['chat', 'settings'].includes(hash) ? hash : ['chat', 'settings'].includes(saved) ? saved : '';
-  if (want === 'settings' || (!want && !state.server)) tab = state.admin ? 'server' : 'profile';
-  else { tab = 'conversations'; viewAuto = !want || Boolean(item); }
+  const want = settingsFromUrl();
+  if (want) openSettings(want.section);
 }
-// Back and forward: the view follows the URL. A URL without a chat or channel opens the default view.
+// Back and forward: a chat or channel in the URL shows that item. The settings link opens or closes the modal.
 window.addEventListener('popstate', () => {
   if (!viewReady || !state) return;
-  const item = takeHashItem();
-  if (!item) conv.channel = null;
-  tab = location.hash === '#settings' ? (state.admin ? 'server' : 'profile') : 'conversations';
-  viewAuto = !item;
-  render();
+  const item = takeHashItem(), want = settingsFromUrl();
+  if (item || !want) { if (!item) { conv.channel = null; conv.run = null; } renderChat(true); }
+  if (want) openSettings(want.section); else closeSettings();
 });
 // A server picker: a button and a menu. The hidden #server select keeps the value and the change handler.
 function serverPicker(slot) {
@@ -98,15 +99,37 @@ document.addEventListener('pointerdown', event => {
     if (!menu.parentElement.contains(event.target)) { menu.hidden = true; menu.parentElement.querySelector('.pick').setAttribute('aria-expanded', 'false'); }
   }
 });
-// Used when the user has no conversation to view. The view then falls back to Settings.
-function fallbackToSettings() {
-  viewAuto = false;
-  tab = state.admin ? 'server' : 'profile';
-  history.replaceState(null, '', '#settings');
+// The settings modal is a native dialog: focus stays inside while it is open, and Escape closes it.
+// The chat stays under it. A click on the backdrop closes it. Closing gives focus back to the control that opened it.
+function openSettings(section, returnTo = document.activeElement) {
+  if (!state) return;
+  const dialog = $('settings');
+  tab = SECTIONS.includes(section) && (section !== 'admin' || admin) ? section : (state.admin ? 'server' : 'profile');
+  if (!dialog.open) { settingsReturn = returnTo; dialog.showModal(); }
+  settingsOpen = true;
   render();
 }
-document.querySelectorAll('[data-view]').forEach(button => { button.onclick = () => setView(button.dataset.view); });
+function closeSettings() { const dialog = $('settings'); if (dialog.open) dialog.close(); }
+// Removes the settings part of the URL, so a reload does not reopen the modal. The chat hash stays.
+function clearSettingsUrl() {
+  const url = new URL(location.href);
+  if (!url.searchParams.has('tab') && !/^#settings/.test(url.hash)) return;
+  url.searchParams.delete('tab');
+  if (/^#settings/.test(url.hash)) url.hash = '';
+  history.replaceState(history.state, '', url);
+}
+$('settings').addEventListener('close', () => {
+  settingsOpen = false;
+  const back = settingsReturn;
+  settingsReturn = null;
+  clearSettingsUrl();
+  setPageTitle($('chat-title')?.textContent || 'Chat');
+  if (back?.isConnected) back.focus();
+});
+$('settings').addEventListener('click', event => { if (event.target === event.currentTarget) closeSettings(); });
+$('settings-close').onclick = closeSettings;
 const accountButton = $('account-button'), accountMenu = $('account-menu');
+$('open-settings').onclick = () => { setAccountMenu(false); openSettings(null, accountButton); };
 function setAccountMenu(open) { accountMenu.hidden = !open; accountButton.setAttribute('aria-expanded', String(open)); }
 accountButton.onclick = event => { event.stopPropagation(); setAccountMenu(accountMenu.hidden); };
 document.addEventListener('click', event => { if (!$('account').contains(event.target)) setAccountMenu(false); });
@@ -189,7 +212,7 @@ function askConfirm({ title, body = '', confirmLabel = 'Confirm', danger = false
     (danger ? cancel : ok).focus();
   });
 }
-function showScreen(name) { if (name !== 'console') setConversationDrawer(false); $('top-tabs').hidden = name !== 'console'; $('boot').hidden = name !== 'boot'; $('login').hidden = name !== 'login'; $('console').hidden = name !== 'console'; $('account').hidden = name !== 'console'; }
+function showScreen(name) { if (name !== 'console') { setConversationDrawer(false); closeSettings(); } $('boot').hidden = name !== 'boot'; $('login').hidden = name !== 'login'; $('console').hidden = name !== 'console'; $('account').hidden = name !== 'console'; }
 const loader = size => { const svg = $('loader').content.firstElementChild.cloneNode(true); if (size) svg.classList.add(size); return svg; };
 function busy(size, text) { const box = document.createElement('div'), label = document.createElement('p'); box.className = 'busy'; label.textContent = text; box.append(loader(size), label); return box; }
 async function request(path, body) {
@@ -219,7 +242,7 @@ function applySettings(result) {
   const list = state.servers || [], current = list.find(s => s.id === state.server?.id), icon = $('server-icon');
   if (state.server && !state.admin && tab === 'server') tab = 'profile';
   showScreen('console');
-  document.querySelector('nav').hidden = !state.server && !admin;
+  $('settings-nav').hidden = !state.server && !admin;
   $('server-pick').hidden = !list.length;
   $('server').innerHTML = list.map(s => `<option value="${esc(s.id)}"${s.id === state.server?.id ? ' selected' : ''}>${esc(s.name)}</option>`).join('');
   serverPicker($('server-menu'));
@@ -286,16 +309,22 @@ async function pollChannels() {
     if (error.status === 401) fail(error); else scheduleHistoryPoll();
   }
 }
+const NO_SERVER_CARD = '<section class="card"><h2>Slopbot is not in any of your servers yet.</h2><p class="small">A server admin must invite Slopbot to a server you are in.</p></section>';
+// The chat is the base view. It is drawn again only when forced, or when the server changed. Settings redraws do not touch it.
+function renderChat(force = false) {
+  if (!state.server) { if (!$('chat-host').querySelector('.base-note')) $('chat-host').innerHTML = `<div class="base-note">${NO_SERVER_CARD}</div>`; return; }
+  if (force || !$('chat-root') || conv.server !== state.server.id) renderConversations();
+}
 function render() {
+  renderChat();
+  if (settingsOpen) renderSettings();
+}
+function renderSettings() {
   document.querySelectorAll('[data-tab]').forEach(button => { button.classList.toggle('selected', button.dataset.tab === tab); button.setAttribute('aria-current', button.dataset.tab === tab ? 'page' : 'false'); button.onclick = () => { tab = button.dataset.tab; render(); }; });
   $('content').classList.toggle('settings-cards', ['server', 'profile'].includes(tab) && !!state.server);
-  const onChat = tab === 'conversations' && !!state.server;
-  setChatMode(onChat);
-  if (!onChat) setPageTitle('Settings');
+  setPageTitle('Settings');
   if (tab === 'admin' && admin) { renderAdmin(); return; }
-  if (tab !== 'conversations') closeConversation();
-  if (!state.server) { $('breadcrumb').textContent = 'Settings'; $('title').textContent = 'No servers yet.'; $('description').textContent = ''; $('content').innerHTML = '<section class="card"><h2>Slopbot is not in any of your servers yet.</h2><p class="small">A server admin must invite Slopbot to a server you are in.</p></section>'; return; }
-  if (tab === 'conversations') return renderConversations();
+  if (!state.server) { $('breadcrumb').textContent = 'Settings'; $('title').textContent = 'No servers yet.'; $('description').textContent = ''; $('content').innerHTML = NO_SERVER_CARD; return; }
   if (state.partial) { $('breadcrumb').textContent = 'Settings'; $('content').replaceChildren(busy('md', 'Loading…')); return; }
   $('breadcrumb').textContent = `Settings / ${tab === 'profile' ? 'My profile' : tab === 'channels' ? 'Channels' : tab === 'mcp' ? 'MCP connections' : 'Server'}`;
   $('title').textContent = {server:'Server settings',channels:'Channels & history',mcp:'MCP connections',profile:'My profile'}[tab];
@@ -378,7 +407,7 @@ const when = ms => new Date(ms).toLocaleString();
 async function loadAdmin() {
   try { admin = await request('/api/admin/me'); } catch { admin = null; }
   $('admin-tab').hidden = !admin;
-  if (admin) document.querySelector('nav').hidden = false;
+  if (admin) $('settings-nav').hidden = false;
 }
 async function adminRun(button, task) {
   const label = button.textContent;
@@ -531,7 +560,7 @@ $('server').onchange = async () => {
   finally { select.disabled = false; }
 };
 $('server-icon').onerror = () => { $('server-icon').hidden = true; };
-$('brand').onclick = event => { if ($('console').hidden) return; event.preventDefault(); tab = state.admin ? 'server' : 'profile'; render(); window.scrollTo(0, 0); };
+$('brand').onclick = event => { if ($('console').hidden) return; event.preventDefault(); closeSettings(); window.scrollTo(0, 0); };
 $('logout').onclick = async () => { try { await request('/api/logout',{}); location.reload(); } catch (error) { notice(error.message, true); } };
 // The page starts from the light /api/session answer: the user, the server list and the admin flag of each server.
 // The chat view shows at once. The full snapshot (channels, settings, profile) and the admin data load in the background.
@@ -549,6 +578,7 @@ async function boot() {
     applySettings(result);
     await loadAdmin();
     await resumeAsk();
+  await resumeShare();
     return;
   }
   const servers = session.servers || [], current = servers.find(s => s.id === remembered) || servers[0];
@@ -562,6 +592,7 @@ async function boot() {
     finishSettings(result);
   }).catch(fail);
   await resumeAsk();
+  await resumeShare();
 }
 // The full snapshot arrives after the light start. The open chat is not drawn again. A settings tab waiting for it is.
 function finishSettings(result) {
@@ -569,9 +600,10 @@ function finishSettings(result) {
   const current = (state.servers || []).find(s => s.id === state.server?.id);
   if (current?.icon) { $('server-icon').src = current.icon; $('server-icon').hidden = false; }
   $('role').textContent = current ? (state.admin ? 'Admin' : 'Member') : '';
-  document.querySelector('nav').hidden = !state.server && !admin;
+  $('settings-nav').hidden = !state.server && !admin;
   renderAccount();
-  if (tab !== 'conversations') render();
+  render();
+  refreshGreeting();
 }
 boot().catch(error => { if (error.status === 401) { showScreen('login'); if (takeAsk()) notice('Sign in with Discord to send your question to Slopbot.'); } else { showScreen('none'); notice(error.message, true); } });
 

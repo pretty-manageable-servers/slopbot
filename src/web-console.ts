@@ -26,6 +26,8 @@ export interface ConsoleAdmin {
 export interface ConsoleBackend {
   /** Share links. Public page and snapshot routes, plus the admin list and writes. */
   shares?: ShareService;
+  /** Copies a live share into a new private chat of the signed-in user. Errors with a ChatError keep their status. */
+  continueShare?(user: string, shareId: string): Promise<unknown>;
   snapshot(user: string, server?: string): Promise<unknown>;
   /** True when the user shares at least one server with Slopbot. Throws when Discord cannot answer, so callers fail closed. */
   canSignIn(user: string): Promise<boolean>;
@@ -111,7 +113,7 @@ const landingCsp = consoleCsp.replace("script-src 'self'", "script-src 'self' 'u
 const consoleFile = (path: string) => {
   if (path === '/console' || path === '/console/') return 'index.html';
   const name = path.startsWith('/console/') ? path.slice('/console/'.length) : '';
-  return /^(app\.js|conversations\.js|markdown\.js|style\.css|chat\.css|console\.css|shares\.js|shares\.css|assets\/(logo-(light|dark)\.svg|[a-z0-9-]+\.woff2))$/.test(name) ? name : undefined;
+  return /^(app\.js|palette\.js|conversations\.js|markdown\.js|style\.css|chat\.css|console\.css|shares\.js|shares\.css|assets\/(logo-(light|dark)\.svg|favicon\.svg|[a-z0-9-]+\.woff2))$/.test(name) ? name : undefined;
 };
 /** Landing file for a path: the home page, /_next/ files and top-level files such as /favicon.svg. */
 const landingFile = (path: string) => path === '/' ? 'index.html' : path.startsWith('/_next/') || /^\/[^/]+$/.test(path) ? path.slice(1) : undefined;
@@ -275,6 +277,13 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
           if (input.kind !== '5h' && input.kind !== 'week') return send(res, 400, { error: 'Invalid window.' });
           try { return send(res, 200, await backend.useReset(session.user, input.server, input.kind)); }
           catch (error) { if (error instanceof ToolError) return send(res, 409, { error: error.message }); throw error; }
+        }
+        const continued = routePath.match(/^\/api\/shares\/([A-Za-z0-9_-]{22})\/continue$/);
+        if (continued) {
+          // Needs no body. The CSRF check above already ran; the body is dropped unread.
+          req.resume();
+          if (!backend.continueShare) return send(res, 404, { error: 'Not found.' });
+          return send(res, 201, await backend.continueShare(session.user, continued[1]!));
         }
         if (routePath === '/api/logout') { await sessions.deleteSession(session.hash); res.setHeader('Set-Cookie', cookie('slopbot_session', '', 0)); return send(res, 200, { ok: true }); }
         const conversation = routePath.match(/^\/api\/conversations\/(\d{17,20})\/reply$/);

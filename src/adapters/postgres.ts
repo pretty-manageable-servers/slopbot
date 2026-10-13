@@ -15,8 +15,10 @@ import type { TaskContext } from "../context.js";
 import type { Job } from "../queue.js";
 import type { ToolArgs, ToolCall, ToolContext, ToolOperation } from "../tools.js";
 import type { HistoryQuery, HistoryPage } from '../search/history-search.js';
+import { FUZZY_SCAN, FUZZY_TERMS, fuzzyWords, likePattern, rankFuzzy, type FuzzyHit, type FuzzyQuery } from '../search/fuzzy.js';
 import type { AppRecord } from '../records.js';
 import type { ConversationEvent } from '../run-events.js';
+import type { ChannelReply, ChannelRun, RunSource } from '../conversation-groups.js';
 /** Rows deleted by one retention statement, so a large prune never holds locks for long. */
 const CONVERSATION_PRUNE_BATCH = 10000;
 
@@ -83,6 +85,28 @@ export class PostgresStore {
           .run(JSON.stringify(value), server, kind, id, expectedRevision)
       ).changes === 1
     );
+  }
+  /**
+   * Fuzzy search of one channel for the web console. The same plan as SQLite: the newest FUZZY_SCAN messages plus
+   * LIKE hits for the query words, then TypeScript scoring (search/fuzzy.ts). No pg_trgm, so no schema change.
+   */
+  async searchFuzzy(request: FuzzyQuery): Promise<FuzzyHit[]> {
+    const candidates = new Map<string, Message>();
+    const recent = await this.db
+      .prepare("SELECT m.body FROM messages m WHERE m.server=? AND m.channel=? ORDER BY json_extract(m.body,'$.timestamp') DESC,m.id DESC LIMIT ?")
+      .all(request.server, request.channel, FUZZY_SCAN);
+    const words = fuzzyWords(request.query).slice(0, FUZZY_TERMS);
+    const hits = words.length
+      ? await this.db
+          .prepare(`SELECT m.body FROM messages m WHERE m.server=? AND m.channel=? AND (${words.map(() => "lower(json_extract(m.body,'$.text')) LIKE ? ESCAPE '\\'").join(" OR ")}) ORDER BY json_extract(m.body,'$.timestamp') DESC,m.id DESC LIMIT 200`)
+          .all(request.server, request.channel, ...words.map(likePattern))
+      : [];
+    for (const row of [...recent, ...hits]) {
+      const message = parseMessage(JSON.parse(String(row.body)));
+      candidates.set(message.id, message);
+    }
+    const ranked = rankFuzzy(request.query, [...candidates.values()], request.limit);
+    return Promise.all(ranked.map(async (hit) => ({ message: await this.namedMessage(hit.message), score: hit.score })));
   }
   async searchHistory(request: HistoryQuery): Promise<HistoryPage> {
     const filters = ["m.server=?", "m.channel=?"];
@@ -507,6 +531,30 @@ export class PostgresStore {
             : await this.db.prepare("SELECT body FROM messages WHERE server=? AND channel=? ORDER BY COALESCE(json_extract(body,'$.timestamp'),0) DESC,id DESC LIMIT ?")
                 .all(server, channel, limit);
         return Promise.all(rows.map(row => this.namedMessage(parseMessage(JSON.parse(String(row.body))))));
+    }
+    // Conversations (see conversation-groups.ts). Reply runs only; participation runs are not conversations.
+    async channelRuns(server: string, channel: string): Promise<ChannelRun[]> {
+        // Only prompts with purpose reply. Participation classifier runs have no purpose, so they are not conversations.
+        return (await this.db.prepare("SELECT id,message,status FROM runs WHERE json_extract(message,'$.server')=? AND json_extract(message,'$.channel')=? AND json_extract(prompt,'$.purpose')='reply' ORDER BY rowid")
+            .all(server, channel)).map(row => ({ id: String(row.id), message: parseMessage(JSON.parse(String(row.message))), status: String(row.status) }));
+    }
+    async channelReplies(server: string, channel: string): Promise<ChannelReply[]> {
+        return (await this.db.prepare("SELECT rr.message_id,rr.run_id,json_extract(m.body,'$.timestamp') AS ts FROM reply_runs rr JOIN messages m ON m.server=rr.server AND m.id=rr.message_id WHERE rr.server=? AND m.channel=?")
+            .all(server, channel)).map(row => ({ messageId: String(row.message_id), runId: String(row.run_id), timestamp: row.ts === null ? null : Number(row.ts) }));
+    }
+    async channelSources(server: string, channel: string): Promise<RunSource[]> {
+        return (await this.db.prepare("SELECT s.run_id,s.message_id FROM runs r JOIN run_sources s ON s.run_id=r.id JOIN messages m ON m.server=s.server AND m.id=s.message_id WHERE json_extract(r.message,'$.server')=? AND json_extract(r.message,'$.channel')=? AND m.channel=?")
+            .all(server, channel, channel)).map(row => ({ runId: String(row.run_id), messageId: String(row.message_id) }));
+    }
+    async messagesById(server: string, channel: string, ids: readonly string[]): Promise<Message[]> {
+        const found: Message[] = [];
+        for (let start = 0; start < ids.length; start += 500) {
+            const part = ids.slice(start, start + 500);
+            const marks = part.map(() => "?").join(",");
+            const rows = await this.db.prepare(`SELECT body FROM messages WHERE server=? AND channel=? AND id IN (${marks})`).all(server, channel, ...part);
+            for (const row of rows) found.push(await this.namedMessage(parseMessage(JSON.parse(String(row.body)))));
+        }
+        return found.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     }
     async replyRunIds(server: string, messageId: string): Promise<string[]> {
         return (await this.db.prepare("SELECT r.run_id FROM reply_runs r LEFT JOIN runs u ON u.id=r.run_id WHERE r.server=? AND r.message_id=? ORDER BY u.rowid")

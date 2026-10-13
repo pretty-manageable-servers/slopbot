@@ -353,3 +353,32 @@ test("concurrent UserLimiter records from two Postgres instances add both charge
     await dropSchema(url, schema);
   }
 });
+
+test("conversation runs match SQLite on Postgres", { skip: !process.env.TEST_DATABASE_URL }, async () => {
+  const log = await sameOnBoth(async (store, step) => {
+    const q1 = message({ id: "q1", authorName: "Alice", text: "What is up?", timestamp: 150 });
+    const b1 = message({ id: "b1", author: "bot", isBot: true, authorName: "Slopbot", text: "Answer", timestamp: 200, replyTo: "q1" });
+    const q2 = message({ id: "q2", authorName: "Alice", text: "And then?", timestamp: 300, replyTo: "b1" });
+    const p1 = message({ id: "p1", authorName: "Carol", text: "Classified only", timestamp: 400 });
+    const x1 = message({ id: "x1", channel: "c2", text: "Other channel", timestamp: 500 });
+    for (const row of [q1, b1, q2, p1, x1]) await step.step(`ingest ${row.id}`, () => store.ingest(row));
+
+    const reply = { prefixVersion: "v1", prefix: [], history: [], inputs: [], purpose: "reply" } as const;
+    await step.step("start run 1", () => store.startRun("run-1", q1, reply));
+    await step.step("sources run 1", () => store.recordSources("run-1", SHARES, ["q1"]));
+    await step.step("link b1 to run 1", () => store.linkOutput(b1, "run-1", "q1"));
+    // A participation classifier run has no purpose. It is not a conversation.
+    await step.step("start classifier run", () => store.startRun("run-p", p1, { prefixVersion: "participation-v2", prefix: [], history: [], inputs: [] }));
+    await step.step("sources classifier run", () => store.recordSources("run-p", SHARES, ["p1"]));
+    await step.step("start run 2", () => store.startRun("run-2", q2, reply));
+    await step.step("sources run 2", () => store.recordSources("run-2", SHARES, ["q2", "b1"]));
+    await step.step("start other channel run", () => store.startRun("run-x", x1, reply));
+    await step.step("sources other channel run", () => store.recordSources("run-x", SHARES, ["x1"]));
+
+    await step.step("channel runs", () => store.channelRuns(SHARES, "c1"));
+    await step.step("channel replies", async () => (await store.channelReplies(SHARES, "c1")).sort((a, b) => a.messageId.localeCompare(b.messageId) || a.runId.localeCompare(b.runId)));
+    await step.step("channel sources", async () => (await store.channelSources(SHARES, "c1")).sort((a, b) => a.runId.localeCompare(b.runId) || a.messageId.localeCompare(b.messageId)));
+    await step.step("messages by id", () => store.messagesById(SHARES, "c1", ["q2", "b1", "q1", "x1", "missing"]));
+  });
+  assert.deepEqual((log["channel runs"] as { value: { id: string }[] }).value.map(run => run.id), ["run-1", "run-2"]);
+});

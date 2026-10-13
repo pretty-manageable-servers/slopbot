@@ -298,7 +298,18 @@ test("search covers only conversations the user can view and that are switched o
   assert.deepEqual(found.body.messages.map((item: { id: string }) => item.id), ["m4"]);
   assert.equal(found.body.messages[0].channel, CHANNEL);
   assert.equal((await get(f, `/api/conversations/search?server=${SERVER}&q=x`)).status, 400);
-  assert.equal((await get(f, `/api/conversations/search?server=${SERVER}&q=lighthouse&mode=bogus`)).status, 400);
+});
+
+test("search is fuzzy: typos, partial words, any word order and case", async t => {
+  const f = await fixture(t);
+  const hits = async (q: string, user = USER) => (await get(f, `/api/conversations/search?server=${SERVER}&q=${encodeURIComponent(q)}`, user)).body.messages.map((item: { id: string }) => item.id);
+  assert.deepEqual(await hits("ligthouse"), ["m4"]);
+  assert.deepEqual(await hits("LIGHTHOU"), ["m4"]);
+  assert.deepEqual(await hits("talk lighthouse"), ["m4"]);
+  assert.deepEqual(await hits("third queston"), ["m3"]);
+  assert.deepEqual(await hits("zebra"), []);
+  // A stranger sees no conversation, so no message either.
+  assert.deepEqual(await hits("ligthouse", STRANGER), []);
 });
 
 test("used is true only for messages a reply run used, not for participation sources", async t => {

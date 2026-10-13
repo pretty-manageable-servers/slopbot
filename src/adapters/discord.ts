@@ -585,9 +585,10 @@ export class DiscordServer implements ChatGateway {
       channels.push({ id: channel.id, name: channel.name, monitored: this.channels.includes(channel.id), ...(admin ? { history: this.history.state(channel.id) } : {}) });
     }
     // The signed-in user's name and avatar for the account menu. The member directory gives the same avatar the chat shows.
+    // The name is the user's own Discord name (global name, then username), never the server nickname.
     const known = (await this.members?.profiles(guild.id, [user]))?.get(user);
     return { server: { id: guild.id, name: guild.name }, user, admin, channels,
-      me: { id: user, displayName: known?.displayName ?? member.displayName, avatarUrl: known?.avatarUrl ?? null },
+      me: { id: user, displayName: member.user.globalName ?? member.user.username, avatarUrl: known?.avatarUrl ?? null },
       profile: await this.store.profile(guild.id, user),
       mcp: admin ? this.mcp.snapshot() : null,
       settings: admin ? {

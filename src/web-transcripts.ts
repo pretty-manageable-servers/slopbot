@@ -4,11 +4,13 @@ import type { Json, Message, ModelEvent } from "./domain.js";
 import type { ChannelAccess, ChannelAccessResult } from "./channel-access.js";
 import { parseToolCalls, toolResult, type ToolCall, type ToolOutput } from "./tools.js";
 import type { HistoryPage, HistoryQuery } from "./search/history-search.js";
+import type { FuzzyHit, FuzzyQuery } from "./search/fuzzy.js";
 import { reasoningText, runEvents, shortArgs, showsProfile, slopbotId, transcriptMessage, type ConversationEvent, type ConversationEventStore, type RunEvents, type TranscriptMessage } from "./run-events.js";
 import type { MemberDirectory } from "./member-directory.js";
 import { transcriptSwitchOn } from "./server-tools.js";
 import { canCreateShare, type ShareRule } from "./shares.js";
 import { isPrivateChannel } from "./private-chat.js";
+import { conversationSummary, groupConversations, type ChannelReply, type ChannelRun, type ConversationGroup, type RunSource } from "./conversation-groups.js";
 
 export interface TranscriptRun { id: string; message: Message; purpose: string; status: string; result: string | null }
 export interface ToolTurn { calls: ToolCall[]; results: Record<string, ToolOutput> }
@@ -23,10 +25,20 @@ export interface TranscriptStore extends ConversationEventStore {
   /** Which of these messages of one channel a reply run used. Participation runs do not count. */
   usedSourceIds(server: string, channel: string, messageIds: readonly string[]): Promise<string[]>;
   requestRunIds(server: string, requestId: string): Promise<string[]>;
+  /** The reply runs of one channel, with their trigger messages, oldest first. Input of the conversation list. */
+  channelRuns(server: string, channel: string): Promise<ChannelRun[]>;
+  /** The Slopbot reply messages of one channel, with the reply runs that wrote them. */
+  channelReplies(server: string, channel: string): Promise<ChannelReply[]>;
+  /** Source links of the reply runs of one channel. Only messages that still exist in the channel are listed. */
+  channelSources(server: string, channel: string): Promise<RunSource[]>;
+  /** Stored messages of one channel by ID, in time order. */
+  messagesById(server: string, channel: string, ids: readonly string[]): Promise<Message[]>;
   runRecord(runId: string): Promise<TranscriptRun | undefined>;
   events(runId: string): ModelEvent[] | Promise<ModelEvent[]>;
   toolTurns(server: string, messageId: string): Promise<ToolTurn[]>;
   searchHistory(query: HistoryQuery): Promise<HistoryPage>;
+  /** Fuzzy match of one channel: words in any order, partial words and typos. See search/fuzzy.ts. */
+  searchFuzzy(query: FuzzyQuery): Promise<FuzzyHit[]>;
 }
 
 export interface TranscriptHost {
@@ -284,12 +296,53 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
     }
     const rows = await store.conversationMessages(server, channel, before, limit + 1);
     json(res, 200, {
-      channel: { id: channel, name: (await host.channelName(server, channel)) ?? channel, parent: await parentOf(server, channel) },
-      canSend: access.send,
-      canShare: host.shareRule ? await canCreateShare(user, server, host.shareRule).catch(() => false) : false,
+      ...(await header(server, channel, access, user)),
       streamId,
       hasMore: rows.length > limit,
       messages: await views(server, rows.slice(0, limit).reverse()),
+    });
+  }
+
+  // The channel name, parent and the send and share flags. The messages and conversation routes both send it.
+  async function header(server: string, channel: string, access: ChannelAccessResult, user: string) {
+    return {
+      channel: { id: channel, name: (await host.channelName(server, channel)) ?? channel, parent: await parentOf(server, channel) },
+      canSend: access.send,
+      canShare: host.shareRule ? await canCreateShare(user, server, host.shareRule).catch(() => false) : false,
+    };
+  }
+
+  // The conversations of one channel, newest first. See conversation-groups.ts for the grouping rules.
+  async function conversationsOf(server: string, channel: string): Promise<ConversationGroup[]> {
+    const [runs, replies, sources] = await Promise.all([store.channelRuns(server, channel), store.channelReplies(server, channel), store.channelSources(server, channel)]);
+    return groupConversations(runs, replies, sources);
+  }
+
+  async function conversationList(res: ServerResponse, url: URL, server: string, channel: string, user: string): Promise<void> {
+    if (!(await granted(host, server, channel, user))) return json(res, 403, { error: "You cannot view this conversation." });
+    const limit = parseLimit(url.searchParams.get("limit"), 20, 50);
+    if (limit === undefined) return json(res, 400, { error: "Invalid limit." });
+    const rawOffset = url.searchParams.get("offset") ?? "";
+    const offset = rawOffset === "" ? 0 : Number(rawOffset);
+    if (!Number.isSafeInteger(offset) || offset < 0) return json(res, 400, { error: "Invalid offset." });
+    const groups = await conversationsOf(server, channel);
+    json(res, 200, { conversations: groups.slice(offset, offset + limit).map(conversationSummary), hasMore: groups.length > offset + limit });
+  }
+
+  // All messages of the conversation that holds this run: the triggers, the sources they used and Slopbot's replies, in time order.
+  async function conversation(res: ServerResponse, server: string, channel: string, runId: string, user: string): Promise<void> {
+    if (!RUN_ID.test(runId)) return json(res, 400, { error: "Invalid run." });
+    const access = await granted(host, server, channel, user);
+    if (!access) return json(res, 403, { error: "You cannot view this conversation." });
+    const group = (await conversationsOf(server, channel)).find(item => item.runIds.includes(runId));
+    if (!group) return json(res, 404, { error: "Conversation not found." });
+    const rows = await store.messagesById(server, channel, group.messageIds);
+    json(res, 200, {
+      ...(await header(server, channel, access, user)),
+      streamId: await store.latestStreamId(server, channel),
+      conversation: { ...conversationSummary(group), runIds: group.runIds },
+      hasMore: false,
+      messages: await views(server, rows),
     });
   }
 
@@ -322,20 +375,15 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
   async function search(res: ServerResponse, url: URL, server: string, user: string): Promise<void> {
     const query = (url.searchParams.get("q") ?? "").trim();
     if (query.length < 2 || query.length > 200) return json(res, 400, { error: "Search needs 2 to 200 characters." });
-    const mode = url.searchParams.get("mode") ?? "keyword";
-    if (!["keyword", "exact", "hybrid", "semantic"].includes(mode)) return json(res, 400, { error: "Invalid search mode." });
-    // Search reads messages, so it covers only channels whose switch is on.
+    // Search reads messages, so it covers only channels whose switch is on. The access check is in visibleConversations.
     const visible = (await visibleConversations(host, server, user)).filter(item => item.enabled).slice(0, 40);
-    const found: Message[] = [];
-    for (const conversation of visible) {
-      const page = await store.searchHistory({ server, channel: conversation.id, query, mode: mode as HistoryQuery["mode"], limit: 10, requester: user });
-      found.push(...page.messages);
-    }
-    found.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
+    const found: FuzzyHit[] = [];
+    for (const conversation of visible) found.push(...await store.searchFuzzy({ server, channel: conversation.id, query, limit: 50 }));
+    found.sort((a, b) => b.score - a.score || (b.message.timestamp ?? 0) - (a.message.timestamp ?? 0));
     json(res, 200, {
       query,
       channels: visible.map(item => ({ id: item.id, name: item.name })),
-      messages: await views(server, found.slice(0, 50)),
+      messages: await views(server, found.slice(0, 50).map(hit => hit.message)),
     });
   }
 
@@ -375,6 +423,8 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
         if (parts.length === 3 && parts[2] === "messages") return await messages(res, url, server, channel, user);
         if (parts.length === 3 && parts[2] === "used") return await used(res, url, server, channel, user);
         if (parts.length === 3 && parts[2] === "stream") return await stream(req, res, url, server, channel, user);
+        if (parts.length === 3 && parts[2] === "runs") return await conversationList(res, url, server, channel, user);
+        if (parts.length === 4 && parts[2] === "runs") return await conversation(res, server, channel, parts[3] ?? "", user);
         return json(res, 404, { error: "Not found." });
       } catch (error) {
         logError("web_transcript_failed", error, { stage: "web transcripts" });

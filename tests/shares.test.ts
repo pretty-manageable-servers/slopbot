@@ -182,15 +182,27 @@ test('the page is noindex and escapes message text and names', async () => {
   assert.match(page, /<meta name="robots" content="noindex">/);
   assert.equal(page.includes('<img src=x'), false);
   assert.equal(page.includes('<b>Mallory</b>'), false);
-  assert.match(page, /&lt;img src=x onerror=alert\(1\)&gt; &quot;quoted&quot; &amp; &#39;single&#39;/);
-  assert.match(page, /&lt;b&gt;Mallory&lt;\/b&gt;/);
+  // The text and names are JSON data. The browser draws them through the markdown renderer, which escapes them.
+  const data = shareDataOf(page);
+  assert.equal(data.messages[0]!.text, '<img src=x onerror=alert(1)> "quoted" & \'single\'');
+  assert.equal(data.messages[0]!.author, '<b>Mallory</b>');
 });
+
+/** The page data that the share page embeds for web/shares.js. */
+function shareDataOf(page: string): { messages: { author: string; text: string; tools: string[]; other: number; images: unknown[] }[] } {
+  const match = /<script type="application\/json" id="share-data">([\s\S]*?)<\/script>/.exec(page);
+  assert.ok(match, "the page has its data");
+  return JSON.parse(match[1]!);
+}
 
 test('renderSharePage keeps an unsafe tool name and status text as text', () => {
   const html = renderSharePage({ id: 'x', created_at: 1, options: { show_avatars: false, show_thinking: false }, messages: [{ author: 'A', bot: true, text: 'hi\n<i>x</i>', attachments: 2, tools: [toolLine('<script>bad()</script>')] }] });
   assert.equal(html.includes('<script>bad()'), false);
-  assert.match(html, /\[attachment\] \[attachment\]/);
-  assert.match(html, /hi<br>&lt;i&gt;x&lt;\/i&gt;/);
+  assert.equal(html.includes('<i>x</i>'), false);
+  const data = shareDataOf(html);
+  assert.deepEqual(data.messages[0]!.tools, ['Used tool <script>bad()</script>']);
+  assert.equal(data.messages[0]!.other, 2);
+  assert.equal(data.messages[0]!.text, 'hi\n<i>x</i>');
 });
 
 test('scrubText removes mentions, emails and long numeric IDs', () => {

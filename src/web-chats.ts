@@ -16,7 +16,7 @@ import { messageViews, openStream, type TranscriptStore } from "./web-transcript
 import type { WebChatRow } from "./web-chat-store.js";
 import { CHAT_IMAGE_ID, CHAT_IMAGE_MAX_BYTES, CHAT_IMAGE_MAX_COUNT, CHAT_IMAGE_SCHEME, LocalDiskStorage, chatImageContentType, chatImageKey, imageAttachments, imageName, newChatImageId, sniffImage } from "./web-chat-images.js";
 import type { ObjectStorageProvider } from "./object-storage.js";
-import { ChatShareService, ShareError, type ShareStore } from "./shares.js";
+import { ChatShareService, ShareError, type ShareService, type ShareStore } from "./shares.js";
 
 /** Store calls for private chats. SQLite and Postgres implement them. */
 export interface ChatStore extends TranscriptStore, ConversationEventStore, ShareStore {
@@ -160,6 +160,40 @@ export class WebChatService {
   /** Revokes one link of this chat. Anyone else gets 404. */
   async shareRevoke(user: string, id: string, shareId: string): Promise<{ id: string; revoked: true }> {
     return this.shares.revoke(await this.owned(user, id), shareId);
+  }
+
+  /**
+   * Copies a live share into a new private chat of the signed-in user. The copied messages are saved in that chat,
+   * so the model reads them as earlier history. An unknown or revoked share, or a private chat link whose owner left
+   * the server, is 404 (the snapshot check). Images and tool lines are not copied.
+   */
+  async continueShare(user: string, shareId: string, shares: Pick<ShareService, "snapshot">): Promise<{ id: string; title: string }> {
+    const row = await this.store.getShare(shareId);
+    const copy = row ? await shares.snapshot(shareId) : undefined;
+    if (!row || !copy) throw new ChatError(404, "Not found.");
+    await this.requireMember(user, row.server);
+    const handle = await this.handle(row.server);
+    const id = newPrivateChatId(), channel = privateChannel(id), at = this.now();
+    // A message with no text (only images) is not copied. Images are never copied.
+    const messages = copy.messages.filter(item => item.text.trim());
+    const title = privateChatTitle(messages[0]?.text ?? "");
+    await this.store.insertWebChat({ id, server: row.server, owner: user, title, created: at, updated: at, deleted: false });
+    const slopbot = slopbotId(this.store, row.server) ?? "slopbot";
+    // Each copied row gets a new ID. Slopbot replies keep the Slopbot author, so the model reads them as its own answers.
+    for (const [index, item] of messages.entries()) {
+      const saved: Message = {
+        id: `chat-share-${randomUUID()}`, server: row.server, channel,
+        author: item.bot ? slopbot : `share:${shareId}:${index}`,
+        authorName: item.bot ? "Slopbot" : item.author,
+        ...(item.bot ? { isBot: true } : {}),
+        text: item.text,
+        timestamp: Math.min(item.at ?? at - messages.length + index, at - 1),
+        addressed: false,
+      };
+      await this.store.ingest(saved);
+    }
+    handle.openChat(channel);
+    return { id, title };
   }
 
   async messages(user: string, id: string, limit: number, before: string | null): Promise<{ messages: unknown[]; hasMore: boolean; streamId: number }> {
