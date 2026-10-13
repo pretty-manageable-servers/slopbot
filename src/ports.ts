@@ -47,6 +47,10 @@ export interface Store extends ProviderKeyStore {
   userTokenTotals(server: string, user: string): Promise<UserTokenTotalRow[]>;
   // All servers together, plus the top `limit` servers and models by cost.
   tokenTotalsSummary(limit: number): Promise<TokenTotalsSummary>;
+  /** Known users: authors in author_directory (bot=0) and users with global limit rows. search is a case-insensitive name substring or an exact ID; empty finds all. Sorted by global 5h spent, then first name, then ID. */
+  listKnownUsers(search: string, limit: number, offset: number): Promise<KnownUserPage>;
+  /** Lifetime totals of one user in every server, by server then model. */
+  userTokenTotalsByServer(user: string): Promise<(UserTokenTotalRow & { server: string })[]>;
   // Replies sent since a time (ms), across all servers. Each triggering message counts once.
   countRepliesSince(since: number): Promise<number>;
 }
@@ -57,6 +61,9 @@ export interface UserLimitState { windows: readonly UserLimitWindow[]; resets: R
 export interface UserLimitRow extends UserLimitState { user: string }
 /** Token counts and cost of model calls. input is the uncached prompt tokens; cached is the cached part of the prompt. */
 export interface TokenTotals { input: number; output: number; cached: number; costMicros: number }
+/** One known user. servers are Discord server IDs from author_directory; 'web' is never listed. */
+export interface KnownUserRow { user: string; names: string[]; servers: string[] }
+export interface KnownUserPage { total: number; users: KnownUserRow[] }
 export interface UserTokenTotalRow extends TokenTotals { model: string; requests: number; firstAt: number; lastAt: number }
 /** Sums of the token totals and request count, over all rows of a group. */
 export type TokenSums = TokenTotals & { requests: number };

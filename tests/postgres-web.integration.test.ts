@@ -136,6 +136,47 @@ test("user limits match SQLite on Postgres", { skip: !process.env.TEST_DATABASE_
   assert.deepEqual(carol?.windows.find(row => row.kind === "5h")?.spent, 320);
 });
 
+test("known users and token totals by server match SQLite on Postgres", { skip: !process.env.TEST_DATABASE_URL }, async () => {
+  const log = await sameOnBoth(async (store, step) => {
+    await step.step("identify authors", async () => {
+      await store.identifyAuthor("s1", "100", ["Alice", "ali"]);
+      await store.identifyAuthor("s2", "100", ["Alice A"]);
+      await store.identifyAuthor("s1", "200", ["Bob"]);
+      await store.identifyAuthor("s1", "400", ["Robot"], true);
+      await store.identifyAuthor("web", "300", ["Carol"]);
+    });
+    await step.step("spend and banked resets", async () => {
+      await store.updateUserLimits("global", "100", () => ({ windows: [window("5h", 1000, 50)], result: undefined }));
+      await store.updateUserLimits("global", "200", () => ({ windows: [window("5h", 1000, 90)], result: undefined }));
+      await store.grantResets("global", "300", "week", 1);
+    });
+    await step.step("token totals", async () => {
+      const totals = { input: 10, output: 2, cached: 4, costMicros: 7 };
+      await store.addTokenTotals("s2", "100", "nimbus", totals, 1000);
+      await store.addTokenTotals("s1", "100", "vane", totals, 1000);
+      await store.addTokenTotals("s1", "100", "nimbus", totals, 2000);
+      await store.addTokenTotals("s1", "200", "nimbus", totals, 1000);
+    });
+    await step.step("list all", () => store.listKnownUsers("", 50, 0));
+    await step.step("search name", () => store.listKnownUsers("CAR", 50, 0));
+    await step.step("search ID", () => store.listKnownUsers("200", 50, 0));
+    await step.step("page", () => store.listKnownUsers("", 2, 1));
+    await step.step("totals by server", () => store.userTokenTotalsByServer("100"));
+  });
+
+  // Bot 400 is not listed. Web-only 300 is listed through its banked reset. 200 has the most 5-hour spend.
+  const all = log["list all"] as { value: { total: number; users: { user: string }[] } };
+  assert.deepEqual([all.value.total, all.value.users.map(row => row.user)], [3, ["200", "100", "300"]]);
+  assert.deepEqual(log["page"], { value: { total: 3, users: [{ user: "100", names: ["Alice", "ali", "Alice A"], servers: ["s1", "s2"] }, { user: "300", names: ["Carol"], servers: [] }] } });
+  assert.deepEqual(log["search name"], { value: { total: 1, users: [{ user: "300", names: ["Carol"], servers: [] }] } });
+  assert.deepEqual(log["search ID"], { value: { total: 1, users: [{ user: "200", names: ["Bob"], servers: ["s1"] }] } });
+  assert.deepEqual(log["totals by server"], { value: [
+    { server: "s1", model: "nimbus", requests: 1, input: 10, output: 2, cached: 4, costMicros: 7, firstAt: 2000, lastAt: 2000 },
+    { server: "s1", model: "vane", requests: 1, input: 10, output: 2, cached: 4, costMicros: 7, firstAt: 1000, lastAt: 1000 },
+    { server: "s2", model: "nimbus", requests: 1, input: 10, output: 2, cached: 4, costMicros: 7, firstAt: 1000, lastAt: 1000 },
+  ] });
+});
+
 test("web webhooks and web reply rows match SQLite on Postgres", { skip: !process.env.TEST_DATABASE_URL }, async () => {
   const hook = (token: string): WebWebhookRow => ({ server: WEB, channel: "chan-1", webhook_id: "hook-1", token_encrypted: token });
   const reply = (id: string, patch: Partial<WebReplyRow> = {}): WebReplyRow => ({ id, server: WEB, channel: "chan-1", user_id: "user-1", status: "pending", message_id: null, created_at: 1000, via: "webhook", ...patch });

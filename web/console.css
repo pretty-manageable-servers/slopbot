@@ -146,8 +146,31 @@ textarea.prompt-field{font-family:'JetBrains Mono',monospace;resize:vertical}
 .prompt-actions>button{display:inline-flex;align-items:center;justify-content:center;height:40px;min-height:40px;margin:0;padding:0 14px;box-sizing:border-box;line-height:1}
 .prompt-actions>.primary{margin:0}
 @media(max-width:760px){textarea.prompt-field{font-size:16px}}
-/* The per-user usage table scrolls sideways in its card instead of breaking words. */
-.usage-table{min-width:760px}.usage-table th,.usage-table td{white-space:nowrap}.usage-table .admin-person{white-space:nowrap}
+/* Manage users: the table of all users (rows open the user dialog), its pager, the page size select and the user dialog (#user-dialog). Colors come from the tokens in style.css. */
+.users-table{min-width:640px}.users-table th,.users-table td{white-space:nowrap}.users-table .admin-person{white-space:nowrap}
+.users-table .progress{max-width:140px;margin-top:4px}
+.user-row{cursor:pointer}
+.user-row:hover{background:var(--pill)}
+.user-open{display:block;width:100%;min-height:0;margin:0;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:left}
+.admin-search .user-size{flex:0 0 auto}
+.admin-search .user-size select{width:auto;min-width:80px}
+.users-pager{margin:12px 0 0}
+.user-dialog{width:min(760px,calc(100% - 32px));max-height:calc(var(--viewport-height) - 32px);padding:0;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--text);overflow:hidden}
+.user-dialog::backdrop{background:rgb(0 0 0 / .5)}
+.user-shell{display:flex;flex-direction:column;max-height:inherit;min-height:0}
+.user-shell .settings-head{flex:none}
+.user-body{flex:1 1 auto;min-height:0;padding:18px 22px 22px;overflow-y:auto;overscroll-behavior:contain}
+.user-profile{margin:0 0 8px}
+.user-body>.chips{margin:0}
+.user-section{margin-top:22px;padding-top:18px;border-top:1px solid var(--line)}
+.user-section h3{margin:0 0 6px;font-size:15px;color:var(--strong)}
+.user-section>.scope{margin:0 0 12px}
+.user-window{min-width:0;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
+.user-window h4{margin:0 0 6px;font-size:14px;color:var(--strong)}
+.user-window p{margin:0 0 6px}
+.user-window .progress{margin:8px 0}
+.user-form .row{margin-bottom:12px}
+@media(max-width:760px){.user-dialog{width:100%;max-width:100%;max-height:var(--viewport-height);border:0;border-radius:0}}
 .admin-server{display:flex;align-items:center;gap:12px;min-width:0}.admin-server .server-icon{width:32px;height:32px;display:grid;place-items:center;font-size:13px}
 /* Model prices and usage totals: cells never wrap, so the table scrolls sideways in its card. Numbers are right-aligned with tabular digits. */
 .price-table th,.price-table td,.usage-totals th,.usage-totals td{white-space:nowrap}

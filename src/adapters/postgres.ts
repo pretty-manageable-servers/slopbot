@@ -8,7 +8,7 @@ import type { ToolOutput } from "../tools.js";
 import { PostgresDatabase, serializeStore } from "./postgres-database.js";
 import { randomUUID } from "node:crypto";
 import { parseMessage, type Effort, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
-import type { AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow, TokenTotals, UserTokenTotalRow, TokenTotalsSummary } from "../ports.js";
+import type { AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow, TokenTotals, UserTokenTotalRow, TokenTotalsSummary, KnownUserPage } from "../ports.js";
 import type { KeyedProvider, ProviderKeyRow, ProviderKeyUsage } from "../web-providers.js";
 import { cosine, searchTerms, type Embeddings, type Evidence, type MemoryRecord } from "../memory.js";
 import { attribution, type Attribution } from "../usage-meter.js";
@@ -804,6 +804,33 @@ export class PostgresStore {
     async userTokenTotals(server: string, user: string): Promise<UserTokenTotalRow[]> {
         return (await this.db.prepare("SELECT model,requests,input_tokens,output_tokens,cached_tokens,cost_micros,first_at,last_at FROM user_token_totals WHERE server=? AND user_id=? ORDER BY model").all(server, user))
             .map(row => ({ model: String(row.model), requests: Number(row.requests), input: Number(row.input_tokens), output: Number(row.output_tokens), cached: Number(row.cached_tokens), costMicros: Number(row.cost_micros), firstAt: Number(row.first_at), lastAt: Number(row.last_at) }));
+    }
+    async listKnownUsers(search: string, limit: number, offset: number): Promise<KnownUserPage> {
+        const directory = await this.db.prepare("SELECT server,author,names,bot FROM author_directory ORDER BY server,author").all();
+        const spent = new Map((await this.db.prepare("SELECT user_id,spent FROM user_limit_counters WHERE server='global' AND kind='5h'").all()).map(row => [String(row.user_id), Number(row.spent)]));
+        const banked = (await this.db.prepare("SELECT DISTINCT user_id FROM user_limit_resets WHERE server='global'").all()).map(row => String(row.user_id));
+        const people = new Map<string, { names: string[]; servers: string[] }>();
+        // Users are the non-web human authors, plus anyone with global limit rows. Names come from every row.
+        const listed = new Set<string>();
+        for (const row of directory) {
+            const user = String(row.author), entry = people.get(user) ?? { names: [], servers: [] };
+            for (const name of JSON.parse(String(row.names)) as string[]) if (!entry.names.includes(name)) entry.names.push(name);
+            if (Number(row.bot) === 0 && String(row.server) !== "web") { listed.add(user); entry.servers.push(String(row.server)); }
+            people.set(user, entry);
+        }
+        const all = [...new Set([...listed, ...spent.keys(), ...banked])].map(user => ({ user, names: people.get(user)?.names ?? [], servers: [...(people.get(user)?.servers ?? [])].sort(), spent: spent.get(user) ?? 0 }));
+        const term = search.trim(), lower = term.toLowerCase();
+        const matches = term === "" ? all
+            : /^\d+$/.test(term) && all.some(row => row.user === term) ? all.filter(row => row.user === term)
+            : all.filter(row => row.names.some(name => name.toLowerCase().includes(lower)));
+        const first = (row: { names: string[] }) => (row.names[0] ?? "").toLowerCase();
+        const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+        matches.sort((a, b) => b.spent - a.spent || compare(first(a), first(b)) || compare(a.user, b.user));
+        return { total: matches.length, users: matches.slice(offset, offset + limit).map(({ user, names, servers }) => ({ user, names, servers })) };
+    }
+    async userTokenTotalsByServer(user: string): Promise<(UserTokenTotalRow & { server: string })[]> {
+        return (await this.db.prepare("SELECT server,model,requests,input_tokens,output_tokens,cached_tokens,cost_micros,first_at,last_at FROM user_token_totals WHERE user_id=? ORDER BY server,model").all(user))
+            .map(row => ({ server: String(row.server), model: String(row.model), requests: Number(row.requests), input: Number(row.input_tokens), output: Number(row.output_tokens), cached: Number(row.cached_tokens), costMicros: Number(row.cost_micros), firstAt: Number(row.first_at), lastAt: Number(row.last_at) }));
     }
     async tokenTotalsSummary(limit: number): Promise<TokenTotalsSummary> {
         const [total] = await this.db.prepare("SELECT COALESCE(SUM(requests),0) AS requests, COALESCE(SUM(input_tokens),0) AS input, COALESCE(SUM(output_tokens),0) AS output, COALESCE(SUM(cached_tokens),0) AS cached, COALESCE(SUM(cost_micros),0) AS cost FROM user_token_totals").all();

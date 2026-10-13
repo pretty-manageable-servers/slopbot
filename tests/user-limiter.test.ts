@@ -9,7 +9,7 @@ import { loadConfig } from "../src/config.js";
 import type { Message, Prompt } from "../src/domain.js";
 import { TaskWorker } from "../src/queue.js";
 import { ToolRegistry } from "../src/tools.js";
-import { UserLimiter, UserLimitError, limitReply, usageView } from "../src/user-limiter.js";
+import { USER_LIMIT_OVERRIDES_SETTING, UserLimiter, UserLimitError, limitOverride, limitReply, usageView } from "../src/user-limiter.js";
 import { activePrices, DEFAULT_FALLBACK_PRICE, parseFallbackPrice, parseModelPrices, usageCostMicros } from "../src/usage-cost.js";
 import { registerUsageTool } from "../src/usage-tools.js";
 import { ProviderEmbeddings, embeddingPriceModel } from "../src/adapters/embeddings.js";
@@ -165,6 +165,51 @@ test("users have separate counters, and resetUserUsage clears one user", async (
   await store.resetUserUsage("global", "u");
   assert.deepEqual(await limits.check("u", 2), { allowed: true });
   store.close();
+});
+
+test("an override replaces the global limit and 0 means no limit", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 100, 500);
+  store.setSetting("global", USER_LIMIT_OVERRIDES_SETTING, {
+    alice: { five_hour_cost_micros: 1000, week_cost_micros: null },
+    bob: { five_hour_cost_micros: 0, week_cost_micros: 0 },
+  });
+  await limits.record("alice", 200, 0);
+  assert.deepEqual(await limits.check("alice", 1), { allowed: true });
+  assert.deepEqual((await limits.usage("alice", 1)).map(window => window.limit), [1000, 500], "a null window keeps the global limit");
+  await limits.record("alice", 800, 0);
+  assert.equal((await limits.check("alice", 1)).allowed, false);
+  await limits.record("bob", 1000000, 0);
+  assert.deepEqual(await limits.check("bob", 1), { allowed: true });
+  assert.deepEqual((await limits.usage("bob", 1)).map(window => window.limit), [0, 0]);
+  await limits.record("carol", 100, 0);
+  assert.deepEqual(await limits.check("carol", 1), { allowed: false, resetAt: 5 * HOUR });
+  assert.deepEqual((await limits.usage("carol", 1)).map(window => window.limit), [100, 500]);
+  store.close();
+});
+
+test("clearing an override restores the global limit, and invalid override fields fall back to it", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 100, 0);
+  store.setSetting("global", USER_LIMIT_OVERRIDES_SETTING, { alice: { five_hour_cost_micros: 1000, week_cost_micros: null } });
+  await limits.record("alice", 500, 0);
+  assert.deepEqual(await limits.check("alice", 1), { allowed: true });
+  store.setSetting("global", USER_LIMIT_OVERRIDES_SETTING, {});
+  assert.deepEqual((await limits.usage("alice", 1)).map(window => window.limit), [100, 0]);
+  assert.deepEqual(await limits.check("alice", 1), { allowed: false, resetAt: 5 * HOUR });
+  store.setSetting("global", USER_LIMIT_OVERRIDES_SETTING, { alice: { five_hour_cost_micros: 1.5, week_cost_micros: -1 } });
+  assert.deepEqual((await limits.usage("alice", 1)).map(window => window.limit), [100, 0]);
+  store.close();
+});
+
+test("limitOverride keeps safe whole numbers from 0 to 1e12, and returns null when no field is set", () => {
+  const only = { five_hour_cost_micros: 5, week_cost_micros: null };
+  assert.deepEqual(limitOverride({ alice: only }, "alice"), only);
+  assert.deepEqual(limitOverride({ alice: { five_hour_cost_micros: -1, week_cost_micros: 1000000000000 } }, "alice"), { five_hour_cost_micros: null, week_cost_micros: 1000000000000 });
+  assert.equal(limitOverride({ alice: { five_hour_cost_micros: 1.5, week_cost_micros: 1000000000001 } }, "alice"), null);
+  assert.equal(limitOverride({ alice: { five_hour_cost_micros: null, week_cost_micros: null } }, "alice"), null);
+  assert.equal(limitOverride({ alice: 5 }, "alice"), null);
+  assert.equal(limitOverride({ alice: only }, "bob"), null);
+  assert.equal(limitOverride({}, "constructor"), null);
+  assert.equal(limitOverride(undefined, "alice"), null);
 });
 
 test("the limit reply shows the reset as a Discord relative time", () => {
@@ -470,4 +515,54 @@ test("one limit covers a user in all servers, and old rows for each server merge
   assert.equal((await shared.check("bob", now)).allowed, true);
   assert.equal(await shared.useReset("alice", "5h"), true);
   assert.equal((await shared.check("alice", now)).allowed, true);
+});
+
+test("listKnownUsers merges servers, adds web-only users, searches names and IDs, pages and sorts by 5h spend", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
+  store.identifyAuthor("s1", "100", ["Alice", "ali"]);
+  store.identifyAuthor("s2", "100", ["Alice A"]);
+  store.identifyAuthor("s1", "200", ["Bob"]);
+  store.identifyAuthor("s1", "700", ["Amy"]);
+  store.identifyAuthor("s1", "400", ["Robot"], true);
+  store.identifyAuthor("web", "500", ["Dan"]);
+  store.identifyAuthor("web", "300", ["Carol"]);
+  await limits.record("100", 50, 0);
+  await limits.record("200", 90, 0);
+  await limits.record("500", 10, 0);
+  await store.grantResets("global", "300", "week", 1);
+  const ids = (page: { users: { user: string }[] }) => page.users.map(row => row.user);
+  const all = await store.listKnownUsers("", 50, 0);
+  // Bot 400 is not listed. Web-only 500 and 300 are listed, with no servers.
+  assert.equal(all.total, 5);
+  assert.deepEqual(ids(all), ["200", "100", "500", "700", "300"]);
+  assert.deepEqual(all.users.find(row => row.user === "100"), { user: "100", names: ["Alice", "ali", "Alice A"], servers: ["s1", "s2"] });
+  assert.deepEqual(all.users.find(row => row.user === "500"), { user: "500", names: ["Dan"], servers: [] });
+  assert.deepEqual(all.users.find(row => row.user === "300"), { user: "300", names: ["Carol"], servers: [] });
+  assert.deepEqual(ids(await store.listKnownUsers("  ALI ", 50, 0)), ["100"], "name search is case-insensitive and trimmed");
+  assert.deepEqual(ids(await store.listKnownUsers("carol", 50, 0)), ["300"], "web names are searched");
+  assert.deepEqual(ids(await store.listKnownUsers("100", 50, 0)), ["100"], "an exact ID matches that ID");
+  assert.deepEqual(ids(await store.listKnownUsers(" 200 ", 50, 0)), ["200"]);
+  assert.deepEqual(ids(await store.listKnownUsers("400", 50, 0)), [], "a bot is not a known user");
+  assert.deepEqual(ids(await store.listKnownUsers("30", 50, 0)), [], "digits that are not an ID search the names");
+  assert.deepEqual(ids(await store.listKnownUsers("zzz", 50, 0)), []);
+  const page = await store.listKnownUsers("", 2, 0);
+  assert.deepEqual([page.total, ids(page)], [5, ["200", "100"]]);
+  assert.deepEqual(ids(await store.listKnownUsers("", 2, 2)), ["500", "700"]);
+  assert.deepEqual(ids(await store.listKnownUsers("", 2, 4)), ["300"]);
+  store.close();
+});
+
+test("userTokenTotalsByServer lists each server and model", async () => {
+  const store = new SQLiteStore();
+  const totals = { input: 10, output: 2, cached: 4, costMicros: 7 };
+  await store.addTokenTotals("s2", "alice", "nimbus", totals, 1000);
+  await store.addTokenTotals("s1", "alice", "vane", totals, 1000);
+  await store.addTokenTotals("s1", "alice", "nimbus", totals, 2000);
+  await store.addTokenTotals("s1", "alice", "nimbus", totals, 3000);
+  await store.addTokenTotals("s1", "bob", "nimbus", totals, 1000);
+  const rows = await store.userTokenTotalsByServer("alice");
+  assert.deepEqual(rows.map(row => [row.server, row.model]), [["s1", "nimbus"], ["s1", "vane"], ["s2", "nimbus"]]);
+  assert.deepEqual(rows[0], { server: "s1", model: "nimbus", requests: 2, input: 20, output: 4, cached: 8, costMicros: 14, firstAt: 2000, lastAt: 3000 });
+  assert.deepEqual(await store.userTokenTotalsByServer("nobody"), []);
+  store.close();
 });

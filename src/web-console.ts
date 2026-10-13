@@ -94,14 +94,15 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
   if (method === 'POST' && path === '/api/admin/web-keys/add') return panel.addWebKey(user, body);
   if (method === 'POST' && path === '/api/admin/web-keys/delete') return panel.deleteWebKey(user, await admin.canEdit(user), body);
   if (method === 'POST' && !await admin.canEdit(user)) throw new ToolError('Team editor role is required.');
+  const info = (id: string) => admin.serverInfo(id);
   if (method === 'GET') {
     if (path === '/api/admin/me') return { role, canEdit: await admin.canEdit(user) };
-    if (path === '/api/admin/limits') return panel.limits(query.get('server'));
+    if (path === '/api/admin/limits') return panel.limits();
+    if (path === '/api/admin/users') return panel.users(query.get('q') ?? '', Number(query.get('limit') ?? 10), Number(query.get('offset') ?? 0), info);
+    if (path === '/api/admin/users/one') return panel.user(query.get('user'), info);
     if (path === '/api/admin/prices') return panel.prices();
     if (path === '/api/admin/system-prompt') return panel.systemPrompt();
     if (path === '/api/admin/bot-replies') return panel.botReplies();
-    if (path === '/api/admin/usage') return panel.usage(query.get('server'), query.get('user') ?? undefined);
-    if (path === '/api/admin/members') return panel.members(query.get('server'), query.get('q') ?? '');
     if (path === '/api/admin/servers') return admin.servers(serverPage(query));
     if (path === '/api/admin/servers/channels') return admin.serverChannels(snowflake(query.get('server'), 'server'));
     if (path === '/api/admin/usage/total') return panel.totalUsage(id => admin.serverInfo(id));
@@ -110,13 +111,14 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
     return undefined;
   }
   if (path === '/api/admin/limits') return panel.saveLimits(body);
+  if (path === '/api/admin/users/reset') return panel.resetUser(body, info);
+  if (path === '/api/admin/users/grant') return panel.grantUser(body, info);
+  if (path === '/api/admin/users/override') return panel.saveOverride(body, info);
   if (path === '/api/admin/web-keys/caps') return panel.saveKeyCaps(body);
   if (path === '/api/admin/web-keys/reset') return panel.resetWebKey(user, await admin.canEdit(user), body);
   if (path === '/api/admin/prices') return panel.savePrice(body);
   if (path === '/api/admin/system-prompt') return panel.saveSystemPrompt(body);
   if (path === '/api/admin/bot-replies') return panel.saveBotReplies(body);
-  if (path === '/api/admin/usage/reset') return panel.resetUsage(body);
-  if (path === '/api/admin/usage/grant') return panel.grantResets(body);
   if (path === '/api/admin/transcripts') {
     const input = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
     if (typeof input.enabled !== 'boolean') throw new AdminInputError('Invalid web transcript setting.');

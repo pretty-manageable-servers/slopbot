@@ -1,11 +1,11 @@
 import { BOT_REPLY_LIMIT_KEY, DEFAULT_BOT_REPLY_LIMIT, MAX_BOT_REPLIES, MAX_BOT_REPLY_MINUTES, botReplyLimit, type BotReplyLimit } from "./bot-reply-limit.js";
 import type { Config } from "./config.js";
 import type { Json } from "./domain.js";
-import type { Store, TokenSums } from "./ports.js";
-import { savedLimit, USER_LIMIT_SCOPE, type UserLimiter } from "./user-limiter.js";
+import type { KnownUserRow, Store, TokenSums, UserTokenTotalRow } from "./ports.js";
+import { limitOverride, savedLimit, USER_LIMIT_OVERRIDES_SETTING, USER_LIMIT_SCOPE, type UserLimiter, type UserLimitOverride, type UserUsageWindow } from "./user-limiter.js";
 import { activePrices, GLOBAL_SETTINGS_SCOPE, type ModelPrice } from "./usage-cost.js";
 import { modelsInUse } from "./usage-meter.js";
-import type { MemberDirectory, MemberProfile } from "./member-directory.js";
+import { UNKNOWN_USER, type MemberDirectory, type MemberProfile } from "./member-directory.js";
 import { DEFAULT_INSTRUCTIONS, fullSystemText } from "./agent-runner.js";
 import type { PresentationPolicy } from "./presentation/policy.js";
 import { newProviderKeyRow, WebKeySecrets } from "./web-keys.js";
@@ -20,9 +20,11 @@ const MAX_COST_MICROS = 1000000000000;
 const MAX_PRICE_MICROS = 1000000000;
 const MAX_GRACE_PERCENT = 1000;
 const MAX_GRANT = 100;
-const USAGE_LIST_LIMIT = 200;
-const MEMBER_SEARCH_LIMIT = 10;
 const MAX_SEARCH_CHARS = 100;
+/** Page sizes of the users list. */
+const USER_PAGE_SIZES = [5, 10, 25, 50] as const;
+/** A lookup of one user by exact ID. */
+const USER_LOOKUP_LIMIT = 10;
 const LIMIT_KEYS = { five: "user_limit_5h_cost_micros", week: "user_limit_week_cost_micros", grace: "user_limit_grace_percent" } as const;
 const MAX_SYSTEM_PROMPT_CHARS = 8000;
 const SYSTEM_PROMPT_KEY = "system_prompt";
@@ -34,10 +36,15 @@ const MAX_KEY_CAP = 100000;
 
 export type AdminConfig = Pick<Config, "model" | "jevModel" | "embeddingModel" | "baseUrl" | "modelPrices" | "fallbackPrice" | "userLimit5hCostMicros" | "userLimitWeekCostMicros" | "userLimitGracePercent">;
 /** resetProviderKey is optional: a store without it keeps the exhausted flag of a key until it has it. */
-export type AdminStore = Pick<Store, "listUserUsage" | "resetUserUsage" | "grantResets" | "tokenTotalsSummary" | "listProviderKeys" | "addProviderKey" | "deleteProviderKey" | "providerKeyUsage"> & { setting(server: string, key: string): unknown; setSetting(server: string, key: string, value: Json): void | Promise<void>; resetProviderKey?(id: string, month: string): void | Promise<void> };
+export type AdminStore = Pick<Store, "listKnownUsers" | "userTokenTotalsByServer" | "resetUserUsage" | "grantResets" | "tokenTotalsSummary" | "listProviderKeys" | "addProviderKey" | "deleteProviderKey" | "providerKeyUsage"> & { setting(server: string, key: string): unknown; setSetting(server: string, key: string, value: Json): void | Promise<void>; resetProviderKey?(id: string, month: string): void | Promise<void> };
 export type WindowKind = "5h" | "week";
 export interface LimitValues { five_hour_cost_micros: number; week_cost_micros: number; grace_percent: number }
-export interface LimitsView extends LimitValues { server: string; defaults: LimitValues }
+export interface UserServer { id: string; name: string }
+export interface UserRowView { user: MemberProfile; servers: UserServer[]; windows: UserUsageWindow[]; override: UserLimitOverride | null }
+export interface UsersPageView { total: number; limit: 5 | 10 | 25 | 50; offset: number; users: UserRowView[] }
+export type UserPageSize = typeof USER_PAGE_SIZES[number];
+export interface UserDetailView extends UserRowView { totals: (UserTokenTotalRow & { server: string; serverName: string })[] }
+export interface LimitsView extends LimitValues { defaults: LimitValues }
 /** configured is the price from the config table; fallback is used when the config has no price for the model. */
 export type PriceSource = "config" | "fallback";
 /** One model. default is the price with no override; override is the saved team price, or null. The price in use is override ?? default. */
@@ -118,11 +125,17 @@ function usageRow(sums: TokenSums): UsageRow {
   return { requests: sums.requests, cost_micros: sums.costMicros, total_tokens: sums.input + sums.cached + sums.output, input_tokens: sums.input, cached_tokens: sums.cached, output_tokens: sums.output };
 }
 
+/** The profile for a row. When the directory could not resolve the user, the first stored name is used, else the ID. */
+function named(profile: MemberProfile | undefined, row: KnownUserRow): MemberProfile {
+  if (profile && !(profile.displayName === UNKNOWN_USER && profile.username === null)) return profile;
+  return { id: row.user, displayName: row.names[0] || row.user, username: null, avatarUrl: null };
+}
+
 /** Limits, model prices and user usage for the team admin panel. Every change is validated before it is saved. */
 export class AdminPanel {
   /** presentation is the same rule set the runs use, so the full prompt view matches a real run. */
   /** secrets seals the team keys. It reads WEB_KEYS_SECRET unless a value is given. */
-  constructor(private readonly config: AdminConfig, private readonly store: AdminStore, private readonly limiter: UserLimiter, private readonly directory: Pick<MemberDirectory, "profiles" | "search">, private readonly presentation?: PresentationPolicy, private readonly secrets: WebKeySecrets = new WebKeySecrets()) {}
+  constructor(private readonly config: AdminConfig, private readonly store: AdminStore, private readonly limiter: UserLimiter, private readonly directory: Pick<MemberDirectory, "profiles">, private readonly presentation?: PresentationPolicy, private readonly secrets: WebKeySecrets = new WebKeySecrets()) {}
 
   /** Lifetime token totals over all servers, with the top servers and models by cost. Server name and icon come from info. */
   async totalUsage(info: (server: string) => ServerInfo): Promise<TotalUsageView> {
@@ -141,13 +154,13 @@ export class AdminPanel {
     return { text: fullSystemText(base, this.presentation) };
   }
 
-  limits(server: unknown): LimitsView {
-    return this.limitsView(snowflake(server, "server"));
+  /** The global limits for every user, with the defaults from the config. */
+  limits(): LimitsView {
+    return this.limitsView();
   }
 
   async saveLimits(body: unknown): Promise<LimitsView> {
     const input = object(body, "Send limits as an object.");
-    const server = snowflake(input.server, "server");
     const values = {
       five_hour_cost_micros: wholeNumber(input.five_hour_cost_micros, MAX_COST_MICROS, "The 5-hour limit must be a whole number of micro-dollars from 0 to 1000000000000."),
       week_cost_micros: wholeNumber(input.week_cost_micros, MAX_COST_MICROS, "The weekly limit must be a whole number of micro-dollars from 0 to 1000000000000."),
@@ -156,13 +169,12 @@ export class AdminPanel {
     await this.store.setSetting(USER_LIMIT_SCOPE, LIMIT_KEYS.five, values.five_hour_cost_micros);
     await this.store.setSetting(USER_LIMIT_SCOPE, LIMIT_KEYS.week, values.week_cost_micros);
     await this.store.setSetting(USER_LIMIT_SCOPE, LIMIT_KEYS.grace, values.grace_percent);
-    return this.limitsView(server);
+    return this.limitsView();
   }
 
-  private limitsView(server: string): LimitsView {
+  private limitsView(): LimitsView {
     const defaults = { five_hour_cost_micros: this.config.userLimit5hCostMicros, week_cost_micros: this.config.userLimitWeekCostMicros, grace_percent: this.config.userLimitGracePercent };
     return {
-      server,
       five_hour_cost_micros: savedLimit(this.store.setting(USER_LIMIT_SCOPE, LIMIT_KEYS.five), defaults.five_hour_cost_micros),
       week_cost_micros: savedLimit(this.store.setting(USER_LIMIT_SCOPE, LIMIT_KEYS.week), defaults.week_cost_micros),
       grace_percent: savedLimit(this.store.setting(USER_LIMIT_SCOPE, LIMIT_KEYS.grace), defaults.grace_percent, MAX_GRACE_PERCENT),
@@ -239,45 +251,91 @@ export class AdminPanel {
     return saved && typeof saved === "object" && !Array.isArray(saved) ? { ...saved } as Record<string, Json> : {};
   }
 
-  /** Every user with counters in the server, or one user when user is given. Each user has an id and a profile. */
-  async usage(server: unknown, user?: unknown): Promise<unknown> {
-    const id = snowflake(server, "server");
-    if (user === undefined) {
-      const rows = await this.store.listUserUsage(USER_LIMIT_SCOPE, USAGE_LIST_LIMIT);
-      const profiles = await this.directory.profiles(id, rows.map(row => row.user));
-      return { server: id, users: rows.map(row => ({ user: profiles.get(row.user)!, windows: this.limiter.summarize(row) })) };
-    }
-    const member = snowflake(user, "user");
-    const profile = (await this.directory.profiles(id, [member])).get(member)!;
-    return { server: id, user: profile, windows: await this.limiter.usage(member) };
+  /**
+   * One page of the known users, sorted by the store. q is a name substring or an exact ID (empty finds all).
+   * limit must be 5, 10, 25 or 50. Server names come from info. Profiles come from each user's first server.
+   */
+  async users(q: unknown, limit: unknown, offset: unknown, info: (server: string) => ServerInfo): Promise<UsersPageView> {
+    if (typeof q !== "string") throw new AdminInputError("Search needs text.");
+    const search = q.trim();
+    if (search.length > MAX_SEARCH_CHARS) throw new AdminInputError("Search for 100 characters or fewer.");
+    if (typeof limit !== "number" || !(USER_PAGE_SIZES as readonly number[]).includes(limit)) throw new AdminInputError(`Page size must be ${USER_PAGE_SIZES.join(", ")}.`);
+    if (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0) throw new AdminInputError("Offset must be a whole number.");
+    const page = await this.store.listKnownUsers(search, limit, offset);
+    return { total: page.total, limit: limit as UserPageSize, offset, users: await this.rowViews(page.users, info) };
   }
 
-  /** Server members whose name starts with the query, for the user picker. An empty query finds nobody. */
-  async members(server: unknown, query: unknown): Promise<{ server: string; members: MemberProfile[] }> {
-    const id = snowflake(server, "server");
-    if (typeof query !== "string") throw new AdminInputError("Search needs text.");
-    const text = query.trim();
-    if (text.length > MAX_SEARCH_CHARS) throw new AdminInputError("Search for 100 characters or fewer.");
-    return { server: id, members: await this.directory.search(id, text, MEMBER_SEARCH_LIMIT) };
+  /** One user: windows, override, servers and lifetime token totals by server and model. */
+  async user(id: unknown, info: (server: string) => ServerInfo): Promise<UserDetailView> {
+    return this.detail(snowflake(id, "user"), info);
   }
 
   /** Clears one window, or both when kind is not given. Banked resets are not used. */
-  async resetUsage(body: unknown): Promise<unknown> {
+  async resetUser(body: unknown, info: (server: string) => ServerInfo): Promise<UserDetailView> {
     const input = object(body, "Send a reset as an object.");
-    const server = snowflake(input.server, "server"), user = snowflake(input.user, "user");
+    const user = snowflake(input.user, "user");
     const kind = input.kind === undefined ? undefined : windowKind(input.kind);
     await this.store.resetUserUsage(USER_LIMIT_SCOPE, user, kind);
-    return { server, user, kind: kind ?? "all", windows: await this.limiter.usage(user) };
+    return this.detail(user, info);
   }
 
   /** Adds banked resets for one window. */
-  async grantResets(body: unknown): Promise<unknown> {
+  async grantUser(body: unknown, info: (server: string) => ServerInfo): Promise<UserDetailView> {
     const input = object(body, "Send a grant as an object.");
-    const server = snowflake(input.server, "server"), user = snowflake(input.user, "user"), kind = windowKind(input.kind);
+    const user = snowflake(input.user, "user"), kind = windowKind(input.kind);
     const count = wholeNumber(input.count, MAX_GRANT, "Grant between 1 and 100 resets.");
     if (count < 1) throw new AdminInputError("Grant between 1 and 100 resets.");
     await this.store.grantResets(USER_LIMIT_SCOPE, user, kind, count);
-    return { server, user, kind, granted: count, windows: await this.limiter.usage(user) };
+    return this.detail(user, info);
+  }
+
+  /**
+   * Saves one user's override: a window value replaces the global limit for that user, and 0 means no limit.
+   * null on a window uses the global limit. Both null removes the user's override.
+   */
+  async saveOverride(body: unknown, info: (server: string) => ServerInfo): Promise<UserDetailView> {
+    const input = object(body, "Send an override as an object.");
+    const user = snowflake(input.user, "user");
+    const field = (value: unknown, name: string): number | null => value === null ? null : wholeNumber(value, MAX_COST_MICROS, `The ${name} override must be a whole number of micro-dollars from 0 to 1000000000000, or empty for the global limit.`);
+    const five = field(input.five_hour_cost_micros, "5-hour"), week = field(input.week_cost_micros, "weekly");
+    const table = this.savedOverrides();
+    if (five === null && week === null) delete table[user];
+    else table[user] = { five_hour_cost_micros: five, week_cost_micros: week };
+    await this.store.setSetting(USER_LIMIT_SCOPE, USER_LIMIT_OVERRIDES_SETTING, table as Json);
+    return this.detail(user, info);
+  }
+
+  /** The view of one user, with the lifetime totals of each server and model. */
+  private async detail(user: string, info: (server: string) => ServerInfo): Promise<UserDetailView> {
+    const known = (await this.store.listKnownUsers(user, USER_LOOKUP_LIMIT, 0)).users.find(row => row.user === user);
+    const [view] = await this.rowViews([{ user, names: known?.names ?? [], servers: known?.servers ?? [] }], info);
+    const totals = await this.store.userTokenTotalsByServer(user);
+    return { ...view!, totals: totals.map(total => ({ ...total, serverName: info(total.server).name })) };
+  }
+
+  /** Views of known users. Each profile comes from the user's first server; a user with no server gets the ID as the name. */
+  private async rowViews(rows: readonly KnownUserRow[], info: (server: string) => ServerInfo): Promise<UserRowView[]> {
+    const idsByServer = new Map<string, string[]>();
+    for (const row of rows) {
+      const first = row.servers[0];
+      if (first !== undefined) idsByServer.set(first, [...idsByServer.get(first) ?? [], row.user]);
+    }
+    const profiles = new Map<string, MemberProfile>();
+    await Promise.all([...idsByServer].map(async ([server, ids]) => {
+      for (const [id, profile] of await this.directory.profiles(server, ids)) profiles.set(id, profile);
+    }));
+    const saved = this.store.setting(USER_LIMIT_SCOPE, USER_LIMIT_OVERRIDES_SETTING);
+    return Promise.all(rows.map(async (row): Promise<UserRowView> => ({
+      user: named(profiles.get(row.user), row),
+      servers: row.servers.map(id => ({ id, name: info(id).name })),
+      windows: await this.limiter.usage(row.user),
+      override: limitOverride(saved, row.user),
+    })));
+  }
+
+  private savedOverrides(): Record<string, Json> {
+    const saved = this.store.setting(USER_LIMIT_SCOPE, USER_LIMIT_OVERRIDES_SETTING);
+    return saved && typeof saved === "object" && !Array.isArray(saved) ? { ...saved } as Record<string, Json> : {};
   }
 
   /** The team web search keys with this month's use and last error. Any team member may read them. Never includes a secret. */
