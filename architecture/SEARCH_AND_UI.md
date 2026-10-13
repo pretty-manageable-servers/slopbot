@@ -28,7 +28,7 @@ The `ui_publish` tool accepts versioned JSON. Supported elements are text, cards
 }
 ```
 
-Search and task tools supply their own UI documents; the model does not need to compose them manually. UI actions reference registered tools. Buttons carry opaque state IDs, revisions, and action indices. Arguments stay in the database. Clicks use the actual clicking member's identity and permissions, never an identity supplied by the model.
+Task tools supply their own UI documents; the model does not need to compose them manually. `history_search` returns text only. The model reads the results and writes the answer, and pages with the returned cursor. UI actions reference registered tools. Buttons carry opaque state IDs, revisions, and action indices. Arguments stay in the database. Clicks use the actual clicking member's identity and permissions, never an identity supplied by the model.
 
 ```mermaid
 flowchart LR
@@ -43,7 +43,7 @@ flowchart LR
   State --> Registry
 ```
 
-State is stored in `app_records`, within the configured database schema. Atomic revision claims prevent duplicate concurrent actions. Completed operation results repair UI state after a crash. Unknown action outcomes remain blocked rather than being repeated. Stale clicks refresh the message to its current controls. Controls expire after 24 hours. Search controls are private to their requester; task controls enforce task ownership.
+State is stored in `app_records`, within the configured database schema. Atomic revision claims prevent duplicate concurrent actions. Completed operation results repair UI state after a crash. Unknown action outcomes remain blocked rather than being repeated. Stale clicks refresh the message to its current controls. Controls expire after 24 hours. Task controls enforce task ownership.
 
 Components V2 handles cards and selects. Native polls use a separate message because V2 disables polls. The renderer enforces component limits and suppresses multiple link previews. Poll questions, answer lengths and duration follow [Discord's poll limits](https://github.com/discord/discord-api-docs/blob/main/developers/resources/poll.mdx).
 
@@ -65,7 +65,7 @@ Components V2 handles cards and selects. Native polls use a separate message bec
 
 Run `npm test`, then use `npm start` and test with slop-dev in an enabled channel:
 
-1. Ask “search our history for deployment problems.” Open **More results**.
+1. Ask “search our history for deployment problems.” Ask for more results. The reply should page with the cursor and post no card.
 2. Ask “read the messages around that result.” Verify timestamps, names, and source links.
 3. Ask “summarize our deployment discussion” and “what did we decide about deployment?”
 4. Ask “make a 24-hour poll: deploy today or tomorrow.”

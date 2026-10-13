@@ -41,8 +41,9 @@ journaling. Checkpoint model time is nested within context building, so steps ar
 not always additive. Uninstrumented validation/storage and scheduling contribute
 to total time.
 
-Tool activity also records duration per individual invocation and displays it in
-progress updates and the final tool footer. Repeated timed calls remain separate.
+Tool activity also records duration per individual invocation. `timing_inspect` shows it.
+Progress updates and reply footers show counts and failed or blocked calls, not durations.
+Repeated timed calls remain separate.
 This covers the tool executor, including authorization and resource wait, but not
 status-message delivery or subsequent result journaling. Replayed results are
 marked saved without inventing their original execution time. These durations
@@ -76,7 +77,7 @@ Members can inspect the current permitted channel only. Authorization is checked
 again before cached tool-result replay. It explains recorded stages, first model
 output and each tool duration; missing historical data is reported explicitly.
 It cannot determine provider load or database/network root causes from elapsed
-time alone. Tool names render as inline code in progress updates and footers.
+time alone. Progress updates and footers name each tool with an emoji and a plain name.
 
 Streaming event writes use batches of up to 32 events or 64 KiB, with a 250ms
 periodic flush and an awaited flush at normal/error termination. Original event

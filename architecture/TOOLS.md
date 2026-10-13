@@ -132,9 +132,9 @@ Setup requires an approved PMServers account, a dedicated bucket and bucket-scop
 
 ## Tool activity display
 
-Live Discord status shows recent calls with arguments, status, and elapsed time. Delegated task seeds post directly in the task thread. Long live arguments are clipped to fit Discord's message limit; credential fields are redacted. Parallel program calls update a single status message.
+Live Discord status shows a pulse header with a changing fun line, one line per tool type with a count, failed or blocked calls, and the current step. It never shows JSON arguments; the current step shows only a clipped search query. Delegated task seeds post directly in the task thread. Parallel program calls update a single status message.
 
-Completed replies default to a summary such as `web_search` × 3. Server managers can choose **No tool calls**, **Summary**, or **Full expansion** in the web console, or use `/slopbot tool_display mode:none|summary|full`. Full expansion lists each call with its arguments, status, timing, and failure reason. This setting persists per server and leaves live progress enabled.
+Completed replies default to a summary line such as `🔎 3 web searches`. Server managers can choose **No tool calls**, **Summary**, or **Full expansion** in the web console, or use `/slopbot tool_display mode:none|summary|full`. Full expansion adds one line for each failed or blocked call with its reason. Tool arguments are never shown. This setting persists per server and leaves live progress enabled.
 
 
 ## Sandbox templates

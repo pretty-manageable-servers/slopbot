@@ -198,33 +198,6 @@ export function registerHistoryTools(
         } as unknown as Json);
       }
       result.text += `\n\nCoverage: ${page.coverage.messages} messages, ${page.coverage.vectors} vectors; ${page.coverage.oldest ? new Date(page.coverage.oldest).toISOString() : "unknown"} to ${page.coverage.newest ? new Date(page.coverage.newest).toISOString() : "unknown"}. Ranked candidate cap: ${page.candidateLimit}.${page.degraded ? " Semantic search unavailable; keyword fallback used." : ""}${cursor ? ` Next cursor: ${cursor}` : ""}`;
-      result.ui = {
-        version: 1,
-        type: "card",
-        title: "Indexed history",
-        text: page.messages.length
-          ? page.messages
-              .map(
-                (message, index) =>
-                  `${index + 1}. **${authorLabel(message).slice(0, 40)}** · ${message.timestamp ? new Date(message.timestamp).toISOString().slice(0, 10) : "date unknown"}\n${message.text.replace(/\s+/g, " ").slice(0, 100)}${message.text.length > 100 ? "…" : ""}\n[Read message](${messageLink(message)})`,
-              )
-              .join("\n\n") +
-            (page.degraded
-              ? "\n\nKeyword results; semantic search unavailable."
-              : "")
-          : "No indexed messages found.",
-        ...(cursor
-          ? {
-              actions: [
-                {
-                  label: "More results",
-                  action: "history.next",
-                  arguments: { cursor },
-                },
-              ],
-            }
-          : {}),
-      };
       return result;
     },
   });
