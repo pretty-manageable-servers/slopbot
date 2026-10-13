@@ -1,13 +1,51 @@
-let state, csrf, tab = 'server';
+let state, csrf, tab = 'server', viewAuto = false, viewReady = false;
 const $ = id => document.getElementById(id);
 const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const recall = key => { try { return localStorage.getItem(key); } catch { return null; } };
 const remember = (key, value) => { try { localStorage.setItem(key, value); } catch { } };
-function theme(light) { document.documentElement.classList.toggle('light', light); document.querySelectorAll('img[src*="logo-"]').forEach(img => img.src = `/assets/logo-${light ? 'dark' : 'light'}.svg`); $('theme').textContent = light ? 'Dark theme' : 'Light theme'; remember('slopbot-theme', light ? 'light' : 'dark'); }
+function theme(light) { document.documentElement.classList.toggle('light', light); document.querySelectorAll('img[src*="logo-"]').forEach(img => img.src = `/assets/logo-${light ? 'dark' : 'light'}.svg`); const next = light ? 'Switch to dark theme' : 'Switch to light theme'; $('theme').setAttribute('aria-label', next); $('theme').title = next; $('theme-sun').hidden = light; $('theme-moon').hidden = !light; remember('slopbot-theme', light ? 'light' : 'dark'); }
 theme(recall('slopbot-theme') === 'light');
 $('theme').onclick = () => theme(!document.documentElement.classList.contains('light'));
+// Top bar: Chat or Settings, and the account menu. Chat is the default when the user can view a conversation.
+function setView(view) {
+  if (view === 'chat') tab = 'conversations';
+  else if (tab === 'conversations') tab = state.admin ? 'server' : 'profile';
+  viewAuto = false;
+  remember('slopbot-view', view);
+  history.replaceState(null, '', '#' + view);
+  render();
+}
+function chooseView() {
+  viewReady = true;
+  const hash = location.hash.slice(1), saved = recall('slopbot-view');
+  const want = ['chat', 'settings'].includes(hash) ? hash : ['chat', 'settings'].includes(saved) ? saved : '';
+  if (want === 'settings' || (!want && !state.server)) tab = state.admin ? 'server' : 'profile';
+  else { tab = 'conversations'; viewAuto = !want; }
+}
+// Used when the user has no conversation to view. The view then falls back to Settings.
+function fallbackToSettings() {
+  viewAuto = false;
+  tab = state.admin ? 'server' : 'profile';
+  history.replaceState(null, '', '#settings');
+  render();
+}
+document.querySelectorAll('[data-view]').forEach(button => { button.onclick = () => setView(button.dataset.view); });
+const accountButton = $('account-button'), accountMenu = $('account-menu');
+function setAccountMenu(open) { accountMenu.hidden = !open; accountButton.setAttribute('aria-expanded', String(open)); }
+accountButton.onclick = event => { event.stopPropagation(); setAccountMenu(accountMenu.hidden); };
+document.addEventListener('click', event => { if (!$('account').contains(event.target)) setAccountMenu(false); });
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && !accountMenu.hidden) { setAccountMenu(false); accountButton.focus(); } });
+function renderAccount() {
+  const name = state.profile?.name || state.user || '';
+  const avatarUrl = state.profile?.avatarUrl;
+  $('account-name').textContent = name;
+  const node = typeof avatarUrl === 'string' && avatarUrl
+    ? Object.assign(document.createElement('img'), { className: 'avatar-img', alt: '', src: avatarUrl, referrerPolicy: 'no-referrer' })
+    : Object.assign(document.createElement('span'), { className: 'avatar-pill', textContent: Array.from(String(name))[0]?.toUpperCase() || '?' });
+  accountButton.replaceChildren(node);
+}
 function notice(text) { $('notice').textContent = text; }
-function showScreen(name) { $('boot').hidden = name !== 'boot'; $('login').hidden = name !== 'login'; $('console').hidden = name !== 'console'; $('logout').hidden = name !== 'console'; }
+function showScreen(name) { $('boot').hidden = name !== 'boot'; $('login').hidden = name !== 'login'; $('console').hidden = name !== 'console'; $('account').hidden = name !== 'console'; }
 const loader = size => { const svg = $('loader').content.firstElementChild.cloneNode(true); if (size) svg.classList.add(size); return svg; };
 function busy(size, text) { const box = document.createElement('div'), label = document.createElement('p'); box.className = 'busy'; label.textContent = text; box.append(loader(size), label); return box; }
 async function request(path, body) {
@@ -40,6 +78,8 @@ function applySettings(result) {
   $('server').innerHTML = list.map(s => `<option value="${esc(s.id)}"${s.id === state.server?.id ? ' selected' : ''}>${esc(s.name)}</option>`).join('');
   icon.hidden = !current?.icon; if (current?.icon) icon.src = current.icon;
   $('role').textContent = current ? (state.admin ? 'Admin' : 'Member') : '';
+  if (!viewReady) chooseView();
+  renderAccount();
   render();
 }
 function channelAction(button) {
@@ -58,6 +98,7 @@ function channelRow(c) {
 }
 function render() {
   document.querySelectorAll('[data-tab]').forEach(button => { button.classList.toggle('selected', button.dataset.tab === tab); button.setAttribute('aria-current', button.dataset.tab === tab ? 'page' : 'false'); button.onclick = () => { tab = button.dataset.tab; render(); }; });
+  setChatMode(tab === 'conversations' && !!state.server);
   if (tab === 'admin' && admin) { renderAdmin(); return; }
   if (tab !== 'conversations') closeConversation();
   if (!state.server) { $('breadcrumb').textContent = 'Settings'; $('title').textContent = 'No servers yet.'; $('description').textContent = ''; $('content').innerHTML = '<section class="card"><h2>Slopbot is not in any of your servers yet.</h2><p class="small">A server admin must invite Slopbot to a server you are in.</p></section>'; return; }

@@ -88,6 +88,13 @@
       }
     });
     close.addEventListener('click', () => dialog.close());
+    // Escape and a click on the backdrop close the dialog. A click inside the box, or a keyboard click, does not.
+    dialog.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); dialog.close(); } });
+    dialog.addEventListener('click', event => {
+      const box = dialog.getBoundingClientRect();
+      const outside = event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom;
+      if (event.target === dialog && outside) dialog.close();
+    });
     dialog.addEventListener('close', () => dialog.remove());
     document.body.append(dialog);
     dialog.showModal();
