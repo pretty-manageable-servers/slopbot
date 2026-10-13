@@ -3,7 +3,7 @@
 const conv = { server: '', list: [], channel: null, source: null, lastStream: 0, seen: 0, live: new Map(), frame: 0 };
 const enc = encodeURIComponent;
 const reduceMotion = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-const when = ts => ts ? new Date(ts).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '';
+const timeLabel = ts => ts ? new Date(ts).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '';
 const label = c => (c.kind === 'thread' ? 'Thread · ' : '#') + c.name;
 
 function renderConversations() {
@@ -38,7 +38,7 @@ function drawList() {
     button.type = 'button'; button.className = 'conv-item'; button.dataset.id = c.id;
     button.setAttribute('aria-current', c.id === conv.channel ? 'true' : 'false');
     const name = document.createElement('strong'); name.textContent = label(c);
-    const date = document.createElement('span'); date.className = 'small'; date.textContent = c.newest ? when(c.newest) : 'No messages yet';
+    const date = document.createElement('span'); date.className = 'small'; date.textContent = c.newest ? timeLabel(c.newest) : 'No messages yet';
     button.append(name, date);
     button.onclick = () => openConversation(c.id);
     item.append(button); list.append(item);
@@ -97,7 +97,7 @@ function messageNode(m) {
   if (m.timestamp) article.dataset.time = String(m.timestamp);
   const head = document.createElement('header');
   const who = document.createElement('strong'); who.textContent = m.authorName;
-  const time = document.createElement('time'); time.textContent = when(m.timestamp);
+  const time = document.createElement('time'); time.textContent = timeLabel(m.timestamp);
   if (m.timestamp) time.dateTime = new Date(m.timestamp).toISOString();
   head.append(who, time);
   if (m.editedAt) { const edited = document.createElement('span'); edited.className = 'chip'; edited.textContent = 'edited'; head.append(edited); }
@@ -336,7 +336,7 @@ async function searchConversations(text) {
     for (const m of result.messages) {
       const row = document.createElement('div'); row.className = 'search-hit';
       const open = document.createElement('button');
-      open.type = 'button'; open.className = 'link-button'; open.textContent = `${names.get(m.channel) || 'Conversation'} · ${when(m.timestamp)}`;
+      open.type = 'button'; open.className = 'link-button'; open.textContent = `${names.get(m.channel) || 'Conversation'} · ${timeLabel(m.timestamp)}`;
       open.onclick = () => { conv.channel = m.channel; openConversation(m.channel); };
       row.append(open, textNode('div', `${m.authorName}: ${m.text.slice(0, 280)}`, 'msg-text'));
       main.append(row);
