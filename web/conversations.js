@@ -377,6 +377,14 @@ function messagesUrl(id, before = '') {
   return conv.kind === 'chat' ? `/api/chats/${enc(id)}/messages?${query}` : `/api/conversations/${enc(id)}/messages?server=${enc(state.server.id)}&${query}`;
 }
 
+// A time-of-day greeting with the user's name when known, and a garden line chosen at random.
+const GARDEN_LINES = ["What's growing today?", 'Plant a question.', 'What should we dig into?', 'Let an idea bloom.', 'What needs some sunlight?', 'Ready to sow something new?'];
+function heroGreeting() {
+  const hour = new Date().getHours(), part = hour < 5 ? 'Good evening' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+  const name = (state.me?.displayName || state.profile?.name || '').trim();
+  return `${name ? `${part}, ${name}` : part}. ${GARDEN_LINES[Math.floor(Math.random() * GARDEN_LINES.length)]}`;
+}
+
 // The greeting of a new chat. The composer sits under it until the first message arrives.
 function heroNode(composer) {
   const hero = document.createElement('section');
@@ -387,7 +395,7 @@ function heroNode(composer) {
   logo.src = document.documentElement.classList.contains('light') ? '/console/assets/logo-dark.svg' : '/console/assets/logo-light.svg';
   const slot = textNode('div', '', 'chat-hero-composer');
   slot.append(composer);
-  hero.append(logo, textNode('h2', "What's growing today?", 'chat-hero-title'), slot);
+  hero.append(logo, textNode('h2', heroGreeting(), 'chat-hero-title'), slot);
   return hero;
 }
 
@@ -435,26 +443,27 @@ function takeAsk() {
   return [...text.trim()].slice(0, ASK_MAX_CHARS).join('');
 }
 function clearAsk() { try { sessionStorage.removeItem('slopbot-ask'); } catch { } }
-// Starts a private chat on the current server (the last one used, or the first), sends the text and opens the chat.
+const ASK_WARNING = 'Only send what you wrote yourself. A prompt from someone else can make Slopbot use tools or read data you did not mean to share.';
+// Opens a new private chat on the current server (the last one used, or the first) with the linked text in the composer.
+// The text is never sent for the user. A banner asks them to read it first.
 async function resumeAsk() {
   const text = takeAsk();
   if (!text) return;
   clearAsk();
   if (!state.server) { notice('Slopbot is not in any of your servers yet, so it cannot answer your question.', true); return; }
   tab = 'conversations'; viewAuto = false; render();
-  let id = '';
   try {
-    id = (await sendJson('POST', '/api/chats', { server: state.server.id })).id;
+    const id = (await sendJson('POST', '/api/chats', { server: state.server.id })).id;
     conv.chats = [{ id, title: '', updated: Date.now() }, ...conv.chats];
-    await sendJson('POST', `/api/chats/${enc(id)}/messages`, { text });
+    conv.prefill = text;
+    await openConversation(id, 'chat');
+    conv.prefill = '';
+    refreshChats();
   } catch (error) {
+    conv.prefill = '';
     if (error.status === 401) { try { sessionStorage.setItem('slopbot-ask', text); } catch { } showScreen('login'); return; }
-    if (error.status === 429) notice(error.resetAt ? `Limit reached. It resets ${new Date(error.resetAt).toLocaleString()}.` : 'Limit reached. Try again later.', true);
-    else notice(error.status === 404 ? 'Private chats are not available right now.' : error.message, true);
-    if (!id) return;
+    notice(error.status === 404 ? 'Private chats are not available right now.' : error.message, true);
   }
-  await openConversation(id, 'chat');
-  refreshChats();
 }
 
 // A JSON request with any method. Errors keep their status, as in request().
@@ -1146,6 +1155,18 @@ function chatComposer(id) {
   const meter = usageMeter();
   conv.meter = meter;
   box.append(field, meter.wrap, send);
+  const linked = conv.prefill;
+  if (linked) {
+    field.value = linked;
+    const banner = document.createElement('div');
+    banner.className = 'chat-link-warning';
+    banner.setAttribute('role', 'alert');
+    banner.append(textNode('strong', 'This question came from a link. Read it before you send it.'), textNode('span', ' ' + ASK_WARNING));
+    form.append(banner);
+    field.addEventListener('input', () => { if (!field.value.trim()) banner.remove(); });
+    form.addEventListener('submit', () => setTimeout(() => { if (!field.value) banner.remove(); }, 0));
+    requestAnimationFrame(() => { fitField(field); box.classList.add('has-text'); field.focus(); });
+  }
   form.append(status, box, textNode('p', 'Slopbot is AI and can make mistakes.', 'chat-foot'));
   const sync = () => { box.classList.toggle('has-text', field.value.trim() !== ''); fitField(field); };
   let sending = false;
