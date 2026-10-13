@@ -1,8 +1,10 @@
 import { DEFAULT_MAX_TOOL_ROUNDS } from "./errors.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, modelTokenLimits } from "./context.js";
 import { parseFallbackPrice, parseModelPrices, type ModelPrice, type PriceTable } from "./usage-cost.js";
+import { loadOperationsConfig, type OperationsConfig } from './operations-config.js';
 
 export interface Config {
+  operations?: OperationsConfig;
   objectStorage?: import("./adapters/s3-storage.js").S3StorageOptions;
   sandboxApiKey?: string;
   sandboxApiUrl?: string;
@@ -54,6 +56,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     return value;
   };
   const mock = env.LLM_MODE === "mock";
+  const operations = loadOperationsConfig(env);
   if (env.LLM_MODE && !["mock", "provider"].includes(env.LLM_MODE)) throw new Error("LLM_MODE must be mock or provider");
   const list = (key: string) => (env[key] ?? "").split(",").map(value => value.trim()).filter(Boolean);
   const channelServer = env.DISCORD_GUILD_ID?.trim() || undefined;
@@ -110,6 +113,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (!accessId || !accessSecret || !env.SEARXNG_URL || new URL(env.SEARXNG_URL).protocol !== "https:") throw new Error("Protected search requires HTTPS SEARXNG_URL and both SEARXNG_ACCESS_CLIENT_ID and SEARXNG_ACCESS_CLIENT_SECRET");
   }
   return {
+    ...(operations ? { operations } : {}),
     ...(objectStorage ? { objectStorage } : {}),
     ...(accessId && accessSecret ? { searxngAccess: { clientId: accessId, clientSecret: accessSecret } } : {}),
     ...(env.E2B_API_KEY ? { sandboxApiKey: env.E2B_API_KEY, sandboxApiUrl: env.E2B_API_URL ?? "https://api.pmservers.org/sandboxes", sandboxUrl: env.E2B_SANDBOX_URL ?? "https://sandbox.pmservers.org" } : {}),

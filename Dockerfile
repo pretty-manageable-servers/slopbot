@@ -40,3 +40,6 @@ FROM runtime AS migration
 COPY --chown=1000:1000 .deployment-build/seed.enc /app/seed.enc
 
 FROM runtime AS production
+ARG SLOPBOT_BUILD_SHA
+ARG SLOPBOT_BUILD_TIME
+ENV SLOPBOT_BUILD_SHA=$SLOPBOT_BUILD_SHA SLOPBOT_BUILD_TIME=$SLOPBOT_BUILD_TIME

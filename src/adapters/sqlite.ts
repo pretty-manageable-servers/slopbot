@@ -30,6 +30,7 @@ import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWeb
 import { isPrivateChannel } from '../private-chat.js';
 import type { WebSessionRow } from '../web-session-store.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
+import { promptInventory, saveRunRuntime } from '../run-diagnostics.js';
 export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore {
   async record(
     server: string,
@@ -588,6 +589,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   async startRun(runId: string, message: Message, prompt: Prompt): Promise<void> {
     this.db.prepare("INSERT INTO runs(id,message,prompt,status,result,context_version) VALUES(?,?,?,?,NULL,?)")
       .run(runId, JSON.stringify(message), JSON.stringify(prompt), "running", await this.contextVersion(message.server, message.channel));
+    await saveRunRuntime(this, message.server, runId);
   }
 
   async appendEvent(runId: string, sequence: number, event: ModelEvent): Promise<void> {
@@ -697,10 +699,10 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     return this.db.prepare("SELECT id FROM runs WHERE json_extract(message,'$.server')=? AND json_extract(message,'$.id')=? AND COALESCE(json_extract(prompt,'$.purpose'),'reply')='reply' ORDER BY rowid")
       .all(server, requestId).map(row => String(row.id));
   }
-  async runRecord(runId: string): Promise<{ id: string; message: Message; purpose: string; status: string; result: string | null } | undefined> {
+  async runRecord(runId: string): Promise<import('../web-transcripts.js').TranscriptRun | undefined> {
     const row = this.db.prepare("SELECT id,message,prompt,status,result FROM runs WHERE id=?").get(runId);
     if (!row) return undefined;
-    return { id: String(row.id), message: parseMessage(JSON.parse(String(row.message))), purpose: String(JSON.parse(String(row.prompt)).purpose ?? "reply"), status: String(row.status), result: row.result === null ? null : String(row.result) };
+    return { id: String(row.id), message: parseMessage(JSON.parse(String(row.message))), purpose: String(JSON.parse(String(row.prompt)).purpose ?? "reply"), status: String(row.status), result: row.result === null ? null : String(row.result), context: promptInventory(JSON.parse(String(row.prompt))) };
   }
   async toolTurns(server: string, messageId: string): Promise<{ calls: ToolCall[]; results: Record<string, ToolOutput> }[]> {
     return this.db.prepare("SELECT calls,results FROM agent_turns WHERE server=? AND message_id=? AND valid=1 ORDER BY sequence")
