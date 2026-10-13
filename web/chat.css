@@ -298,3 +298,22 @@ html[data-view-dir=back]::view-transition-new(chat-side),html[data-view-dir=back
 .chat .chat-sub-note{margin:4px 10px 6px;font-size:13px;color:var(--muted)}
 .chat .chat-sub-more{justify-content:center;font-size:13px;color:var(--muted)}
 @media(prefers-reduced-motion:reduce){.chat .chat-chevron svg,.chat .chat-sub{transition:none}}
+.chat .chat-inbox{justify-content:space-between}
+.chat .chat-inbox[aria-pressed=true]{background:var(--pill);color:var(--strong)}
+.chat .chat-inbox-count{min-width:22px;padding:0 7px;border-radius:999px;background:var(--accent);color:var(--bg);font-size:12px;line-height:20px;text-align:center}
+.chat .inbox{flex:1;min-height:0;overflow-y:auto;width:100%;max-width:760px;margin:0 auto;padding:12px 20px 16px;box-sizing:border-box}
+.chat .inbox-bar{display:flex;gap:8px;justify-content:flex-end;margin-bottom:12px}
+.chat .inbox-bar button{min-height:36px;padding:6px 12px;font-size:13px}
+.chat .inbox-toggle[aria-pressed=true]{background:var(--pill);color:var(--strong)}
+.chat .inbox-list{margin:0;padding:0;list-style:none}
+.chat .inbox-item{padding:12px 0;border-bottom:1px solid var(--line)}
+.chat .inbox-item.done{opacity:.6}
+.chat .inbox-head{display:flex;gap:10px;align-items:baseline;justify-content:space-between;font-size:13px}
+.chat .inbox-sender{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--strong)}
+.chat .inbox-time{flex:none;color:var(--muted)}
+.chat .inbox-summary{margin:6px 0 8px;overflow-wrap:anywhere;color:var(--text)}
+.chat .inbox-actions{display:flex;align-items:center;gap:12px;font-size:13px}
+.chat .inbox-actions a{color:var(--accent)}
+.chat .inbox-actions button,.chat .inbox-done-mark{margin-left:auto;min-height:32px;padding:4px 10px;font-size:13px}
+.chat .inbox-done-mark{color:var(--muted)}
+.chat .inbox-empty{margin:24px 0;text-align:center;color:var(--muted)}
