@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -8,12 +8,13 @@ import { consoleOptions, createConsole } from '../src/web-console.js';
 import { ToolError } from '../src/tools.js';
 import { WebKeySecrets } from '../src/web-keys.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
-import { AdminInputError, AdminPanel, pageItems, serverPage } from '../src/admin-panel.js';
+import { AdminInputError, AdminPanel, pageItems, serverPage, type UserDetailView, type UsersPageView } from '../src/admin-panel.js';
 import { DEFAULT_INSTRUCTIONS, fullSystemText, systemText } from '../src/agent-runner.js';
 import { nativeToolInstructions } from '../src/tools.js';
 import type { PresentationPolicy } from '../src/presentation/policy.js';
 import { TeamAdmins, type TeamSnapshot } from '../src/team-admins.js';
-import { UserLimiter } from '../src/user-limiter.js';
+import { USER_LIMIT_OVERRIDES_SETTING, UserLimiter } from '../src/user-limiter.js';
+import type { KnownUserRow, UserTokenTotalRow } from '../src/ports.js';
 import { KEY_ERRORS_SETTING } from '../src/web-providers.js';
 import type { ConsoleAdmin } from '../src/web-console.js';
 import { MemberDirectory } from '../src/member-directory.js';
@@ -132,9 +133,192 @@ test('landing returns 404 when site/out is missing',async t=>{
   assert.equal((await fetch(base+'/')).status,404);
   assert.equal((await fetch(base+'/console')).status,200);
 });
+const teamConfig = { model: 'nimbus', jevModel: 'cirrus', embeddingModel: 'embed', baseUrl: 'https://models.example.com/v1', modelPrices: {}, fallbackPrice: { input: 1, cached_input: 1, output: 1 }, userLimit5hCostMicros: 100, userLimitWeekCostMicros: 0, userLimitGracePercent: 10 };
+
+/** Stands in for the store queries of the known users until they land: the rows are searched by name substring or exact ID, and paged in the given order. */
+function stubKnownUsers(store: SQLiteStore, rows: KnownUserRow[], totals: Record<string, (UserTokenTotalRow & { server: string })[]> = {}): void {
+  store.listKnownUsers = async (search, limit, offset) => {
+    const needle = search.trim().toLowerCase();
+    const matches = rows.filter(row => !needle || row.user === needle || row.names.some(name => name.toLowerCase().includes(needle)));
+    return { total: matches.length, users: matches.slice(offset, offset + limit) };
+  };
+  store.userTokenTotalsByServer = async user => totals[user] ?? [];
+}
+
+/** The team admin backend over a panel. Roles come from the team, which is read on each request. */
+function consoleAdmin(teams: TeamAdmins, panel: AdminPanel, serverInfo: ConsoleAdmin['serverInfo']): ConsoleAdmin {
+  return { role: id => teams.role(id), canEdit: id => teams.canEdit(id), servers: async () => ({ servers: [], total: 0 }), serverChannels: async server => ({ server, channels: [] }), serverInfo, setTranscript: async (server, channel, enabled) => ({ server, channel, enabled }), rotateWebhook: async () => ({}), panel };
+}
+
+/** Starts a console with that admin backend. login(id) signs in as that Discord user and returns the headers for its requests. */
+async function teamConsole(t: TestContext, members: TeamSnapshot['members'], build: (teams: TeamAdmins) => ConsoleAdmin) {
+  const OWNER = '100000000000000001';
+  const teams = new TeamAdmins({ async load() { return { ownerId: OWNER, members: [...members] }; } });
+  const server = createConsole({ origin: 'http://localhost:3000', host: '127.0.0.1', port: 3000, clientId: 'id', clientSecret: 'secret' }, { sessions: new SQLiteStore(), async canSignIn() { return true; },
+    async snapshot() { return {}; }, async invoke() { return {}; }, admin: build(teams),
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  const base = `http://127.0.0.1:${address.port}`, originalFetch = globalThis.fetch;
+  let identity = '';
+  t.mock.method(globalThis, 'fetch', async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url) === 'https://discord.com/api/oauth2/token') return Response.json({ access_token: 'oauth-secret' });
+    if (String(url) === 'https://discord.com/api/users/@me') return Response.json({ id: identity });
+    return originalFetch(url, init);
+  });
+  const login = async (id: string) => {
+    identity = id;
+    const start = await originalFetch(base + '/auth/login', { redirect: 'manual' });
+    const state = new URL(start.headers.get('location')!).searchParams.get('state')!;
+    const callback = await originalFetch(base + `/auth/callback?state=${state}&code=x`, { redirect: 'manual', headers: { Cookie: `slopbot_state=${state}` } });
+    const cookie = callback.headers.getSetCookie()[0]!.split(';')[0]!;
+    const { csrf } = await (await originalFetch(base + '/api/settings', { headers: { Cookie: cookie } })).json() as { csrf: string };
+    return { Cookie: cookie, Origin: 'http://localhost:3000', 'X-CSRF-Token': csrf };
+  };
+  const get = (path: string, session: Record<string, string>) => originalFetch(base + path, { headers: session });
+  const post = (path: string, body: unknown, session: Record<string, string>) => originalFetch(base + path, { method: 'POST', headers: { ...session, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  return { login, get, post };
+}
+
+test('users route pages and searches, rejects bad page sizes', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const DEVELOPER = '100000000000000003', READER = '100000000000000004', SERVER = '200000000000000001', OTHER = '200000000000000002', AVATAR = 'https://cdn.discordapp.com/guilds/1/users/1/avatar.png';
+  const userId = (n: number) => `10000000000000002${n}`;
+  stubKnownUsers(store, [
+    { user: userId(1), names: ['Ada L', 'ada'], servers: [SERVER, OTHER] },
+    { user: userId(2), names: ['Grace'], servers: [OTHER] },
+    { user: userId(3), names: ['Mia'], servers: [] },
+    { user: userId(4), names: ['Member 4'], servers: [SERVER] },
+    { user: userId(5), names: ['Member 5'], servers: [SERVER] },
+    { user: userId(6), names: ['Member 6'], servers: [] },
+  ]);
+  const directory = new MemberDirectory(fakeSource({ [userId(1)]: { username: 'ada', nickname: 'Ada L', serverAvatar: AVATAR, inServer: true, email: 'ada@example.com' } }));
+  const panel = new AdminPanel(teamConfig, store, new UserLimiter(store, { fiveHourCostMicros: 100, weekCostMicros: 0, gracePercent: 10 }), directory);
+  const members: TeamSnapshot['members'] = [{ id: DEVELOPER, role: 'developer', accepted: true }, { id: READER, role: 'read_only', accepted: true }];
+  const { login, get } = await teamConsole(t, members, teams => consoleAdmin(teams, panel, id => ({ name: id === SERVER ? 'Alpha' : 'Beta', icon: null })));
+  const developer = await login(DEVELOPER), reader = await login(READER);
+  const list = async (query: string): Promise<UsersPageView> => await (await get(`/api/admin/users?${query}`, developer)).json() as UsersPageView;
+
+  const all = await list('');
+  assert.deepEqual([all.total, all.limit, all.offset, all.users.length], [6, 10, 0, 6]);
+  const first = await list('limit=5');
+  assert.deepEqual([first.total, first.limit, first.users.length], [6, 5, 5]);
+  assert.deepEqual((await list('limit=5&offset=5')).users.map(row => row.user.id), [userId(6)]);
+
+  const ada = await list('q=%20ADA%20');
+  assert.equal(ada.total, 1);
+  assert.deepEqual(ada.users[0]!.user, { id: userId(1), displayName: 'Ada L', username: 'ada', avatarUrl: AVATAR });
+  assert.deepEqual(ada.users[0]!.servers, [{ id: SERVER, name: 'Alpha' }, { id: OTHER, name: 'Beta' }]);
+  assert.deepEqual(ada.users[0]!.windows.map(window => [window.kind, window.limit, window.spent]), [['5h', 100, 0], ['week', 0, 0]]);
+  assert.equal(ada.users[0]!.override, null);
+  assert.equal((await list(`q=${userId(2)}`)).users[0]!.user.id, userId(2), 'an exact ID finds the user');
+
+  // A user with no server is named by its ID, and has no servers.
+  const mia = await list('q=Mia');
+  assert.deepEqual(mia.users[0], { user: { id: userId(3), displayName: userId(3), username: null, avatarUrl: null }, servers: [], windows: mia.users[0]!.windows, override: null });
+  assert.equal((await list('q=nobody')).total, 0);
+
+  // The page never shows email data, and a read-only member can read it.
+  const text = await (await get('/api/admin/users?q=ada', developer)).text();
+  assert.doesNotMatch(text, /email|@example/);
+  assert.equal((await get('/api/admin/users?limit=5', reader)).status, 200);
+
+  for (const query of ['limit=7', 'limit=0', 'limit=100', 'limit=abc', 'limit=', 'offset=-1', 'offset=1.5', 'offset=abc', `q=${'a'.repeat(101)}`]) {
+    assert.equal((await get(`/api/admin/users?${query}`, developer)).status, 400, query);
+  }
+});
+
+test('reset, grant and override need an editor', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const DEVELOPER = '100000000000000003', READER = '100000000000000004', OUTSIDER = '100000000000000005', USER = '100000000000000007', SERVER = '200000000000000001';
+  stubKnownUsers(store, [{ user: USER, names: ['Ada L'], servers: [SERVER] }]);
+  const limiter = new UserLimiter(store, { fiveHourCostMicros: 100, weekCostMicros: 0, gracePercent: 10 });
+  const panel = new AdminPanel(teamConfig, store, limiter, new MemberDirectory(fakeSource({})));
+  const members: TeamSnapshot['members'] = [{ id: DEVELOPER, role: 'developer', accepted: true }, { id: READER, role: 'read_only', accepted: true }];
+  const { login, post } = await teamConsole(t, members, teams => consoleAdmin(teams, panel, () => ({ name: 'Test server', icon: null })));
+  const outsider = await login(OUTSIDER), reader = await login(READER), developer = await login(DEVELOPER);
+  await limiter.record(USER, 60, Date.now());
+  const writes: [string, unknown][] = [
+    ['/api/admin/users/reset', { user: USER, kind: '5h' }],
+    ['/api/admin/users/grant', { user: USER, kind: 'week', count: 2 }],
+    ['/api/admin/users/override', { user: USER, five_hour_cost_micros: 1000, week_cost_micros: null }],
+  ];
+
+  // Outsiders and read-only members are refused, and nothing changes.
+  for (const [path, body] of writes) {
+    assert.equal((await post(path, body, outsider)).status, 403, path);
+    assert.equal((await post(path, body, reader)).status, 403, path);
+  }
+  assert.equal((await store.userUsage('global', USER)).windows[0]!.spent, 60);
+  assert.equal((await store.userUsage('global', USER)).resets.week, undefined);
+  assert.equal(store.setting('global', USER_LIMIT_OVERRIDES_SETTING), undefined);
+
+  // An editor's reset clears the window and returns the user's detail.
+  const reset = await post('/api/admin/users/reset', { user: USER, kind: '5h' }, developer);
+  assert.equal(reset.status, 200);
+  assert.deepEqual((await reset.json() as UserDetailView).windows.map(window => [window.kind, window.spent]), [['5h', 0], ['week', 60]]);
+
+  // A grant adds banked resets: 1 to 100 for one window.
+  const granted = await post('/api/admin/users/grant', { user: USER, kind: 'week', count: 2 }, developer);
+  assert.equal(granted.status, 200);
+  assert.equal((await granted.json() as UserDetailView).windows.find(window => window.kind === 'week')!.banked, 2);
+  for (const bad of [{ user: USER, kind: 'week', count: 0 }, { user: USER, kind: 'week', count: 101 }, { user: USER, kind: 'month', count: 1 }]) {
+    assert.equal((await post('/api/admin/users/grant', bad, developer)).status, 400, JSON.stringify(bad));
+  }
+
+  // An override saves one user's values; bad values save nothing.
+  const saved = await post('/api/admin/users/override', { user: USER, five_hour_cost_micros: 1000, week_cost_micros: null }, developer);
+  assert.equal(saved.status, 200);
+  assert.deepEqual((await saved.json() as UserDetailView).override, { five_hour_cost_micros: 1000, week_cost_micros: null });
+  for (const bad of [
+    { user: USER, five_hour_cost_micros: -1, week_cost_micros: null },
+    { user: USER, five_hour_cost_micros: 1.5, week_cost_micros: null },
+    { user: USER, five_hour_cost_micros: 1 },
+    { user: USER, five_hour_cost_micros: 'x', week_cost_micros: null },
+    { user: 'bad', five_hour_cost_micros: 1, week_cost_micros: null },
+  ]) {
+    assert.equal((await post('/api/admin/users/override', bad, developer)).status, 400, JSON.stringify(bad));
+  }
+  assert.deepEqual(store.setting('global', USER_LIMIT_OVERRIDES_SETTING), { [USER]: { five_hour_cost_micros: 1000, week_cost_micros: null } });
+
+  // Both null clears the override, and the user is back on the global limit.
+  const cleared = await post('/api/admin/users/override', { user: USER, five_hour_cost_micros: null, week_cost_micros: null }, developer);
+  assert.equal(cleared.status, 200);
+  assert.equal((await cleared.json() as UserDetailView).override, null);
+  assert.deepEqual(store.setting('global', USER_LIMIT_OVERRIDES_SETTING), {});
+});
+
+test('user detail lists lifetime totals by server with names', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const DEVELOPER = '100000000000000003', SERVER = '200000000000000001', OTHER = '200000000000000002', USER = '100000000000000007';
+  const totals = { server: SERVER, model: 'nimbus', input: 10, output: 2, cached: 1, costMicros: 50, requests: 3, firstAt: 1, lastAt: 3 };
+  stubKnownUsers(store, [{ user: USER, names: ['Ada L'], servers: [SERVER, OTHER] }], { [USER]: [
+    totals,
+    { server: OTHER, model: 'cirrus', input: 5, output: 1, cached: 0, costMicros: 20, requests: 2, firstAt: 1, lastAt: 2 },
+  ] });
+  const limiter = new UserLimiter(store, { fiveHourCostMicros: 100, weekCostMicros: 0, gracePercent: 10 });
+  await limiter.record(USER, 60, Date.now());
+  const panel = new AdminPanel(teamConfig, store, limiter, new MemberDirectory(fakeSource({})));
+  const members: TeamSnapshot['members'] = [{ id: DEVELOPER, role: 'developer', accepted: true }];
+  const { login, get } = await teamConsole(t, members, teams => consoleAdmin(teams, panel, id => ({ name: id === SERVER ? 'Alpha' : 'Beta', icon: null })));
+  const developer = await login(DEVELOPER);
+
+  const detail = await (await get(`/api/admin/users/one?user=${USER}`, developer)).json() as UserDetailView;
+  assert.deepEqual(detail.servers, [{ id: SERVER, name: 'Alpha' }, { id: OTHER, name: 'Beta' }]);
+  assert.deepEqual(detail.windows.map(window => [window.kind, window.spent]), [['5h', 60], ['week', 60]]);
+  assert.deepEqual(detail.totals, [
+    { ...totals, serverName: 'Alpha' },
+    { server: OTHER, serverName: 'Beta', model: 'cirrus', input: 5, output: 1, cached: 0, costMicros: 20, requests: 2, firstAt: 1, lastAt: 2 },
+  ]);
+  assert.equal((await get('/api/admin/users/one?user=bad', developer)).status, 400);
+  assert.equal((await get('/api/admin/users/one', developer)).status, 400);
+});
+
 test('team admin routes need team membership, and only editors can change settings', async t => {
   const store = new SQLiteStore(), OWNER = '100000000000000001', DEVELOPER = '100000000000000003', READER = '100000000000000004', OUTSIDER = '100000000000000005', USER = '100000000000000007';
   const SERVER = '200000000000000001';
+  stubKnownUsers(store, [{ user: USER, names: ['Ada L'], servers: [SERVER] }]);
   let members: TeamSnapshot['members'] = [{ id: DEVELOPER, role: 'developer', accepted: true }, { id: READER, role: 'read_only', accepted: true }];
   const teams = new TeamAdmins({ async load() { return { ownerId: OWNER, members: [...members] }; } });
   const limiter = new UserLimiter(store, { fiveHourCostMicros: 100, weekCostMicros: 0, gracePercent: 10 });
@@ -170,12 +354,13 @@ test('team admin routes need team membership, and only editors can change settin
   const get = (path: string, session: Record<string, string>) => originalFetch(base + path, { headers: session });
   const post = (path: string, body: unknown, session: Record<string, string>) => originalFetch(base + path, { method: 'POST', headers: { ...session, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const outsider = await login(OUTSIDER), reader = await login(READER), developer = await login(DEVELOPER);
-  const reads = ['/api/admin/me', `/api/admin/limits?server=${SERVER}`, '/api/admin/prices', '/api/admin/system-prompt',`/api/admin/usage?server=${SERVER}`, `/api/admin/members?server=${SERVER}&q=ad`, '/api/admin/servers', '/api/admin/servers?q=test&offset=0&limit=50', `/api/admin/servers/channels?server=${SERVER}`, '/api/admin/usage/total', '/api/admin/system-prompt/full'];
+  const reads = ['/api/admin/me', '/api/admin/limits', '/api/admin/users?limit=10', `/api/admin/users/one?user=${USER}`, '/api/admin/prices', '/api/admin/system-prompt', '/api/admin/servers', '/api/admin/servers?q=test&offset=0&limit=50', `/api/admin/servers/channels?server=${SERVER}`, '/api/admin/usage/total', '/api/admin/system-prompt/full'];
   const writes: [string, unknown][] = [
-    ['/api/admin/limits', { server: SERVER, five_hour_cost_micros: 5000000, week_cost_micros: 20000000, grace_percent: 15 }],
+    ['/api/admin/limits', { five_hour_cost_micros: 5000000, week_cost_micros: 20000000, grace_percent: 15 }],
     ['/api/admin/prices', { model: 'stratus', input: 1000000, cached_input: 100000, output: 4000000 }],
-    ['/api/admin/usage/reset', { server: SERVER, user: USER, kind: '5h' }],
-    ['/api/admin/usage/grant', { server: SERVER, user: USER, kind: '5h', count: 1 }],
+    ['/api/admin/users/reset', { user: USER, kind: '5h' }],
+    ['/api/admin/users/grant', { user: USER, kind: '5h', count: 1 }],
+    ['/api/admin/users/override', { user: USER, five_hour_cost_micros: 1000, week_cost_micros: null }],
     ['/api/admin/transcripts', { server: SERVER, channel: '300000000000000001', enabled: true }],
     ['/api/admin/web-webhooks/rotate', { server: SERVER, channel: '300000000000000001' }],
     ['/api/admin/system-prompt', { text: 'Be brief.' }],
@@ -197,14 +382,13 @@ test('team admin routes need team membership, and only editors can change settin
   assert.deepEqual(await (await get('/api/admin/me', developer)).json(), { role: 'developer', canEdit: true });
   const limits = await post('/api/admin/limits', writes[0]![1], developer);
   assert.equal(limits.status, 200);
-  assert.deepEqual(await limits.json(), { server: SERVER, five_hour_cost_micros: 5000000, week_cost_micros: 20000000, grace_percent: 15, defaults: { five_hour_cost_micros: 100, week_cost_micros: 0, grace_percent: 10 } });
+  assert.deepEqual(await limits.json(), { five_hour_cost_micros: 5000000, week_cost_micros: 20000000, grace_percent: 15, defaults: { five_hour_cost_micros: 100, week_cost_micros: 0, grace_percent: 10 } });
   assert.equal(store.setting('global', 'user_limit_week_cost_micros'), 20000000);
   for (const bad of [{ five_hour_cost_micros: -1, week_cost_micros: 0, grace_percent: 0 }, { five_hour_cost_micros: 1.5, week_cost_micros: 0, grace_percent: 0 }, { five_hour_cost_micros: 1, week_cost_micros: 0, grace_percent: 1001 }, { five_hour_cost_micros: 1, week_cost_micros: 'x', grace_percent: 0 }]) {
-    assert.equal((await post('/api/admin/limits', { server: SERVER, ...bad }, developer)).status, 400, JSON.stringify(bad));
+    assert.equal((await post('/api/admin/limits', bad, developer)).status, 400, JSON.stringify(bad));
   }
-  assert.equal((await post('/api/admin/limits', { server: 'nope', five_hour_cost_micros: 1, week_cost_micros: 0, grace_percent: 0 }, developer)).status, 400);
   assert.equal(store.setting('global', 'user_limit_5h_cost_micros'), 5000000, 'bad input saves nothing');
-  assert.equal((await get(`/api/admin/limits?server=${SERVER}`, developer)).status, 200);
+  assert.equal((await get('/api/admin/limits', developer)).status, 200);
 
   // Rotate: refused members rotate nothing; an editor rotates one channel's webhook and bad input rotates nothing.
   assert.deepEqual(rotated, []);
@@ -234,40 +418,31 @@ test('team admin routes need team membership, and only editors can change settin
   assert.equal(reset.models.some(item => item.model === 'nimbus'), true);
   assert.equal((await post('/api/admin/prices', { model: 'stratus', remove: true }, outsider)).status, 403);
 
-  // Usage: list, one user, grant, reset. Banked resets survive a window reset.
+  // Users: the list and one user. Banked resets survive a window reset.
   await limiter.record(USER, 60, Date.now());
   await store.grantResets('global', USER, '5h', 1);
-  const listed = await (await get(`/api/admin/usage?server=${SERVER}`, developer)).json() as { users: { user: { id: string; displayName: string; username: string | null; avatarUrl: string | null }; windows: { kind: string; spent: number; banked: number }[] }[] };
+  const listed = await (await get('/api/admin/users?limit=5', developer)).json() as UsersPageView;
   assert.deepEqual(listed.users[0]!.user, { id: USER, displayName: 'Ada L', username: 'ada', avatarUrl: AVATAR });
   assert.deepEqual(listed.users[0]!.windows.map(window => [window.kind, window.spent, window.banked]), [['5h', 60, 1], ['week', 60, 0]]);
-  assert.equal((await get(`/api/admin/usage?server=${SERVER}&user=bad`, developer)).status, 400);
-  const one = await (await get(`/api/admin/usage?server=${SERVER}&user=${USER}`, developer)).json() as { user: unknown; windows: { kind: string; spent: number; banked: number }[] };
+  const one = await (await get(`/api/admin/users/one?user=${USER}`, developer)).json() as UserDetailView;
   assert.deepEqual(one.user, { id: USER, displayName: 'Ada L', username: 'ada', avatarUrl: AVATAR });
   assert.deepEqual(one.windows.map(window => [window.kind, window.spent, window.banked]), [['5h', 60, 1], ['week', 60, 0]]);
+  assert.equal((await get('/api/admin/users?limit=7', developer)).status, 400);
 
-  // Member search: a name finds the member and the answer has no email or raw email data. An empty query finds nobody.
-  assert.deepEqual(await (await get(`/api/admin/members?server=${SERVER}&q=%20Ad%20`, developer)).json(), { server: SERVER, members: [{ id: USER, displayName: 'Ada L', username: 'ada', avatarUrl: AVATAR }] });
-  assert.deepEqual(await (await get(`/api/admin/members?server=${SERVER}&q=%20%20`, developer)).json(), { server: SERVER, members: [] });
-  assert.equal((await get(`/api/admin/members?server=${SERVER}&q=${'a'.repeat(101)}`, developer)).status, 400);
-  assert.equal((await get('/api/admin/members?server=bad&q=a', developer)).status, 400);
-  assert.doesNotMatch(await (await get(`/api/admin/members?server=${SERVER}&q=ad`, developer)).text(), /email|@example/);
-  assert.equal((await get('/api/admin/usage?server=bad', developer)).status, 400);
-  const granted = await post('/api/admin/usage/grant', { server: SERVER, user: USER, kind: 'week', count: 2 }, developer);
+  // Grant, reset: an editor's grant and reset return the user's detail. An admin reset does not use a banked reset.
+  const granted = await post('/api/admin/users/grant', { user: USER, kind: 'week', count: 2 }, developer);
   assert.equal(granted.status, 200);
   assert.equal((await store.userUsage('global', USER)).resets.week, 2);
-  for (const bad of [{ kind: 'week', count: 0 }, { kind: 'week', count: 101 }, { kind: 'month', count: 1 }]) {
-    assert.equal((await post('/api/admin/usage/grant', { server: SERVER, user: USER, ...bad }, developer)).status, 400, JSON.stringify(bad));
-  }
-  const reset5h = await post('/api/admin/usage/reset', { server: SERVER, user: USER, kind: '5h' }, developer);
+  const reset5h = await post('/api/admin/users/reset', { user: USER, kind: '5h' }, developer);
   assert.equal(reset5h.status, 200);
-  assert.deepEqual((await reset5h.json() as { windows: { kind: string; spent: number }[] }).windows.map(window => [window.kind, window.spent]), [['5h', 0], ['week', 60]]);
+  assert.deepEqual((await reset5h.json() as UserDetailView).windows.map(window => [window.kind, window.spent]), [['5h', 0], ['week', 60]]);
   assert.equal((await store.userUsage('global', USER)).resets['5h'], 1, 'an admin reset does not use a banked reset');
-  await post('/api/admin/usage/reset', { server: SERVER, user: USER }, developer);
+  await post('/api/admin/users/reset', { user: USER }, developer);
   assert.deepEqual((await store.userUsage('global', USER)).windows, []);
 
   // Web transcripts: the team editor can switch a channel, and the value is checked.
   assert.equal((await post('/api/admin/transcripts', { server: SERVER, channel: '300000000000000001', enabled: 'yes' }, developer)).status, 400);
-  assert.deepEqual(await (await post('/api/admin/transcripts', writes[4]![1], developer)).json(), { server: SERVER, channel: '300000000000000001', enabled: true });
+  assert.deepEqual(await (await post('/api/admin/transcripts', { server: SERVER, channel: '300000000000000001', enabled: true }, developer)).json(), { server: SERVER, channel: '300000000000000001', enabled: true });
   assert.equal((await post('/api/admin/system-prompt', { text: 'Be brief.' }, reader)).status, 403);
   assert.deepEqual(await (await post('/api/admin/system-prompt', { text: 'Be brief.' }, developer)).json(), { text: 'Be brief.', default: DEFAULT_INSTRUCTIONS, max: 8000 });
   assert.deepEqual(await (await get('/api/admin/system-prompt', reader)).json(), { text: 'Be brief.', default: DEFAULT_INSTRUCTIONS, max: 8000 });
