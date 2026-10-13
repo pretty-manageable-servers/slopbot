@@ -165,7 +165,7 @@ test("messages carry the Slopbot flag and run IDs, and edits and deletes publish
   await runEvents.idle();
   const rows = await saved(store);
   const upsertReply = rows.find(row => row.ref === "reply-1")!;
-  assert.deepEqual(upsertReply.data, { action: "upsert", message: { id: "reply-1", channel, author: bot, authorName: "Slopbot", username: null, avatarUrl: null, text: "Answer", timestamp: 2_000, editedAt: 2_500, slopbot: true, runIds: ["run-x"] } });
+  assert.deepEqual(upsertReply.data, { action: "upsert", message: { id: "reply-1", channel, author: bot, authorName: "Slopbot", username: null, avatarUrl: null, text: "Answer", timestamp: 2_000, editedAt: 2_500, slopbot: true, runIds: ["run-x"], used: true } });
   const userRow = rows.find(row => row.ref === "user-1" && (row.data as { action: string }).action === "upsert")!;
   assert.equal((userRow.data as { message: { slopbot: boolean; runIds: string[] } }).message.slopbot, false);
   assert.deepEqual((userRow.data as { message: { runIds: string[] } }).message.runIds, []);
