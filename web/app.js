@@ -52,7 +52,7 @@ function renderAccount() {
   $('account-name').replaceChildren(accountAvatar(avatarUrl, name), document.createTextNode(name));
 }
 function notice(text) { $('notice').textContent = text; }
-function showScreen(name) { $('boot').hidden = name !== 'boot'; $('login').hidden = name !== 'login'; $('console').hidden = name !== 'console'; $('account').hidden = name !== 'console'; }
+function showScreen(name) { $('top-tabs').hidden = name !== 'console'; $('boot').hidden = name !== 'boot'; $('login').hidden = name !== 'login'; $('console').hidden = name !== 'console'; $('account').hidden = name !== 'console'; }
 const loader = size => { const svg = $('loader').content.firstElementChild.cloneNode(true); if (size) svg.classList.add(size); return svg; };
 function busy(size, text) { const box = document.createElement('div'), label = document.createElement('p'); box.className = 'busy'; label.textContent = text; box.append(loader(size), label); return box; }
 async function request(path, body) {
