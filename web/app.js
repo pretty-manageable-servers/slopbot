@@ -845,7 +845,8 @@ $('logout').onclick = async () => { try { await request('/api/logout',{}); locat
 // The chat view shows at once. The full snapshot (channels, settings, profile) and the admin data load in the background.
 async function boot() {
   if (/^#ask=/.test(location.hash)) takeAsk();
-  const remembered = recall('slopbot-server');
+  // A link from Discord ("Continue in Slopbot web") names its server, so its chat shows in the list.
+  const remembered = new URLSearchParams(location.search).get('server') || recall('slopbot-server');
   let session;
   try { session = await request('/api/session'); }
   catch (error) { if (error.status !== 404) throw error; }

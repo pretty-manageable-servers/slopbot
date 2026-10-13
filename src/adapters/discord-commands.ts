@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, ChannelType, type APIEmbed } from "discord.js";
+import { SlashCommandBuilder, ContextMenuCommandBuilder, ApplicationCommandType, ChannelType, type APIEmbed } from "discord.js";
 import type { ToolRegistry } from "../tools.js";
 import { usageView, type UsageView, type UserLimiter } from "../user-limiter.js";
 
@@ -16,6 +16,26 @@ export function buildUsageCommand(): SlashCommandBuilder {
 /** The top-level /stop command. Stops the Slopbot responses in this channel. */
 export function buildStopCommand(): SlashCommandBuilder {
   return new SlashCommandBuilder().setName("stop").setDescription("Stop the Slopbot response in this channel");
+}
+
+/** The right-click message commands under Apps that Slopbot answers in the channel. Each name maps to the request that Slopbot gets. */
+export const MESSAGE_APPS: Record<string, string> = {
+  "Summarize": "Summarize this message. If it starts a discussion, summarize the discussion too.",
+  "Explain": "Explain this message in simple words. If it has code, explain the code.",
+};
+
+/** The message command that opens the message in a new private web chat. */
+export const CONTINUE_IN_WEB = "Continue in Slopbot web";
+
+/** The message commands that show in the Apps menu when you right-click a message. Discord allows 5. */
+export function buildMessageApps(): ContextMenuCommandBuilder[] {
+  return [...Object.keys(MESSAGE_APPS), CONTINUE_IN_WEB].map(name => new ContextMenuCommandBuilder().setName(name).setType(ApplicationCommandType.Message));
+}
+
+/** The request text for one message command. It quotes the target message, so the model sees it even without context. */
+export function messageAppText(name: string, author: string, text: string): string {
+  const quote = text.trim() ? text.trim().split("\n").map(line => `> ${line}`).join("\n") : "> (no text)";
+  return `${MESSAGE_APPS[name]}\nMessage from ${author}:\n${quote}`;
 }
 
 /** A text bar of 10 blocks. No limit gives an empty bar. */
