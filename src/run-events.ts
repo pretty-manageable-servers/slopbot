@@ -23,6 +23,40 @@ export interface ConversationEventStore {
   taskThreads(server: string): { thread: string; parent: string }[];
   appendConversationEvent(row: ConversationRow & { createdAt: number }): Promise<number>;
   conversationEventsAfter(server: string, channel: string, after: number, limit: number): Promise<ConversationEvent[]>;
+  /** The lowest stream ID kept for the channel, or undefined when no rows are kept. */
+  oldestStreamId(server: string, channel: string): Promise<number | undefined>;
+}
+
+/** The store part the retention timer needs. */
+export interface ConversationEventRetention {
+  pruneConversationEvents(olderThan: number, maxRows: number): Promise<number>;
+}
+
+const DAY_MS = 86_400_000, HOUR_MS = 3_600_000;
+
+/**
+ * Prunes conversation events now and then every hour. Rows older than `days` go first, then the
+ * oldest rows beyond `maxRows`. A run that is still pruning is not started again. Errors are
+ * logged and the timer goes on. Returns stop().
+ */
+export function startConversationEventRetention(store: ConversationEventRetention, options: { days: number; maxRows: number }, intervalMs = HOUR_MS): () => void {
+  let running = false;
+  const prune = async (): Promise<void> => {
+    if (running) return;
+    running = true;
+    try {
+      const deleted = await store.pruneConversationEvents(Date.now() - options.days * DAY_MS, options.maxRows);
+      console.log(JSON.stringify({ type: "conversation_events_pruned", deleted, retentionDays: options.days, maxRows: options.maxRows }));
+    } catch (error) {
+      logError("conversation_events_prune_failed", error, { stage: "conversation events retention" });
+    } finally {
+      running = false;
+    }
+  };
+  void prune();
+  const timer = setInterval(() => void prune(), intervalMs);
+  timer.unref();
+  return () => clearInterval(timer);
 }
 
 /** The message shape the web transcript shows. Avatars are not stored yet, so avatarUrl is always null. */

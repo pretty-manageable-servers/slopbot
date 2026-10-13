@@ -359,3 +359,102 @@ test("the HTTP stream sends the retry hint and keeps the cursor for reconnects",
   controller.abort();
   await reader.cancel().catch(() => undefined);
 });
+
+test("a cursor older than the oldest kept event sends reset, then only live events", async t => {
+  const f = await fixture(t);
+  const bus = new RunEvents();
+  bus.attach(f.store);
+  for (const id of ["a", "b", "c"]) bus.publish(SERVER, CHANNEL, "message", id, { action: "upsert" });
+  await bus.idle();
+  const rows = await f.store.conversationEventsAfter(SERVER, CHANNEL, 0, 10);
+  // Keep only the newest row. The cursor is the first row, which is now pruned.
+  assert.equal(await f.store.pruneConversationEvents(0, 1), 2);
+  const c = collect();
+  const stop = openStream({ server: SERVER, channel: CHANNEL, user: USER, cursor: rows[0]!.streamId, store: f.store, bus, access: f.access, allowed: async () => true, write: c.write, end: c.end, heartbeatMs: 100000, recheckMs: 100000 });
+  await settle();
+  assert.match(c.out.join(""), /^event: reset\ndata: \{"reason":"pruned"\}\n\n/m);
+  // The kept row was already before the reset, so it is not sent again. Only live events follow.
+  assert.deepEqual(ids(c.out), []);
+  bus.publish(SERVER, CHANNEL, "message", "d", { action: "upsert" });
+  await settle();
+  assert.deepEqual(ids(c.out), [rows[2]!.streamId + 1]);
+  stop();
+});
+
+test("no reset for a cursor that is kept, for a fresh load, or for a channel that never had events", async t => {
+  const f = await fixture(t);
+  const bus = new RunEvents();
+  bus.attach(f.store);
+  for (const id of ["a", "b", "c"]) bus.publish(SERVER, CHANNEL, "message", id, { action: "upsert" });
+  await bus.idle();
+  const rows = await f.store.conversationEventsAfter(SERVER, CHANNEL, 0, 10);
+  assert.equal(await f.store.pruneConversationEvents(0, 2), 1);
+  for (const cursor of [0, rows[1]!.streamId, rows[2]!.streamId]) {
+    const c = collect();
+    const stop = openStream({ server: SERVER, channel: CHANNEL, user: USER, cursor, store: f.store, bus, access: f.access, allowed: async () => true, write: c.write, end: c.end, heartbeatMs: 100000, recheckMs: 100000 });
+    await settle();
+    assert.doesNotMatch(c.out.join(""), /event: reset/);
+    stop();
+  }
+  const c = collect();
+  const stop = openStream({ server: SERVER, channel: OTHER, user: USER, cursor: 0, store: f.store, bus, access: f.access, allowed: async () => true, write: c.write, end: c.end, heartbeatMs: 100000, recheckMs: 100000 });
+  await settle();
+  assert.doesNotMatch(c.out.join(""), /event: reset/);
+  stop();
+});
+
+test("a channel whose rows are all pruned sends reset for an old cursor", async t => {
+  const f = await fixture(t);
+  const bus = new RunEvents();
+  bus.attach(f.store);
+  bus.publish(SERVER, CHANNEL, "message", "a", { action: "upsert" });
+  await bus.idle();
+  const [row] = await f.store.conversationEventsAfter(SERVER, CHANNEL, 0, 10);
+  assert.equal(await f.store.pruneConversationEvents(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER), 1);
+  const c = collect();
+  const stop = openStream({ server: SERVER, channel: CHANNEL, user: USER, cursor: row!.streamId, store: f.store, bus, access: f.access, allowed: async () => true, write: c.write, end: c.end, heartbeatMs: 100000, recheckMs: 100000 });
+  await settle();
+  assert.match(c.out.join(""), /event: reset/);
+  stop();
+});
+
+test("the HTTP stream sends reset for a pruned Last-Event-ID", async t => {
+  const f = await fixture(t);
+  const bus = new RunEvents();
+  bus.attach(f.store);
+  bus.publish(SERVER, CHANNEL, "message", "a", { action: "upsert" });
+  bus.publish(SERVER, CHANNEL, "message", "b", { action: "upsert" });
+  await bus.idle();
+  const [first] = await f.store.conversationEventsAfter(SERVER, CHANNEL, 0, 10);
+  await f.store.pruneConversationEvents(0, 1);
+  const controller = new AbortController();
+  const response = await fetch(`${f.base}/api/conversations/${CHANNEL}/stream?server=${SERVER}`, { headers: { "x-user": USER, "Last-Event-ID": String(first!.streamId) }, signal: controller.signal });
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  while (!text.includes("event: reset")) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    text += decoder.decode(chunk.value);
+  }
+  assert.match(text, /event: reset/);
+  controller.abort();
+  await reader.cancel().catch(() => undefined);
+});
+
+test("a run view still works after its live events are pruned, because it reads the saved run", async t => {
+  const f = await fixture(t);
+  const bus = new RunEvents();
+  bus.attach(f.store);
+  bus.publish(SERVER, CHANNEL, "run.start", "run-1", { requestId: "m3" });
+  bus.publish(SERVER, CHANNEL, "run.delta", "run-1", { part: "text", text: "Answer: yes" });
+  bus.publish(SERVER, CHANNEL, "run.end", "run-1", { status: "done" });
+  await bus.idle();
+  const before = await get(f, "/api/runs/run-1");
+  assert.equal(await f.store.pruneConversationEvents(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER), 3);
+  assert.equal((await f.store.conversationEventsAfter(SERVER, CHANNEL, 0, 10)).length, 0);
+  const after = await get(f, "/api/runs/run-1");
+  assert.equal(after.status, 200);
+  assert.deepEqual(after.body, before.body);
+  assert.equal(after.body.steps[0].type, "thinking");
+});

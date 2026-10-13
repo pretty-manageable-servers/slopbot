@@ -83,6 +83,8 @@ Configure unsolicited replies with `/slopbot cooldown seconds:120 per_hour:5` us
 
 History imports run in the background for configured text channels. On startup, Slopbot fills the last `HISTORY_WINDOW_DAYS` days, default 7, then catches up from its last completed scan. New messages save live. Every minute it checks for gaps; unfinished imports resume after restart. Separate thread histories are not imported automatically.
 
+Web transcript live events are kept for `CONVERSATION_EVENTS_RETENTION_DAYS` days, default 14, and at most `CONVERSATION_EVENTS_MAX_ROWS` rows, default 2000000. Slopbot prunes them at startup and every hour. Saved runs stay viewable after their live events are pruned; a browser whose stream position was pruned reloads the conversation.
+
 - `/slopbot index channel:#chat action:window days:30` sets initial coverage to 30 days.
 - `/slopbot index channel:#chat action:more` imports up to 5000 messages before the oldest imported message. Repeat to reach the beginning.
 - `/slopbot index channel:#chat action:status` shows stored dates, message/vector counts, import progress and successful embedding requests/reported tokens, separated by indexing and queries.

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { EventJournal } from "../src/event-journal.js";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
-import { RunEvents, publishMessage, publishMessageDelete, publishTool, reasoningText, runEvents, shortArgs, transcriptMessage, type ConversationEvent } from "../src/run-events.js";
+import { RunEvents, publishMessage, publishMessageDelete, publishTool, reasoningText, runEvents, shortArgs, startConversationEventRetention, transcriptMessage, type ConversationEvent } from "../src/run-events.js";
 import { webTranscriptKey } from "../src/server-tools.js";
 import type { Message } from "../src/domain.js";
 
@@ -179,4 +179,90 @@ test("helpers: short arguments, thinking text, and the view shape", () => {
   assert.equal(view.editedAt, null);
   assert.equal(view.avatarUrl, null);
   assert.equal(view.slopbot, false);
+});
+
+const ALL = Number.MAX_SAFE_INTEGER;
+/** Adds rows straight to the store. createdAt is set per row, so age tests need no clock. */
+async function addRows(store: SQLiteStore, count: number, createdAt: number, channelId = channel): Promise<number[]> {
+  const ids: number[] = [];
+  for (let index = 0; index < count; index++) ids.push(await store.appendConversationEvent({ server, channel: channelId, kind: "run.delta", ref: "run", data: { part: "text", text: String(index) }, createdAt }));
+  return ids;
+}
+
+test("age prune deletes rows older than the cutoff and keeps newer ones", async t => {
+  const { store } = setup(t);
+  await addRows(store, 3, 1_000);
+  const fresh = await addRows(store, 2, 9_000);
+  assert.equal(await store.pruneConversationEvents(5_000, 1_000_000), 3);
+  assert.deepEqual((await saved(store)).map(event => event.streamId), fresh);
+  assert.equal(await store.pruneConversationEvents(5_000, 1_000_000), 0);
+});
+
+test("row cap keeps the newest maxRows rows and deletes the oldest by stream ID", async t => {
+  const { store } = setup(t);
+  const ids = await addRows(store, 10, 1_000);
+  assert.equal(await store.pruneConversationEvents(0, 4), 6);
+  assert.deepEqual((await saved(store)).map(event => event.streamId), ids.slice(6));
+  assert.equal(await store.pruneConversationEvents(0, 4), 0);
+});
+
+test("age and cap work together: old rows go first, then the cap counts what is left", async t => {
+  const { store } = setup(t);
+  await addRows(store, 4, 1_000);
+  const kept = await addRows(store, 5, 9_000);
+  assert.equal(await store.pruneConversationEvents(5_000, 3), 6);
+  assert.deepEqual((await saved(store)).map(event => event.streamId), kept.slice(2));
+});
+
+test("a prune larger than one batch runs in batches: age first, then the cap across batches", async t => {
+  const { store } = setup(t);
+  await addRows(store, 25_000, 1_000);
+  assert.equal(await store.pruneConversationEvents(5_000, ALL), 25_000);
+  assert.equal((await saved(store)).length, 0);
+  await addRows(store, 25_000, 9_000);
+  const newest = (await addRows(store, 1_000, 9_000)).at(-1)!;
+  // 26,000 fresh rows, cap 1,000: the cap removes 25,000 in three statements (10,000 + 10,000 + 5,000).
+  assert.equal(await store.pruneConversationEvents(5_000, 1_000), 25_000);
+  const rest = await saved(store);
+  assert.equal(rest.length, 1_000);
+  assert.equal(rest.at(-1)!.streamId, newest);
+});
+
+test("oldestStreamId is the lowest kept row of the channel, or undefined when none is kept", async t => {
+  const { store } = setup(t);
+  assert.equal(await store.oldestStreamId(server, channel), undefined);
+  const ids = await addRows(store, 3, 1_000);
+  assert.equal(await store.oldestStreamId(server, channel), ids[0]);
+  assert.equal(await store.pruneConversationEvents(ALL, ALL), 3);
+  assert.equal(await store.oldestStreamId(server, channel), undefined);
+});
+
+test("the retention timer prunes at startup and on each interval, logs the count, and stops", async t => {
+  const logged: string[] = [];
+  t.mock.method(console, "log", (line: string) => { logged.push(line); });
+  const calls: [number, number][] = [];
+  const store = { async pruneConversationEvents(olderThan: number, maxRows: number) { calls.push([olderThan, maxRows]); return 7; } };
+  const stop = startConversationEventRetention(store, { days: 14, maxRows: 99 }, 5);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  stop();
+  const count = calls.length;
+  assert.ok(count >= 2, `expected startup and interval runs, got ${count}`);
+  assert.equal(calls[0]![1], 99);
+  assert.ok(Math.abs(calls[0]![0] - (Date.now() - 14 * 86_400_000)) < 60_000);
+  assert.deepEqual(JSON.parse(logged[0]!), { type: "conversation_events_pruned", deleted: 7, retentionDays: 14, maxRows: 99 });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(calls.length, count);
+});
+
+test("a failing prune is logged and the timer keeps going", async t => {
+  const errors: string[] = [];
+  t.mock.method(console, "error", (line: string) => { errors.push(line); });
+  let attempts = 0;
+  const store = { async pruneConversationEvents() { attempts++; throw new Error("disk full"); } };
+  const stop = startConversationEventRetention(store, { days: 1, maxRows: 1 }, 5);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  stop();
+  assert.ok(attempts >= 2);
+  assert.ok(errors.every(line => line.includes("conversation_events_prune_failed")));
+  assert.ok(errors.length >= 2);
 });

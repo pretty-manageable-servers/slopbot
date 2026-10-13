@@ -139,7 +139,7 @@ export interface StreamOptions {
   user: string;
   /** The last stream ID the client has. Events after it are sent first. */
   cursor: number;
-  store: Pick<TranscriptStore, "conversationEventsAfter">;
+  store: Pick<TranscriptStore, "conversationEventsAfter" | "oldestStreamId" | "latestStreamId">;
   bus: RunEvents;
   access: ChannelAccess;
   /** True while the switch is on and the user can view the channel. */
@@ -148,6 +148,15 @@ export interface StreamOptions {
   end(): void;
   heartbeatMs?: number;
   recheckMs?: number;
+}
+
+/**
+ * True when the cursor is older than the oldest kept row of the channel, so some events were
+ * pruned. A channel with no rows left counts as pruned too, because a cursor only exists for a saved row.
+ */
+async function pruned(store: Pick<TranscriptStore, "oldestStreamId">, server: string, channel: string, cursor: number): Promise<boolean> {
+  const oldest = await store.oldestStreamId(server, channel);
+  return oldest === undefined || cursor < oldest;
 }
 
 /**
@@ -191,6 +200,14 @@ export function openStream(options: StreamOptions): () => void {
   void (async () => {
     try {
       let after = lastSent;
+      // A pruned cursor cannot be resumed. The client reloads its messages, and the stream goes on live from the newest row.
+      if (lastSent > 0 && await pruned(store, server, channel, lastSent)) {
+        const latest = await store.latestStreamId(server, channel);
+        if (closed) return;
+        lastSent = Math.max(lastSent, latest);
+        after = lastSent;
+        options.write(`event: reset\ndata: ${JSON.stringify({ reason: "pruned" })}\n\n`);
+      }
       for (;;) {
         const rows = await store.conversationEventsAfter(server, channel, after, BACKLOG_PAGE);
         if (closed) return;

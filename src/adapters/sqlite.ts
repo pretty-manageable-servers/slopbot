@@ -18,6 +18,9 @@ import type { ToolArgs, ToolCall, ToolContext, ToolJournal, ToolOperation } from
 import type { HistoryQuery, HistoryPage } from '../search/history-search.js';
 import type { AppRecord } from '../records.js';
 import type { ConversationEvent } from '../run-events.js';
+/** Rows deleted by one retention statement, so a large prune never holds the database for long. */
+const CONVERSATION_PRUNE_BATCH = 10000;
+
 export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore {
   async record(
     server: string,
@@ -364,6 +367,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
         kind TEXT NOT NULL, ref TEXT NOT NULL, data TEXT NOT NULL, created_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS conversation_events_channel ON conversation_events(server,channel,stream_id);
+      CREATE INDEX IF NOT EXISTS conversation_events_created ON conversation_events(created_at);
     `);
     const operationColumns = this.db.prepare("PRAGMA table_info(tool_operations)").all();
     if (!operationColumns.some(column => column.name === "resource")) this.db.exec("ALTER TABLE tool_operations ADD COLUMN resource TEXT");
@@ -646,6 +650,27 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   async conversationEventsAfter(server: string, channel: string, after: number, limit: number): Promise<ConversationEvent[]> {
     return this.db.prepare("SELECT stream_id,server,channel,kind,ref,data,created_at FROM conversation_events WHERE server=? AND channel=? AND stream_id>? ORDER BY stream_id LIMIT ?")
       .all(server, channel, after, limit).map(row => ({ streamId: Number(row.stream_id), server: String(row.server), channel: String(row.channel), kind: String(row.kind) as ConversationEvent["kind"], ref: String(row.ref), data: JSON.parse(String(row.data)) as Json, createdAt: Number(row.created_at) }));
+  }
+  async oldestStreamId(server: string, channel: string): Promise<number | undefined> {
+    const row = this.db.prepare("SELECT MIN(stream_id) AS id FROM conversation_events WHERE server=? AND channel=?").get(server, channel)!;
+    return row.id === null ? undefined : Number(row.id);
+  }
+  /** Deletes rows older than olderThan, then the oldest rows beyond maxRows. Each statement deletes at most CONVERSATION_PRUNE_BATCH rows. */
+  async pruneConversationEvents(olderThan: number, maxRows: number): Promise<number> {
+    let deleted = 0;
+    for (;;) {
+      const changes = Number(this.db.prepare("DELETE FROM conversation_events WHERE stream_id IN (SELECT stream_id FROM conversation_events WHERE created_at<? LIMIT ?)").run(olderThan, CONVERSATION_PRUNE_BATCH).changes);
+      deleted += changes;
+      if (changes < CONVERSATION_PRUNE_BATCH) break;
+    }
+    let excess = Number(this.db.prepare("SELECT COUNT(*) AS n FROM conversation_events").get()!.n) - maxRows;
+    while (excess > 0) {
+      const changes = Number(this.db.prepare("DELETE FROM conversation_events WHERE stream_id IN (SELECT stream_id FROM conversation_events ORDER BY stream_id LIMIT ?)").run(Math.min(excess, CONVERSATION_PRUNE_BATCH)).changes);
+      if (!changes) break;
+      deleted += changes;
+      excess -= changes;
+    }
+    return deleted;
   }
 
   close(): void { this.db.close(); }
