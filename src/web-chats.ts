@@ -4,6 +4,7 @@ import { logError } from "./errors.js";
 import type { ChatGateway } from "./bot.js";
 import type { Message } from "./domain.js";
 import type { ToolActivity } from "./tool-activity.js";
+import { toolDisplayMode, toolFooter } from "./presentation/tool-activity.js";
 import type { UiDocument } from "./ui/schema.js";
 import type { ChannelAccess } from "./channel-access.js";
 import type { MemberDirectory } from "./member-directory.js";
@@ -58,12 +59,17 @@ const MESSAGE_ID = /^[\w:.-]{1,64}$/;
 export class WebChatGateway implements ChatGateway {
   constructor(private readonly store: Pick<ChatStore, "setting" | "taskThreads" | "requestRunIds" | "replyRunIds">, private readonly server: string) {}
 
-  async reply(message: Message, text: string, deliveryId?: string, _activity?: readonly ToolActivity[], _ui?: UiDocument): Promise<readonly Message[]> {
+  /**
+   * Saves the reply with the same tool footer that Discord shows, so the transcript matches. Live tool progress is
+   * published by the bot's tool observer. A UI document has no place in a saved Message, so it is not kept here.
+   */
+  async reply(message: Message, text: string, deliveryId?: string, activity: readonly ToolActivity[] = [], _ui?: UiDocument): Promise<readonly Message[]> {
+    const footer = toolFooter(activity, toolDisplayMode(this.store.setting(this.server, "tool_display")));
     const output: Message = {
       id: `chat-reply-${deliveryId ? stableOperationId(deliveryId) : randomUUID()}`,
       server: this.server, channel: message.channel,
       author: slopbotId(this.store, this.server) ?? "slopbot", authorName: "Slopbot", isBot: true,
-      text, timestamp: Date.now(), addressed: false,
+      text: text + footer, timestamp: Date.now(), addressed: false,
     };
     const runIds = await this.store.requestRunIds(this.server, message.id);
     await publishMessage(this.store, output, runIds);
@@ -215,7 +221,7 @@ export function createChatRoutes(service: WebChatService): ChatRoutes {
             const raw = url.searchParams.get("limit");
             const limit = raw === null || raw === "" ? 50 : Number(raw);
             if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new ChatError(400, "Invalid limit.");
-            return json(res, 200, await service.messages(user, id, limit, url.searchParams.get("before")));
+            return json(res, 200, await service.messages(user, id, limit, url.searchParams.get("before") || null));
           }
           if (req.method === "POST") return json(res, 201, await service.send(user, id, input.text));
         }
