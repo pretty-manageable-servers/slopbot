@@ -47,3 +47,12 @@ test('object storage uses PMServers path-style settings and requires a dedicated
   for (const endpoint of ['http://example.com', 'https://user:pass@example.com', 'https://example.com/path', 'https://example.com/?secret=value']) assert.throws(() => loadConfig({ ...storageEnv, AWS_ENDPOINT_URL: endpoint }));
   assert.throws(() => loadConfig({ ...storageEnv, OBJECT_STORAGE_PUBLIC_ENDPOINT: 'http://garage.pms-storage.svc:3900' }), /HTTPS/);
 });
+
+test("servers: empty allowlist allows all, initial channels need their server", () => {
+  const base = { DISCORD_BOT_TOKEN: "test", LLM_MODE: "mock" };
+  assert.deepEqual(loadConfig(base).guildIds, []);
+  assert.deepEqual(loadConfig({ ...base, DISCORD_GUILD_IDS: "12345678901234567, 12345678901234569" }).guildIds, ["12345678901234567", "12345678901234569"]);
+  assert.deepEqual(loadConfig({ ...base, DISCORD_GUILD_ID: "12345678901234567" }).guildIds, []);
+  assert.throws(() => loadConfig({ ...base, DISCORD_CHANNEL_IDS: "12345678901234568" }), /DISCORD_GUILD_ID/);
+  assert.throws(() => loadConfig({ ...base, DISCORD_GUILD_IDS: "my-server" }), /numeric IDs/);
+});

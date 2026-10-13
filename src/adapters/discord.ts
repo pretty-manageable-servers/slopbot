@@ -28,7 +28,7 @@ import { registerFileTool, inspectFile } from '../files.js';
 import {
   Client, Events, GatewayIntentBits, Partials, ThreadAutoArchiveDuration,
   MessageFlags, PermissionFlagsBits, ChannelType,
-  type ChatInputCommandInteraction, type Message as DiscordMessage,
+  type ChatInputCommandInteraction, type Interaction, type Message as DiscordMessage, type PartialMessage,
 } from "discord.js";
 import { buildToolCommands } from "./discord-commands.js";
 import { registerProfileTools } from "../profiles.js";
@@ -45,7 +45,8 @@ import { TaskWorker } from "../queue.js";
 import { configuredChannels, registerServerTools } from "../server-tools.js";
 import { displayToolResult, ToolError, ToolRegistry, UncertainActionError, stableOperationId } from "../tools.js";
 
-export class DiscordAdapter implements ChatGateway {
+/** Slopbot state and services for one Discord server. All servers share one client. */
+export class DiscordServer implements ChatGateway {
   private readonly client: Client;
   private readonly bot: Bot;
   private readonly app: Application;
@@ -54,42 +55,41 @@ export class DiscordAdapter implements ChatGateway {
   private readonly uiRuntime: UiRuntime;
   private readonly toolProgress = new DiscordToolProgress();
   private readonly tools: ToolRegistry;
-  private readonly objectStorageProvider: S3StorageProvider | undefined;
   private readonly mcp: McpManager;
   private readonly worker: TaskWorker;
   private readonly history: HistoryImporter;
   private channels: string[];
   private historyTimer: ReturnType<typeof setInterval> | undefined;
 
-  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client?: Client) {
-    this.client = client ?? new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent], partials: [Partials.Message, Partials.Channel] });
+  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined) {
+    this.client = client;
     this.renderer = new ReplyRenderer(store, discordPresentation);
-    this.channels = configuredChannels(config, store);
-    this.history = new HistoryImporter(config.guildId, store, {
+    this.channels = configuredChannels(config, store, guildId);
+    this.history = new HistoryImporter(guildId, store, {
       fetch: async (channel, before, limit) => {
         if (!this.channels.includes(channel)) throw new ToolError("Channel is no longer configured");
         const target = await this.client.channels.fetch(channel);
-        if (!target || target.type !== ChannelType.GuildText || target.guildId !== config.guildId) throw new ToolError("Text channel unavailable");
+        if (!target || target.type !== ChannelType.GuildText || target.guildId !== guildId) throw new ToolError("Text channel unavailable");
         const batch = await target.messages.fetch({ limit, ...(before ? { before } : {}) });
         return [...batch.values()].sort((a, b) => a.id === b.id ? 0 : BigInt(a.id) > BigInt(b.id) ? -1 : 1)
           .map(message => ({ ...this.normalize(message), addressed: false }));
       },
     }, config.historyWindowDays);
     const savedLimit = (key: string, fallback: number, max: number): number => {
-      const value = store.setting(config.guildId, key);
+      const value = store.setting(guildId, key);
       return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= max ? value : fallback;
     };
-    const savedMonitoring = store.setting(config.guildId, "monitoring");
+    const savedMonitoring = store.setting(guildId, "monitoring");
     const participation = new ParticipationGate(new DecisionClassifier({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.jevModel }, store, undefined, new LLMClassifier(llm, store)), {
       enabled: (typeof savedMonitoring === "boolean" ? savedMonitoring : config.jevEnabled) && !config.mock,
-      reactionFrequency: savedLimit("reaction_frequency", store.setting(config.guildId, "reactions_enabled") === false ? 0 : 60, 100),
+      reactionFrequency: savedLimit("reaction_frequency", store.setting(guildId, "reactions_enabled") === false ? 0 : 60, 100),
       contextMessages: savedLimit("classifier_context", config.jevContextMessages, 100),
       cooldownMs: savedLimit("cooldown_seconds", config.jevCooldownSeconds, 3600) * 1000,
       maxUnsolicitedPerHour: savedLimit("max_unsolicited_per_hour", config.jevMaxRepliesPerHour, 1000),
     });
     this.tools = new ToolRegistry(store, async message => {
-      if (message.server !== config.guildId) return false;
-      const guild = await this.client.guilds.fetch(config.guildId);
+      if (message.server !== guildId) return false;
+      const guild = await this.client.guilds.fetch(guildId);
       const member = await guild.members.fetch({ user: message.author, force: true });
       return member.permissions.has(PermissionFlagsBits.ManageGuild);
     }, async (context, expectedVersion) => {
@@ -102,13 +102,13 @@ export class DiscordAdapter implements ChatGateway {
         if (message.taskId && (await store.hasPendingOther(message.server, message.channel, message.id))) throw new ToolError("New contributions are queued; review them before further actions");
       }
     });
-    this.mcp = new McpManager(config.guildId, store, this.tools, remoteMcpConnector({ allowPrivate: process.env.MCP_ALLOW_PRIVATE === 'true' }), new McpSecrets(process.env.MCP_SECRET_KEY), message => this.validateChannel(message, message.channel));
+    this.mcp = new McpManager(guildId, store, this.tools, remoteMcpConnector({ allowPrivate: process.env.MCP_ALLOW_PRIVATE === 'true' }), new McpSecrets(process.env.MCP_SECRET_KEY), message => this.validateChannel(message, message.channel));
     registerServerTools(this.tools, {
-      config, store, participation, history: this.history,
+      config, server: guildId, store, participation, history: this.history,
       channels: () => this.channels,
       setChannels: channels => this.setChannels(channels),
       findChannels: async (message, query) => {
-        const guild = await this.client.guilds.fetch(config.guildId);
+        const guild = await this.client.guilds.fetch(guildId);
         const channels = await guild.channels.fetch();
         const found: string[] = [];
         for (const channel of channels.values()) {
@@ -119,7 +119,7 @@ export class DiscordAdapter implements ChatGateway {
         return found.join("\n") || "No matching channels visible to you and Slopbot.";
       },
       validateChannel: (message, channel, parentOnly) => this.validateChannel(message, channel, parentOnly),
-      accepts: channel => this.bot.accepts(config.guildId, channel),
+      accepts: channel => this.bot.accepts(guildId, channel),
       setReplyContext: count => this.app.setRecentMessages(count),
       originMessage: async message => message.id.startsWith("task-seed:") ? (await store.canonicalMessage(message.server, message.id.slice(10))) ?? message : message,
       startTask: (message, goal) => this.bot.startTask(message, goal),
@@ -132,7 +132,7 @@ export class DiscordAdapter implements ChatGateway {
         if (!source.hasThread) return undefined;
         const thread = (source.thread ?? await channel.threads.fetch(source.id));
         if (!thread || thread.ownerId !== this.client.user?.id) return undefined;
-        (await store.registerTask(config.guildId, thread.id, message.channel, message.id));
+        (await store.registerTask(guildId, thread.id, message.channel, message.id));
         await this.bot.startTask(message, message.text);
         return thread.id;
       },
@@ -149,7 +149,7 @@ export class DiscordAdapter implements ChatGateway {
     registerPollTool(this.tools);
     registerTaskTools(this.tools,{store,authorize:authorizeFeature});
     registerReminderTools(this.tools,{store,authorize:authorizeFeature});
-    this.reminders=new ReminderWorker(config.guildId,store,async(message,text,id)=>{await this.reply(message,text,id);},authorizeFeature);
+    this.reminders=new ReminderWorker(guildId,store,async(message,text,id)=>{await this.reply(message,text,id);},authorizeFeature);
     registerUiTool(this.tools);
     registerProfileTools(this.tools, store);
     registerWebSearch(this.tools, config.searxngUrl ? new SearxNGSearch(config.searxngUrl, fetch, Date.now, config.searxngAccess) : new UnconfiguredSearch());
@@ -168,8 +168,7 @@ export class DiscordAdapter implements ChatGateway {
     };
     registerFileTool(this.tools, { store, llm, resolve: resolveAttachment });
     const sandboxProvider = config.sandboxApiKey ? new E2BSandboxProvider({ apiKey: config.sandboxApiKey, apiUrl: config.sandboxApiUrl!, sandboxUrl: config.sandboxUrl!, ...(config.sandboxTemplate ? { template: config.sandboxTemplate } : {}) }) : undefined;
-    this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;
-    const storage = new UserFileStorage(store, this.objectStorageProvider);
+    const storage = new UserFileStorage(store, objectStorageProvider);
     this.tools.register(sandboxTool(store, sandboxProvider, { resolve: (request, id) => resolveAttachment(request, id, true) }, storage));
     this.tools.register(objectStorageTool({
       storage,
@@ -190,7 +189,7 @@ export class DiscordAdapter implements ChatGateway {
       } } : {}),
     }));
     this.app = new Application(store, llm, {
-      allowedChannels: this.channels.map(channel => ({ server: config.guildId, channel })),
+      allowedChannels: this.channels.map(channel => ({ server: guildId, channel })),
       recentMessages: savedLimit("reply_context", config.replyContextMessages, 100),
       maxContextTokens: config.contextTokens, maxInputChars: config.contextTokens,
       maxOutputTokens: config.outputTokens, checkpointTokens: config.checkpointTokens, maxToolRounds: config.maxToolRounds,
@@ -212,7 +211,7 @@ export class DiscordAdapter implements ChatGateway {
         } };
       },
     } });
-    this.worker = new TaskWorker(config.guildId, store, async message => {
+    this.worker = new TaskWorker(guildId, store, async message => {
       const source = (await store.canonicalMessage(message.server, message.id));
       if (!source || source.text !== message.text || source.author !== message.author) throw new Error("Source changed while queued; submit a new request");
       if (!message.taskId && /^!task(?:\s|$)/i.test(message.text)) {
@@ -228,46 +227,41 @@ export class DiscordAdapter implements ChatGateway {
       if (!this.bot.accepts(job.message.server, job.message.channel)) return;
       await this.reply(job.message, errorReply(error, job.id), `job-error:${job.id}`);
     });
-    this.bot = new Bot(this.app, store, store, this, config.guildId, this.channels, { profiles: store, knowledge: store, participation, worker: this.worker, tools: this.tools, queueStore: store });
-    this.client.once(Events.ClientReady, async client => {
-      try { await store.setSetting(config.guildId, "context_bot_author", client.user.id); }
-      catch (error) { logError("Context identity initialization failed", error); await this.client.destroy(); return; }
-      console.log(`Slopbot connected as ${client.user.tag}. LLM mode: ${config.mock ? "mock" : "provider"}`);
-      if (!this.channels.length) console.warn("No channels configured. Use /slopbot channels action:add channel:<test channel> to enable replies.");
-      void this.purgeAndIndex().catch(error => logError("Database startup indexing failed", error));
-      void this.hydrateAuthors().catch(error => logError("Author-name refresh unavailable; names will fill from new messages.", error));
-      try { this.worker.start(); } catch (error) { console.error(error instanceof Error ? error.message : "Worker unavailable"); void this.client.destroy(); return; }
-      const sync = () => { for (const channel of this.channels) void this.history.start(channel).catch(error => logError("History import startup failed", error)); };
-      this.reminders.start();
-      sync(); this.historyTimer = setInterval(sync, 60000);
-      void this.registerCommands().catch(error => logError("Could not register /slopbot commands. Check application command permissions.", error));
-    });
-    this.client.on(Events.InteractionCreate, interaction => {
-      if ((interaction.isButton() || interaction.isStringSelectMenu()) && interaction.customId.startsWith('slopui:')) {
-        void handleDiscordUi(interaction,this.uiRuntime).catch(error => logError('UI interaction display failed.', error));
-      }
-      if (interaction.isChatInputCommand() && interaction.commandName === "slopbot") void this.command(interaction).catch(error => logError("Command failed.", error));
-    });
-    this.client.on(Events.Error, error => logError("discord_client_failed", error));
-    this.client.on(Events.MessageCreate, message => { void this.receive(message).catch(error => logError("Discord event failed. Check channel permissions.", error)); });
-    this.client.on(Events.MessageUpdate, (_old, updated) => {
-      void (async () => {
-        if (!updated.guildId || !this.bot.accepts(updated.guildId, updated.channelId)) return;
-        const message = updated.partial ? await updated.fetch() : updated;
-        await store.revise(this.normalize(message));
-      })().catch(error => logError("Could not update edited message context.", error));
-    });
-    this.client.on(Events.MessageDelete, message => {
-      if (message.guildId && this.bot.accepts(message.guildId, message.channelId)) void store.remove(message.guildId, message.channelId, message.id).catch(error => logError("discord_message_delete_failed", error, { messageId: message.id }));
-    });
-    this.client.on(Events.MessageBulkDelete, messages => {
-      for (const message of messages.values()) if (message.guildId && this.bot.accepts(message.guildId, message.channelId)) void store.remove(message.guildId, message.channelId, message.id).catch(error => logError("discord_message_delete_failed", error, { messageId: message.id }));
-    });
+    this.bot = new Bot(this.app, store, store, this, guildId, this.channels, { profiles: store, knowledge: store, participation, worker: this.worker, tools: this.tools, queueStore: store });
+  }
+  /** Starts work for this server after the client is ready. */
+  async ready(botUser: string): Promise<void> {
+    await this.store.setSetting(this.guildId, "context_bot_author", botUser);
+    if (!this.channels.length) console.warn(`No channels configured for server ${this.guildId}. Use /slopbot channels action:add channel:<channel> to enable replies.`);
+    void this.purgeAndIndex().catch(error => logError("Database startup indexing failed", error, { server: this.guildId }));
+    void this.hydrateAuthors().catch(error => logError("Author-name refresh unavailable; names will fill from new messages.", error, { server: this.guildId }));
+    this.worker.start();
+    const sync = () => { for (const channel of this.channels) void this.history.start(channel).catch(error => logError("History import startup failed", error, { server: this.guildId })); };
+    this.reminders.start();
+    sync(); this.historyTimer = setInterval(sync, 60000);
+    void this.registerCommands().catch(error => logError("Could not register /slopbot commands. Check application command permissions.", error, { server: this.guildId }));
+  }
+  interaction(interaction: Interaction): void {
+    if ((interaction.isButton() || interaction.isStringSelectMenu()) && interaction.customId.startsWith('slopui:')) {
+      void handleDiscordUi(interaction,this.uiRuntime).catch(error => logError('UI interaction display failed.', error));
+    }
+    if (interaction.isChatInputCommand() && interaction.commandName === "slopbot") void this.command(interaction).catch(error => logError("Command failed.", error));
+  }
+  messageCreate(message: DiscordMessage): void { void this.receive(message).catch(error => logError("Discord event failed. Check channel permissions.", error)); }
+  messageUpdate(updated: DiscordMessage | PartialMessage): void {
+    void (async () => {
+      if (!updated.guildId || !this.bot.accepts(updated.guildId, updated.channelId)) return;
+      const message = updated.partial ? await updated.fetch() : updated;
+      await this.store.revise(this.normalize(message));
+    })().catch(error => logError("Could not update edited message context.", error));
+  }
+  messageDelete(message: { guildId: string | null; channelId: string; id: string }): void {
+    if (message.guildId && this.bot.accepts(message.guildId, message.channelId)) void this.store.remove(message.guildId, message.channelId, message.id).catch(error => logError("discord_message_delete_failed", error, { messageId: message.id }));
   }
   private async purgeAndIndex(): Promise<void> {
-    const children = this.store.taskThreads(this.config.guildId).filter(task => this.channels.includes(task.parent)).map(task => task.thread);
+    const children = this.store.taskThreads(this.guildId).filter(task => this.channels.includes(task.parent)).map(task => task.thread);
     const scopes = [...this.channels, ...children];
-    await this.store.purgeUnconfigured(this.config.guildId, scopes); await this.store.reindex(this.config.guildId, scopes);
+    await this.store.purgeUnconfigured(this.guildId, scopes); await this.store.reindex(this.guildId, scopes);
   }
   private async setChannels(channels: string[]): Promise<void> {
     const previous = this.channels;
@@ -278,7 +272,7 @@ export class DiscordAdapter implements ChatGateway {
   }
   private async validateChannel(message: Message, channelId: string, parentOnly = false): Promise<void> {
     const channel = await this.client.channels.fetch(channelId);
-    if (!channel || !(channel.type === ChannelType.GuildText || (!parentOnly && channel.isThread())) || channel.guildId !== message.server || message.server !== this.config.guildId) throw new ToolError("Choose a text channel in this server.");
+    if (!channel || !(channel.type === ChannelType.GuildText || (!parentOnly && channel.isThread())) || channel.guildId !== message.server || message.server !== this.guildId) throw new ToolError("Choose a text channel in this server.");
     const guild = await this.client.guilds.fetch(message.server);
     const member = await guild.members.fetch({ user: message.author, force: true });
     const bot = await guild.members.fetchMe();
@@ -286,12 +280,12 @@ export class DiscordAdapter implements ChatGateway {
     if (!channel.permissionsFor(member)?.has(permission) || !channel.permissionsFor(bot)?.has(permission)) throw new ToolError("Both you and Slopbot need View Channel and Read Message History permission.");
   }
   private async registerCommands(): Promise<void> {
-    const guild = await this.client.guilds.fetch(this.config.guildId);
+    const guild = await this.client.guilds.fetch(this.guildId);
     const command = buildToolCommands(this.tools);
     await guild.commands.create(command.toJSON());
   }
   private async command(interaction: ChatInputCommandInteraction): Promise<void> {
-    if (interaction.guildId !== this.config.guildId) return;
+    if (interaction.guildId !== this.guildId) return;
     let ephemeral = true;
     try {
       const subcommand = interaction.options.getSubcommand();
@@ -332,19 +326,19 @@ export class DiscordAdapter implements ChatGateway {
       for (const content of parts.slice(1)) await interaction.followUp({ content, flags: previewFlags | (ephemeral ? MessageFlags.Ephemeral : 0), allowedMentions: { parse: [] } });
       if(output.ui){const state=await this.uiRuntime.prepare(message,output.ui,interaction.id);const payload=discordUi(output.ui,state.id,state.revision);await interaction.followUp({...payload,flags:[...('flags' in payload?payload.flags:[]),...(ephemeral?['Ephemeral' as const]:[])],allowedMentions:{parse:[]}});}
     } catch (error) {
-      logError("command_failed", error, { stage: "slash command", server: this.config.guildId, messageId: interaction.id });
+      logError("command_failed", error, { stage: "slash command", server: this.guildId, messageId: interaction.id });
       await interaction.editReply({content: errorReply(error), allowedMentions: {parse: []}});
     }
   }
   private async hydrateAuthors(): Promise<void> {
-    const guild = await this.client.guilds.fetch(this.config.guildId);
-    const authors = (await this.store.knownAuthors(this.config.guildId)).filter(item => /^\d{17,20}$/.test(item.author));
+    const guild = await this.client.guilds.fetch(this.guildId);
+    const authors = (await this.store.knownAuthors(this.guildId)).filter(item => /^\d{17,20}$/.test(item.author));
     let refreshed = 0;
     for (let offset = 0; offset < authors.length; offset += 4) {
       const results = await Promise.allSettled(authors.slice(offset, offset + 4).map(async ({ author }) => {
         const member = await guild.members.fetch(author).catch(() => undefined);
         const user = member?.user ?? await this.client.users.fetch(author);
-        await this.store.identifyAuthor(this.config.guildId, author, [member?.displayName ?? user.globalName ?? user.username, user.username, ...(user.globalName ? [user.globalName] : [])], user.bot, { discord_handle: user.username, discord_name: user.globalName ?? user.username, server_nickname: member?.displayName ?? user.username, server_name: guild.name });
+        await this.store.identifyAuthor(this.guildId, author, [member?.displayName ?? user.globalName ?? user.username, user.username, ...(user.globalName ? [user.globalName] : [])], user.bot, { discord_handle: user.username, discord_name: user.globalName ?? user.username, server_nickname: member?.displayName ?? user.username, server_name: guild.name });
       }));
       refreshed += results.filter(result => result.status === "fulfilled").length;
     }
@@ -480,7 +474,7 @@ export class DiscordAdapter implements ChatGateway {
     const timer = setInterval(send, 8000); timer.unref(); return () => clearInterval(timer);
   }
   async consoleSnapshot(user: string): Promise<unknown> {
-    const guild = await this.client.guilds.fetch(this.config.guildId);
+    const guild = await this.client.guilds.fetch(this.guildId);
     const member = await guild.members.fetch({ user, force: true });
     const admin = member.permissions.has(PermissionFlagsBits.ManageGuild);
     const channels = [];
@@ -506,23 +500,110 @@ export class DiscordAdapter implements ChatGateway {
       } : null };
   }
   async consoleInvoke(user: string, channel: string, name: string, args: import('../tools.js').ToolArgs): Promise<unknown> {
-    const message: Message = { id: `command:web:${crypto.randomUUID()}`, server: this.config.guildId, channel, author: user, text: '' };
+    const message: Message = { id: `command:web:${crypto.randomUUID()}`, server: this.guildId, channel, author: user, text: '' };
     await this.validateChannel(message, channel, true);
     if (name === 'profile') args = { ...args, user };
     return this.tools.invokeResult(message, name, args, message.id, 'command');
   }
   async consoleMcp(user: string, input: unknown): Promise<unknown> {
-    const guild = await this.client.guilds.fetch(this.config.guildId);
+    const guild = await this.client.guilds.fetch(this.guildId);
     const member = await guild.members.fetch({ user, force: true });
     if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) throw new ToolError('Manage Server permission is required.');
     await this.mcp.configure(user, input);
     return { text: 'MCP configuration applied. Available tools update without a restart.', mcp: this.mcp.snapshot() };
   }
-  async start(): Promise<void> { await this.mcp.restore(); await this.client.login(this.config.discordToken); }
+  async start(): Promise<void> { await this.mcp.restore(); }
   async stop(): Promise<void> {
     if (this.historyTimer) clearInterval(this.historyTimer);
     await this.reminders.stop();
-    await this.history.stop(); await this.worker.stop(); await this.mcp.close(); await this.client.destroy();
+    await this.history.stop(); await this.worker.stop(); await this.mcp.close();
+  }
+}
+
+/** Owns the Discord client and runs one DiscordServer for each server that Slopbot is in. */
+export class DiscordAdapter {
+  private readonly client: Client;
+  private readonly servers = new Map<string, Promise<DiscordServer>>();
+  private readonly objectStorageProvider: S3StorageProvider | undefined;
+  private botUser: string | undefined;
+
+  constructor(private readonly config: Config, private readonly store: RuntimeStore, private readonly llm: LLM, client?: Client) {
+    this.client = client ?? new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent], partials: [Partials.Message, Partials.Channel] });
+    this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;
+    this.client.once(Events.ClientReady, async client => {
+      this.botUser = client.user.id;
+      console.log(`Slopbot connected as ${client.user.tag}. LLM mode: ${config.mock ? "mock" : "provider"}. Servers: ${client.guilds.cache.size}`);
+      for (const guild of client.guilds.cache.values()) void this.open(guild.id).catch(error => logError("server_start_failed", error, { server: guild.id }));
+    });
+    this.client.on(Events.GuildCreate, guild => { if (this.botUser) void this.open(guild.id).catch(error => logError("server_start_failed", error, { server: guild.id })); });
+    this.client.on(Events.GuildDelete, guild => { void this.close(guild.id).catch(error => logError("server_stop_failed", error, { server: guild.id })); });
+    this.client.on(Events.InteractionCreate, interaction => { if (interaction.guildId) void this.route(interaction.guildId, server => server.interaction(interaction)); });
+    this.client.on(Events.Error, error => logError("discord_client_failed", error));
+    this.client.on(Events.MessageCreate, message => { if (message.guildId) void this.route(message.guildId, server => server.messageCreate(message)); });
+    this.client.on(Events.MessageUpdate, (_old, updated) => { if (updated.guildId) void this.route(updated.guildId, server => server.messageUpdate(updated)); });
+    this.client.on(Events.MessageDelete, message => { if (message.guildId) void this.route(message.guildId, server => server.messageDelete(message)); });
+    this.client.on(Events.MessageBulkDelete, messages => { for (const message of messages.values()) if (message.guildId) void this.route(message.guildId, server => server.messageDelete(message)); });
+  }
+  /** True when the operator allows Slopbot in this server. An empty list allows all servers. */
+  private allowed(guildId: string): boolean { return !this.config.guildIds.length || this.config.guildIds.includes(guildId); }
+  private open(guildId: string): Promise<DiscordServer> {
+    const existing = this.servers.get(guildId);
+    if (existing) return existing;
+    if (!this.allowed(guildId)) return Promise.reject(new ToolError("Slopbot is not enabled for this server."));
+    const opening = (async () => {
+      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider);
+      await server.start();
+      await server.ready(this.botUser!);
+      return server;
+    })();
+    this.servers.set(guildId, opening);
+    opening.catch(() => { if (this.servers.get(guildId) === opening) this.servers.delete(guildId); });
+    return opening;
+  }
+  private async close(guildId: string): Promise<void> {
+    const server = this.servers.get(guildId);
+    if (!server) return;
+    this.servers.delete(guildId);
+    await (await server).stop();
+  }
+  private async route(guildId: string, handle: (server: DiscordServer) => void): Promise<void> {
+    const server = this.servers.get(guildId);
+    if (!server) return;
+    try { handle(await server); } catch (error) { logError("discord_event_failed", error, { server: guildId }); }
+  }
+  /** Servers that both Slopbot and the user are in. */
+  async consoleServers(user: string): Promise<{ id: string; name: string; icon: string | null; admin: boolean }[]> {
+    const found = [];
+    for (const id of this.servers.keys()) {
+      const guild = this.client.guilds.cache.get(id);
+      if (!guild) continue;
+      const member = await guild.members.fetch({ user, force: true }).catch(() => undefined);
+      if (member) found.push({ id, name: guild.name, icon: guild.iconURL({ size: 64 }), admin: member.permissions.has(PermissionFlagsBits.ManageGuild) });
+    }
+    return found.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  private async server(user: string, guildId: string | undefined): Promise<DiscordServer> {
+    const servers = await this.consoleServers(user);
+    const chosen = servers.find(item => item.id === guildId) ?? (guildId ? undefined : servers[0]);
+    if (!chosen) throw new ToolError(guildId ? "You and Slopbot are not both in that server." : "You and Slopbot do not share a server yet.", "rejected");
+    return this.servers.get(chosen.id)!;
+  }
+  async consoleSnapshot(user: string, guildId?: string): Promise<unknown> {
+    const servers = await this.consoleServers(user);
+    if (!servers.length) return { user, servers, server: null };
+    const snapshot = await (await this.server(user, guildId)).consoleSnapshot(user) as Record<string, unknown>;
+    return { ...snapshot, servers };
+  }
+  async consoleInvoke(user: string, guildId: string | undefined, channel: string, name: string, args: import('../tools.js').ToolArgs): Promise<unknown> {
+    return (await this.server(user, guildId)).consoleInvoke(user, channel, name, args);
+  }
+  async consoleMcp(user: string, guildId: string | undefined, input: unknown): Promise<unknown> {
+    return (await this.server(user, guildId)).consoleMcp(user, input);
+  }
+  async start(): Promise<void> { await this.client.login(this.config.discordToken); }
+  async stop(): Promise<void> {
+    await Promise.all([...this.servers.keys()].map(id => this.close(id)));
+    await this.client.destroy();
     this.objectStorageProvider?.close();
   }
 }

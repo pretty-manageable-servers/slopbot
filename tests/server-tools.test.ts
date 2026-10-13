@@ -23,11 +23,11 @@ test("timing footer setting persists and requires server management permission",
 
 function setup() {
   const store = new SQLiteStore();
-  let channels = configuredChannels(config, store), admin = true;
+  let channels = configuredChannels(config, store, server), admin = true;
   const history = new HistoryImporter(server, store, { async fetch() { return []; } });
   const registry = new ToolRegistry(store, async () => admin);
   const participation = { options: { enabled: true, contextMessages: 8, cooldownMs: 60000, maxUnsolicitedPerHour: 3 }, diagnostics: new Map<string, string>() };
-  registerServerTools(registry, { config, store, participation, history, channels: () => channels,
+  registerServerTools(registry, { config, server, store, participation, history, channels: () => channels,
     setChannels(value) { channels = value; }, async validateChannel(_message, id) { if (![channel, other].includes(id)) throw new ToolError("Cannot view channel"); },
     async findChannels() { return "chat: " + channel; },
     accepts: id => channels.includes(id), setReplyContext() {}, originMessage: value => value,
@@ -40,9 +40,9 @@ test("channel changes persist and bot calls use the same handler and admin check
   const f = setup(); t.after(() => f.store.close());
   await f.registry.invoke(message, "channels", { action: "add", channel: other }, "add", "agent");
   assert.deepEqual(f.channels(), [channel, other]);
-  assert.deepEqual(configuredChannels(config, f.store), [channel, other]);
+  assert.deepEqual(configuredChannels(config, f.store, server), [channel, other]);
   await f.registry.invoke(message, "channels", { action: "remove", channel: channel }, "remove", "command");
-  assert.deepEqual(configuredChannels(config, f.store), [other]);
+  assert.deepEqual(configuredChannels(config, f.store, server), [other]);
   f.setAdmin(false);
   await assert.rejects(f.registry.invoke(message, "cooldown", { seconds: 120, per_hour: 5 }, "cooldown", "agent"), /Manage Server/);
   assert.equal(f.participation.options.cooldownMs, 60000);

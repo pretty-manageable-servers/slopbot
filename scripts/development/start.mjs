@@ -5,7 +5,7 @@ import { parseEnv } from 'node:util';
 const file='.env.development';
 if(!existsSync(file)) throw new Error('Create .env.development from .env.development.example.');
 const env=parseEnv(readFileSync(file,'utf8'));
-for(const key of ['DISCORD_BOT_TOKEN','DISCORD_GUILD_ID','DATABASE_URL','SEARXNG_URL']) {
+for(const key of ['DISCORD_BOT_TOKEN','DATABASE_URL','SEARXNG_URL']) {
   if(!env[key]?.trim()) throw new Error(`Set ${key} in .env.development.`);
 }
 const production=existsSync('data/deployment/bot.env') ? parseEnv(readFileSync('data/deployment/bot.env','utf8')) : {};

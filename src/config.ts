@@ -8,7 +8,10 @@ export interface Config {
   sandboxUrl?: string;
   sandboxTemplate?: string;
   discordToken: string;
-  guildId: string;
+  /** Servers Slopbot may join. Empty means every server that invites it. */
+  guildIds: string[];
+  /** Server that receives the initial DISCORD_CHANNEL_IDS list. */
+  channelServer?: string;
   channelIds: string[];
   mock: boolean;
   baseUrl: string;
@@ -42,9 +45,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   };
   const mock = env.LLM_MODE === "mock";
   if (env.LLM_MODE && !["mock", "provider"].includes(env.LLM_MODE)) throw new Error("LLM_MODE must be mock or provider");
-  const guildId = required("DISCORD_GUILD_ID");
-  const channelIds = (env.DISCORD_CHANNEL_IDS ?? "").split(",").map(value => value.trim()).filter(Boolean);
-  if (![guildId, ...channelIds].every(value => /^\d{17,20}$/.test(value))) {
+  const list = (key: string) => (env[key] ?? "").split(",").map(value => value.trim()).filter(Boolean);
+  const channelServer = env.DISCORD_GUILD_ID?.trim() || undefined;
+  const guildIds = [...new Set(list("DISCORD_GUILD_IDS"))];
+  const channelIds = list("DISCORD_CHANNEL_IDS");
+  if (channelIds.length && !channelServer) throw new Error("Set DISCORD_GUILD_ID for the server of DISCORD_CHANNEL_IDS");
+  if (![...guildIds, ...(channelServer ? [channelServer] : []), ...channelIds].every(value => /^\d{17,20}$/.test(value))) {
     throw new Error("Discord server/channel IDs must be numeric IDs, not names");
   }
   const baseUrl = env.LLM_BASE_URL ?? "https://api.pmservers.org/ai/v1";
@@ -99,7 +105,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.E2B_API_KEY ? { sandboxApiKey: env.E2B_API_KEY, sandboxApiUrl: env.E2B_API_URL ?? "https://api.pmservers.org/sandboxes", sandboxUrl: env.E2B_SANDBOX_URL ?? "https://sandbox.pmservers.org" } : {}),
     ...(env.E2B_TEMPLATE ? { sandboxTemplate: env.E2B_TEMPLATE } : {}),
     ...(env.SEARXNG_URL ? { searxngUrl: env.SEARXNG_URL } : {}),
-    discordToken: required("DISCORD_BOT_TOKEN"), guildId, channelIds, mock, baseUrl,
+    discordToken: required("DISCORD_BOT_TOKEN"), guildIds, ...(channelServer ? { channelServer } : {}), channelIds, mock, baseUrl,
     apiKey: mock ? "" : required("LLM_API_KEY"),
     model,
     ...(env.DATABASE_URL ? { databaseUrl: env.DATABASE_URL } : {}),
