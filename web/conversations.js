@@ -55,39 +55,13 @@ function markTopTabs() {
   }
 }
 
-// A compact server picker at the top of the list: a button and a menu, styled like the chat menu. It uses the same change handler as the Settings picker.
+// A compact server picker at the top of the list. It is the same picker as in Settings.
 function renderChatServers() {
   const slot = $('chat-server');
   if (!slot) return;
-  const servers = state.servers || [];
-  slot.hidden = !servers.length;
-  const current = servers.find(s => s.id === state.server?.id) || servers[0];
-  const pick = document.createElement('button');
-  pick.type = 'button';
-  pick.className = 'chat-server-pick';
-  pick.setAttribute('aria-label', 'Discord server');
-  pick.setAttribute('aria-haspopup', 'menu');
-  pick.setAttribute('aria-expanded', 'false');
-  pick.append(textNode('span', current?.name || '', 'chat-server-name'));
-  const menu = document.createElement('div');
-  menu.className = 'chat-menu';
-  menu.setAttribute('role', 'menu');
-  menu.hidden = true;
-  for (const s of servers) {
-    const item = menuItem(s.name, () => {
-      closeMenu(slot, true);
-      if (s.id === current?.id) return;
-      $('server').value = s.id;
-      $('server').dispatchEvent(new Event('change'));
-    });
-    item.setAttribute('role', 'menuitemradio');
-    item.setAttribute('aria-checked', String(s.id === current?.id));
-    menu.append(item);
-  }
-  if (servers.length < 2) pick.disabled = true;
-  pick.onclick = () => (menu.hidden ? openMenu(slot) : closeMenu(slot, true));
-  slot.onkeydown = event => { if (event.key === 'Escape' && !menu.hidden) { event.preventDefault(); closeMenu(slot, true); } };
-  slot.replaceChildren(pick, menu);
+  slot.hidden = !(state.servers || []).length;
+  slot.classList.add('pick-slot');
+  serverPicker(slot);
 }
 
 function renderConversations() {
@@ -218,13 +192,13 @@ function menuItem(text, onClick) {
 function openMenu(row) {
   for (const other of document.querySelectorAll('.chat-menu:not([hidden])')) closeMenu(other.parentElement, false);
   row.querySelector('.chat-menu').hidden = false;
-  row.querySelector('.chat-more, .chat-server-pick').setAttribute('aria-expanded', 'true');
+  row.querySelector('.chat-more').setAttribute('aria-expanded', 'true');
   row.querySelector('.chat-menu-item').focus();
 }
 
 // Closes a row's menu. Refocus puts the focus back on the "⋯" button.
 function closeMenu(row, refocus) {
-  const more = row.querySelector('.chat-more, .chat-server-pick');
+  const more = row.querySelector('.chat-more');
   row.querySelector('.chat-menu').hidden = true;
   more.setAttribute('aria-expanded', 'false');
   if (refocus) more.focus();

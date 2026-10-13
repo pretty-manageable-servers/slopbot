@@ -148,16 +148,8 @@ main.chat-mode{padding:0;max-width:none;min-width:0}
 .chat .chat-run-sum>.chat-mark+.chat-run-text{margin-left:0}
 
 /* Server picker at the top of the conversation list */
-.chat .chat-server{padding:0 0 10px}
-.chat .chat-server{position:relative}
-.chat .chat-server-pick{display:flex;align-items:center;gap:8px;width:100%;padding:7px 10px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--text);font:inherit;font-size:13px;text-align:left;cursor:pointer}
-.chat .chat-server-pick:hover:not(:disabled){border-color:var(--strong)}
-.chat .chat-server-pick:disabled{cursor:default}
-.chat .chat-server-pick::after{content:"";margin-left:auto;width:6px;height:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:translateY(-2px) rotate(45deg);opacity:.6}
-.chat .chat-server-pick:disabled::after{display:none}
-.chat .chat-server-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.chat .chat-server .chat-menu{left:0;right:0}
-.chat .chat-menu-item[aria-checked=true]{color:var(--strong);font-weight:600}
+.chat .chat-server{padding:0 0 10px;flex:none}
+.chat .chat-server .pick{padding:7px 10px;border-radius:10px;font-size:13px}
 
 /* Top bar: Chat and Settings tabs, Docs, theme icon and the account menu */
 .topbar .top-tabs{display:flex;gap:4px}

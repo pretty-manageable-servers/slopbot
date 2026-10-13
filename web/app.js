@@ -38,6 +38,57 @@ window.addEventListener('popstate', () => {
   viewAuto = !item;
   render();
 });
+// A server picker: a button and a menu. The hidden #server select keeps the value and the change handler.
+function serverPicker(slot) {
+  if (!slot) return;
+  const servers = state.servers || [], current = servers.find(s => s.id === state.server?.id) || servers[0];
+  const pick = document.createElement('button');
+  pick.type = 'button';
+  pick.className = 'pick';
+  pick.setAttribute('aria-label', 'Discord server');
+  pick.setAttribute('aria-haspopup', 'menu');
+  pick.setAttribute('aria-expanded', 'false');
+  const name = document.createElement('span');
+  name.className = 'pick-name';
+  name.textContent = current?.name || '';
+  pick.append(name);
+  pick.disabled = servers.length < 2;
+  const menu = document.createElement('div');
+  menu.className = 'pick-menu';
+  menu.setAttribute('role', 'menu');
+  menu.hidden = true;
+  const close = refocus => { menu.hidden = true; pick.setAttribute('aria-expanded', 'false'); if (refocus) pick.focus(); };
+  for (const s of servers) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'pick-item';
+    item.textContent = s.name;
+    item.setAttribute('role', 'menuitemradio');
+    item.setAttribute('aria-checked', String(s.id === current?.id));
+    item.onclick = () => {
+      close(true);
+      if (s.id === current?.id) return;
+      $('server').value = s.id;
+      $('server').dispatchEvent(new Event('change'));
+    };
+    menu.append(item);
+  }
+  pick.onclick = () => {
+    if (!menu.hidden) return close(true);
+    menu.hidden = false;
+    pick.setAttribute('aria-expanded', 'true');
+    menu.querySelector('[aria-checked=true]')?.focus();
+  };
+  slot.onkeydown = event => { if (event.key === 'Escape' && !menu.hidden) { event.preventDefault(); close(true); } };
+  slot.onfocusout = event => { if (!slot.contains(event.relatedTarget)) close(false); };
+  slot.replaceChildren(pick, menu);
+}
+// A click or tap outside an open server menu closes it.
+document.addEventListener('pointerdown', event => {
+  for (const menu of document.querySelectorAll('.pick-menu:not([hidden])')) {
+    if (!menu.parentElement.contains(event.target)) { menu.hidden = true; menu.parentElement.querySelector('.pick').setAttribute('aria-expanded', 'false'); }
+  }
+});
 // Used when the user has no conversation to view. The view then falls back to Settings.
 function fallbackToSettings() {
   viewAuto = false;
@@ -101,6 +152,7 @@ function applySettings(result) {
   document.querySelector('nav').hidden = !state.server && !admin;
   $('server-pick').hidden = !list.length;
   $('server').innerHTML = list.map(s => `<option value="${esc(s.id)}"${s.id === state.server?.id ? ' selected' : ''}>${esc(s.name)}</option>`).join('');
+  serverPicker($('server-menu'));
   icon.hidden = !current?.icon; if (current?.icon) icon.src = current.icon;
   $('role').textContent = current ? (state.admin ? 'Admin' : 'Member') : '';
   if (!viewReady) chooseView();
