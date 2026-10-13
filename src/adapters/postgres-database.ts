@@ -17,7 +17,10 @@ export class PostgresDatabase {
         await client.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
         await client.query(`SET search_path TO "${schema}", public`);
       }
-      await client.query(readFileSync(new URL("./postgres-schema.sql", import.meta.url), "utf8"));
+      // Processes that start together would race on CREATE EXTENSION and table setup, so the setup runs under one lock.
+      await client.query("SELECT pg_advisory_lock(hashtextextended('slopbot_schema_setup', 0))");
+      try { await client.query(readFileSync(new URL("./postgres-schema.sql", import.meta.url), "utf8")); }
+      finally { await client.query("SELECT pg_advisory_unlock(hashtextextended('slopbot_schema_setup', 0))"); }
     }
     catch(error) { await client.end(); throw error; }
     return new PostgresDatabase(client);
