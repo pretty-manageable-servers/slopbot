@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const recall = key => { try { return localStorage.getItem(key); } catch { return null; } };
 const remember = (key, value) => { try { localStorage.setItem(key, value); } catch { } };
-function theme(light) { document.documentElement.classList.toggle('light', light); document.querySelectorAll('img[src*="logo-"]').forEach(img => img.src = `/assets/logo-${light ? 'dark' : 'light'}.svg`); const next = light ? 'Switch to dark theme' : 'Switch to light theme'; $('theme').setAttribute('aria-label', next); $('theme').title = next; $('theme-sun').hidden = light; $('theme-moon').hidden = !light; remember('slopbot-theme', light ? 'light' : 'dark'); }
+function theme(light) { document.documentElement.classList.toggle('light', light); document.querySelectorAll('img[src*="logo-"]').forEach(img => img.src = `/console/assets/logo-${light ? 'dark' : 'light'}.svg`); const next = light ? 'Switch to dark theme' : 'Switch to light theme'; $('theme').setAttribute('aria-label', next); $('theme').title = next; $('theme-sun').hidden = light; $('theme-moon').hidden = !light; remember('slopbot-theme', light ? 'light' : 'dark'); }
 theme(recall('slopbot-theme') === 'light');
 $('theme').onclick = () => theme(!document.documentElement.classList.contains('light'));
 // Top bar: Chat or Settings, and the account menu. Chat is the default when the user can view a conversation.
@@ -521,14 +521,16 @@ $('server-icon').onerror = () => { $('server-icon').hidden = true; };
 $('brand').onclick = event => { if ($('console').hidden) return; event.preventDefault(); tab = state.admin ? 'server' : 'profile'; render(); window.scrollTo(0, 0); };
 $('logout').onclick = async () => { try { await request('/api/logout',{}); location.reload(); } catch (error) { notice(error.message, true); } };
 async function boot() {
+  if (/^#ask=/.test(location.hash)) takeAsk();
   const remembered = recall('slopbot-server');
   let result;
   try { result = await settingsFor(remembered); }
   catch (error) { if (!remembered || error.status === 401) throw error; result = await settingsFor(); }
   applySettings(result);
   await loadAdmin();
+  await resumeAsk();
 }
-boot().catch(error => { if (error.status === 401) showScreen('login'); else { showScreen('none'); notice(error.message, true); } });
+boot().catch(error => { if (error.status === 401) { showScreen('login'); if (takeAsk()) notice('Sign in with Discord to send your question to Slopbot.'); } else { showScreen('none'); notice(error.message, true); } });
 
 // Reply box for one conversation. A transcript view calls renderReplyBox(container, server, channel).
 // The server sends the reply as the signed-in user through a channel webhook, or as Slopbot when the bot lacks Manage Webhooks.

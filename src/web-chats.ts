@@ -14,9 +14,10 @@ import { PRIVATE_CHANNEL_PREFIX, PRIVATE_CHAT_MAX_CHARS, PRIVATE_CHAT_TITLE_CHAR
 import { publishMessage, runEvents, slopbotId, type ConversationEventStore, type RunEvents } from "./run-events.js";
 import { messageViews, openStream, type TranscriptStore } from "./web-transcripts.js";
 import type { WebChatRow } from "./web-chat-store.js";
+import { ChatShareService, ShareError, type ShareStore } from "./shares.js";
 
 /** Store calls for private chats. SQLite and Postgres implement them. */
-export interface ChatStore extends TranscriptStore, ConversationEventStore {
+export interface ChatStore extends TranscriptStore, ConversationEventStore, ShareStore {
   ingest(message: Message): Promise<boolean>;
   insertWebChat(row: WebChatRow): Promise<void>;
   webChat(id: string): Promise<WebChatRow | undefined>;
@@ -81,7 +82,10 @@ export class WebChatGateway implements ChatGateway {
 
 /** The private chat API: list, create, rename, delete, messages, live stream and send. Every call checks the owner and the server membership. */
 export class WebChatService {
-  constructor(private readonly store: ChatStore, private readonly host: ChatHost, private readonly bus: RunEvents = runEvents, private readonly now: () => number = Date.now) {}
+  private readonly shares: ChatShareService;
+  constructor(private readonly store: ChatStore, private readonly host: ChatHost, private readonly bus: RunEvents = runEvents, private readonly now: () => number = Date.now) {
+    this.shares = new ChatShareService(store, now);
+  }
 
   async list(user: string, server: string): Promise<{ id: string; title: string; updated: number }[]> {
     await this.requireMember(user, server);
@@ -108,9 +112,26 @@ export class WebChatService {
     const chat = await this.owned(user, id);
     const channel = privateChannel(chat.id);
     (await this.handle(chat.server)).closeChat(channel);
+    // The chat's share links stop working and their frozen copies go with the chat.
+    await this.shares.removeChat(chat);
     await this.store.deleteWebChat(chat.id, chat.server, channel, this.now());
     // Wakes open streams, which then see that the chat is gone and close.
     this.bus.changed(chat.server);
+  }
+
+  /** The owner's share links of this chat. Anyone else gets 404. */
+  async shareList(user: string, id: string): Promise<{ shares: { id: string; created_at: number; revoked: boolean }[] }> {
+    return this.shares.list(await this.owned(user, id));
+  }
+
+  /** A new link with a frozen copy of the chat's messages up to now. */
+  async shareCreate(user: string, id: string): Promise<{ id: string }> {
+    return this.shares.create(await this.owned(user, id), user);
+  }
+
+  /** Revokes one link of this chat. Anyone else gets 404. */
+  async shareRevoke(user: string, id: string, shareId: string): Promise<{ id: string; revoked: true }> {
+    return this.shares.revoke(await this.owned(user, id), shareId);
   }
 
   async messages(user: string, id: string, limit: number, before: string | null): Promise<{ messages: unknown[]; hasMore: boolean; streamId: number }> {
@@ -201,6 +222,7 @@ export function createChatRoutes(service: WebChatService): ChatRoutes {
   const json = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
   const fail = (res: ServerResponse, error: unknown) => {
     if (error instanceof ChatError) return json(res, error.status, { error: error.message, ...(error.resetAt !== undefined ? { resetAt: error.resetAt } : {}) });
+    if (error instanceof ShareError) return json(res, error.status, { error: error.message });
     logError("web_chat_failed", error, { stage: "web chats" });
     if (!res.headersSent) json(res, 502, { error: "Could not complete this chat request." });
     else res.end();
@@ -230,6 +252,11 @@ export function createChatRoutes(service: WebChatService): ChatRoutes {
           if (req.method === "POST") return json(res, 201, await service.send(user, id, input.text));
         }
         if (parts.length === 3 && parts[2] === "stream" && req.method === "GET") return await service.openStream(req, res, user, id);
+        if (parts[2] === "shares") {
+          if (parts.length === 3 && req.method === "GET") return json(res, 200, await service.shareList(user, id));
+          if (parts.length === 3 && req.method === "POST") return json(res, 201, await service.shareCreate(user, id));
+          if (parts.length === 5 && parts[4] === "revoke" && req.method === "POST") return json(res, 200, await service.shareRevoke(user, id, parts[3] ?? ""));
+        }
         return json(res, 404, { error: "Not found." });
       } catch (error) { fail(res, error); }
     },

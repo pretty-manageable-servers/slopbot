@@ -1,5 +1,5 @@
-// Share links for the web console. Load with <script src="/shares.js" defer>.
-// Exposes window.SlopbotShares.renderShareButton and renderShareList.
+// Share links for the web console. Load with <script src="/console/shares.js" defer>.
+// Exposes window.SlopbotShares.renderShareButton, renderShareList and renderChatShare.
 // Text is always set with textContent or text nodes, never innerHTML.
 (() => {
   'use strict';
@@ -88,7 +88,11 @@
       }
     });
     close.addEventListener('click', () => dialog.close());
-    // Escape and a click on the backdrop close the dialog. A click inside the box, or a keyboard click, does not.
+    showModal(dialog);
+  }
+
+  // Escape and a click on the backdrop close the dialog. A click inside the box, or a keyboard click, does not.
+  function showModal(dialog) {
     dialog.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); dialog.close(); } });
     dialog.addEventListener('click', event => {
       const box = dialog.getBoundingClientRect();
@@ -98,6 +102,84 @@
     dialog.addEventListener('close', () => dialog.remove());
     document.body.append(dialog);
     dialog.showModal();
+  }
+
+  /**
+   * Shows a Share button for a private chat in container. Only the chat's owner sees its chat, so only the owner gets this button.
+   * The dialog lists the chat's links, makes a new one (a frozen copy of the messages up to now) and revokes a link.
+   */
+  function renderChatShare(container, chatId) {
+    const button = el('button', { type: 'button' }, 'Share');
+    button.addEventListener('click', () => openChatDialog(chatId));
+    container.replaceChildren(button);
+    return button;
+  }
+
+  function openChatDialog(chatId) {
+    const base = `/api/chats/${encodeURIComponent(chatId)}/shares`;
+    const error = el('p', { class: 'error', role: 'alert' });
+    const status = el('p', { class: 'small', role: 'status' }, 'Loading links...');
+    const links = el('div', { class: 'share-list-box' });
+    const create = el('button', { type: 'button' }, 'Create link');
+    const close = el('button', { type: 'button' }, 'Close');
+    const dialog = el('dialog', { class: 'share-dialog', 'aria-labelledby': 'share-title' },
+      el('h2', { id: 'share-title' }, 'Share this chat'),
+      el('p', { class: 'small' }, 'Anyone with a link can read a frozen copy of the messages up to now. Later messages are not added. Search engines do not list the link.'),
+      error, status, links,
+      el('div', { class: 'actions' }, close, create));
+
+    async function load() {
+      status.textContent = 'Loading links...';
+      try {
+        const data = await request(base);
+        const active = data.shares.filter(share => !share.revoked);
+        status.textContent = active.length ? '' : 'No links yet.';
+        links.replaceChildren(...active.map(share => chatLinkRow(share)));
+      } catch (failure) {
+        status.textContent = failure.message;
+      }
+    }
+
+    function chatLinkRow(share) {
+      const url = `${location.origin}/s/${share.id}`;
+      const copyButton = el('button', { type: 'button' }, 'Copy link');
+      copyButton.addEventListener('click', () => copy(url, copyButton));
+      const revoke = el('button', { type: 'button' }, 'Revoke');
+      revoke.addEventListener('click', async () => {
+        if (!await askConfirm({ title: 'Remove this link?', body: 'Anyone with it can no longer read this copy.', confirmLabel: 'Remove link', danger: true })) return;
+        revoke.disabled = true;
+        error.textContent = '';
+        try {
+          await post(`${base}/${encodeURIComponent(share.id)}/revoke`, {});
+          notice('Link removed.');
+          await load();
+        } catch (failure) {
+          error.textContent = failure.message;
+          revoke.disabled = false;
+        }
+      });
+      return el('div', { class: 'share-row' },
+        el('div', {}, el('div', { class: 'link' }, url), el('div', { class: 'meta' }, new Date(share.created_at).toLocaleString())),
+        el('div', { class: 'share-tools-row' }, copyButton, revoke));
+    }
+
+    create.addEventListener('click', async () => {
+      create.disabled = true;
+      error.textContent = '';
+      try {
+        await post(base, {});
+        notice('Link ready. Copy it to share.');
+        await load();
+      } catch (failure) {
+        error.textContent = failure.message;
+        status.textContent = failure.message;
+      } finally {
+        create.disabled = false;
+      }
+    });
+    close.addEventListener('click', () => dialog.close());
+    showModal(dialog);
+    void load();
   }
 
   /** Lists the server's share links with revoke buttons. It replaces the container's content. */
@@ -134,5 +216,5 @@
     try { await load(); } catch (failure) { status.textContent = failure.message; }
   }
 
-  window.SlopbotShares = { renderShareButton, renderShareList };
+  window.SlopbotShares = { renderShareButton, renderShareList, renderChatShare };
 })();

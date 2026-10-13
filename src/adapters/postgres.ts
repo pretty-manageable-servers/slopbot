@@ -21,7 +21,7 @@ import type { ConversationEvent } from '../run-events.js';
 const CONVERSATION_PRUNE_BATCH = 10000;
 
 import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
-import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, revokeShare, revokeAllShares } from '../share-store.js';
+import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, listChatShares, revokeShare, revokeAllShares, deleteChatShares } from '../share-store.js';
 import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../web-chat-store.js';
 import { isPrivateChannel } from '../private-chat.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
@@ -411,8 +411,10 @@ export class PostgresStore {
     async insertShare(row: ShareRow): Promise<void> { return insertShare(this.db, row); }
     async getShare(id: string): Promise<ShareRow | undefined> { return getShare(this.db, id); }
     async listShares(server: string, limit: number) { return listShares(this.db, server, limit); }
+    async listChatShares(server: string, channel: string, limit: number) { return listChatShares(this.db, server, channel, limit); }
     async revokeShare(server: string, id: string, at: number): Promise<boolean> { return revokeShare(this.db, server, id, at); }
     async revokeAllShares(server: string, at: number): Promise<number> { return revokeAllShares(this.db, server, at); }
+    async deleteChatShares(channel: string): Promise<number> { return deleteChatShares(this.db, channel); }
     async getSession(idHash: string): Promise<WebSessionRow | undefined> { return getWebSession(this.db, idHash); }
     async insertWebChat(row: WebChatRow): Promise<void> { return insertWebChat(this.db, row); }
     async webChat(id: string): Promise<WebChatRow | undefined> { return getWebChat(this.db, id); }

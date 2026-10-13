@@ -91,10 +91,12 @@ async function loadConversations() {
   const id = state.server.id;
   // A failed chat list (for example a 404 before the server routes exist) leaves the Private chats group empty. The channels still load.
   const chats = fetchChats(id).catch(error => { if (error.status === 401) throw error; return []; });
+  const run = conv.loadRun = (conv.loadRun || 0) + 1;
   const [result, privateChats] = await Promise.all([request(`/api/conversations?server=${enc(id)}`), chats]);
-  if (conv.server !== id || !$('conv-list')) return;
+  // A newer load has started, so only that one may choose the view.
+  if (run !== conv.loadRun || conv.server !== id || !$('conv-list')) return;
   conv.list = result.conversations;
-  conv.chats = privateChats;
+  conv.chats = conv.ask && conv.ask.server === id && !privateChats.some(c => c.id === conv.ask.chat) ? [{ id: conv.ask.chat, title: '', updated: Date.now() }, ...privateChats] : privateChats;
   drawList();
   // A chat or channel named in the URL opens first. An id that is not listed falls back to the default view.
   const item = takeHashItem();
@@ -344,6 +346,8 @@ async function openConversation(id, kind = 'channel', replace = false) {
     const page = await request(messagesUrl(id));
     if (conv.channel !== id) return;
     if (chat) {
+      // Only the owner opens a private chat, so the owner always gets the Share button here.
+      if (window.SlopbotShares) { $('conv-share').hidden = false; window.SlopbotShares.renderChatShare($('conv-share'), id); }
       // A chat with no messages shows the greeting, with the composer under it. Otherwise the composer is at the bottom.
       const composer = chatComposer(id);
       const empty = !page.messages.length;
@@ -377,6 +381,14 @@ function messagesUrl(id, before = '') {
   return conv.kind === 'chat' ? `/api/chats/${enc(id)}/messages?${query}` : `/api/conversations/${enc(id)}/messages?server=${enc(state.server.id)}&${query}`;
 }
 
+// A time-of-day greeting with the user's name when known, and a garden line chosen at random.
+const GARDEN_LINES = ["What's growing today?", 'Plant a question.', 'What should we dig into?', 'Let an idea bloom.', 'What needs some sunlight?', 'Ready to sow something new?'];
+function heroGreeting() {
+  const hour = new Date().getHours(), part = hour < 5 ? 'Good evening' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+  const name = (state.me?.displayName || state.profile?.name || '').trim();
+  return `${name ? `${part}, ${name}` : part}. ${GARDEN_LINES[Math.floor(Math.random() * GARDEN_LINES.length)]}`;
+}
+
 // The greeting of a new chat. The composer sits under it until the first message arrives.
 function heroNode(composer) {
   const hero = document.createElement('section');
@@ -384,10 +396,10 @@ function heroNode(composer) {
   const logo = document.createElement('img');
   logo.className = 'chat-hero-logo';
   logo.alt = ''; logo.width = 56; logo.height = 56;
-  logo.src = document.documentElement.classList.contains('light') ? '/assets/logo-dark.svg' : '/assets/logo-light.svg';
+  logo.src = document.documentElement.classList.contains('light') ? '/console/assets/logo-dark.svg' : '/console/assets/logo-light.svg';
   const slot = textNode('div', '', 'chat-hero-composer');
   slot.append(composer);
-  hero.append(logo, textNode('h2', "What's growing today?", 'chat-hero-title'), slot);
+  hero.append(logo, textNode('h2', heroGreeting(), 'chat-hero-title'), slot);
   return hero;
 }
 
@@ -420,11 +432,47 @@ async function newChat(button) {
   } finally { button.disabled = false; }
 }
 
+// The landing page Ask box links to /console#ask=<text>. boot() keeps the text in sessionStorage, so it survives the Discord login.
+// Longest text the chat API takes. It matches PRIVATE_CHAT_MAX_CHARS in src/private-chat.ts.
+const ASK_MAX_CHARS = 8000;
+function takeAsk() {
+  let text = '';
+  const match = /^#ask=(.*)$/s.exec(location.hash);
+  if (match) {
+    try { text = decodeURIComponent(match[1]); } catch { text = ''; }
+    history.replaceState(null, '', location.pathname + location.search);
+    try { if (text.trim()) sessionStorage.setItem('slopbot-ask', text); } catch { }
+  }
+  try { text = sessionStorage.getItem('slopbot-ask') || ''; } catch { }
+  return [...text.trim()].slice(0, ASK_MAX_CHARS).join('');
+}
+function clearAsk() { try { sessionStorage.removeItem('slopbot-ask'); } catch { } }
+const ASK_WARNING = 'Only send what you wrote yourself. A prompt from someone else can make Slopbot use tools or read data you did not mean to share.';
+// Opens a new private chat on the current server (the last one used, or the first) with the linked text in the composer.
+// The text is never sent for the user. A banner asks them to read it first.
+async function resumeAsk() {
+  const text = takeAsk();
+  if (!text) return;
+  clearAsk();
+  if (!state.server) { notice('Slopbot is not in any of your servers yet, so it cannot answer your question.', true); return; }
+  try {
+    const id = (await sendJson('POST', '/api/chats', { server: state.server.id })).id;
+    // The text stays with this chat until the user sends it or clears it. Any later open of the chat shows it again.
+    conv.ask = { server: state.server.id, chat: id, text };
+    conv.chats = [{ id, title: '', updated: Date.now() }, ...conv.chats];
+    history.replaceState(null, '', '#chat/' + encodeURIComponent(id));
+    tab = 'conversations'; viewAuto = false; render();
+  } catch (error) {
+    if (error.status === 401) { try { sessionStorage.setItem('slopbot-ask', text); } catch { } showScreen('login'); return; }
+    notice(error.status === 404 ? 'Private chats are not available right now.' : error.message, true);
+  }
+}
+
 // A JSON request with any method. Errors keep their status, as in request().
 async function sendJson(method, path, body) {
   const response = await fetch(path, { method, headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: body === undefined ? undefined : JSON.stringify(body) });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) { const error = new Error(data.error || 'Request failed.'); error.status = response.status; throw error; }
+  if (!response.ok) { const error = new Error(data.error || 'Request failed.'); error.status = response.status; error.resetAt = data.resetAt; throw error; }
   return data;
 }
 
@@ -1109,6 +1157,19 @@ function chatComposer(id) {
   const meter = usageMeter();
   conv.meter = meter;
   box.append(field, meter.wrap, send);
+  const linked = conv.ask && conv.ask.chat === id ? conv.ask.text : '';
+  if (linked) {
+    field.value = linked;
+    const banner = document.createElement('div');
+    banner.className = 'chat-link-warning';
+    banner.setAttribute('role', 'alert');
+    banner.append(textNode('strong', 'This question came from a link. Read it before you send it.'), textNode('span', ' ' + ASK_WARNING));
+    form.append(banner);
+    field.addEventListener('input', () => { if (!field.value.trim()) { banner.remove(); conv.ask = null; } });
+    // The user read the text and sent it, so the warning goes.
+    form.addEventListener('submit', () => { if (field.value.trim()) { banner.remove(); conv.ask = null; } });
+    requestAnimationFrame(() => { fitField(field); box.classList.add('has-text'); field.focus(); });
+  }
   form.append(status, box, textNode('p', 'Slopbot is AI and can make mistakes.', 'chat-foot'));
   const sync = () => { box.classList.toggle('has-text', field.value.trim() !== ''); fitField(field); };
   let sending = false;

@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { Json, Message } from "./domain.js";
 import { webTranscriptsEnabled } from "./server-tools.js";
-import { isPrivateChannel } from "./private-chat.js";
+import { isPrivateChannel, privateChannel } from "./private-chat.js";
 
 /** One share link. The body is a frozen snapshot, stored as JSON text. */
 export interface ShareRow { id: string; server: string; channel: string; created_by: string; created_at: number; revoked_at: number | null; body: string }
@@ -15,9 +15,15 @@ export interface ShareStore {
   shareRequestEvents(server: string, requests: readonly string[]): Promise<readonly { request: string; kind: string; payload: Json }[]>;
   insertShare(row: ShareRow): Promise<void>;
   getShare(id: string): Promise<ShareRow | undefined>;
+  /** Channel links only. Private chat links are never listed here. */
   listShares(server: string, limit: number): Promise<ShareListRow[]>;
+  /** The links of one private chat, for its owner. */
+  listChatShares(server: string, channel: string, limit: number): Promise<ShareListRow[]>;
   revokeShare(server: string, id: string, at: number): Promise<boolean>;
+  /** Channel links only. Private chat links are never revoked here. */
   revokeAllShares(server: string, at: number): Promise<number>;
+  /** Removes every link of a deleted private chat, with its frozen copies. */
+  deleteChatShares(channel: string): Promise<number>;
 }
 
 export interface ShareToolLine { name: string; status: string }
@@ -25,6 +31,8 @@ export interface ShareMessage {
   author: string; bot: boolean; at?: number; text: string; attachments: number;
   tools: ShareToolLine[]; thinking?: string;
 }
+/** Chat shares do not show thinking or avatars. Owners share the answer text and tool labels. */
+const CHAT_SHARE_OPTIONS = { show_avatars: false, show_thinking: false };
 export interface ShareSnapshot {
   id: string; created_at: number;
   options: { show_avatars: boolean; show_thinking: boolean };
@@ -48,6 +56,8 @@ export class ShareError extends Error {
 }
 
 export const MAX_SHARE_MESSAGES = 200;
+/** How long a private chat link remembers that its owner is (or is not) in the server. */
+export const MEMBER_CACHE_MS = 60_000;
 const snowflake = /^\d{17,20}$/;
 const shareId = /^[A-Za-z0-9_-]{22}$/;
 export const isShareId = (id: string): boolean => shareId.test(id);
@@ -134,7 +144,17 @@ export function buildMessages(messages: readonly Message[], events: readonly { r
   });
 }
 
+/** The stored messages of a range, as snapshot messages. Tool lines and thinking come from the runs of the answers. */
+async function snapshotOf(store: Pick<ShareStore, "shareMessages" | "shareRequestEvents">, server: string, channel: string, range: ShareMessageRange, options: { show_thinking: boolean }): Promise<{ messages: ShareMessage[]; more: boolean }> {
+  const found = await store.shareMessages(server, channel, range);
+  const requests = [...new Set(found.messages.flatMap(message => message.isBot && message.replyTo ? [message.replyTo] : []))];
+  const events = await store.shareRequestEvents(server, requests);
+  return { messages: buildMessages(found.messages, events, options), more: found.more };
+}
+
 export interface ShareDeps {
+  /** Is this user in the server? Throws when Discord cannot say. Private chat links need it; without it they are not served. */
+  member?: (user: string, server: string) => Promise<boolean>;
   store: ShareStore & {
     setting(server: string, key: string): unknown;
     taskThreads(server: string): { thread: string; parent: string }[];
@@ -147,7 +167,27 @@ export interface ShareDeps {
 /** Operations for the console. Errors carry an HTTP status. */
 export class ShareService {
   private readonly now: () => number;
+  private readonly memberCache = new Map<string, { member: boolean; at: number }>();
   constructor(private readonly deps: ShareDeps) { this.now = deps.now ?? Date.now; }
+
+  /**
+   * Is the chat owner still in the home server? Cached for MEMBER_CACHE_MS so a busy link does not call Discord each time.
+   * A Discord error is not cached and throws 503.
+   */
+  private async ownerIsMember(owner: string, server: string): Promise<boolean> {
+    if (!this.deps.member) return false;
+    const key = `${server}:${owner}`, now = this.now();
+    const hit = this.memberCache.get(key);
+    if (hit && now - hit.at < MEMBER_CACHE_MS) return hit.member;
+    let member: boolean;
+    try {
+      member = await this.deps.member(owner, server);
+    } catch {
+      throw new ShareError(503, "Could not check the server right now. Try again.");
+    }
+    this.memberCache.set(key, { member, at: now });
+    return member;
+  }
 
   private async requireManager(user: string, server: string): Promise<void> {
     if (!(await canCreateShare(user, server, this.deps.rule))) throw new ShareError(403, "Only server managers can manage share links.");
@@ -165,13 +205,11 @@ export class ShareService {
     if (!(await this.deps.access.check(server, channel, user)).view) throw new ShareError(403, "You cannot view that channel.");
     const parent = this.deps.store.taskThreads(server).find(task => task.thread === channel)?.parent ?? channel;
     if (!webTranscriptsEnabled(this.deps.store, server, parent)) throw new ShareError(403, "Web transcripts are off for this channel.");
-    const range = await this.deps.store.shareMessages(server, channel, { from, to, limit: MAX_SHARE_MESSAGES });
-    if ((from || to) && range.more) throw new ShareError(400, `Choose ${MAX_SHARE_MESSAGES} messages or fewer.`);
-    if (!range.messages.length) throw new ShareError(400, "No messages in that range.");
-    const requests = [...new Set(range.messages.flatMap(message => message.isBot && message.replyTo ? [message.replyTo] : []))];
-    const events = await this.deps.store.shareRequestEvents(server, requests);
+    const found = await snapshotOf(this.deps.store, server, channel, { from, to, limit: MAX_SHARE_MESSAGES }, options);
+    if ((from || to) && found.more) throw new ShareError(400, `Choose ${MAX_SHARE_MESSAGES} messages or fewer.`);
+    if (!found.messages.length) throw new ShareError(400, "No messages in that range.");
     const created_at = this.now();
-    const snapshot = { created_at, options, messages: buildMessages(range.messages, events, options) };
+    const snapshot = { created_at, options, messages: found.messages };
     const id = randomBytes(16).toString("base64url");
     await this.deps.store.insertShare({ id, server, channel, created_by: user, created_at, revoked_at: null, body: JSON.stringify(snapshot) });
     return { id };
@@ -182,6 +220,8 @@ export class ShareService {
     if (!isShareId(id)) return undefined;
     const row = await this.deps.store.getShare(id);
     if (!row || row.revoked_at !== null) return undefined;
+    // A private chat link works only while its owner is still in the home server. Otherwise it is not found.
+    if (isPrivateChannel(row.channel) && !(await this.ownerIsMember(row.created_by, row.server))) return undefined;
     return { id: row.id, ...JSON.parse(row.body) as Omit<ShareSnapshot, "id"> };
   }
 
@@ -200,7 +240,8 @@ export class ShareService {
 
   async revoke(user: string, id: string): Promise<{ id: string; revoked: true }> {
     const row = isShareId(id) ? await this.deps.store.getShare(id) : undefined;
-    if (!row) throw new ShareError(404, "Not found.");
+    // A private chat link is managed by its owner only (ChatShareService). Here it is simply not found.
+    if (!row || isPrivateChannel(row.channel)) throw new ShareError(404, "Not found.");
     await this.requireManager(user, row.server);
     await this.deps.store.revokeShare(row.server, id, this.now());
     return { id, revoked: true };
@@ -210,6 +251,47 @@ export class ShareService {
     if (typeof server !== "string" || !snowflake.test(server)) throw new ShareError(400, "Invalid server.");
     await this.requireManager(user, server);
     return { revoked: await this.deps.store.revokeAllShares(server, this.now()) };
+  }
+}
+
+/**
+ * Share links of one private chat. The owner check is not here: WebChatService checks the owner and the
+ * server membership first, then calls these. A chat link is a frozen copy, like a channel link.
+ */
+export class ChatShareService {
+  private readonly now: () => number;
+  constructor(private readonly store: Pick<ShareStore, "shareMessages" | "shareRequestEvents" | "insertShare" | "getShare" | "listChatShares" | "revokeShare" | "deleteChatShares">, now?: () => number) {
+    this.now = now ?? Date.now;
+  }
+
+  /** Freezes the newest messages of the chat up to now, as a channel share does with no range. Later messages are not added. */
+  async create(chat: { id: string; server: string }, user: string): Promise<{ id: string }> {
+    const channel = privateChannel(chat.id);
+    const found = await snapshotOf(this.store, chat.server, channel, { limit: MAX_SHARE_MESSAGES }, CHAT_SHARE_OPTIONS);
+    if (!found.messages.length) throw new ShareError(400, "Send a message before you share this chat.");
+    const created_at = this.now();
+    const id = randomBytes(16).toString("base64url");
+    const body = JSON.stringify({ created_at, options: CHAT_SHARE_OPTIONS, messages: found.messages });
+    await this.store.insertShare({ id, server: chat.server, channel, created_by: user, created_at, revoked_at: null, body });
+    return { id };
+  }
+
+  async list(chat: { id: string; server: string }): Promise<{ shares: { id: string; created_at: number; revoked: boolean }[] }> {
+    const rows = await this.store.listChatShares(chat.server, privateChannel(chat.id), 200);
+    return { shares: rows.map(row => ({ id: row.id, created_at: row.created_at, revoked: row.revoked_at !== null })) };
+  }
+
+  /** Revokes one link of this chat only. Any other link ID is 404. */
+  async revoke(chat: { id: string; server: string }, id: string): Promise<{ id: string; revoked: true }> {
+    const row = isShareId(id) ? await this.store.getShare(id) : undefined;
+    if (!row || row.server !== chat.server || row.channel !== privateChannel(chat.id)) throw new ShareError(404, "Not found.");
+    await this.store.revokeShare(chat.server, id, this.now());
+    return { id, revoked: true };
+  }
+
+  /** Called when the chat is deleted. Its links stop working and their frozen copies are removed. */
+  async removeChat(chat: { id: string }): Promise<void> {
+    await this.store.deleteChatShares(privateChannel(chat.id));
   }
 }
 
@@ -226,5 +308,5 @@ export function renderSharePage(snapshot: ShareSnapshot): string {
     const thinking = message.thinking ? `<details class="share-thinking"><summary>Thinking</summary><div>${block(message.thinking)}</div></details>` : "";
     return `<article class="share-msg${message.bot ? " bot" : ""}"><header><strong>${escapeHtml(message.author)}</strong>${message.bot ? '<span class="tag">Slopbot</span>' : ""}${time}</header><div class="share-text">${block(message.text)}</div>${attachments}${tools}${thinking}</article>`;
   }).join("");
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><meta name="referrer" content="no-referrer"><title>Shared conversation · Slopbot</title><link rel="icon" href="/assets/logo-light.svg"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/shares.css"></head><body class="share-page"><main class="share"><p class="eyebrow">Shared from Slopbot</p><h1>Shared conversation</h1><p class="small">This is a frozen copy. Messages sent later are not included.</p><section class="share-list">${messages}</section></main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><meta name="referrer" content="no-referrer"><title>Shared conversation · Slopbot</title><link rel="icon" href="/console/assets/logo-light.svg"><link rel="stylesheet" href="/console/style.css"><link rel="stylesheet" href="/console/shares.css"></head><body class="share-page"><main class="share"><p class="eyebrow">Shared from Slopbot</p><h1>Shared conversation</h1><p class="small">This is a frozen copy. Messages sent later are not included.</p><section class="share-list">${messages}</section></main></body></html>`;
 }
