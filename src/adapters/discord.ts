@@ -394,7 +394,8 @@ export class DiscordServer implements ChatGateway {
     if (!message.guildId || !this.bot.accepts(message.guildId, message.channelId)) return;
     if (message.author.id === this.client.user?.id) return this.receiveOwn(message);
     const live = this.normalize(message);
-    if (!live.transient) await publishMessage(this.store, live, undefined, this.members).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
+    // Not awaited: a member lookup must not delay the reply.
+    if (!live.transient) void publishMessage(this.store, live, undefined, this.members).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
     const timingScope = { server: message.guildId, channel: message.channelId, id: message.id };
     requestTimings.begin(timingScope); requestTimings.start(timingScope, "references");
     await requestTimings.withScope(timingScope, () => this.receiveScoped(message, timingScope));
