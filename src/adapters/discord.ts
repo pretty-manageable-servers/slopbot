@@ -30,7 +30,7 @@ import {
   MessageFlags, PermissionFlagsBits, ChannelType,
   type ChatInputCommandInteraction, type Interaction, type Message as DiscordMessage, type PartialMessage,
 } from "discord.js";
-import { buildToolCommands } from "./discord-commands.js";
+import { buildToolCommands, buildUsageCommand, usageReply } from "./discord-commands.js";
 import { registerProfileTools } from "../profiles.js";
 import { Application } from "../application.js";
 import { Bot, splitReply, type ChatGateway, type Incoming } from "../bot.js";
@@ -262,13 +262,14 @@ export class DiscordServer implements ChatGateway {
     const sync = () => { for (const channel of this.channels) void this.history.start(channel).catch(error => logError("History import startup failed", error, { server: this.guildId })); };
     this.reminders.start();
     sync(); this.historyTimer = setInterval(sync, 60000);
-    void this.registerCommands().catch(error => logError("Could not register /slopbot commands. Check application command permissions.", error, { server: this.guildId }));
+    void this.registerCommands().catch(error => logError("Could not register /slopbot and /usage commands. Check application command permissions.", error, { server: this.guildId }));
   }
   interaction(interaction: Interaction): void {
     if ((interaction.isButton() || interaction.isStringSelectMenu()) && interaction.customId.startsWith('slopui:')) {
       void handleDiscordUi(interaction,this.uiRuntime).catch(error => logError('UI interaction display failed.', error));
     }
     if (interaction.isChatInputCommand() && interaction.commandName === "slopbot") void this.command(interaction).catch(error => logError("Command failed.", error));
+    if (interaction.isChatInputCommand() && interaction.commandName === "usage") void this.usageCommand(interaction).catch(error => logError("Command failed.", error));
   }
   messageCreate(message: DiscordMessage): void { void this.receive(message).catch(error => logError("Discord event failed. Check channel permissions.", error)); }
   messageUpdate(updated: DiscordMessage | PartialMessage): void {
@@ -308,6 +309,23 @@ export class DiscordServer implements ChatGateway {
     const guild = await this.client.guilds.fetch(this.guildId);
     const command = buildToolCommands(this.tools);
     await guild.commands.create(command.toJSON());
+    // A separate command, so /slopbot stays as it is.
+    await guild.commands.create(buildUsageCommand().toJSON());
+  }
+  /**
+   * The /usage command. Read-only, so it never checks the UserLimiter gate: a user over the limit
+   * still sees their usage and can use a banked reset. Do not add a limiter check here.
+   */
+  private async usageCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (interaction.guildId !== this.guildId) return;
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    try {
+      const reply = await usageReply(this.limiter, this.guildId, interaction.user.id, interaction.options.getString("reset"));
+      await interaction.editReply({ ...(reply.content ? { content: reply.content } : {}), embeds: reply.embeds, allowedMentions: { parse: [] } });
+    } catch (error) {
+      logError("command_failed", error, { stage: "usage command", server: this.guildId, messageId: interaction.id });
+      await interaction.editReply({ content: errorReply(error), allowedMentions: { parse: [] } });
+    }
   }
   private async command(interaction: ChatInputCommandInteraction): Promise<void> {
     if (interaction.guildId !== this.guildId) return;
