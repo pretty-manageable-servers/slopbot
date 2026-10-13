@@ -791,6 +791,15 @@ function toolRow(name, status, args, extra, extraLabel, open) {
   return row;
 }
 
+function updateToolRow(row, name, status, args, extra, extraLabel) {
+  const mark = row.querySelector('.chat-tool-status'), text = statusMark(status);
+  if (mark.textContent !== text) mark.textContent = text;
+  mark.title = status || '';
+  row.querySelector('.chat-tool-name').textContent = toolKind(name).label;
+  row.querySelector('.chat-tool-args').textContent = String(args || '').slice(0, 160);
+  row.querySelector('.chat-tool-detail').textContent = detailText(args, extra, extraLabel || 'Result');
+}
+
 function messageRow(id) { return document.querySelector(`[data-id="${id}"]`); }
 
 function openStream(id) {
@@ -907,7 +916,7 @@ function liveFor(requestId) {
   card = {
     requestId, node, view, meta, mark, text, think, thinkBody: think.querySelector('.chat-think-text'),
     runs: new Set(), active: new Set(), buffers: { text: '', thinking: '' }, shown: { text: 0, thinking: 0 },
-    toolState: new Map(), rows: new Map(), started: Date.now(), ticks: 0, timer: 0,
+    toolState: new Map(), rows: new Map(), started: Date.now(), ticks: 0, timer: 0, tokens: 0, verb: '', verbAt: 0, verbTimer: 0,
     word: Math.floor(Math.random() * GARDEN_WORDS.length),
   };
   conv.live.set(requestId, card);
@@ -930,8 +939,23 @@ function startTimer(card) {
 function liveTick(card) {
   card.ticks++;
   if (card.ticks % 4 === 0) card.word++;
-  card.meta.textContent = `(${elapsedSeconds(card)}s · ↓ ${formatTokens(outputTokens(card))} tokens)`;
+  setMeta(card);
   setLiveSummary(card);
+}
+
+// The status meta: elapsed time and output tokens. The token count moves toward the estimate a little each frame, so it counts up smoothly.
+function setMeta(card) {
+  if (!card.timer) return;
+  card.meta.textContent = `(${elapsedSeconds(card)}s · ↓ ${formatTokens(card.tokens)} tokens)`;
+}
+
+// Returns true while the shown token count is behind the estimate.
+function stepTokens(card) {
+  const target = outputTokens(card), gap = target - card.tokens;
+  if (gap <= 0) return false;
+  card.tokens += reduceMotion() ? gap : Math.max(1, Math.ceil(gap / 10));
+  setMeta(card);
+  return card.tokens < target;
 }
 
 function elapsedSeconds(card) { return Math.floor((Date.now() - card.started) / 1000); }
@@ -965,9 +989,15 @@ function tool(data) {
   const card = liveFor(data.requestId);
   if (!card) return;
   const old = card.rows.get(data.id);
-  const row = toolRow(data.name, data.status, data.args, data.reason, 'Reason', old ? old.dataset.open === 'true' : false);
-  if (old) old.replaceWith(row); else card.view.box.append(row);
-  card.rows.set(data.id, row);
+  // An update changes the row in place. Replacing it made fast tool calls flicker.
+  if (old) updateToolRow(old, data.name, data.status, data.args, data.reason, 'Reason');
+  else {
+    const log = $('conv-log'), stick = log && !card.view.box.hidden && nearBottom(log);
+    const row = toolRow(data.name, data.status, data.args, data.reason, 'Reason', false);
+    card.view.box.append(row);
+    card.rows.set(data.id, row);
+    if (stick) log.scrollTop = log.scrollHeight;
+  }
   card.toolState.set(data.id, { name: data.name, status: data.status || '' });
   setLiveSummary(card);
 }
@@ -984,7 +1014,19 @@ function liveVerb(card) {
   return `${GARDEN_WORDS[card.word % GARDEN_WORDS.length]}…`;
 }
 
-function setLiveSummary(card) { card.view.text.textContent = liveVerb(card); }
+// The verb stays at least VERB_HOLD_MS, so fast tool calls do not make it flicker. The newest verb shows when the hold ends.
+const VERB_HOLD_MS = 800;
+function setLiveSummary(card) {
+  if (!card.timer) return;
+  const verb = liveVerb(card), wait = card.verbAt + VERB_HOLD_MS - Date.now();
+  if (verb === card.verb) return;
+  if (wait > 0) {
+    if (!card.verbTimer) card.verbTimer = setTimeout(() => { card.verbTimer = 0; setLiveSummary(card); }, wait);
+    return;
+  }
+  card.verb = verb; card.verbAt = Date.now();
+  card.view.text.textContent = verb;
+}
 
 // When every run of the card has ended, the status line becomes the run summary with the time.
 function endLive(runId) {
@@ -993,7 +1035,8 @@ function endLive(runId) {
   card.active.delete(runId);
   if (card.active.size) return;
   clearInterval(card.timer);
-  card.timer = 0;
+  clearTimeout(card.verbTimer);
+  card.timer = 0; card.verbTimer = 0;
   card.node.classList.add('done');
   card.mark.classList.add('still');
   card.view.text.classList.remove('chat-verb');
@@ -1003,12 +1046,12 @@ function endLive(runId) {
 
 function finishLiveRun(runId) {
   for (const [key, card] of conv.live) {
-    if (card.runs.has(runId)) { clearInterval(card.timer); card.node.remove(); conv.live.delete(key); }
+    if (card.runs.has(runId)) { clearInterval(card.timer); clearTimeout(card.verbTimer); card.node.remove(); conv.live.delete(key); }
   }
 }
 
 function dropLive() {
-  for (const card of conv.live.values()) clearInterval(card.timer);
+  for (const card of conv.live.values()) { clearInterval(card.timer); clearTimeout(card.verbTimer); }
   conv.live.clear();
 }
 
@@ -1028,6 +1071,7 @@ function tick() {
   const stick = log ? nearBottom(log) : false;
   let more = false;
   for (const card of conv.live.values()) {
+    if (stepTokens(card)) more = true;
     for (const part of ['text', 'thinking']) {
       const backlog = card.buffers[part].length - card.shown[part];
       if (backlog <= 0) continue;
@@ -1201,9 +1245,28 @@ function paintUsage(meter, data) {
       row.append(track);
     }
     if (item.resetAt) row.append(textNode('p', resetsLabel(item.resetAt), 'chat-usage-note'));
+    if (item.banked > 0) row.append(resetButton(meter, item));
     rows.push(row);
   }
   meter.pop.replaceChildren(...rows);
+}
+
+// Uses one banked reset on a window. The button shows how many are banked.
+function resetButton(meter, item) {
+  const label = item.kind === '5h' ? '5-hour' : 'weekly';
+  const button = textNode('button', `Use a ${label} reset (${item.banked} left)`, 'chat-usage-reset');
+  button.type = 'button';
+  button.onclick = async event => {
+    event.stopPropagation();
+    if (!confirm(`Use one ${label} reset? Your ${label} usage goes back to 0%.`)) return;
+    button.disabled = true;
+    try {
+      const data = await request('/api/usage/reset', { server: state.server.id, kind: item.kind });
+      if (conv.meter === meter) paintUsage(meter, data);
+      notice(`Your ${label} usage is reset.`);
+    } catch (error) { button.disabled = false; fail(error); }
+  };
+  return button;
 }
 
 // Loads the meter for the open server. It runs when a conversation opens and after each run ends.

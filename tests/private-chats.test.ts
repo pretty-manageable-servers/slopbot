@@ -162,13 +162,10 @@ test("a private chat cannot run a write tool through the bot", async t => {
   assert.equal(created(), 0);
 });
 
-test("a private chat reply keeps the tool footer that Discord shows, unless tool display is off", async t => {
+test("a private chat reply has no tool footer, because the web run summary shows the tools", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const gateway = new WebChatGateway(store, "s");
   const activity: ToolActivity[] = [{ id: "t1", name: "status", status: "completed" }];
-  const [full] = await gateway.reply(privateMessage, "Answer", "delivery-1", activity);
-  assert.match(full!.text, /^Answer\n\n-# /);
-  await store.setSetting("s", "tool_display", "none");
-  const [plain] = await gateway.reply(privateMessage, "Answer", "delivery-2", activity);
-  assert.equal(plain!.text, "Answer");
+  const [reply] = await gateway.reply(privateMessage, "Answer", "delivery-1", activity);
+  assert.equal(reply!.text, "Answer");
 });

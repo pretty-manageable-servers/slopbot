@@ -32,6 +32,8 @@ export interface ConsoleBackend {
   transcripts?(user: string, server: string): Promise<unknown>;
   /** The signed-in user's own usage meter for one server. Members only. */
   usage?(user: string, server: string): Promise<unknown>;
+  /** Uses one of the signed-in user's own banked resets on a window, then returns the new meter. */
+  useReset?(user: string, server: string, kind: string): Promise<unknown>;
   setTranscript?(user: string, server: string, channel: string, enabled: boolean): Promise<unknown>;
   /** Live per-user view and send checks for the read and send routes. */
   access?: ChannelAccess;
@@ -207,6 +209,17 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
           return send(res, 200, await backend.shares.list(session.user, url.searchParams.get('server') ?? ''));
         }
         if (req.method !== 'POST' || req.headers.origin !== new URL(options.origin).origin || req.headers['x-csrf-token'] !== session.csrf) return send(res, 403, { error: 'Invalid request.' });
+        if (routePath === '/api/usage/reset') {
+          if (!backend.useReset) return send(res, 404, { error: 'Not found.' });
+          if (!req.headers['content-type']?.startsWith('application/json')) return send(res, 415, { error: 'Send JSON.' });
+          let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 1024) return send(res, 413, { error: 'Request too large.' }); }
+          let input: { server?: unknown; kind?: unknown };
+          try { input = JSON.parse(body); } catch { return send(res, 400, { error: 'Invalid JSON.' }); }
+          if (typeof input.server !== 'string' || !/^\d{17,20}$/.test(input.server)) return send(res, 400, { error: 'Invalid server.' });
+          if (input.kind !== '5h' && input.kind !== 'week') return send(res, 400, { error: 'Invalid window.' });
+          try { return send(res, 200, await backend.useReset(session.user, input.server, input.kind)); }
+          catch (error) { if (error instanceof ToolError) return send(res, 409, { error: error.message }); throw error; }
+        }
         if (routePath === '/api/logout') { await sessions.deleteSession(session.hash); res.setHeader('Set-Cookie', cookie('slopbot_session', '', 0)); return send(res, 200, { ok: true }); }
         const conversation = routePath.match(/^\/api\/conversations\/(\d{17,20})\/reply$/);
         if (conversation) {

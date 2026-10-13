@@ -778,6 +778,12 @@ export class DiscordAdapter {
     await this.server(user, guildId);
     return usageView(await this.usage.limiter.usage(guildId, user));
   }
+  /** Uses one of the user's own banked resets on a window. Members only. The limiter refuses when none is banked. */
+  async consoleUseReset(user: string, guildId: string, kind: string): Promise<unknown> {
+    await this.server(user, guildId);
+    if (!await this.usage.limiter.useReset(guildId, user, kind)) throw new ToolError(`You have no banked ${kind === "5h" ? "5-hour" : "weekly"} reset.`);
+    return usageView(await this.usage.limiter.usage(guildId, user));
+  }
   /** The channel's name for the web transcript list. Undefined when the channel is not in the server. */
   async channelName(server: string, channel: string): Promise<string | undefined> {
     if (isPrivateChannel(channel)) return undefined;
