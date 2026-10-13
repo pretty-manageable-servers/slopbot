@@ -14,9 +14,9 @@ CREATE TABLE IF NOT EXISTS embedding_usage (
         requests BIGINT NOT NULL DEFAULT 0, tokens BIGINT NOT NULL DEFAULT 0, unknown_tokens BIGINT NOT NULL DEFAULT 0,
         PRIMARY KEY(server,channel,model,purpose)
       );
-CREATE TABLE IF NOT EXISTS embeddings (
-        server TEXT NOT NULL, message_id TEXT NOT NULL, model TEXT NOT NULL,
-        vector vector NOT NULL, PRIMARY KEY(server,message_id,model)
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+        server TEXT NOT NULL, memory_id TEXT NOT NULL, model TEXT NOT NULL,
+        vector vector NOT NULL, PRIMARY KEY(server,memory_id,model)
       );
 CREATE TABLE IF NOT EXISTS events (
         run_id TEXT NOT NULL, sequence BIGINT NOT NULL,
@@ -111,3 +111,9 @@ CREATE INDEX IF NOT EXISTS messages_fulltext ON messages USING gin(to_tsvector('
 
 CREATE TABLE IF NOT EXISTS shares (id TEXT PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, created_by TEXT NOT NULL, created_at BIGINT NOT NULL, revoked_at BIGINT, body TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS shares_server ON shares(server,created_at);
+
+-- Remove legacy chat vectors only in this schema; chat history stays in messages.
+DO $$ BEGIN
+  EXECUTE format('DROP TABLE IF EXISTS %I.embeddings', current_schema());
+END $$;
+DELETE FROM embedding_usage WHERE purpose IN ('index','query');

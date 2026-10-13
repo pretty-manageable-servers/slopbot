@@ -86,13 +86,13 @@ export function registerHistoryTools(
   registry.register({
     name: "history_search",
     description:
-      "Search indexed messages. Hybrid combines keywords and semantic similarity. Exact finds literal quotes. Resolve authors by name or mention. Refine queries and use history_read for context; no result is not proof something was never said.",
+      "Search stored chat messages using keywords. Exact finds literal quotes. Resolve authors by name or mention. Refine queries and use history_read for context; no result is not proof something was never said.",
     fields: {
       query: { type: "string", description: "Topic or quote", max: 1000 },
       mode: {
         type: "string",
-        description: "Default hybrid",
-        choices: ["hybrid", "keyword", "exact", "semantic"],
+        description: "Default keyword",
+        choices: ["keyword", "exact"],
       },
       author: { type: "string", description: "Member name or mention" },
       channel: { type: "channel", description: "Defaults to current channel" },
@@ -171,7 +171,7 @@ export function registerHistoryTools(
           server: context.message.server,
           channel: String(args.channel ?? context.message.channel),
           query: String(args.query ?? ""),
-          mode: (args.mode ?? "hybrid") as HistoryQuery["mode"],
+          mode: (args.mode ?? "keyword") as HistoryQuery["mode"],
           limit: Number(args.limit ?? 10),
           ...(author ? { author } : {}),
           ...(args.after ? { after: date(args.after) } : {}),
@@ -199,7 +199,7 @@ export function registerHistoryTools(
           query: { ...query, offset: page.nextOffset },
         } as unknown as Json);
       }
-      result.text += `\n\nCoverage: ${page.coverage.messages} messages, ${page.coverage.vectors} vectors; ${page.coverage.oldest ? new Date(page.coverage.oldest).toISOString() : "unknown"} to ${page.coverage.newest ? new Date(page.coverage.newest).toISOString() : "unknown"}. Ranked candidate cap: ${page.candidateLimit}.${page.degraded ? " Semantic search unavailable; keyword fallback used." : ""}${cursor ? ` Next cursor: ${cursor}` : ""}`;
+      result.text += `\n\nCoverage: ${page.coverage.messages} messages, ${page.coverage.vectors} memory vectors; ${page.coverage.oldest ? new Date(page.coverage.oldest).toISOString() : "unknown"} to ${page.coverage.newest ? new Date(page.coverage.newest).toISOString() : "unknown"}. Ranked candidate cap: ${page.candidateLimit}.${page.degraded ? " Semantic search unavailable; keyword fallback used." : ""}${cursor ? ` Next cursor: ${cursor}` : ""}`;
       return result;
     },
   });

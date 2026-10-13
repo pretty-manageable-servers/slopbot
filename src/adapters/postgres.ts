@@ -7,7 +7,7 @@ import { PostgresDatabase, serializeStore } from "./postgres-database.js";
 import { randomUUID } from "node:crypto";
 import { parseMessage, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
 import type { AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow } from "../ports.js";
-import { searchTerms, type Embeddings, type Evidence, type MemoryRecord } from "../memory.js";
+import { cosine, searchTerms, type Embeddings, type Evidence, type MemoryRecord } from "../memory.js";
 import { attribution, type Attribution } from "../usage-meter.js";
 import { ToolError } from "../tools.js";
 import type { ProfileField, UserProfile } from "../profiles.js";
@@ -131,46 +131,8 @@ export class PostgresStore {
           .all(...values, query, query)
       ).map((row) => parseMessage(JSON.parse(String(row.body))));
     }
-    let semantic: Message[] = [];
-    let degraded = false;
-    if (request.mode === "semantic" || request.mode === "hybrid") {
-      if (this.embeddings && request.query.trim()) {
-        try {
-          const query = await this.embed(
-            {
-              server: request.server,
-              channel: request.channel,
-              author: "search",
-              id: "search",
-              text: request.query,
-            },
-            "query",
-            request.requester ? { server: request.server, user: request.requester } : undefined,
-          );
-          const ranked = await this.db
-            .prepare(
-              `SELECT m.body, e.vector AS vector FROM messages m JOIN embeddings e ON e.server=m.server AND e.message_id=m.id WHERE ${where} AND e.model=? AND vector_dims(e.vector)=? ORDER BY e.vector <=> ?::vector LIMIT 200`,
-            )
-            .all(
-              ...values,
-              this.embeddings.model,
-              query.length,
-              JSON.stringify(query),
-            );
-          semantic = ranked.map((row) =>
-            parseMessage(JSON.parse(String(row.body))),
-          );
-        } catch {
-          degraded = true;
-        }
-      } else degraded = true;
-    }
-    const lists =
-      request.mode === "semantic" && !degraded
-        ? [semantic]
-        : request.mode === "hybrid"
-          ? [keywords, semantic]
-          : [keywords];
+    const degraded = request.mode === "semantic" || request.mode === "hybrid";
+    const lists = [keywords];
     const scores = new Map<string, { message: Message; score: number }>();
     for (const list of lists)
       list.forEach((message, index) => {
@@ -350,8 +312,6 @@ export class PostgresStore {
         if (message.authorName)
             (await this.identifyAuthor(message.server, message.author, [message.authorName, ...(message.authorAliases ?? [])], message.isBot, message.authorIdentity));
         const result = (await this.db.prepare("INSERT OR IGNORE INTO messages(server,id,channel,body) VALUES(?,?,?,?)").run(message.server, message.id, message.channel, JSON.stringify(message)));
-        if (result.changes === 1)
-            this.queueIndex(message);
         return result.changes === 1;
     }
     async context(message: Message, limit: number): Promise<readonly Message[]> {
@@ -583,19 +543,15 @@ export class PostgresStore {
         if ((await this.db.prepare("SELECT 1 FROM message_tombstones WHERE server=? AND id=?").get(message.server, message.id)))
             throw contextChangedError(message, { reason: "message_deleted", sourceId: message.id });
         (await this.db.exec("BEGIN IMMEDIATE"));
-        let added = false;
-        try {
-            const result = (await this.db.prepare("INSERT OR IGNORE INTO messages(server,id,channel,body) VALUES(?,?,?,?)").run(message.server, message.id, message.channel, JSON.stringify(message)));
-            added = result.changes === 1;
-            (await this.db.prepare("INSERT OR IGNORE INTO jobs(id,server,channel,message_id,message,status) VALUES(?,?,?,?,?,'pending')").run(randomUUID(), message.server, message.channel, message.id, JSON.stringify(message)));
+            try {
+            (await this.db.prepare("INSERT OR IGNORE INTO messages(server,id,channel,body) VALUES(?,?,?,?)").run(message.server, message.id, message.channel, JSON.stringify(message)));
+                  (await this.db.prepare("INSERT OR IGNORE INTO jobs(id,server,channel,message_id,message,status) VALUES(?,?,?,?,?,'pending')").run(randomUUID(), message.server, message.channel, message.id, JSON.stringify(message)));
             (await this.db.exec("COMMIT"));
         }
         catch (error) {
             (await this.db.exec("ROLLBACK"));
             throw error;
         }
-        if (added)
-            this.queueIndex(message);
         return this.job((await this.db.prepare("SELECT * FROM jobs WHERE server=? AND message_id=?").get(message.server, message.id))!);
     }
     async acquireWorker(server: string, owner: string, expires: number): Promise<boolean> {
@@ -744,17 +700,16 @@ export class PostgresStore {
             return true;
         } catch (error) { (await this.db.exec("ROLLBACK")); throw error; }
     }
-    async reindex(server: string, channels: readonly string[]): Promise<number> {
-        if (!this.embeddings || !channels.length)
-            return 0;
-        const rows = (await this.db.prepare(`SELECT m.body FROM messages m WHERE m.server=?
-      AND m.channel IN (${channels.map(() => "?").join(",")}) AND NOT EXISTS
-      (SELECT 1 FROM embeddings e WHERE e.server=m.server AND e.message_id=m.id AND e.model=?)`)
-            .all(server, ...channels, this.embeddings.model));
-        for (const row of rows)
-            this.queueIndex(parseMessage(JSON.parse(String(row.body))), false);
-        return rows.length;
-    }
+  async reindex(server: string, channels: readonly string[]): Promise<number> {
+    if (!this.embeddings || !channels.length) return 0;
+    const rows = await this.db.prepare(`SELECT m.* FROM memories m WHERE m.server=?
+      AND m.status='active' AND m.channel IN (${channels.map(() => "?").join(",")}) AND NOT EXISTS
+      (SELECT 1 FROM memory_embeddings e WHERE e.server=m.server AND e.memory_id=m.id AND e.model=?)`)
+      .all(server, ...channels, this.embeddings.model);
+    for (const row of rows) this.queueIndex({ server, channel: String(row.channel), author: String(row.author), id: String(row.id), text: String(row.content) }, false);
+    return rows.length;
+  }
+
     async purgeUnconfigured(server: string, allowed: readonly string[]): Promise<void> {
         const rows = (await this.db.prepare("SELECT id,channel FROM messages WHERE server=?").all(server));
         for (const row of rows) {
@@ -781,20 +736,26 @@ export class PostgresStore {
         if (this.indexingStopped || !this.embeddings || !message.text.trim())
             return;
         this.indexTail = this.indexTail.then(() => this.indexingStopped ? undefined : this.indexMessage(message, charge)).catch((error: unknown) => {
-            logError("embedding_index_failed_keyword_search_available", error, { stage: "embedding indexing", server: message.server, channel: message.channel, messageId: message.id });
+            logError("memory_embedding_index_failed", error, { stage: "memory embedding indexing", server: message.server, channel: message.channel, messageId: message.id });
         });
     }
-    private async indexMessage(message: Message, charge: boolean): Promise<void> {
-            const existing = (await this.db.prepare("SELECT 1 FROM embeddings WHERE server=? AND message_id=? AND model=?").get(message.server, message.id, this.embeddings!.model));
-            if (existing)
-                return;
-            // Index work is charged to the message author. A bot message has no payer, so attribution() skips its charge.
-            const vector = await this.embed(message, "index", charge ? attribution(message) : undefined);
-            const current = (await this.db.prepare("SELECT body FROM messages WHERE server=? AND id=?").get(message.server, message.id));
-            if (!current || parseMessage(JSON.parse(String(current.body))).text !== message.text)
-                return;
-            (await this.db.prepare("INSERT OR REPLACE INTO embeddings VALUES(?,?,?,?)")
-                .run(message.server, message.id, this.embeddings!.model, JSON.stringify(vector)));
+    private async indexMessage(message: Message, charge = true): Promise<void> {
+        if (await this.hasEmbedding(message)) return;
+        // The provider may throttle or stall. It must never own the SQL queue.
+        const result = this.embeddings!.embedWithUsage
+            ? await this.embeddings!.embedWithUsage(message.text, charge ? attribution(message) : undefined)
+            : { vector: await this.embeddings!.embed(message.text), tokens: null };
+        await this.saveIndexedEmbedding(message, result);
+    }
+    private async hasEmbedding(message: Message): Promise<boolean> {
+        return Boolean(await this.db.prepare("SELECT 1 FROM memory_embeddings WHERE server=? AND memory_id=? AND model=?").get(message.server, message.id, this.embeddings!.model));
+    }
+    private async saveIndexedEmbedding(message: Message, result: { vector: readonly number[]; tokens: number | null }): Promise<void> {
+        await this.recordEmbeddingUsage(message, "memory_index", result.tokens);
+        const current = await this.db.prepare("SELECT content FROM memories WHERE server=? AND id=? AND status='active'").get(message.server, message.id);
+        if (!current || String(current.content) !== message.text) return;
+        await this.db.prepare("INSERT OR REPLACE INTO memory_embeddings VALUES(?,?,?,?)")
+            .run(message.server, message.id, this.embeddings!.model, JSON.stringify(result.vector));
     }
 
     async indexStats(server: string, channel: string): Promise<{
@@ -811,18 +772,21 @@ export class PostgresStore {
         }[];
     }> {
         const row = (await this.db.prepare("SELECT count(*) AS count,min(json_extract(body,'$.timestamp')) AS oldest,max(json_extract(body,'$.timestamp')) AS newest FROM messages WHERE server=? AND channel=?").get(server, channel))!;
-        const vectors = (await this.db.prepare("SELECT count(*) AS count FROM embeddings e JOIN messages m ON m.server=e.server AND m.id=e.message_id WHERE m.server=? AND m.channel=? AND e.model=?").get(server, channel, this.embeddings?.model ?? ""))!;
+        const vectors = (await this.db.prepare("SELECT count(*) AS count FROM memory_embeddings e JOIN memories m ON m.server=e.server AND m.id=e.memory_id WHERE m.server=? AND m.channel=? AND m.status='active' AND e.model=?").get(server, channel, this.embeddings?.model ?? ""))!;
         const usage = (await this.db.prepare("SELECT * FROM embedding_usage WHERE server=? AND channel=?").all(server, channel)).map(value => ({ model: String(value.model), purpose: String(value.purpose), requests: Number(value.requests), tokens: Number(value.tokens), unknown: Number(value.unknown_tokens) }));
         return { messages: Number(row.count), vectors: Number(vectors.count), oldest: row.oldest === null ? null : Number(row.oldest), newest: row.newest === null ? null : Number(row.newest), usage };
     }
-    private async embed(message: Message, purpose: "index" | "query", who?: Attribution): Promise<readonly number[]> {
+    private async embed(message: Message, purpose: "memory_index" | "memory_query", who?: Attribution): Promise<readonly number[]> {
         const result = this.embeddings!.embedWithUsage
             ? await this.embeddings!.embedWithUsage(message.text, who)
             : { vector: await this.embeddings!.embed(message.text), tokens: null };
-        (await this.db.prepare(`INSERT INTO embedding_usage VALUES(?,?,?,?,1,?,?)
-      ON CONFLICT(server,channel,model,purpose) DO UPDATE SET requests=requests+1,tokens=tokens+excluded.tokens,unknown_tokens=unknown_tokens+excluded.unknown_tokens`)
-            .run(message.server, message.channel, this.embeddings!.model, purpose, result.tokens ?? 0, result.tokens === null ? 1 : 0));
+        await this.recordEmbeddingUsage(message, purpose, result.tokens);
         return result.vector;
+    }
+    private async recordEmbeddingUsage(message: Message, purpose: "memory_index" | "memory_query", tokens: number | null): Promise<void> {
+        await this.db.prepare(`INSERT INTO embedding_usage VALUES(?,?,?,?,1,?,?)
+      ON CONFLICT(server,channel,model,purpose) DO UPDATE SET requests=requests+1,tokens=tokens+excluded.tokens,unknown_tokens=unknown_tokens+excluded.unknown_tokens`)
+            .run(message.server, message.channel, this.embeddings!.model, purpose, tokens ?? 0, tokens === null ? 1 : 0);
     }
     async remember(message: Message, content: string): Promise<MemoryRecord> {
         if (!content.trim() || content.length > 2000)
@@ -846,7 +810,8 @@ export class PostgresStore {
             (await this.db.exec("ROLLBACK"));
             throw error;
         }
-        return memory;
+        this.queueIndex({ ...message, id: memory.id, text: memory.content });
+    return memory;
     }
     async memories(server: string, channel: string): Promise<readonly MemoryRecord[]> {
         return (await Promise.all((await this.db.prepare(`SELECT * FROM memories m WHERE server=? AND channel=? AND status='active'
@@ -912,13 +877,22 @@ export class PostgresStore {
             return [{ kind: "retrieval", author: "system", sourceIds: [], content: targets.length > 1 ? "Person name is ambiguous. Ask which member the requester means before attributing messages." : "Could not resolve the requested person from known channel author names. Ask for their Discord mention. Do not attribute unrelated recent chat to them." }];
         const terms = searchTerms(message.text);
         const notes = await (await this.memories(message.server, message.channel));
-        const relevant = [...notes].sort((a, b) => {
-            const score = (memory: MemoryRecord) => terms.filter(term => memory.content.toLowerCase().includes(term)).length;
-            return score(b) - score(a);
-        }).slice(0, Math.min(limit, 4));
+    const semanticScores = new Map<string, number>();
+    if (this.embeddings && notes.length && message.text.trim()) {
+      try {
+        const rows = await this.db.prepare(`SELECT e.memory_id,e.vector FROM memory_embeddings e JOIN memories m ON m.server=e.server AND m.id=e.memory_id WHERE m.server=? AND m.channel=? AND m.status='active' AND e.model=?`)
+          .all(message.server, message.channel, this.embeddings.model);
+        if (rows.length) {
+          const query = await this.embed(message, "memory_query", attribution(message));
+          for (const row of rows) semanticScores.set(String(row.memory_id), cosine(query, JSON.parse(String(row.vector))));
+        }
+      } catch (error) { logError("memory_embedding_query_failed", error, { server: message.server, channel: message.channel }); }
+    }
+    const score = (memory: MemoryRecord) => terms.filter(term => memory.content.toLowerCase().includes(term)).length + Math.max(0, semanticScores.get(memory.id) ?? 0);
+    const relevant = [...notes].sort((a, b) => score(b) - score(a)).slice(0, Math.min(limit, 4));
         for (const memory of relevant)
             evidence.push({ kind: "memory", content: memory.content, author: memory.author, sourceIds: memory.sourceIds });
-    const recalled=await this.searchHistory({server:message.server,channel:message.channel,query:message.text,mode:'hybrid',limit,excludeId:message.id,requester:message.isBot?undefined:message.author});
+    const recalled=await this.searchHistory({server:message.server,channel:message.channel,query:message.text,mode:'keyword',limit,excludeId:message.id,requester:message.isBot?undefined:message.author});
     const selected=new Map(recalled.messages.map(item=>[item.id,item]));
         for (const item of selected.values()) {
             if (evidence.length >= limit)
@@ -966,7 +940,7 @@ export class PostgresStore {
         (await this.db.prepare("UPDATE memories SET status='invalidated' WHERE status='active' AND id IN (SELECT memory_id FROM memory_sources WHERE server=? AND message_id=?)")
             .run(server, id));
         (await this.db.prepare("UPDATE profile_events SET valid=0 WHERE server=? AND id IN (SELECT e.id FROM profile_events e,json_each(e.sources) s WHERE e.server=? AND s.value=?)").run(server, server, id));
-        (await this.db.prepare("DELETE FROM embeddings WHERE server=? AND message_id=?").run(server, id));
+        (await this.db.prepare("DELETE FROM memory_embeddings WHERE server=? AND memory_id IN (SELECT memory_id FROM memory_sources WHERE server=? AND message_id=?)").run(server, server, id));
         const dependents = (await this.db.prepare("SELECT output_id FROM source_dependents WHERE server=? AND source_id=?").all(server, id));
         for (const dependent of dependents) {
             const output = String(dependent.output_id);
@@ -1004,10 +978,10 @@ export class PostgresStore {
         (await this.db.prepare("UPDATE messages SET body=? WHERE server=? AND id=? AND channel=?")
             .run(JSON.stringify(message), message.server, message.id, message.channel));
         (await this.invalidate(message.server, message.channel, { reason: "message_edited", sourceId: message.id }));
-        this.queueIndex(message);
+
     }
     private async removeTransient(server: string, channel: string, id: string): Promise<void> {
-        await this.db.prepare("DELETE FROM embeddings WHERE server=? AND message_id=?").run(server, id);
+        await this.db.prepare("DELETE FROM memory_embeddings WHERE server=? AND memory_id IN (SELECT memory_id FROM memory_sources WHERE server=? AND message_id=?)").run(server, server, id);
         await this.db.prepare("DELETE FROM messages WHERE server=? AND channel=? AND id=?").run(server, channel, id);
     }
     async remove(server: string, channel: string, id: string): Promise<void> {
