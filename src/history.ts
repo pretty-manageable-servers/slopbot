@@ -1,5 +1,6 @@
 import { errorSummary, logError } from "./errors.js";
 import type { Json, Message } from "./domain.js";
+import { isPrivateChannel } from "./private-chat.js";
 
 export interface HistoryState {
   days: number;
@@ -42,7 +43,8 @@ export class HistoryImporter {
     await this.store.setSetting(this.server, `history:${channel}`, state as unknown as Json);
   }
   async start(channel: string, action: "window" | "more" | "resume" = "resume", days?: number): Promise<void> {
-    if (this.stopping || this.excluded.has(channel) || this.workers.has(channel)) return;
+    // A private chat is never imported. It is not a Discord channel, so the Discord fetch cannot read it anyway.
+    if (this.stopping || isPrivateChannel(channel) || this.excluded.has(channel) || this.workers.has(channel)) return;
     const state = this.state(channel);
     if (action !== "resume") state.paused = false;
     if (state.paused) return;
