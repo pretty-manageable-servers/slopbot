@@ -214,11 +214,26 @@ export class Bot {
 
 export function splitReply(text: string, limit = 1900): string[] {
   const chunks: string[] = [];
-  let chunk = "";
-  for (const character of text) {
-    if (chunk.length + character.length > limit) { chunks.push(chunk); chunk = ""; }
-    chunk += character;
+  let chunk = "", fence = "";
+  const flush = () => {
+    chunks.push(chunk + (fence ? "\n```" : ""));
+    chunk = fence;
+  };
+  // Treat fence lines atomically so each Discord message can close and reopen them.
+  const tokens = text.split(/(^```[^\n]*\n|^```$)/gm).filter(Boolean);
+  for (const token of tokens) {
+    if (/^```[^\n]*(?:\n|$)$/.test(token) && token.length + 4 < limit) {
+      const nextFence = fence ? "" : token.endsWith("\n") ? token : token + "\n";
+      if (chunk.length + token.length + (nextFence ? 4 : 0) > limit) flush();
+      chunk += token;
+      fence = nextFence;
+      continue;
+    }
+    for (const character of token) {
+      if (chunk.length + character.length + (fence ? 4 : 0) > limit) flush();
+      chunk += character;
+    }
   }
-  if (chunk) chunks.push(chunk);
+  if (chunk) chunks.push(chunk + (fence ? "\n```" : ""));
   return chunks;
 }

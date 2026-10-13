@@ -17,7 +17,7 @@ import {UiRuntime,registerUiTool,registerPollTool} from '../ui/runtime.js';
 import type {UiDocument} from '../ui/schema.js';
 import {discordUi} from './discord-ui.js';
 import { DiscordToolProgress } from './discord-tool-progress.js';
-import { toolFooter } from '../presentation/tool-activity.js';
+import { toolFooter, toolDisplayMode } from '../presentation/tool-activity.js';
 import type { ToolActivity } from '../tool-activity.js';
 import { discordPresentation, suppressLinkPreviews } from '../presentation/discord.js';
 import { registerHistoryTools } from '../search/history-search.js';
@@ -199,7 +199,7 @@ export class DiscordAdapter implements ChatGateway {
       await this.toolProgress.update(JSON.stringify([message.server,message.channel,message.id]), activity, async content => {
         const channel = await this.client.channels.fetch(message.channel);
         if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Status channel unavailable");
-        return channel.send({content,embeds:[{footer:{text:toolProgressFooter}}],reply:{messageReference:message.id,failIfNotExists:false},allowedMentions:{parse:[],repliedUser:false}});
+        return channel.send({content,embeds:[{footer:{text:toolProgressFooter}}],...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? {reply:{messageReference:message.id,failIfNotExists:false}} : {}),allowedMentions:{parse:[],repliedUser:false}});
       });
     }, presentation: discordPresentation, profiles: store, harness: store, tools: {
       catalog: () => this.tools.catalog(), schemas: () => this.tools.schemas(), suggest: message => this.tools.suggest(message),
@@ -416,7 +416,7 @@ export class DiscordAdapter implements ChatGateway {
     // Freeze the footer in the existing delivery journal so retries keep identical content.
     const timingRecordId = deliveryId ?? `reply:${message.channel}:${message.id}`;
     const footer = await savedTimingFooter(this.store, message, timingRecordId);
-    const rendered = await this.renderer.render(message.server, text + toolFooter(activity) + footer);
+    const rendered = await this.renderer.render(message.server, text + toolFooter(activity, toolDisplayMode(this.store.setting(message.server, "tool_display"))) + footer);
     const flags = suppressLinkPreviews(rendered) ? MessageFlags.SuppressEmbeds : undefined;
     const payloads: import('discord.js').MessageCreateOptions[] = splitReply(rendered).map(content=>({content,flags}));
     if(ui){const state=await this.uiRuntime.prepare(message,ui,deliveryId??message.id);payloads.push(discordUi(ui,state.id,state.revision));}
@@ -500,6 +500,7 @@ export class DiscordAdapter implements ChatGateway {
         reply_context: this.store.setting(guild.id, 'reply_context') ?? this.config.replyContextMessages,
         cooldown_seconds: this.store.setting(guild.id, 'cooldown_seconds') ?? this.config.jevCooldownSeconds,
         max_unsolicited_per_hour: this.store.setting(guild.id, 'max_unsolicited_per_hour') ?? this.config.jevMaxRepliesPerHour,
+        tool_display: toolDisplayMode(this.store.setting(guild.id, 'tool_display')),
         timing_footer: this.store.setting(guild.id, 'timing_footer') ?? false,
         model: this.config.model, mock: this.config.mock,
       } : null };

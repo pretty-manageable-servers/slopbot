@@ -1,6 +1,7 @@
 export interface ToolActivity {
   readonly id: string;
   readonly name: string;
+  readonly arguments?: import('./tools.js').ToolArgs;
   readonly status: 'running' | 'completed' | 'rejected' | 'failed' | 'delegated';
   readonly reused?: boolean;
   readonly durationMs?: number;

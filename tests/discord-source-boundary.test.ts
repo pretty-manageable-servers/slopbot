@@ -18,7 +18,7 @@ function fixture(fresh: { content: string; url: string; size?: number; author?: 
   const config = loadConfig({ DISCORD_BOT_TOKEN: 'test-only', DISCORD_GUILD_ID: guild, DISCORD_CHANNEL_IDS: channel, LLM_MODE: 'mock' });
   const store = new SQLiteStore(); let generations = 0;
   const adapter = new DiscordAdapter(config, store, { async *stream() { generations++; yield { kind: 'text', payload: { text: 'File report.' } }; } }, client as unknown as Client);
-  return { adapter, store, message, generations: () => generations };
+  return { adapter, store, message, target, generations: () => generations };
 }
 
 for (const changed of ['caption', 'attachment']) test(`file source ${changed} change alone stops the stale inspection before generation`, async t => {
@@ -59,4 +59,23 @@ test('final error reply removes progress even without activity footer', async t 
  let finished=false; f.adapter['toolProgress'].finish=async()=>{finished=true;};
  await f.adapter.reply({id:'request',server:guild,channel,author:'person',text:'request'},'[CONTEXT_CHANGED] source changed');
  assert.equal(finished,true);
+});
+
+
+for (const id of ['task-seed:source', 'command:reminder:source', 'source']) test(`live status uses valid reply references for ${id}`, async t => {
+  const f = fixture({content:'request',url:'https://cdn.discordapp.com/a.txt'});
+  t.after(() => f.store.close());
+  const thread = '1528064977913647299';
+  f.adapter['bot']['tasks'].add(thread);
+  const payloads: {content:string; reply?:unknown}[] = [];
+  t.mock.method(f.target, 'send', async (payload: {content:string; reply?:unknown}) => {
+    payloads.push(payload);
+    return {async edit() {}, async delete() {}};
+  });
+  const observer = f.adapter['app']['runner']['services'].onToolActivity!;
+  await observer({id,server:guild,channel:thread,author:'person',text:'request',taskId:thread},
+    {id:'call',name:'web_search',status:'running',arguments:{query:'weather'}});
+  assert.equal(payloads.length, 1);
+  assert.match(payloads[0]!.content, /"query": "weather"/);
+  assert.equal(Boolean(payloads[0]!.reply), id === 'source');
 });

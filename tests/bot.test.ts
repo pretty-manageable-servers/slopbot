@@ -154,3 +154,16 @@ test('quick inline writes stay in the channel while sustained writes use a task 
  const result=await bot.executeTool(request,{name:'quick_write',arguments:{}},'quick');assert.equal(result.text,'Done');assert.equal(executed,1);assert.equal(f.created(),0);
  const handoff=await bot.executeTool(request,{name:'long_write',arguments:{}},'long');assert.equal(handoff.handoff?.threadId,'thread');assert.equal(f.created(),1);
 });
+
+
+test('long tool argument blocks keep code fences balanced across Discord messages', () => {
+  const text = 'Answer\n\n```json\n' + JSON.stringify({command:'🙂'.repeat(3000)}) + '\n```\nAfter';
+  const chunks = splitReply(text);
+  assert.ok(chunks.length > 2);
+  for (const chunk of chunks) {
+    assert.ok(chunk.length <= 1900);
+    assert.equal((chunk.match(/```/g) ?? []).length % 2, 0);
+    assert.ok(!/[\uD800-\uDBFF]$/.test(chunk));
+  }
+  assert.equal(chunks.join('').replace(/\n``````json\n/g, ''), text);
+});

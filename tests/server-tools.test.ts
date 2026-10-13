@@ -98,3 +98,16 @@ test('large tool enums still produce valid slash commands without losing validat
  assert.deepEqual(f.registry.validate('large_enum',{topic:'topic_25'}),{topic:'topic_25'});
  assert.throws(()=>f.registry.validate('large_enum',{topic:'unknown'}));
 });
+
+
+test('tool display modes persist, validate choices, and require server management', async t => {
+  const f = setup(); t.after(() => f.store.close());
+  for (const mode of ['none', 'summary', 'full']) {
+    await f.registry.invoke(message, 'tool_display', {mode}, `display-${mode}`, 'command');
+    assert.equal(f.store.setting(server, 'tool_display'), mode);
+  }
+  await assert.rejects(f.registry.invoke(message, 'tool_display', {mode:'invalid'}, 'invalid-display', 'command'));
+  f.setAdmin(false);
+  await assert.rejects(f.registry.invoke(message, 'tool_display', {mode:'none'}, 'denied-display', 'command'), /Manage Server/);
+  assert.equal(f.store.setting(server, 'tool_display'), 'full');
+});

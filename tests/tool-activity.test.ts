@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toolFooter, toolProgress } from '../src/presentation/tool-activity.js';
+import { toolFooter, toolProgress, toolDisplayMode } from '../src/presentation/tool-activity.js';
 import { DiscordToolProgress } from '../src/adapters/discord-tool-progress.js';
 import { Application } from '../src/application.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
@@ -18,7 +18,7 @@ test('each timed call is displayed separately, with no invented duration for sav
   assert.ok(toolFooter(calls).endsWith('`web_search`: completed, saved result'));
 });
 
-test('tool footer groups repeated calls and distinguishes rejected and saved results', () => {
+test('full footer keeps each call and distinguishes rejected and saved results', () => {
   assert.equal(toolFooter([]), '');
   const calls: ToolActivity[] = [
     {id:'1',name:'web_search',status:'completed'},
@@ -26,7 +26,7 @@ test('tool footer groups repeated calls and distinguishes rejected and saved res
     {id:'3',name:'index',status:'rejected'},
     {id:'4',name:'index',status:'completed',reused:true},
   ];
-  assert.equal(toolFooter(calls), '\n\n**Tool activity**\n- `web_search` ×2: completed\n- `index`: blocked\n- `index`: completed, saved result');
+  assert.equal(toolFooter(calls), '\n\n**Tool activity**\n- `web_search`: completed\n- `web_search`: completed\n- `index`: blocked\n- `index`: completed, saved result');
   assert.match(toolProgress(calls), /1\. `web_search`: completed/);
 });
 
@@ -86,12 +86,14 @@ for (const rejected of [false,true]) test(`execution reports ${rejected ? 'rejec
   const events: ToolActivity[] = [];
   let rounds = 0;
   try {
-    const app = new Application(store, {async *stream(){yield {kind:'text',payload:{text:++rounds === 1 ? '{"tool_calls":[{"name":"web_search","arguments":{}}]}' : 'Answer'}};}},
+    const app = new Application(store, {async *stream(){yield {kind:'text',payload:{text:++rounds === 1 ? '{"tool_calls":[{"name":"web_search","arguments":{"query":"weather"}}]}' : 'Answer'}};}},
       {allowedChannels:[{server:'s',channel:'c'}]}, undefined,
       {onToolActivity:async (_message,event)=>{events.push(event);},tools:{catalog:()=>'',execute:async()=>{if(rejected)throw new ToolError('Unavailable');return 'Search results';}}});
     const reply = await app.handle({server:'s',channel:'c',author:'person',id:'request',text:'Find information',addressed:true});
     assert.deepEqual(events.map(event=>event.status),['running',rejected ? 'rejected' : 'completed']);
     assert.equal(reply?.toolActivity?.length,1);
+    assert.deepEqual(events[0]?.arguments, {query:'weather'});
+    assert.deepEqual(reply?.toolActivity?.[0]?.arguments, {query:'weather'});
     assert.equal(reply?.toolActivity?.[0]?.status,rejected ? 'rejected' : 'completed');
     assert.equal(reply?.toolActivity?.[0]?.reused,false);
     if (rejected) { assert.match(reply?.toolActivity?.[0]?.reason ?? '', /Unavailable/); assert.equal(reply!.text, 'Answer'); }
@@ -117,3 +119,57 @@ test('a failed status display does not prevent tool execution', async () => {
  const items: ToolActivity[] = Array.from({length:8},(_,i)=>({id:String(i),name:'read_'+i,status:'failed',reason:'x'.repeat(500)}));
  const text = toolProgress(items); assert.ok(text.length <= 2000); for(const item of items) assert.ok(text.includes(item.name));
  });
+
+
+test('completed replies support hidden, grouped, and expanded tool activity', () => {
+  const calls: ToolActivity[] = [
+    {id:'1',name:'web_search',status:'completed',durationMs:100,arguments:{query:'weather'}},
+    {id:'2',name:'web_search',status:'completed',durationMs:200,arguments:{query:'traffic'}},
+    {id:'3',name:'sandbox',status:'failed',arguments:{command:'ls'},reason:'Unavailable'},
+  ];
+  assert.equal(toolFooter(calls, 'none'), '');
+  assert.equal(toolFooter(calls, 'summary'), '\n\n**Tool activity**\n`web_search` × 2 · `sandbox` × 1');
+  const full = toolFooter(calls, 'full');
+  assert.match(full, /"query": "weather"/);
+  assert.match(full, /"query": "traffic"/);
+  assert.match(full, /failed: Unavailable/);
+  assert.equal(toolDisplayMode(undefined), 'summary');
+  assert.equal(toolDisplayMode('invalid'), 'summary');
+  assert.equal(toolDisplayMode('none'), 'none');
+  assert.equal(toolDisplayMode('full'), 'full');
+});
+
+test('live arguments are bounded, escape code fences, and redact credential fields', () => {
+  const calls: ToolActivity[] = Array.from({length:10}, (_, i) => ({
+    id:String(i),name:'read',status:'running',reason:'oops '.repeat(200),
+    arguments:{query:'``` <@123> '.repeat(200), api_key:'private-value', nested:{password:'private-value'}},
+  }));
+  const progress = toolProgress(calls);
+  assert.ok(progress.length <= 2000);
+  assert.match(progress, /Earlier steps: 2/);
+  assert.match(progress, /"query"/);
+  const full = toolFooter(calls, 'full');
+  assert.ok(!full.includes('private-value'));
+  assert.match(full, /redacted/);
+  assert.equal(full.split('```').length - 1, 20);
+});
+
+test('parallel child events send a single status message and cleanup waits for updates', async () => {
+  const progress = new DiscordToolProgress();
+  let sent = 0, deleted = false;
+  const edits: string[] = [];
+  const send = async () => {
+    sent++;
+    await new Promise(resolve => setImmediate(resolve));
+    return {async edit(content: string) {assert.equal(deleted, false); edits.push(content);}, async delete() {deleted = true;}};
+  };
+  await Promise.all([
+    progress.update('request', {id:'1',name:'read_one',status:'running'}, send),
+    progress.update('request', {id:'2',name:'read_two',status:'running'}, send),
+    progress.finish('request'),
+  ]);
+  assert.equal(sent, 1);
+  assert.match(edits[0]!, /read_one/);
+  assert.match(edits[0]!, /read_two/);
+  assert.equal(deleted, true);
+});

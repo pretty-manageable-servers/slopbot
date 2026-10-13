@@ -238,7 +238,7 @@ export class AgentRunner {
         await step({ type: "ToolDecision", id, decision: "approve" });
         if (result === undefined) {
           if (!tools || !this.accepts(message)) throw new Error("Tools unavailable in this scope");
-          await report({ id, name: turn.calls[index]!.name, status: "running" });
+          await report({ id, name: turn.calls[index]!.name, arguments: turn.calls[index]!.arguments, status: "running" });
           const toolStarted = performance.now();
           try { result = await requestTimings.measure(message, `tool:${turn.calls[index]!.name}`, () => tools.execute(message, turn.calls[index]!, `${turn.id}:${index}`, sourceVersion)); }
           catch (error) {
@@ -255,7 +255,7 @@ export class AgentRunner {
         const output = toolResult(result);
         batchFailed ||= toolFailed(output);
         if (output.ui) ui = output.ui;
-        await report({ id, name: turn.calls[index]!.name, status: toolFailed(output) ? output.status as "rejected" | "failed" : output.handoff ? "delegated" : "completed", ...(toolFailed(output) ? { reason: output.reason ?? output.text } : {}), reused, ...(durationMs !== undefined ? { durationMs } : {}) });
+        await report({ id, name: turn.calls[index]!.name, arguments: turn.calls[index]!.arguments, status: toolFailed(output) ? output.status as "rejected" | "failed" : output.handoff ? "delegated" : "completed", ...(toolFailed(output) ? { reason: output.reason ?? output.text } : {}), reused, ...(durationMs !== undefined ? { durationMs } : {}) });
         if (signal.aborted) throw new HarnessInterrupted("Tool execution ended after interruption; its actual result is retained");
         if (machine.state.kind === "ToolPhase" && machine.state.calls.find(call => call.id === id)?.state === "Running") {
           // A failed execution is still a result the model must receive.

@@ -129,3 +129,9 @@ PMServers has no anonymous public bucket access or ACLs. `publish` sets visibili
 Setup requires an approved PMServers account, a dedicated bucket and bucket-scoped read/write S3 key. Use the console or current `pms storage` CLI; project/AI tokens cannot provision storage. Set `OBJECT_STORAGE_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION=pms`, and `AWS_ENDPOINT_URL=https://s3.pmservers.org`. Containers may use `http://garage.pms-storage.svc:3900`. `OBJECT_STORAGE_PUBLIC_ENDPOINT` defaults to public S3 HTTPS. Clients force path style and use checksums only when required. Credentials are operator configuration and never returned by tools.
 
 `npm run storage:smoke` reads `.env.development`, uploads a uniquely named temporary binary object, verifies authenticated and signed public downloads, then deletes it. Unit tests cover all three scopes, every pair of copy destinations, per-user/server isolation, server creator/admin controls, private/public access and revocation, legacy metadata, cache authorization, uploads/overwrites/deletes, lists, sandbox round trips, binary preservation, bounded S3 reads, public URL signing and private DM delivery.
+
+## Tool activity display
+
+Live Discord status shows recent calls with arguments, status, and elapsed time. Delegated task seeds post directly in the task thread. Long live arguments are clipped to fit Discord's message limit; credential fields are redacted. Parallel program calls update a single status message.
+
+Completed replies default to a summary such as `web_search` × 3. Server managers can choose **No tool calls**, **Summary**, or **Full expansion** in the web console, or use `/slopbot tool_display mode:none|summary|full`. Full expansion lists each call with its arguments, status, timing, and failure reason. This setting persists per server and leaves live progress enabled.

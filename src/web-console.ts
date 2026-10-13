@@ -22,7 +22,7 @@ export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOpt
   return { origin: origin.origin, port, host: env.WEB_HOST || '127.0.0.1', clientId: env.DISCORD_CLIENT_ID, clientSecret: env.DISCORD_CLIENT_SECRET };
 }
 const token = () => randomBytes(32).toString('hex');
-const allowed = new Set(['monitoring', 'context', 'cooldown', 'channels', 'index', 'profile', 'timing']);
+const allowed = new Set(['monitoring', 'context', 'cooldown', 'channels', 'index', 'profile', 'timing', 'tool_display']);
 export function createConsole(options: ConsoleOptions, backend: ConsoleBackend): Server {
   const sessions = new Map<string, { user: string; csrf: string; expires: number }>();
   const states = new Map<string, number>();

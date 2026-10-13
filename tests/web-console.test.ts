@@ -48,6 +48,8 @@ test('Discord login binds state to browser, protects writes, and destroys logout
   assert.equal((await call('/api/settings',{method:'POST',headers:{...headers,Origin:'https://evil.example'},body})).status,403);
   assert.equal((await call('/api/settings',{method:'POST',headers,body})).status,200);
   assert.equal(user,'123456789012345678');assert.equal(name,'monitoring');
+  assert.equal((await call('/api/settings',{method:'POST',headers,body:JSON.stringify({channel:'123456789012345679',name:'tool_display',args:{mode:'full'}})})).status,200);
+  assert.equal(name,'tool_display');
   const mcpBody=JSON.stringify({action:'save',id:'github',url:'https://example.com/mcp',tools:[]});
   assert.equal((await call('/api/mcp',{method:'POST',headers:{Cookie:cookie,'Content-Type':'application/json'},body:mcpBody})).status,403);
   assert.equal((await call('/api/mcp',{method:'POST',headers,body:mcpBody})).status,200);
