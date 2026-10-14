@@ -301,10 +301,10 @@ export class DiscordVoice {
   }
 
   private status(): string {
-    if (!this.session) return `No active voice session.\nVoice style: ${this.instructions()}`;
+    if (!this.session) return `No active voice session.\nVoice style: ${this.instructions() || `preset ${this.config.voice?.voice}`}`;
     const { channel, replies, turn } = this.session;
     const state = turn ? `Busy (replying to ${this.speakerName(turn.user)})` : 'Listening';
-    return `Voice session in <#${channel}>.\nReplies: ${replies}\nState: ${state}\nVoice style: ${this.instructions()}`;
+    return `Voice session in <#${channel}>.\nReplies: ${replies}\nState: ${state}\nVoice style: ${this.instructions() || `preset ${this.config.voice?.voice}`}`;
   }
 
   /** The display name of a speaker in this server, or the user ID when it is not cached. */

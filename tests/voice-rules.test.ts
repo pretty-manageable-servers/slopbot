@@ -61,3 +61,11 @@ test("spokenText drops markdown, links and mentions", async () => {
   const { spokenText } = await import("../src/voice-rules.js");
   assert.equal(spokenText("**Paris** is the [capital](https://example.com) of `France`, <@123456789012345678>. See https://x.y/z"), "Paris is the capital of France, . See");
 });
+
+test("a voice preset sends no default instructions", async () => {
+  const { voiceInstructions, DEFAULT_VOICE_INSTRUCTIONS } = await import("../src/voice-rules.js");
+  assert.equal(voiceInstructions(undefined, undefined, true), "");
+  assert.equal(voiceInstructions("A pirate.", undefined, true), "A pirate.");
+  assert.equal(voiceInstructions(undefined, "From env.", true), "From env.");
+  assert.equal(voiceInstructions(undefined, undefined, false), DEFAULT_VOICE_INSTRUCTIONS);
+});
