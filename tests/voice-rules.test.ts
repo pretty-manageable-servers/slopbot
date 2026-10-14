@@ -67,6 +67,17 @@ test("web request has no voice_rule", async () => {
   assert.equal(context.includes("voice_channel"), false);
 });
 
+test("web prompt mentions math", async () => {
+  const context = await requestContext("web");
+  assert.ok(context.split("\n").includes("web_math_rule: The web view renders LaTeX math: use $…$ inline and $$…$$ for display."));
+});
+
+test("discord prompt has no math line", async () => {
+  const context = await requestContext();
+  assert.equal(context.includes("web_math_rule"), false);
+  assert.equal(context.includes("LaTeX"), false);
+});
+
 test("spokenText speaks a short sentence for an error reply", async () => {
   const { spokenText, VOICE_ERROR_TEXT } = await import("../src/voice-rules.js");
   assert.equal(spokenText("\\[ACTION\\_UNCERTAIN\\] Discord delivery: Job ID 123"), VOICE_ERROR_TEXT);
