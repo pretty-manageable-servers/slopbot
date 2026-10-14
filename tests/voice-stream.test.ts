@@ -13,7 +13,7 @@ import { UsageMeter } from '../src/usage-meter.js';
 import { UserLimiter } from '../src/user-limiter.js';
 import type { ToolDefinition, ToolRegistry, ToolContext } from '../src/tools.js';
 import { loadConfig } from '../src/config.js';
-import { DEFAULT_VOICE_INSTRUCTIONS, SentenceSplitter, VOICE_CUE_TEXT, VOICE_ERROR_TEXT, VOICE_SPOKEN_MAX, spokenText } from '../src/voice-rules.js';
+import { DEFAULT_VOICE_INSTRUCTIONS, SentenceSplitter, VOICE_FILLER_GAP_MS, VOICE_FILLER_TEXTS, VOICE_ERROR_TEXT, VOICE_SPOKEN_MAX, spokenText } from '../src/voice-rules.js';
 
 /** Samples per sentence of fake speech: 2400 at 24 kHz is 0.1 s. */
 const SAMPLES = 2400;
@@ -262,8 +262,8 @@ test('streamed sentences play in order before reply arrives', async t => {
   await r.voice.speak('channel', 'First sentence is here. Second sentence is here too. Third one ends it.');
   assert.deepEqual(r.provider.speeches.map(call => call.input), ['First sentence is here.', 'Second sentence is here too.', 'Third one ends it.']);
   assert.deepEqual(r.player.levels(), [1, 2, 3]);
-  // One resource plays the whole turn, with no gap between sentences. The ready cue is a second resource, after the turn.
-  assert.equal(r.player.resources.length, 2);
+  // One resource plays the whole turn, with no gap between sentences.
+  assert.equal(r.player.resources.length, 1);
 });
 
 test('reply after streaming does not speak twice', async t => {
@@ -317,8 +317,7 @@ test('pipeline keeps at most one request ahead', async t => {
   await r.voice.speak('channel', text);
   const starts = r.provider.speeches.map(call => call.at);
   assert.equal(starts.length, 5);
-  // The heard cue is the first job of the turn, so sentence 2 waits for the cue to play (0.09 s).
-  // Sentence 3 waits until sentence 1 has played.
+  // Sentence 3 waits until sentence 1 has played, and sentence 4 until sentence 2 has played.
   assert.ok(starts[2]! - starts[0]! >= 90, `third request started after ${starts[2]! - starts[0]!} ms`);
   assert.ok(starts[3]! - starts[1]! >= 90, `fourth request started after ${starts[3]! - starts[1]!} ms`);
 });
@@ -348,12 +347,12 @@ test('text mode posts transcript and plays no speech', async t => {
   r.talk();
   await until(() => r.posts.length === 1);
   assert.deepEqual(r.posts[0], { user: 'user', server: 'guild', channel: 'channel', text: 'Hello', kind: 'voice' });
-  await r.voice.cue('channel');
+  r.voice.checkFiller('channel', Date.now() + VOICE_FILLER_GAP_MS);
   reply('run-1', ['First sentence is here. Second sentence is here too.']);
   await settle();
   assert.equal(r.provider.speeches.length, 0);
-  // Only the heard cue plays: text mode has no reply speech.
-  assert.equal(r.player.resources.length, 1);
+  // Text mode plays nothing.
+  assert.equal(r.player.resources.length, 0);
   assert.match(String(r.joined), /text only/);
 });
 
@@ -368,11 +367,11 @@ test('text mode ends turn when reply is posted', async t => {
   await until(() => r.posts.length === 2);
 });
 
-test('text mode skips cue and thunder billing', async t => {
+test('text mode skips filler and thunder billing', async t => {
   const r = await rig(t, { reply: 'text' });
   r.talk();
   await until(() => r.posts.length === 1);
-  await r.voice.cue('channel');
+  r.voice.checkFiller('channel', Date.now() + VOICE_FILLER_GAP_MS);
   await settle();
   assert.equal(r.provider.speeches.length, 0);
   // Only the Squall transcription is billed. The 30720 bytes of speech are 0.16 s of audio at 4000 per minute.
@@ -386,13 +385,13 @@ test('status shows reply mode', async t => {
   assert.equal(await text.tool.execute(text.context, { action: 'status' }), `Voice session in <#channel>.\nReplies: text\nState: Listening\nVoice style: ${DEFAULT_VOICE_INSTRUCTIONS}`);
 });
 
-test('voice mode cue plays before sentences in the same stream', async t => {
+test('voice mode filler plays before sentences in the same stream', async t => {
   const r = await rig(t);
   r.talk();
   await until(() => r.posts.length === 1);
-  await r.voice.cue('channel');
+  r.voice.checkFiller('channel', Date.now() + VOICE_FILLER_GAP_MS);
   reply('run-1', ['First sentence is here. Second sentence is here too.']);
   await r.voice.speak('channel', 'First sentence is here. Second sentence is here too.');
-  assert.deepEqual(r.provider.speeches.map(call => call.input), [VOICE_CUE_TEXT, 'First sentence is here.', 'Second sentence is here too.']);
+  assert.deepEqual(r.provider.speeches.map(call => call.input), [VOICE_FILLER_TEXTS[0], 'First sentence is here.', 'Second sentence is here too.']);
   assert.deepEqual(r.player.levels(), [1, 2, 3]);
 });

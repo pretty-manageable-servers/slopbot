@@ -9,8 +9,7 @@ import type { Message } from '../domain.js';
 import { errorReply, logError } from '../errors.js';
 import type { UsageMeter } from '../usage-meter.js';
 import type { WebReplies } from '../web-replies.js';
-import { containsSkipMarker, cutSpoken, heldSkipLength, isErrorReply, plainSpoken, SentenceSplitter, spokenText, VOICE_CUE_TEXT, VOICE_INSTRUCTIONS_MAX, VOICE_SPOKEN_MAX, VOICE_TURN_TIMEOUT_MS } from '../voice-rules.js';
-import { HEARD_CUE, READY_CUE } from '../voice-sounds.js';
+import { containsSkipMarker, cutSpoken, heldSkipLength, isErrorReply, plainSpoken, SentenceSplitter, spokenText, VOICE_FILLER_GAP_MS, VOICE_FILLER_MAX, VOICE_FILLER_TEXTS, VOICE_INSTRUCTIONS_MAX, VOICE_SPOKEN_MAX, VOICE_TURN_TIMEOUT_MS } from '../voice-rules.js';
 import { liveText, type LiveTextEvent } from '../live-text.js';
 import { PmAudio, speechPcm } from './audio.js';
 
@@ -51,11 +50,16 @@ export interface VoicePoster { reply: WebReplies["reply"] }
 /** One speaker's turn. It starts at capture and ends after the spoken reply, a timeout, or an early stop. */
 interface Turn {
   user: string;
-  /** True once voice_say queued the spoken text. The reply text is then not read aloud. */
+  /** True once voice_say queued spoken text. The reply text is then not read aloud. voice_say may be called again. */
   said: boolean;
   channel: string;
   timer: ReturnType<typeof setTimeout>;
-  cued: boolean;
+  /** Checks for a long silence while the bot works, and then speaks a filler. Started when the transcript is posted. */
+  filler?: ReturnType<typeof setInterval>;
+  /** Fillers spoken in this turn. */
+  fillers: number;
+  /** Time (ms since epoch) the silence counts from, before any audio plays. */
+  quietFrom: number;
   /** True once the model skipped the turn (voice_skip, or a [SKIP] marker). Its speech stops and is not started again. */
   skipped: boolean;
   /** The chat message that holds the transcript, once it is posted. Its reactions show the turn state. */
@@ -80,8 +84,8 @@ interface Session {
   listening: string | undefined;
   /** Time (ms since epoch) of the last "Listening" post. */
   listeningAt: number;
-  /** The cue clip for one set of voice instructions. Made again when the instructions change. Plays do not bill. */
-  cue: { instructions: string; clip: Promise<Buffer> } | undefined;
+  /** Filler clips by text, for one set of voice instructions. Made again when the instructions change. */
+  fillers: { instructions: string; clips: Map<string, Promise<Buffer>> } | undefined;
   refresh(): void;
   fail(error: unknown): void;
   stop(): void;
@@ -145,7 +149,7 @@ export class LiveAudio extends Readable {
 }
 
 /**
- * One reply's speech. One stream plays the cue and every sentence in order, so there is no gap between them.
+ * One reply's speech. One stream plays fillers and every sentence in order, so there is no gap between them.
  * Jobs run one at a time. Job N waits until job N-2 has finished playing, so at most one request is ahead of the one playing.
  */
 class TurnSpeech {
@@ -156,6 +160,8 @@ class TurnSpeech {
   private chain: Promise<void> = Promise.resolve();
   private readonly ends: number[] = [];
   private count = 0;
+  /** Jobs queued and not yet finished. */
+  pending = 0;
   private started = false;
   /** Time (ms since epoch) when the audio written so far has finished playing. */
   playEndsAt = 0;
@@ -172,6 +178,7 @@ class TurnSpeech {
   /** Queues one job. The job calls write() with each PCM chunk it gets. A failed job reports once and stops the speech. */
   queue(job: (write: (pcm: Buffer) => void) => Promise<void>): void {
     const index = this.count++;
+    this.pending++;
     this.chain = this.chain.then(async () => {
       try {
         if (index >= 2) await sleepUntil(this.ends[index - 2]!, this.signal);
@@ -183,6 +190,7 @@ class TurnSpeech {
         this.close();
       } finally {
         this.ends[index] = this.playEndsAt;
+        this.pending--;
       }
     });
   }
@@ -238,7 +246,7 @@ export class DiscordVoice {
       },
     });
 
-    registry.register({ name: 'voice_say', description: 'Say these words aloud in the voice channel. Call it first, once, for every voice request: one to three short spoken sentences, at most 60 words, plain words only (no markdown, code, emoji or URLs; say numbers as words). Then write the full answer for the chat with code, links and details as needed; the chat answer is not read aloud.', scope: 'discord',
+    registry.register({ name: 'voice_say', description: 'Say these words aloud in the voice channel. Plain words only (no markdown, code, emoji or URLs; say numbers as words). For every voice request, call it with the spoken answer: one to three short sentences, at most 60 words. Before a slow tool (search, fetch, code), you may first call it with one short line that tells what you will do. Then write the full answer for the chat with code, links and details as needed; the chat answer is not read aloud.', scope: 'discord',
       fields: {
         text: { type: 'string', description: 'The words to say aloud. One to three short spoken sentences, plain words.', required: true, max: VOICE_SPOKEN_MAX },
       },
@@ -248,11 +256,15 @@ export class DiscordVoice {
         if (!session || !turn || message.source !== 'voice' || message.channel !== session.channel) return 'Not in a voice turn.';
         if (session.replies === 'text') return 'Text-only session; not spoken.';
         if (turn.skipped) return 'Skipped. Nothing is spoken.';
-        if (turn.said) return 'Already speaking.';
+        // All voice_say calls of a turn share VOICE_SPOKEN_MAX. Text over the room left is cut, and later calls speak nothing.
+        const room = VOICE_SPOKEN_MAX - turn.speech.spokenChars;
+        if (turn.speech.capped || room <= 0) return 'Spoken limit reached. Nothing more is spoken in this turn.';
         turn.said = true;
         const splitter = new SentenceSplitter();
-        const plain = cutSpoken(plainSpoken(String(args.text ?? '')), VOICE_SPOKEN_MAX);
+        const full = plainSpoken(String(args.text ?? ''));
+        const plain = cutSpoken(full, room);
         this.queueSentences(session, turn, [...splitter.push(plain), ...splitter.flush()]);
+        if (plain !== full.trim()) turn.speech.capped = true;
         return 'Speaking.';
       },
     });
@@ -410,8 +422,8 @@ export class DiscordVoice {
         void target.send({ content: `Voice conversation failed. ${errorReply(error)}`, allowedMentions: { parse: [] } }).catch(error => logError('discord_voice_notice_failed', error, { server: this.server, channel }));
       }
     };
-    const session: Session = { channel, connection, abort, player, audio, replies, busy: false, turn: undefined, cue: undefined, listening: undefined, listeningAt: Number.NEGATIVE_INFINITY, refresh, fail, stop: () => {
-      // Leaving: no ready cue and no listening line for the turn that ends here. The line is removed.
+    const session: Session = { channel, connection, abort, player, audio, replies, busy: false, turn: undefined, fillers: undefined, listening: undefined, listeningAt: Number.NEGATIVE_INFINITY, refresh, fail, stop: () => {
+      // Leaving: no listening line for the turn that ends here. The line is removed.
       abort.abort(); clearTimeout(idle); if (session.turn) this.endTurn(session, session.turn); player.stop(true);
       void this.removeListening(session).catch(error => logError('discord_voice_listening_failed', error, { server: this.server, channel }));
       for (const capture of captures) capture.destroy();
@@ -440,8 +452,6 @@ export class DiscordVoice {
         const pcm = await this.capture(connection, user, captures, abort.signal);
         if (pcm.length < 19200 || member.voice.channelId !== channel || this.muted(user)) return;
         if (!(await this.usage.limiter.check(user)).allowed) return;
-        // The capture is accepted: the heard cue plays now, before transcription.
-        this.hear(session, turn);
         const transcript = await audio.transcribe(pcm, abort.signal);
         // Squall is billed at $0.004/minute, independent of token prices.
         await this.usage.limiter.record(user, Math.ceil(pcm.length / 192000 / 60 * 4000));
@@ -450,6 +460,7 @@ export class DiscordVoice {
         const sent = await this.poster.reply({ user, server: this.server, channel, text: transcript.slice(0, 2000), kind: 'voice' });
         posted = true;
         turn.transcript = { channel, messageId: sent.messageId };
+        this.startFillers(session, turn);
         void this.signTranscript(turn, EAR);
       })().catch(error => { failed = true; fail(error); }).finally(() => { if (!posted) this.endTurn(session, turn, !failed && !abort.signal.aborted); });
     });
@@ -484,31 +495,38 @@ export class DiscordVoice {
     } catch (error) { session.fail(error); this.endTurn(session, turn); }
   }
 
-  /** Plays a short cue while the bot works. Once per turn; the clip is made once per session. Text sessions play nothing. */
-  async cue(channel: string): Promise<void> {
+  /**
+   * Speaks a filler when the turn has been silent for VOICE_FILLER_GAP_MS while the bot works.
+   * At most VOICE_FILLER_MAX per turn. Each clip is made once per session. Text sessions play nothing.
+   */
+  checkFiller(channel: string, now = Date.now()): void {
     const session = this.session, turn = session?.turn;
-    if (!session || session.channel !== channel || !turn || turn.cued || turn.skipped || turn.said || session.replies === 'text') return;
-    turn.cued = true;
+    if (!session || !turn || session.channel !== channel || turn.filler === undefined) return;
+    const speech = turn.speech;
+    if (session.turn !== turn || turn.skipped || speech.capped || session.replies === 'text') return;
+    if (speech.pending > 0 || now < Math.max(speech.playEndsAt, turn.quietFrom) + VOICE_FILLER_GAP_MS) return;
+    if (turn.fillers >= VOICE_FILLER_MAX) { clearInterval(turn.filler); return; }
+    const text = VOICE_FILLER_TEXTS[turn.fillers % VOICE_FILLER_TEXTS.length]!;
+    turn.fillers++;
     const instructions = this.instructions();
-    let cue = session.cue;
-    if (!cue || cue.instructions !== instructions) {
-      const clip = session.audio.speak(VOICE_CUE_TEXT, session.abort.signal, instructions).then(async pcm => {
+    if (session.fillers?.instructions !== instructions) session.fillers = { instructions, clips: new Map() };
+    const clips = session.fillers.clips;
+    let clip = clips.get(text);
+    if (!clip) {
+      clip = session.audio.speak(text, session.abort.signal, instructions).then(async pcm => {
         // Thunder is billed at $10/1M characters.
-        await this.usage.limiter.record(turn.user, Array.from(VOICE_CUE_TEXT).length * 10);
+        await this.usage.limiter.record(turn.user, Array.from(text).length * 10);
         return pcm;
       });
-      cue = { instructions, clip };
-      session.cue = cue;
-      clip.catch(() => { if (session.cue === cue) session.cue = undefined; });
+      clips.set(text, clip);
+      clip.catch(() => { if (clips.get(text) === clip) clips.delete(text); });
     }
-    const clip = cue.clip;
-    // The cue goes in the turn's stream, before any sentence. A failed cue is reported, and the reply still plays.
-    turn.speech.queue(async write => {
-      const pcm = await clip.catch(error => { session.fail(error); });
-      // A skip that came first leaves the cue unplayed.
-      if (pcm && !turn.skipped && !turn.said) write(pcm);
+    const made = clip;
+    // A failed filler is reported, and the reply still plays.
+    speech.queue(async write => {
+      const pcm = await made.catch(error => { session.fail(error); });
+      if (pcm && !turn.skipped) write(pcm);
     });
-    await turn.speech.settled();
   }
 
   /** Live reply text. Sentences of a reply in a voice turn are queued for speech as the model streams them. */
@@ -569,7 +587,7 @@ export class DiscordVoice {
       if (speech.capped || turn.skipped) return;
       let said = plainSpoken(sentence);
       const room = VOICE_SPOKEN_MAX - speech.spokenChars;
-      if (Array.from(said).length > room) { said = cutSpoken(said, room); speech.capped = true; }
+      if (Array.from(said).length >= room) { said = cutSpoken(said, room); speech.capped = true; }
       if (!said) continue;
       speech.spokenChars += Array.from(said).length;
       speech.streamed = true;
@@ -595,29 +613,31 @@ export class DiscordVoice {
   }
 
   private startTurn(session: Session, user: string): Turn {
-    const turn: Turn = { user, channel: session.channel, cued: false, skipped: false, said: false, speech: new TurnSpeech(session.player, session.abort.signal, error => session.fail(error)), timer: setTimeout(() => this.endTurn(session, turn, true), VOICE_TURN_TIMEOUT_MS) };
+    const turn: Turn = { user, channel: session.channel, fillers: 0, quietFrom: Date.now(), skipped: false, said: false, speech: new TurnSpeech(session.player, session.abort.signal, error => session.fail(error)), timer: setTimeout(() => this.endTurn(session, turn, true), VOICE_TURN_TIMEOUT_MS) };
     turn.timer.unref();
     session.busy = true; session.turn = turn;
     return turn;
   }
 
-  /** The heard cue: the first audio of the turn's stream. In text mode there is no speech, so the cue plays alone. */
-  private hear(session: Session, turn: Turn): void {
-    if (session.replies === 'text') { this.playClip(session, HEARD_CUE); return; }
-    turn.speech.queue(async write => { if (!turn.skipped) write(HEARD_CUE); });
+  /** Starts the filler checks. The silence counts from now: the transcript is posted and the bot starts work. */
+  private startFillers(session: Session, turn: Turn): void {
+    if (session.replies === 'text' || session.turn !== turn) return;
+    turn.quietFrom = Date.now();
+    turn.filler = setInterval(() => this.checkFiller(session.channel), 1000);
+    turn.filler.unref();
   }
 
   /**
    * Ends a turn. `normal` is true when the reply was spoken, posted, skipped, empty, or timed out.
-   * A leave or an abort ends it without the ready cue and without the listening line.
+   * A leave or an abort ends it without the listening line.
    */
   private endTurn(session: Session, turn: Turn, normal = false): void {
     if (session.turn !== turn) return;
-    clearTimeout(turn.timer); session.turn = undefined; session.busy = false;
+    clearTimeout(turn.timer); clearInterval(turn.filler); session.turn = undefined; session.busy = false;
     skippedChannels.delete(turn.channel);
     turn.speech.close();
     for (const [id, run] of this.runs) if (run.turn === turn) this.runs.delete(id);
-    if (normal) { this.listen(session); void this.readyCue(session); }
+    if (normal) this.listen(session);
   }
 
   /** Marks the turn skipped: its queued and in-flight speech stops. Audio already written still plays. */
@@ -626,15 +646,6 @@ export class DiscordVoice {
     turn.skipped = true;
     skippedChannels.add(turn.channel);
     turn.speech.close();
-  }
-
-  /** The ready cue, once the player is idle. It never plays over a new turn or after a leave. */
-  private async readyCue(session: Session): Promise<void> {
-    try {
-      if (session.player.state && session.player.state.status !== AudioPlayerStatus.Idle) await entersState(session.player, AudioPlayerStatus.Idle, AbortSignal.any([session.abort.signal, AbortSignal.timeout(60_000)]));
-      if (session.turn || session.abort.signal.aborted || this.session !== session) return;
-      this.playClip(session, READY_CUE);
-    } catch { /* The wait ended early (leave or timeout). No ready cue. */ }
   }
 
   /** The text channel of the session, or undefined when the bot cannot post there. */

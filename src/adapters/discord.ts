@@ -308,8 +308,6 @@ export class DiscordServer implements ChatGateway {
         const channel = await this.client.channels.fetch(message.channel);
         if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Status channel unavailable");
         const sent = await channel.send({content,embeds:[{footer:{text:toolProgressFooter}}],...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? {reply:{messageReference:message.id,failIfNotExists:false}} : {}),allowedMentions:{parse:[],repliedUser:false}});
-        // The first progress post is the one that tells a voice user the bot is working.
-        if (message.source === "voice") void this.voice?.cue(message.channel).catch(error => logError("discord_voice_cue_failed", error, { server: message.server, channel: message.channel }));
         return sent;
       });
     }, presentation: discordPresentation, profiles: store, harness: store, tools: {

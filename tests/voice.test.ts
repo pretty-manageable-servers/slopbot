@@ -10,7 +10,7 @@ import { UsageMeter } from '../src/usage-meter.js';
 import { UserLimiter } from '../src/user-limiter.js';
 import type { ToolDefinition, ToolRegistry, ToolContext } from '../src/tools.js';
 import { loadConfig } from '../src/config.js';
-import { DEFAULT_VOICE_INSTRUCTIONS, VOICE_CUE_TEXT, VOICE_TURN_TIMEOUT_MS, spokenText } from '../src/voice-rules.js';
+import { DEFAULT_VOICE_INSTRUCTIONS, VOICE_FILLER_GAP_MS, VOICE_FILLER_MAX, VOICE_FILLER_TEXTS, VOICE_TURN_TIMEOUT_MS, spokenText } from '../src/voice-rules.js';
 
 function thunderWav(): Buffer {
   const wav = pcmWav(Buffer.from([1, 0, 254, 255]));
@@ -191,19 +191,23 @@ test('turn ends after timeout', async t => {
   await until(() => r.posts.length === 2);
 });
 
-test('cue plays once per turn', async t => {
+test('fillers rotate, stop at the max, and are cached per session', async t => {
   const r = await rig(t);
   r.talk();
   await until(() => r.posts.length === 1);
-  await r.voice.cue('channel');
-  await r.voice.cue('channel');
-  assert.deepEqual(r.provider.speeches, [VOICE_CUE_TEXT]);
+  // Each check is far in the future, so the silence is always long enough once the last filler is done.
+  for (let index = 0; index < VOICE_FILLER_MAX + 2; index++) {
+    r.voice.checkFiller('channel', Date.now() + (index + 1) * 60_000);
+    await settle();
+  }
+  assert.deepEqual(r.provider.speeches, VOICE_FILLER_TEXTS.slice(0, VOICE_FILLER_MAX));
   await r.voice.speak('channel', 'Done.');
-  // The next turn plays the cached cue. No new speech request is made for it.
+  // The next turn plays the cached first filler. No new speech request is made for it.
   r.talk();
   await until(() => r.posts.length === 2);
-  await r.voice.cue('channel');
-  assert.deepEqual(r.provider.speeches, [VOICE_CUE_TEXT, 'Done.']);
+  r.voice.checkFiller('channel', Date.now() + VOICE_FILLER_GAP_MS);
+  await settle();
+  assert.deepEqual(r.provider.speeches, [...VOICE_FILLER_TEXTS.slice(0, VOICE_FILLER_MAX), 'Done.']);
   assert.equal(r.notices.some(notice => notice.includes('failed')), false);
 });
 

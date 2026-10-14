@@ -1,7 +1,11 @@
 /** Rules for a voice turn. The reply is posted in chat and read aloud by text to speech. */
-export const VOICE_RULE = "This request was spoken in a Discord voice channel. Call voice_say first with what to say aloud (one to three short spoken sentences, plain words). Then write the full answer for the chat; it is not read aloud, so it may contain code, links and details. A voice channel has no task threads: never call task_start here. If the transcript is only noise, a filler word or cut-off speech with no request, call voice_skip and write no reply.";
+export const VOICE_RULE = "This request was spoken in a Discord voice channel. Call voice_say with what to say aloud (one to three short spoken sentences, plain words). Before a slow tool you may first call voice_say with one short line on what you will do, then call it again with the answer. Then write the full answer for the chat; it is not read aloud, so it may contain code, links and details. A voice channel has no task threads: never call task_start here. If the transcript is only noise, a filler word or cut-off speech with no request, call voice_skip and write no reply.";
 export const VOICE_SPOKEN_MAX = 600;
-export const VOICE_CUE_TEXT = "One moment.";
+/** Fillers spoken in order when a turn is silent while the bot works. */
+export const VOICE_FILLER_TEXTS = ["One moment.", "Still working on it.", "Almost there."] as const;
+/** Silence, in ms, before a filler is spoken. */
+export const VOICE_FILLER_GAP_MS = 8000;
+export const VOICE_FILLER_MAX = 3;
 export const VOICE_TURN_TIMEOUT_MS = 120_000;
 /** Spoken when a reply is an error report. The details stay in the chat. */
 export const VOICE_ERROR_TEXT = "Sorry, that did not work. The details are in the chat.";
