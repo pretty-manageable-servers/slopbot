@@ -8,7 +8,7 @@ import type { ToolExecutor } from "./tools.js";
 import { expandReplySubject, shouldRecall, personResponses, suggestRequestTool } from "./request-routing.js";
 import { isPrivateChannel } from "./private-chat.js";
 import { VOICE_RULE } from "./voice-rules.js";
-import { renderTranscript } from "./transcript.js";
+import { renderTranscript, requestLine } from "./transcript.js";
 import { slopbotId, type ConversationEventStore } from "./run-events.js";
 
 const privateChatRule = "This is a private web chat. It has no task threads. Do writes directly in this chat. Never call task_start. This replaces the task thread rule in the tool instructions for this chat.";
@@ -23,7 +23,7 @@ export class ContextBuilder {
     boundedHistory: (message: Message, taskKey: string, limit: number) => Promise<readonly PromptItem[]>,
     prefix = this.options.prefix, tools = this.options.tools, schemaBudget = 0) {
     const sourceVersion = await this.options.store.contextVersion(message.server, message.channel);
-    let request: PromptItem = { role: "user", content: message.text, author: message.author, sourceIds: [message.id], ...(message.modelImages?.length ? { images: message.modelImages } : {}) };
+    let request: PromptItem = { role: "user", content: requestLine(message), author: message.author, sourceIds: [message.id], ...(message.modelImages?.length ? { images: message.modelImages } : {}) };
     // A private chat has no task threads, so the thread rule in the tool instructions does not apply to it. Only this request says so.
     const privateChat = isPrivateChannel(message.channel) ? { private_web_chat: true, private_chat_rule: privateChatRule } : {};
     const voice = message.source === "voice" ? { voice_channel: true, voice_rule: VOICE_RULE } : {};
@@ -33,9 +33,11 @@ export class ContextBuilder {
     const referencedContext = message.replyTo ? await this.options.store.context(message, recentMessages) : undefined;
     const target = referencedContext?.find(item => item.id === message.replyTo);
     const expanded = await expandReplySubject(this.options.profiles, message, target, request);
-    budget -= this.options.counter.count([expanded]) - this.options.counter.count([request]);
+    // expandReplySubject returns the same object when it adds nothing. Otherwise the header goes back on, around the subject text.
+    const headed: PromptItem = expanded === request ? request : { ...expanded, content: requestLine(message, expanded.content) };
+    budget -= this.options.counter.count([headed]) - this.options.counter.count([request]);
     if (budget < 0) throw new RequestError("CONTEXT_BUDGET", "Request and reply subject exceed the context budget.", "Reduce the request or increase CONTEXT_TOKENS.", { inputLimit: this.options.inputLimit, schemaBudget });
-    request = expanded;
+    request = headed;
     // Slopbot's own ID comes from the store setting. Without a setting store, no message counts as Slopbot's own.
     const selfId = "setting" in this.options.store && typeof this.options.store.setting === "function" ? slopbotId(this.options.store as Pick<ConversationEventStore, "setting">, message.server) : undefined;
     const targetReplies = (target ? await this.options.store.modelReplies?.(message.server, [target.id]) : undefined) ?? new Map<string, { runId: string; text: string }>();

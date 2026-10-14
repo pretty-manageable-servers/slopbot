@@ -52,6 +52,20 @@ export function toLine(message: Message, ref: string, refs: ReadonlyMap<string, 
   return lineOf(message, ref, refs, false);
 }
 
+/**
+ * The current request as the model reads it: same time, name, handle, edited and file fields as a transcript line, no ref.
+ * `text` replaces message.text when a reply subject was added. Example: "[14:05] Alice (@alice) [current request]: text"
+ */
+export function requestLine(message: Message, text: string = message.text): string {
+  const line = lineOf(message, "", new Map(), false);
+  let head = `[${line.time}] ${line.name}`;
+  if (line.handle) head += ` (@${line.handle})`;
+  if (line.bot) head += " [bot]";
+  if (line.edited) head += " [edited]";
+  if (line.attachments?.length) head += ` [files: ${line.attachments.join(", ")}]`;
+  return `${head} [current request]: ${text}`;
+}
+
 /** The text of one line for the prompt. Example: "[14:02] #m3 Alice (@alice) ↩#m1 [edited] [files: a.png]: text" */
 export function formatLine(line: TranscriptLine): string {
   let head = `[${line.time}] #${line.ref} ${line.notice ? "Slopbot notice" : line.name}`;
