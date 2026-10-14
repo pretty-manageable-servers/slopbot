@@ -159,7 +159,7 @@ test("task handoff carries the referenced profile rather than unrelated channel 
   await f.store.ingest(request);
   await f.bot.startTask(request,request.text);
   const seed=f.store.canonicalMessage("s","task-seed:correction")!;
-  assert.ok(seed.text.includes('"context_role":"reply_target"')&&seed.text.includes("Rice Farmer"));
+  assert.ok(seed.text.includes("[reply target]")&&seed.text.includes("Rice Farmer"));
   assert.ok(!seed.text.includes("irrelevant weather"));
   assert.ok(f.llm.prompts[0]?.inputs.some(item=>item.content.includes("Rice Farmer")));
 });
