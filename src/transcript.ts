@@ -19,7 +19,7 @@ export interface TranscriptLine {
 }
 
 const NO_TIME = "--:--";
-const REF_VALUE = /^#?m\d+$/;
+const REF_VALUE = /^#?[ms]\d+$/;
 
 function clockTime(timestamp: number | undefined): string {
   if (timestamp === undefined || !Number.isFinite(timestamp)) return NO_TIME;
@@ -69,9 +69,10 @@ export function formatLine(line: TranscriptLine): string {
  * Slopbot's own messages with a model reply become assistant turns (one per run, with the run's text).
  * Other messages become user-side lines. Consecutive lines share one user turn.
  * `replyTo` is the real ID of the message being answered.
+ * `refPrefix` is the letter of the refs: "m" for history, "s" for a task seed.
  */
 export function renderTranscript(messages: readonly Message[], selfId: string | undefined,
-  modelReplies: ReadonlyMap<string, { runId: string; text: string }>, replyTo?: string):
+  modelReplies: ReadonlyMap<string, { runId: string; text: string }>, replyTo?: string, refPrefix = "m"):
   { items: PromptItem[]; refs: Map<string, string> } {
   type Slot = { kind: "assistant"; text: string } | { kind: "user"; message: Message; own: boolean; ref: string };
   // Pass 1: decide each message's side, and give user-side lines their refs.
@@ -89,7 +90,7 @@ export function renderTranscript(messages: readonly Message[], selfId: string | 
       slots.push({ kind: "assistant", text: reply.text });
       continue;
     }
-    const ref = `m${refs.size + 1}`;
+    const ref = `${refPrefix}${refs.size + 1}`;
     refs.set(ref, message.id);
     ids.set(message.id, ref);
     slots.push({ kind: "user", message, own, ref });
@@ -146,4 +147,30 @@ export function resolveRefs(args: Json, refs: ReadonlyMap<string, string>): Json
     return Object.fromEntries(Object.entries(args).map(([key, value]) => [key, resolveRefs(value, refs)]));
   }
   return args;
+}
+
+/** The store methods that keep task refs. Both adapters have them; the Store port does not declare them. */
+export interface SettingsPort {
+  setting?(server: string, key: string): unknown;
+  setSetting?(server: string, key: string, value: Json): unknown;
+}
+
+const taskRefsKey = (thread: string): string => `task_refs:${thread}`;
+
+/**
+ * Saves the refs of a task seed (ref -> real message ID) for the task thread.
+ * Refs from earlier seeds of the same thread are kept.
+ */
+export async function saveTaskRefs(store: SettingsPort, server: string, thread: string, refs: ReadonlyMap<string, string>): Promise<void> {
+  if (!store.setSetting) throw new Error("Store cannot save task refs");
+  const merged = new Map([...await loadTaskRefs(store, server, thread), ...refs]);
+  await store.setSetting(server, taskRefsKey(thread), Object.fromEntries(merged));
+}
+
+/** The saved refs of a task thread. Missing or malformed values give an empty map. */
+export async function loadTaskRefs(store: SettingsPort, server: string, thread: string | undefined): Promise<Map<string, string>> {
+  if (!thread || !store.setting) return new Map();
+  const value = await store.setting(server, taskRefsKey(thread));
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return new Map();
+  return new Map(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
 }

@@ -12,7 +12,7 @@ import { ToolError, discordOnlyMessage, type ToolCall, type ToolRegistry, type T
 import type { ParticipationGate } from "./participation.js";
 import { UserLimitError, limitReply } from "./user-limiter.js";
 import { isPrivateChannel } from "./private-chat.js";
-import { renderTranscript } from "./transcript.js";
+import { renderTranscript, saveTaskRefs, type SettingsPort } from "./transcript.js";
 import { slopbotId, type ConversationEventStore } from "./run-events.js";
 
 export interface Incoming extends Message {
@@ -254,7 +254,7 @@ export class Bot {
     const context = message.replyTo ? available.filter(item => referenceIds.has(item.id)) : available;
     const selfId = "setting" in this.store ? slopbotId(this.store as Pick<ConversationEventStore, "setting">, message.server) : undefined;
     const replies = (await this.store.modelReplies?.(message.server, context.map(item => item.id))) ?? new Map<string, { runId: string; text: string }>();
-    const { items } = renderTranscript(context, selfId, replies, message.replyTo);
+    const { items, refs: seedRefs } = renderTranscript(context, selfId, replies, message.replyTo, "s");
     // Model text is a labelled quote here. The seed is one user message, so an assistant turn cannot be sent as a real role.
     const contextText = items.map(item => item.role === "assistant" ? `Slopbot: ${item.content}` : item.content).join("\n");
     const subject = message.replyTo ? await replySubject(this.options.profiles, message.server, context.find(item => item.id === message.replyTo)?.text ?? "") : undefined;
@@ -264,6 +264,8 @@ export class Bot {
       author: message.author, text: `Task goal: ${resolvedGoal}\nSource-channel context:\n${contextText}`,
       taskId: thread, addressed: true,
     };
+    // Task runs resolve these "s" refs. Saved before the seed is queued.
+    await saveTaskRefs(this.store as SettingsPort, message.server, thread, seedRefs);
     await this.store.linkOutput(seed, undefined, message.id);
     for (const source of context) await this.store.linkOutput(seed, undefined, source.id);
     if (this.options.worker) await this.options.worker.enqueue(seed);
