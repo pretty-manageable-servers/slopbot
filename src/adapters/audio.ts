@@ -24,12 +24,31 @@ export function speechPcm(wav: Buffer): Buffer {
     offset = start + size + (size % 2);
   }
   if (!valid || !data || data.length % 2) throw new Error('Expected 24 kHz mono 16-bit PCM speech');
+  return speechSamples(data);
+}
+
+/** 24 kHz mono s16le samples to Discord's 48 kHz stereo s16le. Each sample is copied 4 times. `data` has an even length. */
+function speechSamples(data: Buffer): Buffer {
   const pcm = Buffer.alloc(data.length * 4);
   for (let index = 0; index < data.length / 2; index++) {
     const sample = data.readInt16LE(index * 2);
     for (let copy = 0; copy < 4; copy++) pcm.writeInt16LE(sample, index * 8 + copy * 2);
   }
   return pcm;
+}
+
+/** One SSE line. `audio` is a delta's base64 PCM. `done` ends the stream. */
+type SseEvent = { done: true } | { audio: Buffer } | undefined;
+
+function sseEvent(line: string): SseEvent {
+  if (!line.startsWith('data:')) return undefined;
+  const payload = line.slice(5).trim();
+  if (payload === '[DONE]') return { done: true };
+  let event: { type?: unknown; audio?: unknown; error?: { message?: unknown } };
+  try { event = JSON.parse(payload) as typeof event; } catch { throw new Error('Speech stream sent invalid JSON'); }
+  if (event.type === 'error') throw new Error(typeof event.error?.message === 'string' ? event.error.message : 'Speech stream failed');
+  if (event.type !== 'speech.audio.delta' || typeof event.audio !== 'string') return undefined;
+  return { audio: Buffer.from(event.audio, 'base64') };
 }
 
 export class PmAudio {
@@ -64,5 +83,44 @@ export class PmAudio {
   /** Thunder speech converted to Discord's playback format. */
   async speak(text: string, signal: AbortSignal, instructions?: string): Promise<Buffer> {
     return speechPcm(await this.speakWav(text, signal, instructions));
+  }
+
+  /**
+   * Thunder speech as Discord PCM, yielded as the gateway streams it (SSE). A reply that is not an event stream
+   * is read as one WAV and yielded once. A sample split across two deltas waits for its second byte.
+   */
+  async *speakStream(text: string, signal: AbortSignal, instructions?: string): AsyncGenerator<Buffer> {
+    if (!text.length || text.length > 4096) throw new Error('Speech requires 1 to 4096 characters');
+    const body = { model: 'thunder', input: text, voice: this.voice, stream: true, stream_format: 'sse', ...(instructions ? { instructions } : {}) };
+    const response = await this.request('speech', JSON.stringify(body), true, signal);
+    if (!(response.headers.get('content-type') ?? '').startsWith('text/event-stream')) {
+      yield speechPcm(Buffer.from(await response.arrayBuffer()));
+      return;
+    }
+    if (!response.body) throw new Error('Speech stream has no body');
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let streamText = '', odd = Buffer.alloc(0), finished = false;
+    try {
+      while (!finished) {
+        const { done, value } = await reader.read();
+        streamText += done ? decoder.decode() : decoder.decode(value, { stream: true });
+        const lines = streamText.split('\n');
+        streamText = lines.pop() ?? '';
+        if (done) { lines.push(streamText); streamText = ''; }
+        for (const line of lines) {
+          const event = sseEvent(line.replace(/\r$/, ''));
+          if (event && 'done' in event) { finished = true; break; }
+          if (!event) continue;
+          const bytes = Buffer.concat([odd, event.audio]);
+          const usable = bytes.length - (bytes.length % 2);
+          odd = Buffer.from(bytes.subarray(usable));
+          if (usable > 0) yield speechSamples(bytes.subarray(0, usable));
+        }
+        if (done) break;
+      }
+    } finally {
+      await reader.cancel().catch(() => undefined);
+    }
   }
 }
