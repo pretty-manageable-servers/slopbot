@@ -3,23 +3,34 @@ export const VOICE_RULE = "This request was spoken in a Discord voice channel an
 export const VOICE_SPOKEN_MAX = 600;
 export const VOICE_CUE_TEXT = "One moment.";
 export const VOICE_TURN_TIMEOUT_MS = 120_000;
-
-/** Text for TTS: cut at the last . ! ? at or before max characters, else a hard cut. Trims. */
 /** Spoken when a reply is an error report. The details stay in the chat. */
 export const VOICE_ERROR_TEXT = "Sorry, that did not work. The details are in the chat.";
 
-export function spokenText(text: string, max = VOICE_SPOKEN_MAX): string {
-  // An error reply starts with a code such as [ACTION_UNCERTAIN]. Do not read it aloud.
-  if (/^\s*\\?\[[A-Z][A-Z0-9\\_]*\]/.test(text)) return VOICE_ERROR_TEXT;
-  // Markdown marks, links and URLs are not spoken.
-  const plain = text.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, "").replace(/<[@#&!]*\d+>/g, "").replace(/[\\*_`~#>|]/g, "").replace(/\s+/g, " ");
-  const chars = Array.from(plain.trim());
+/** An error reply starts with a code such as [ACTION_UNCERTAIN]. Its text is not read aloud. */
+export function isErrorReply(text: string): boolean {
+  return /^\s*\\?\[[A-Z][A-Z0-9\\_]*\]/.test(text);
+}
+
+/** Text without markdown marks, links, URLs, mentions or extra spaces. Trimmed. */
+export function plainSpoken(text: string): string {
+  return text.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, "").replace(/<[@#&!]*\d+>/g, "").replace(/[\\*_`~#>|]/g, "").replace(/\s+/g, " ").trim();
+}
+
+/** Plain text for TTS: cut at the last . ! ? at or before max characters, else a hard cut. Trims. */
+export function cutSpoken(plain: string, max: number): string {
+  const chars = Array.from(plain);
   if (chars.length <= max) return chars.join("");
   const head = chars.slice(0, max);
   for (let i = head.length - 1; i >= 0; i--) {
     if (".!?".includes(head[i]!)) return head.slice(0, i + 1).join("").trim();
   }
   return head.join("").trim();
+}
+
+/** Text for TTS: an error code gives VOICE_ERROR_TEXT; otherwise plain text cut to max characters. */
+export function spokenText(text: string, max = VOICE_SPOKEN_MAX): string {
+  if (isErrorReply(text)) return VOICE_ERROR_TEXT;
+  return cutSpoken(plainSpoken(text), max);
 }
 
 /** Server setting that holds the TTS voice instructions. Empty or unset means the default. */
@@ -30,4 +41,65 @@ export const DEFAULT_VOICE_INSTRUCTIONS = "A calm, clear adult man with a low vo
 /** The instructions sent with each speech request for a server. */
 export function voiceInstructions(setting: string | undefined, envDefault?: string): string {
   return setting?.trim() || envDefault?.trim() || DEFAULT_VOICE_INSTRUCTIONS;
+}
+
+const CLOSERS = "\"')]}”’»";
+const ABBREVIATIONS = new Set(["e.g", "i.e", "mr", "mrs", "ms", "dr", "vs", "prof", "jr", "sr"]);
+const SHORT_PIECE = 20;
+
+/**
+ * Splits streamed reply text into sentences for speech. push() returns the sentences that are complete;
+ * flush() returns the rest. A sentence ends at . ! ? (optionally with closing quotes or brackets) followed by
+ * whitespace, or at a newline. Common abbreviations and decimals do not end a sentence. A piece shorter than
+ * 20 characters joins the next sentence; flush() does not join.
+ */
+export class SentenceSplitter {
+  private pending = "";
+  private carry = "";
+
+  push(delta: string): string[] {
+    this.pending += delta;
+    const out: string[] = [];
+    let start = 0;
+    let i = 0;
+    while (i < this.pending.length) {
+      const c = this.pending[i]!;
+      let stop = -1, resume = -1;
+      if (c === "\n") { stop = i; resume = i + 1; }
+      else if (".!?".includes(c)) {
+        let j = i + 1;
+        while (j < this.pending.length && CLOSERS.includes(this.pending[j]!)) j++;
+        // The text after the mark is not known yet. Wait for more text.
+        if (j >= this.pending.length) break;
+        if (/\s/.test(this.pending[j]!) && !(c === "." && isAbbreviation(this.pending.slice(start, i)))) { stop = j; resume = j; }
+      }
+      if (stop < 0) { i++; continue; }
+      this.take(this.pending.slice(start, stop), out);
+      start = resume; i = resume;
+    }
+    this.pending = this.pending.slice(start);
+    return out;
+  }
+
+  flush(): string[] {
+    const rest = this.pending;
+    this.pending = "";
+    const piece = [this.carry, rest.trim()].filter(Boolean).join(" ");
+    this.carry = "";
+    return piece ? [piece] : [];
+  }
+
+  private take(text: string, out: string[]): void {
+    const piece = [this.carry, text.trim()].filter(Boolean).join(" ");
+    this.carry = "";
+    if (!piece) return;
+    if (Array.from(piece).length < SHORT_PIECE) this.carry = piece;
+    else out.push(piece);
+  }
+}
+
+/** True when the text ends with a known abbreviation such as "e.g" or "Dr" (the dot is not included). */
+function isAbbreviation(before: string): boolean {
+  const token = /[A-Za-z.]+$/.exec(before)?.[0].toLowerCase();
+  return token !== undefined && ABBREVIATIONS.has(token);
 }
