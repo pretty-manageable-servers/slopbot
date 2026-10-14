@@ -523,3 +523,30 @@ test('voice_skip beats voice_say', async t => {
   await settle();
   assert.equal(r.speeches.length, 0);
 });
+
+test('leave from a voice turn waits for the reply', async t => {
+  const r = await rig(t);
+  r.talk();
+  await until(() => r.posts.length === 1);
+  await r.say('Goodbye for now.');
+  const leave = { message: { author: 'user', source: 'voice', channel: 'channel' }, isAdmin: false } as unknown as ToolContext;
+  assert.equal(await r.tools.get('voice')!.execute(leave, { action: 'leave' }), 'Leaving after this reply.');
+  // The session is still live while the reply is pending.
+  assert.match(String(await r.tools.get('voice')!.execute(r.context, { action: 'status' })), /Voice session in/);
+  await r.voice.speak('channel', 'Goodbye for now.');
+  await until(() => r.player.ended[0] === true);
+  assert.deepEqual(r.player.events, ['play 0', 'end 0']);
+  assert.deepEqual(r.speeches, ['Goodbye for now.']);
+  // The reply ended, so the session is gone.
+  assert.match(String(await r.tools.get('voice')!.execute(r.context, { action: 'status' })), /No active voice session/);
+});
+
+test('leave from text leaves at once', async t => {
+  const r = await rig(t);
+  r.talk();
+  await until(() => r.posts.length === 1);
+  // A Discord text message has no voice source.
+  const leave = { message: { author: 'user', channel: 'channel' }, isAdmin: false } as unknown as ToolContext;
+  assert.equal(await r.tools.get('voice')!.execute(leave, { action: 'leave' }), 'Left the voice channel.');
+  assert.match(String(await r.tools.get('voice')!.execute(r.context, { action: 'status' })), /No active voice session/);
+});

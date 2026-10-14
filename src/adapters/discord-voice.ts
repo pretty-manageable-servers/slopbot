@@ -291,6 +291,12 @@ export class DiscordVoice {
         const member = await guild.members.fetch({ user: message.author, force: true });
         if (args.action === 'leave') {
           if (this.session && !isAdmin && member.voice.channelId !== this.session.channel) throw new ToolError('Join the active voice channel or ask a server admin to stop the session.');
+          // WP1: a leave from a voice turn lets the reply finish first. endTurn() leaves after it.
+          const session = this.session, turn = session?.turn;
+          if (message.source === 'voice' && session && turn && message.channel === session.channel) {
+            turn.leaveAfter = true;
+            return 'Leaving after this reply.';
+          }
           this.leave(); return 'Left the voice channel.';
         }
         if (this.config.mock) throw new ToolError('Voice requires LLM_MODE=provider and an AI key with squall and thunder access.');
@@ -482,7 +488,7 @@ export class DiscordVoice {
     // A skipped turn (voice_skip, or a [SKIP] marker in the reply) speaks nothing and ends silently.
     const skipped = turn.skipped || containsSkipMarker(text);
     if (skipped) { this.skipTurn(turn); void this.signTranscript(turn, SLEEP, EAR); }
-    if (session.replies === 'text') { this.endTurn(session, turn, true); session.refresh(); return; }
+    if (session.replies === 'text') { this.endTurn(session, turn, true); if (this.session === session) session.refresh(); return; }
     try {
       const speech = turn.speech;
       // Nothing was streamed (an error reply, or no sentence): speak the whole reply once.
@@ -497,7 +503,8 @@ export class DiscordVoice {
       if (session.player.state && session.player.state.status !== AudioPlayerStatus.Idle) await entersState(session.player, AudioPlayerStatus.Idle, AbortSignal.any([session.abort.signal, AbortSignal.timeout(60_000)])).catch(() => undefined);
       if (session.turn !== turn) return;
       this.endTurn(session, turn, true);
-      session.refresh();
+      // The session may have left in endTurn (leave after the reply). Its idle timer must not start then.
+      if (this.session === session) session.refresh();
     } catch (error) { session.fail(error); this.endTurn(session, turn); }
   }
 
@@ -644,6 +651,8 @@ export class DiscordVoice {
     turn.speech.close();
     for (const [id, run] of this.runs) if (run.turn === turn) this.runs.delete(id);
     if (normal) this.listen(session);
+    // WP1: the voice tool's leave ran in this turn. Leave now that the reply has ended.
+    if (turn.leaveAfter && this.session === session) this.leave();
   }
 
   /** Marks the turn skipped: its queued and in-flight speech stops. Audio already written still plays. */
