@@ -38,6 +38,67 @@
     }
   }
 
+  // Math. KaTeX draws it when window.katex exists. Otherwise the source shows as code.
+  // KaTeX gets the raw source, so callers unescape it first.
+  const MATH_BLOCKS = [['$$', '$$'], ['\\[', '\\]']];
+  // Inline math, in this order: \(…\), \[…\], a backslash pair (skipped, so \$ is not math), $$…$$, $…$.
+  // Pandoc rule for $: no space after the opening $, no space before the closing $, no digit after the closing $.
+  const MATH_INLINE = /\\\(((?:\\[\s\S]|[^\\\u0001\u0002])+?)\\\)|\\\[((?:\\[\s\S]|[^\\\u0001\u0002])+?)\\\]|\\[\s\S]|\$\$((?:\\[\s\S]|[^\\$\u0001\u0002])+?)\$\$|\$(?!\s|\$)((?:\\[\s\S]|[^\\$\u0001\u0002])+?)(?<!\s)\$(?!\d)/g;
+
+  // Math is a placeholder with the source in data-tex. The page's CSP has no 'unsafe-inline' for styles,
+  // so KaTeX output is not put in as HTML. typeset() draws it with katex.render after the markup is in the page.
+  // Until then, or without KaTeX, the escaped source shows as text.
+  function mathHtml(tex, displayMode) {
+    const attr = `data-tex="${esc(tex)}"`;
+    const src = `<code class="math-src">${esc(tex)}</code>`;
+    return displayMode ? `<div class="math-block" ${attr}>${src}</div>` : `<span class="math" ${attr}>${src}</span>`;
+  }
+
+  // Draws every math placeholder under root that is not drawn yet. Does nothing without window.katex.
+  function typeset(root) {
+    const katex = typeof window !== 'undefined' ? window.katex : undefined;
+    if (!katex || typeof katex.render !== 'function' || !root || typeof root.querySelectorAll !== 'function') return;
+    for (const el of root.querySelectorAll('[data-tex]:not([data-typeset])')) {
+      const tex = el.getAttribute('data-tex') ?? '';
+      const displayMode = el.classList.contains('math-block');
+      el.setAttribute('data-typeset', '');
+      try {
+        el.textContent = '';
+        katex.render(tex, el, { displayMode, throwOnError: false, output: 'html', trust: false, maxSize: 20, maxExpand: 1000 });
+      } catch {
+        el.textContent = tex;
+      }
+    }
+  }
+
+  // A display block opens with $$ or \[ and closes on a line that ends with the matching closer.
+  // A blank line ends the search. Returns the TeX and the index after the block, or null.
+  function mathBlockAt(lines, i) {
+    const t = lines[i].trim();
+    for (const [open, close] of MATH_BLOCKS) {
+      if (!t.startsWith(open)) continue;
+      const first = t.slice(open.length);
+      if (first.includes(close)) {
+        // One line. Text after the closer means it is not a block.
+        const tex = first.endsWith(close) ? first.slice(0, -close.length).trim() : '';
+        return tex ? { tex, end: i + 1 } : null;
+      }
+      const body = [first];
+      for (let j = i + 1; j < lines.length; j++) {
+        const rest = lines[j].trim();
+        if (rest === '') break;
+        if (rest.endsWith(close)) {
+          body.push(rest.slice(0, -close.length));
+          const tex = body.join('\n').trim();
+          return tex ? { tex, end: j + 1 } : null;
+        }
+        body.push(lines[j]);
+      }
+      return null;
+    }
+    return null;
+  }
+
   // Runs on one line. Finished HTML is held in `held` and put back last, so later rules never touch it.
   function inline(raw) {
     const held = [];
@@ -45,6 +106,11 @@
     let s = esc(raw);
 
     s = s.replace(/`([^`]+)`/g, (_, code) => hold(`<code>${code}</code>`));
+    // Math runs after code spans, so code is never math.
+    s = s.replace(MATH_INLINE, (match, paren, bracket, dbl, dollar) => {
+      const tex = paren ?? bracket ?? dbl ?? dollar;
+      return tex === undefined ? match : hold(mathHtml(unesc(tex), false));
+    });
     // Discord escapes: a backslash before punctuation shows the punctuation as plain text.
     s = s.replace(/\\(&(?:amp|lt|gt|quot|#39);|[!-\/:-@\[-`{-~])/g, (_, ch) => hold(ch));
     s = s.replace(/\[([^\]\u0001\u0002]+)\]\(((?:[^\s()\u0001\u0002]|\([^\s()\u0001\u0002]*\))+)\)/g, (match, label, url) => {
@@ -144,8 +210,9 @@
     }
     return runs.map((run) => {
       const tag = run[0].ordered ? 'ol' : 'ul';
+      const start = run[0].ordered && run[0].num !== 1 ? ` start="${run[0].num}"` : '';
       const rows = run.map((item) => `<li>${inline(item.text)}${item.subs.length ? listHtml(item.subs) : ''}</li>`);
-      return `<${tag}>${rows.join('')}</${tag}>`;
+      return `<${tag}${start}>${rows.join('')}</${tag}>`;
     }).join('');
   }
 
@@ -156,7 +223,7 @@
     for (; i < lines.length; i++) {
       const match = lines[i].match(LIST_ITEM);
       if (!match) break;
-      const item = { ordered: /\d/.test(match[2]), text: match[3], subs: [] };
+      const item = { ordered: /\d/.test(match[2]), num: Number.parseInt(match[2], 10), text: match[3], subs: [] };
       const parent = items[items.length - 1];
       if (match[1].length >= 2 && parent) parent.subs.push(item);
       else items.push(item);
@@ -176,12 +243,17 @@
       const line = lines[i];
       const fence = line.match(/^```([^`]*)$/);
       const heading = line.match(/^(#{1,3}) (.+)$/);
+      const math = mathBlockAt(lines, i);
 
       if (fence) {
         flush();
         const body = [];
         for (i++; i < lines.length && !/^```\s*$/.test(lines[i]); i++) body.push(lines[i]);
         html.push(codeBlock(fence[1], body));
+      } else if (math) {
+        flush();
+        html.push(mathHtml(math.tex, true));
+        i = math.end - 1;
       } else if (line.startsWith('-# ')) {
         flush();
         html.push(`<small class="md-sub">${inline(line.slice(3))}</small>`);
@@ -217,6 +289,6 @@
   const renderMarkdown = (text) =>
     renderBlocks(String(text ?? '').replace(/\r\n?/g, '\n').replace(CONTROL, '').split('\n'));
 
-  if (typeof window !== 'undefined') window.SlopbotMarkdown = { renderMarkdown };
-  if (typeof module !== 'undefined') module.exports = { renderMarkdown };
+  if (typeof window !== 'undefined') window.SlopbotMarkdown = { renderMarkdown, typeset };
+  if (typeof module !== 'undefined') module.exports = { renderMarkdown, typeset };
 })();

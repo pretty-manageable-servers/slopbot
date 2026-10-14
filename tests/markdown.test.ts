@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { parseHTML } from "linkedom";
 import { runInNewContext } from "node:vm";
 
 type Render = (text: string) => string;
@@ -174,4 +175,127 @@ test("Discord backslash escapes show the plain character", () => {
   assert.equal(render('word \\"ok\\" and \\*not italic\\* and \\_x\\_'), '<p>word &quot;ok&quot; and *not italic* and _x_</p>');
   assert.equal(render('`\\*kept*`'), '<p><code>\\*kept*</code></p>');
   assert.equal(render('a \\\\ b \\n'), '<p>a \\ b \\n</p>');
+});
+
+// Math. The placeholders come from the plain render. typeset() gets a fake katex and a DOM from linkedom.
+type KatexCall = { tex: string; displayMode: boolean; opts: Record<string, unknown> };
+
+const ENTITY: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" };
+const decode = (text: string) => text.replace(/&(amp|lt|gt|quot|#39);/g, (_, name: string) => ENTITY[name] ?? "");
+// The raw TeX in data-tex, decoded the way the HTML parser decodes attribute values.
+const dataTex = (html: string) => decode(html.match(/data-tex="([^"]*)"/)?.[1] ?? "<missing>");
+
+test("inline dollar math", () => {
+  const out = render("Euler: $e^{i\\pi}+1=0$ ok");
+  assert.equal(out, '<p>Euler: <span class="math" data-tex="e^{i\\pi}+1=0"><code class="math-src">e^{i\\pi}+1=0</code></span> ok</p>');
+  assert.equal(dataTex(out), "e^{i\\pi}+1=0");
+});
+
+test("price dollars are not math", () => {
+  assert.equal(render("It costs $5 and $10 each."), "<p>It costs $5 and $10 each.</p>");
+  assert.equal(render("$x$5 and $ y$"), "<p>$x$5 and $ y$</p>");
+});
+
+test("block math across lines", () => {
+  assert.equal(
+    render("before\n$$\na^2\n+ b^2\n$$\nafter"),
+    '<p>before</p><div class="math-block" data-tex="a^2\n+ b^2"><code class="math-src">a^2\n+ b^2</code></div><p>after</p>',
+  );
+});
+
+test("backslash paren and bracket", () => {
+  assert.equal(
+    render("see \\(a_1\\) now"),
+    '<p>see <span class="math" data-tex="a_1"><code class="math-src">a_1</code></span> now</p>',
+  );
+  assert.equal(render("\\[\nb_2\n\\]"), '<div class="math-block" data-tex="b_2"><code class="math-src">b_2</code></div>');
+});
+
+test("underscores in math are not italics", () => {
+  assert.equal(
+    render("$a_1 + b_2$ and _c_"),
+    '<p><span class="math" data-tex="a_1 + b_2"><code class="math-src">a_1 + b_2</code></span> and <em>c</em></p>',
+  );
+});
+
+test("math in code is not math", () => {
+  assert.equal(render("`$x$`"), "<p><code>$x$</code></p>");
+  assert.equal(
+    render("```\n$$x$$\n```"),
+    '<div class="md-code"><div class="md-code-head"><button type="button" class="md-copy">Copy</button></div><pre><code>$$x$$</code></pre></div>',
+  );
+});
+
+test("escaped dollar", () => {
+  assert.equal(render("cost \\$5 and \\$6"), "<p>cost $5 and $6</p>");
+  assert.equal(render("\\$x$"), "<p>$x$</p>");
+});
+
+test("no katex shows source", () => {
+  assert.equal(
+    render("x $a < b$ y"),
+    '<p>x <span class="math" data-tex="a &lt; b"><code class="math-src">a &lt; b</code></span> y</p>',
+  );
+  assert.equal(
+    render("$$\nc & d\n$$"),
+    '<div class="math-block" data-tex="c &amp; d"><code class="math-src">c &amp; d</code></div>',
+  );
+});
+
+test("display math from a real document keeps \\, and has no em", () => {
+  const tex = "\\frac{d\\,KE}{dt} = \\rho\\int_{-\\infty}^{\\infty} u_t\\,u_{tt}\\,dx.";
+  const out = render(`$$${tex}$$`);
+  assert.equal(out, `<div class="math-block" data-tex="${tex}"><code class="math-src">${tex}</code></div>`);
+  assert.equal(dataTex(out), tex);
+  assert.match(out, /\\,/);
+  assert.doesNotMatch(out, /<em>/);
+});
+
+test("ordered list keeps start number", () => {
+  assert.equal(render("3. c\n4. d"), '<ol start="3"><li>c</li><li>d</li></ol>');
+  assert.equal(
+    render("1. a\n2. b\n$$\nx\n$$\n3. c"),
+    '<ol><li>a</li><li>b</li></ol><div class="math-block" data-tex="x"><code class="math-src">x</code></div><ol start="3"><li>c</li></ol>',
+  );
+});
+
+test("typeset draws each math placeholder once with katex.render", () => {
+  const calls: KatexCall[] = [];
+  const katex = {
+    render(tex: string, el: { textContent: string | null }, opts: Record<string, unknown>) {
+      calls.push({ tex, displayMode: opts.displayMode === true, opts: JSON.parse(JSON.stringify(opts)) as Record<string, unknown> });
+      el.textContent = `drawn:${tex}`;
+    },
+  };
+  const win: { katex?: unknown; SlopbotMarkdown?: { renderMarkdown: Render; typeset: (root: unknown) => void } } = { katex };
+  runInNewContext(source, { window: win, URL });
+  const lib = win.SlopbotMarkdown as { renderMarkdown: Render; typeset: (root: unknown) => void };
+
+  const { document } = parseHTML("<!doctype html><html><body></body></html>");
+  const body = document.body;
+  body.innerHTML = lib.renderMarkdown("x $a_1$ and\n\n$$\nb\n$$");
+  lib.typeset(body);
+  lib.typeset(body);
+
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], {
+    tex: "a_1",
+    displayMode: false,
+    opts: { displayMode: false, throwOnError: false, output: "html", trust: false, maxSize: 20, maxExpand: 1000 },
+  });
+  assert.equal(calls[1]?.tex, "b");
+  assert.equal(calls[1]?.displayMode, true);
+  assert.equal(body.querySelector(".math")?.textContent, "drawn:a_1");
+  assert.equal(body.querySelectorAll("[data-typeset]").length, 2);
+});
+
+test("typeset without katex keeps the source text", () => {
+  const win: { SlopbotMarkdown?: { renderMarkdown: Render; typeset: (root: unknown) => void } } = {};
+  runInNewContext(source, { window: win, URL });
+  const lib = win.SlopbotMarkdown as { renderMarkdown: Render; typeset: (root: unknown) => void };
+  const { document } = parseHTML("<!doctype html><html><body></body></html>");
+  document.body.innerHTML = lib.renderMarkdown("$x<y$");
+  lib.typeset(document.body);
+  assert.equal(document.body.querySelector(".math")?.textContent, "x<y");
+  assert.equal(document.body.querySelectorAll("[data-typeset]").length, 0);
 });
