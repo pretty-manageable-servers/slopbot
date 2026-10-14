@@ -120,13 +120,26 @@ export function renderTranscript(messages: readonly Message[], selfId: string | 
 }
 
 /**
+ * The parts of a comma-separated ref list such as "m3, #m5", trimmed.
+ * Returns undefined unless the string has a comma and every part is a ref.
+ */
+export function refListParts(value: string): string[] | undefined {
+  if (!value.includes(",")) return undefined;
+  const parts = value.split(",").map(part => part.trim());
+  return parts.every(part => REF_VALUE.test(part)) ? parts : undefined;
+}
+
+/**
  * Replaces refs such as "m3" or "#m3" in tool arguments with the real message ID.
+ * A comma-separated list of refs ("m3, #m5") maps each part and joins them with ",".
  * Unknown refs stay as they are.
  */
 export function resolveRefs(args: Json, refs: ReadonlyMap<string, string>): Json {
   if (typeof args === "string") {
-    if (!REF_VALUE.test(args)) return args;
-    return refs.get(args.replace(/^#/, "")) ?? args;
+    if (REF_VALUE.test(args)) return refs.get(args.replace(/^#/, "")) ?? args;
+    const parts = refListParts(args);
+    if (parts) return parts.map(part => refs.get(part.replace(/^#/, "")) ?? part).join(",");
+    return args;
   }
   if (Array.isArray(args)) return args.map(item => resolveRefs(item, refs));
   if (args !== null && typeof args === "object") {

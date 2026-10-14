@@ -12,7 +12,7 @@ import { ContextBuilder } from "./context-builder.js";
 import { ReplyRenderer } from "./reply-renderer.js";
 import { randomUUID } from "node:crypto";
 import { parseEffort, type Effort, type Json, type Message, type Prompt, type PromptItem, type Reply } from "./domain.js";
-import { resolveRefs } from "./transcript.js";
+import { refListParts, resolveRefs } from "./transcript.js";
 import type { AgentTurn, LLM, Store } from "./ports.js";
 import type { Recall } from "./memory.js";
 import { attribution, streamMetered, type UsageMeter } from "./usage-meter.js";
@@ -31,12 +31,12 @@ export function fullSystemText(base: string, presentation?: PresentationPolicy):
   return systemText(base, presentation) + "\n" + nativeToolInstructions;
 }
 /**
- * The first string argument that is a message ref ("m3" or "#m3") the transcript does not define, or undefined.
+ * The first message ref ("m3" or "#m3", also inside a comma-separated list) the transcript does not define, or undefined.
  * Checked only when refs is non-empty, because an empty map means this request has no transcript.
  */
 export function unknownMessageRef(args: Json, refs: ReadonlyMap<string, string>): string | undefined {
   if (refs.size === 0) return undefined;
-  if (typeof args === "string") return /^#?m\d+$/.test(args) && !refs.has(args.replace(/^#/, "")) ? args : undefined;
+  if (typeof args === "string") return (refListParts(args) ?? [args]).find(part => /^#?m\d+$/.test(part) && !refs.has(part.replace(/^#/, "")));
   if (Array.isArray(args)) return args.map(item => unknownMessageRef(item, refs)).find(found => found !== undefined);
   if (args !== null && typeof args === "object") return Object.values(args).map(value => unknownMessageRef(value, refs)).find(found => found !== undefined);
   return undefined;

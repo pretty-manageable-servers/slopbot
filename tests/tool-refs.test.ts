@@ -32,3 +32,10 @@ test("unknown ref detection reads nested arguments", () => {
   const args: Json = { items: [{ id: "m1" }, { id: "#m8" }] };
   assert.equal(unknownMessageRef(args, refs), "#m8");
 });
+
+test("comma list with unknown ref errors", () => {
+  const args = { source_ids: "m1, #m9" };
+  assert.equal(unknownMessageRef(args, refs), "#m9");
+  assert.equal(unknownMessageRef({ source_ids: "m1,m2" }, refs), undefined);
+  assert.deepEqual(resolveRefs(args, refs), { source_ids: "real-id-1,#m9" });
+});
