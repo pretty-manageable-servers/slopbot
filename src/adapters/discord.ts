@@ -1,4 +1,5 @@
 import { LocalDiskStorage } from "../web-chat-images.js";
+import { ChatFileFetcher } from "../web-chat-files.js";
 import { DiscordVoice, voiceTurnSkipped } from './discord-voice.js';
 import { containsSkipMarker, splitSpeak, VOICE_INSTRUCTIONS_KEY, VOICE_NAME_DEFAULT, VOICE_SKIP, voiceInstructions } from "../voice-rules.js";
 import { contextChangedError, legacyToolProgress, sourceFingerprint, stableAttachmentUrl, toolProgressFooter } from "../source-context.js";
@@ -258,12 +259,14 @@ export class DiscordServer implements ChatGateway {
       if (sourceFingerprint(fresh) !== sourceFingerprint(known)) { await this.store.revise(fresh); throw contextChangedError(request, { reason: "file_source_changed", sourceId: id }); }
       return fresh;
     };
-    registerFileTool(this.tools, { store, llm, resolve: resolveAttachment, usage });
+    const chatFiles = new ChatFileFetcher(objectStorageProvider ?? new LocalDiskStorage());
+    registerFileTool(this.tools, { store, llm, resolve: resolveAttachment, usage, fetcher: chatFiles });
     const sandboxProvider = config.sandboxApiKey ? new E2BSandboxProvider({ apiKey: config.sandboxApiKey, apiUrl: config.sandboxApiUrl!, sandboxUrl: config.sandboxUrl!, ...(config.sandboxTemplate ? { template: config.sandboxTemplate } : {}) }) : undefined;
     const storage = new UserFileStorage(store, objectStorageProvider);
-    this.tools.register(sandboxTool(store, sandboxProvider, { resolve: (request, id) => resolveAttachment(request, id, true) }, storage));
+    this.tools.register(sandboxTool(store, sandboxProvider, { resolve: (request, id) => resolveAttachment(request, id, true), fetcher: chatFiles }, storage));
     this.tools.register(objectStorageTool({
       storage,
+      fetcher: chatFiles,
       authorize: message => authorizeFeature(message, message.channel),
       resolveAttachment: (request, id) => resolveAttachment(request, id, true),
       inspect: (context, file, bytes, question) => inspectFile({ store, llm, usage, assertCurrent: async () => { const current = await storage.entry(context.message.server, context.message.author, file.owner, file.path, false, fileStorageScope(file), context.isAdmin); if (current.file.key !== file.key) throw new ToolError('Stored file changed during inspection. Read its current version.'); } }, context, file.path, file.contentType, bytes, question),

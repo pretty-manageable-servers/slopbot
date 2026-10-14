@@ -5,6 +5,8 @@ import { sandboxTool, type SandboxProvider, type SandboxSession, type SandboxAtt
 import { ToolRegistry, ToolError, UncertainActionError } from '../src/tools.js';
 import { describeError } from '../src/errors.js';
 import { privateChannel } from '../src/private-chat.js';
+import type { ObjectStorageProvider } from '../src/object-storage.js';
+import { ChatFileFetcher, fileUrl } from '../src/web-chat-files.js';
 
 function setup(attachments?: SandboxAttachments) {
   const store = new SQLiteStore();
@@ -333,4 +335,22 @@ test('an uncertain sandbox action stops blocking after its orphan lifetime; priv
   const abandoned = await f.store.operation('first');
   assert.equal(abandoned?.status, 'failed');
   assert.match(abandoned?.result ?? '', /"reason":"abandoned"/);
+});
+
+test('sandbox import_attachment imports web-file', async t => {
+  const bytes = new Uint8Array([7, 8, 9]);
+  const fileId = `${'1'.repeat(32)}.bin`;
+  const source = { id: 'file-message', server: 's', channel: 'task', author: 'a', text: 'file', attachments: [{ name: 'data.bin', url: fileUrl('s', 'task', fileId), contentType: 'application/octet-stream', size: 3 }] };
+  const keys: string[] = [];
+  const storage: ObjectStorageProvider = { put: async () => {}, get: async key => { keys.push(key); return bytes; }, delete: async () => {}, link: async () => '' };
+  const f = setup({ resolve: async () => source, fetcher: new ChatFileFetcher(storage, { fetch: async () => { throw new Error('inner fetcher must not run for web-file'); } }) });
+  t.after(() => f.store.close());
+  let uploaded: string | Uint8Array | undefined;
+  await f.registry.invoke(f.message, 'sandbox', { action: 'write', path: '/tmp/existing', text: 'retained' }, 'create', 'agent');
+  const session = f.sessions.get('workspace-1')!;
+  session.write = async (path, data) => { assert.equal(path, '/tmp/data.bin'); uploaded = data; };
+  const result = await f.registry.invokeResult(f.message, 'sandbox', { action: 'import_attachment', message_id: source.id, path: '/tmp/data.bin' }, 'import', 'agent');
+  assert.deepEqual(uploaded, bytes);
+  assert.match(result.text, /3 bytes.*\/tmp\/data.bin/);
+  assert.deepEqual(keys, [`web-chat-files/s/task/${fileId}`]);
 });
