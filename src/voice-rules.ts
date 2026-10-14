@@ -1,10 +1,17 @@
 /** Rules for a voice turn. The reply is posted in chat and read aloud by text to speech. */
-export const VOICE_RULE = "This request was spoken in a Discord voice channel. Call voice_say first with what to say aloud (one to three short spoken sentences, plain words). Then write the full answer for the chat; it is not read aloud, so it may contain code, links and details. A voice channel has no task threads: never call task_start here. If the transcript is only noise, a filler word or cut-off speech with no request, call voice_skip and write no reply.";
-export const VOICE_SPOKEN_MAX = 600;
-export const VOICE_CUE_TEXT = "One moment.";
+export const VOICE_RULE = "This request was spoken in a Discord voice channel. Call voice_say with what to say aloud (short spoken sentences in plain words, up to about 150 words, about one minute; shorter when a short answer is enough). Before a slow tool you may first call voice_say with one short line on what you will do. After tools, call voice_say again with the answer, or put the spoken answer in the reply inside <speak>...</speak> (plain words, removed from the chat post). Then write the full answer for the chat; it is not read aloud, so it may contain code, links and details. Task threads for voice requests open in the text channel where Slopbot was asked to join. If the transcript is only noise, a filler word or cut-off speech with no request, call voice_skip and write no reply.";
+/** Hard limit of spoken characters per turn: about 80 seconds. The prompt asks for about 150 words (one minute), so this leaves some room. */
+export const VOICE_SPOKEN_MAX = 2000;
+/** Fillers spoken in order when a turn is silent while the bot works. */
+export const VOICE_FILLER_TEXTS = ["One moment.", "Still working on it.", "Almost there."] as const;
+/** Silence, in ms, before a filler is spoken. */
+export const VOICE_FILLER_GAP_MS = 8000;
+export const VOICE_FILLER_MAX = 3;
 export const VOICE_TURN_TIMEOUT_MS = 120_000;
 /** Spoken when a reply is an error report. The details stay in the chat. */
 export const VOICE_ERROR_TEXT = "Sorry, that did not work. The details are in the chat.";
+/** Spoken, or posted in the voice chat, when a voice turn is dropped because the user is over the usage limit. */
+export const VOICE_LIMIT_TEXT = "You reached your Slopbot usage limit, so I can't answer right now.";
 
 /** Fallback skip: a voice reply with "[SKIP]" anywhere means the turn is skipped. Nothing is posted or spoken. */
 export const VOICE_SKIP = "[SKIP]";
@@ -31,6 +38,17 @@ export function heldSkipLength(text: string): number {
   return 0;
 }
 
+/**
+ * Length of the end of `text` that might be the start of `tag`, such as "<sp" for "<speak>". `tag` is lower case.
+ * Streamed text holds this part back until a later delta shows whether it is the tag.
+ */
+export function heldTagLength(text: string, tag: string): number {
+  for (let length = Math.min(text.length, tag.length - 1); length > 0; length--) {
+    if (text.slice(text.length - length).toLowerCase() === tag.slice(0, length)) return length;
+  }
+  return 0;
+}
+
 /** An error reply starts with a code such as [ACTION_UNCERTAIN]. Its text is not read aloud. A skip is not an error. */
 export function isErrorReply(text: string): boolean {
   if (containsSkipMarker(text)) return false;
@@ -39,7 +57,8 @@ export function isErrorReply(text: string): boolean {
 
 /** Text without markdown marks, links, URLs, mentions or extra spaces. Trimmed. */
 export function plainSpoken(text: string): string {
-  return text.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, "").replace(/<[@#&!]*\d+>/g, "").replace(/[\\*_`~#>|]/g, "").replace(/\s+/g, " ").trim();
+  // Channel links become words: "in <#id>" is the task thread, any other is the channel. This runs before mentions are dropped.
+  return text.replace(/\bin <#\d+>/g, "in the thread").replace(/<#\d+>/g, "the channel").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, "").replace(/<[@#&!]*\d+>/g, "").replace(/[\\*_`~#>|]/g, "").replace(/\s+/g, " ").trim();
 }
 
 /** Plain text for TTS: cut at the last . ! ? at or before max characters, else a hard cut. Trims. */
@@ -135,4 +154,13 @@ export class SentenceSplitter {
 function isAbbreviation(before: string): boolean {
   const token = /[A-Za-z.]+$/.exec(before)?.[0].toLowerCase();
   return token !== undefined && ABBREVIATIONS.has(token);
+}
+
+/** The spoken block of a voice reply: <speak>...</speak>. */
+export const SPEAK_BLOCK = /<speak>([\s\S]*?)<\/speak>/gi;
+
+/** Splits a voice reply. `spoken` joins all <speak> blocks (undefined when there are none). `chat` is the reply without them, trimmed. */
+export function splitSpeak(text: string): { spoken: string | undefined; chat: string } {
+  const blocks = [...text.matchAll(SPEAK_BLOCK)].map(match => match[1]!.trim()).filter(Boolean);
+  return { spoken: blocks.length ? blocks.join(' ') : undefined, chat: text.replace(SPEAK_BLOCK, '').replace(/\n{3,}/g, '\n\n').trim() };
 }

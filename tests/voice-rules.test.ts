@@ -3,7 +3,23 @@ import { test } from "node:test";
 import { ContextBuilder } from "../src/context-builder.js";
 import type { Message } from "../src/domain.js";
 import type { ToolExecutor } from "../src/tools.js";
-import { spokenText, VOICE_RULE } from "../src/voice-rules.js";
+import { plainSpoken, spokenText, splitSpeak, VOICE_RULE } from "../src/voice-rules.js";
+
+test("splitSpeak keeps a reply with no block as chat", () => {
+  assert.deepEqual(splitSpeak("  Plain reply.  "), { spoken: undefined, chat: "Plain reply." });
+});
+
+test("splitSpeak takes one block out of the chat", () => {
+  assert.deepEqual(splitSpeak("Details here.\n<speak>It is sunny.</speak>"), { spoken: "It is sunny.", chat: "Details here." });
+});
+
+test("splitSpeak joins two blocks with a space", () => {
+  assert.deepEqual(splitSpeak("<speak>One.</speak> Text.\n<speak>Two.</speak>"), { spoken: "One. Two.", chat: "Text." });
+});
+
+test("splitSpeak ignores an empty block", () => {
+  assert.deepEqual(splitSpeak("Hi there.<speak>  </speak>"), { spoken: undefined, chat: "Hi there." });
+});
 
 test("spokenText cuts at sentence end", () => {
   assert.equal(spokenText("First sentence here. Second sentence is much longer and goes on.", 30), "First sentence here.");
@@ -68,4 +84,12 @@ test("a voice preset sends no default instructions", async () => {
   assert.equal(voiceInstructions("A pirate.", undefined, true), "A pirate.");
   assert.equal(voiceInstructions(undefined, "From env.", true), "From env.");
   assert.equal(voiceInstructions(undefined, undefined, false), DEFAULT_VOICE_INSTRUCTIONS);
+});
+
+test("plainSpoken says the thread for a link after in", () => {
+  assert.equal(plainSpoken("Task started in <#123456789012345678>. Updates will appear there."), "Task started in the thread. Updates will appear there.");
+});
+
+test("plainSpoken says the channel for other channel links", () => {
+  assert.equal(plainSpoken("Joined <#123456789012345678>. Use /voice to leave."), "Joined the channel. Use /voice to leave.");
 });

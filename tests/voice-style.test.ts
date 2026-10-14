@@ -10,7 +10,7 @@ import { UsageMeter } from '../src/usage-meter.js';
 import { UserLimiter } from '../src/user-limiter.js';
 import type { ToolDefinition, ToolRegistry, ToolContext } from '../src/tools.js';
 import { loadConfig } from '../src/config.js';
-import { DEFAULT_VOICE_INSTRUCTIONS, VOICE_CUE_TEXT, VOICE_INSTRUCTIONS_KEY, voiceInstructions } from '../src/voice-rules.js';
+import { DEFAULT_VOICE_INSTRUCTIONS, VOICE_FILLER_GAP_MS, VOICE_FILLER_TEXTS, VOICE_INSTRUCTIONS_KEY, voiceInstructions } from '../src/voice-rules.js';
 
 const PREVIEW = 'Hi, this is my new voice.';
 
@@ -227,23 +227,22 @@ test('proposal expires after 15 minutes', async t => {
   assert.equal(r.saves(), 0);
 });
 
-test('cue cache follows instructions change', async t => {
+test('filler cache follows instructions change', async t => {
   const r = rig(t);
   r.settings.set(VOICE_INSTRUCTIONS_KEY, 'Voice A.');
   await r.join();
   r.talk();
   await until(() => r.posts.length === 1);
-  await r.voice.cue('channel');
-  await r.voice.cue('channel');
+  r.voice.checkFiller('channel', Date.now() + VOICE_FILLER_GAP_MS);
+  await settle();
   await r.voice.speak('channel', 'Done.');
-  // The setting changes. The next cue is made again with the new voice.
+  // The setting changes. The next filler is made again with the new voice.
   r.settings.set(VOICE_INSTRUCTIONS_KEY, 'Voice B.');
   r.talk();
   await until(() => r.posts.length === 2);
-  await r.voice.cue('channel');
-  await r.voice.cue('channel');
+  r.voice.checkFiller('channel', Date.now() + VOICE_FILLER_GAP_MS);
   await settle();
-  assert.deepEqual(r.speeches.map(speech => `${speech.input}|${speech.instructions}`), [`${VOICE_CUE_TEXT}|Voice A.`, 'Done.|Voice A.', `${VOICE_CUE_TEXT}|Voice B.`]);
+  assert.deepEqual(r.speeches.map(speech => `${speech.input}|${speech.instructions}`), [`${VOICE_FILLER_TEXTS[0]}|Voice A.`, 'Done.|Voice A.', `${VOICE_FILLER_TEXTS[0]}|Voice B.`]);
 });
 
 test('VOICE_INSTRUCTIONS env sets the default voice style', () => {

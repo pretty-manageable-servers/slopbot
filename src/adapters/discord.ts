@@ -1,6 +1,6 @@
 import { LocalDiskStorage } from "../web-chat-images.js";
 import { DiscordVoice, voiceTurnSkipped } from './discord-voice.js';
-import { containsSkipMarker, VOICE_INSTRUCTIONS_KEY, VOICE_NAME_DEFAULT, VOICE_SKIP, voiceInstructions } from "../voice-rules.js";
+import { containsSkipMarker, splitSpeak, VOICE_INSTRUCTIONS_KEY, VOICE_NAME_DEFAULT, VOICE_SKIP, voiceInstructions } from "../voice-rules.js";
 import { contextChangedError, legacyToolProgress, sourceFingerprint, stableAttachmentUrl, toolProgressFooter } from "../source-context.js";
 import { errorReply, logError } from "../errors.js";
 import { sandboxTool, readSandboxFile } from "../sandbox.js";
@@ -234,7 +234,7 @@ export class DiscordServer implements ChatGateway {
     registerReportTools(this.tools,{store,llm,authorize:authorizeFeature,usage});
     registerPollTool(this.tools);
     registerTaskTools(this.tools,{store,authorize:authorizeFeature});
-    registerReminderTools(this.tools,{store,authorize:authorizeFeature});
+    registerReminderTools(this.tools,{store,authorize:authorizeFeature,reminderChannel:message=>message.source==='voice'?this.voice?.taskParent(message.channel):undefined});
     this.reminders=new ReminderWorker(guildId,store,async(message,text,id)=>{await this.reply(message,text,id);},authorizeFeature);
     registerUiTool(this.tools);
     registerProfileTools(this.tools, store);
@@ -300,6 +300,7 @@ export class DiscordServer implements ChatGateway {
       maxContextTokens: config.contextTokens, maxInputChars: config.contextTokens,
       maxOutputTokens: config.outputTokens, checkpointTokens: config.checkpointTokens, maxToolRounds: config.maxToolRounds,
     }, store, { usage, onToolActivity: async (message, activity) => {
+      if (message.source === "voice" && activity.status === "running") this.voice?.toolStarted(message.channel, activity.name);
       if (!this.bot.accepts(message.server, message.channel)) return;
       publishTool(message, activity);
       // A private chat shows tool progress in its own stream, not in Discord.
@@ -308,8 +309,6 @@ export class DiscordServer implements ChatGateway {
         const channel = await this.client.channels.fetch(message.channel);
         if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Status channel unavailable");
         const sent = await channel.send({content,embeds:[{footer:{text:toolProgressFooter}}],...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? {reply:{messageReference:message.id,failIfNotExists:false}} : {}),allowedMentions:{parse:[],repliedUser:false}});
-        // The first progress post is the one that tells a voice user the bot is working.
-        if (message.source === "voice") void this.voice?.cue(message.channel).catch(error => logError("discord_voice_cue_failed", error, { server: message.server, channel: message.channel }));
         return sent;
       });
     }, presentation: discordPresentation, profiles: store, harness: store, tools: {
@@ -704,9 +703,11 @@ export class DiscordServer implements ChatGateway {
     // Freeze the footer in the existing delivery journal so retries keep identical content.
     const timingRecordId = deliveryId ?? `reply:${message.channel}:${message.id}`;
     const footer = await savedTimingFooter(this.store, message, timingRecordId);
-    const rendered = await this.renderer.render(message.server, text + toolFooter(activity, toolDisplayMode(this.store.setting(message.server, "tool_display"))) + footer);
+    // A voice reply posts only its chat part: <speak> blocks are spoken, not posted. With no chat part, nothing is posted.
+    const chat = message.source === "voice" ? splitSpeak(text).chat : text;
+    const rendered = await this.renderer.render(message.server, chat + toolFooter(activity, toolDisplayMode(this.store.setting(message.server, "tool_display"))) + footer);
     const flags = suppressLinkPreviews(rendered) ? MessageFlags.SuppressEmbeds : undefined;
-    const payloads: import('discord.js').MessageCreateOptions[] = splitReply(rendered).map(content=>({content,flags}));
+    const payloads: import('discord.js').MessageCreateOptions[] = chat ? splitReply(rendered).map(content=>({content,flags})) : [];
     if(ui){const state=await this.uiRuntime.prepare(message,ui,deliveryId??message.id);payloads.push(discordUi(ui,state.id,state.revision));}
     for (const payload of payloads) {
       const content = payload.content ?? JSON.stringify(payload);
@@ -755,6 +756,19 @@ export class DiscordServer implements ChatGateway {
   async createTaskThread(message: Message, name: string): Promise<string> {
     if (isPrivateChannel(message.channel)) return this.chatGateway.createTaskThread();
     const channel = await this.client.channels.fetch(message.channel);
+    if (channel?.type === ChannelType.GuildVoice) {
+      // A voice request opens its task thread in the text channel where the join was asked.
+      const parentId = this.voice?.taskParent(message.channel);
+      if (!parentId) throw new ToolError("Ask me to join from a text channel to use tasks.");
+      const parent = await this.client.channels.fetch(parentId);
+      if (parent?.type !== ChannelType.GuildText) throw new ToolError("Task parent must be a text channel");
+      const member = await this.client.guilds.fetch(message.server).then(guild => guild.members.fetch(message.author)).catch(() => undefined);
+      const from = member?.displayName ?? message.authorName ?? message.author;
+      const source = await parent.send({ content: `Voice task from ${from}: ${message.text.slice(0, 1500)}`, allowedMentions: { parse: [] } });
+      const thread = await source.startThread({ name, autoArchiveDuration: ThreadAutoArchiveDuration.OneDay });
+      await channel.send({ content: `-# Task thread: <#${thread.id}>`, allowedMentions: { parse: [] } });
+      return thread.id;
+    }
     if (channel?.type !== ChannelType.GuildText) throw new ToolError("Task parent must be a text channel");
     if (message.id.startsWith("command:")) {
       const thread = await channel.threads.create({ name: `${name} ${stableOperationId(message.id).slice(0, 8)}`, autoArchiveDuration: ThreadAutoArchiveDuration.OneDay });
