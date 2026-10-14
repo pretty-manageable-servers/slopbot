@@ -71,40 +71,47 @@ function sleepUntil(time: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** 20 ms of silence in Discord raw format: 48 kHz, stereo, 16-bit. */
-const SILENCE_FRAME = Buffer.alloc(3840);
+/** 48 kHz stereo 16-bit is 192 bytes per ms. Thunder's first chunks double in size (80, 160, 320, 640 ms), so about 700 ms must be buffered to play without gaps. */
+const START_BUFFER_BYTES = 750 * 192;
+const REBUFFER_BYTES = 500 * 192;
+/** The Discord player stops after this many 20 ms frames with no data (its default is 5). A reply waits for TTS, so allow 60 s. */
+const MAX_MISSED_FRAMES = 3000;
 
 /**
- * Live PCM for one turn. The Discord player stops a resource as soon as its stream has no data,
+ * Live PCM for one turn, with a jitter buffer. The player waits through short gaps (MAX_MISSED_FRAMES);
  * so this stream sends 20 ms of silence while it waits for the next audio. It ends only after end() and the queue is empty.
  */
 export class LiveAudio extends Readable {
   private readonly chunks: Buffer[] = [];
+  private bytes = 0;
   private ended = false;
-  private waiting: ReturnType<typeof setTimeout> | undefined;
+  /** True while the stream holds audio back to build a buffer. The player waits meanwhile (see MAX_MISSED_FRAMES). */
+  private buffering = true;
+  private target = START_BUFFER_BYTES;
+  private pending = false;
   get writableEnded(): boolean { return this.ended; }
   write(pcm: Buffer): void {
     if (this.ended || this.destroyed) return;
-    this.chunks.push(pcm);
+    this.chunks.push(pcm); this.bytes += pcm.length;
     this.wake();
   }
-  end(): void { this.ended = true; this.wake(); }
+  /** A source finished (for example one sentence): play what is buffered, do not wait for more. */
+  release(): void { this.buffering = false; this.wake(); }
+  end(): void { this.ended = true; this.buffering = false; this.wake(); }
   override _read(): void {
-    const chunk = this.chunks.shift();
-    if (chunk) { this.push(chunk); return; }
-    if (this.ended) { this.push(null); return; }
-    // Nothing yet: send one silence frame after 20 ms, unless audio arrives first.
-    this.waiting ??= setTimeout(() => { this.waiting = undefined; if (!this.destroyed && !this.ended && !this.chunks.length) this.push(SILENCE_FRAME); else this._read(); }, 20);
+    // TTS sends audio in bursts that start small. Hold audio back until enough is buffered, so playback does not run dry.
+    if (this.buffering && this.bytes >= this.target) this.buffering = false;
+    if (!this.buffering) {
+      const chunk = this.chunks.shift();
+      if (chunk) { this.bytes -= chunk.length; this.pending = false; this.push(chunk); return; }
+      if (this.ended) { this.pending = false; this.push(null); return; }
+      // Ran dry: build a smaller buffer again before audio continues.
+      this.buffering = true; this.target = REBUFFER_BYTES;
+    }
+    // No audio to give yet. Do not push silence: it would queue in front of audio that arrives later.
+    this.pending = true;
   }
-  private wake(): void {
-    if (!this.waiting) return;
-    clearTimeout(this.waiting); this.waiting = undefined;
-    this._read();
-  }
-  override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
-    if (this.waiting) clearTimeout(this.waiting);
-    callback(error);
-  }
+  private wake(): void { if (this.pending) this._read(); }
 }
 
 /**
@@ -139,6 +146,8 @@ class TurnSpeech {
       try {
         if (index >= 2) await sleepUntil(this.ends[index - 2]!, this.signal);
         if (!this.signal.aborted) await job(pcm => this.write(pcm));
+        // The sentence is complete: play its tail now. The next sentence builds its own buffer when the stream runs dry.
+        this.out.release();
       } catch (error) {
         if (!this.signal.aborted) this.onError(error);
         this.close();
@@ -176,7 +185,7 @@ export class DiscordVoice {
   private readonly unlisten: () => void;
 
   /** `instructions` returns the voice description for this server. `saveInstructions` stores a new one; "" clears it. */
-  constructor(private readonly client: Client, private readonly server: string, private readonly config: Config, private readonly poster: VoicePoster, private readonly usage: UsageMeter, private readonly muted: (user: string) => boolean, private readonly instructions: () => string, private readonly saveInstructions: (value: string) => void | Promise<void>, private readonly connect: typeof joinVoiceChannel = joinVoiceChannel, private readonly createPlayer: () => AudioPlayer = () => createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Stop } })) {
+  constructor(private readonly client: Client, private readonly server: string, private readonly config: Config, private readonly poster: VoicePoster, private readonly usage: UsageMeter, private readonly muted: (user: string) => boolean, private readonly instructions: () => string, private readonly saveInstructions: (value: string) => void | Promise<void>, private readonly connect: typeof joinVoiceChannel = joinVoiceChannel, private readonly createPlayer: () => AudioPlayer = () => createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Stop, maxMissedFrames: MAX_MISSED_FRAMES } })) {
     this.onVoiceState = (_old, next) => {
       if (next.guild.id !== server || !this.session) return;
       if (next.id === client.user?.id && next.channelId !== this.session.channel) { this.leave(); return; }
