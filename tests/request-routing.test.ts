@@ -7,7 +7,7 @@ const request: Message = {id:'request',server:'s',channel:'c',author:'alice',tex
 test('reply file routing supplies attachments without replacing request identity', () => {
  const target = {...request,id:'file',author:'bob',text:'',attachments:[{name:'a.gif',url:'https://cdn.discordapp.com/a.gif'}]};
  let seen: Message | undefined;
- const tools: ToolExecutor = {catalog:()=>'',execute:async()=>'',suggest:message=>{seen=message;return {name:'read',arguments:{}};}};
+ const tools: ToolExecutor = {schemas: () => [], catalog:()=>'',execute:async()=>'',suggest:message=>{seen=message;return {name:'read',arguments:{}};}};
  assert.equal(suggestRequestTool(tools,request,target)?.name,'read');
  assert.equal(seen?.id,request.id); assert.equal(seen?.author,request.author); assert.equal(seen?.attachments,target.attachments);
  assert.equal(request.attachments,undefined);

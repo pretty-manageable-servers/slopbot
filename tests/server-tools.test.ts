@@ -140,13 +140,12 @@ test('why returns member-visible history with scores, cutoff snapshots and compl
   await assert.rejects(f.registry.invoke(message, 'why', { channel: other }, 'why-denied', 'command'), /not configured/);
 });
 
-test("memory tools run inline and channel removal needs Confirm, other channel actions do not", () => {
-  const f = setup();
+test("memory tools run inline and channel removal needs Confirm, other channel actions do not", t => {
+  const f = setup(); t.after(() => f.store.close());
   for (const name of ["memory_remember", "memory_forget"]) assert.equal(f.registry.requiresThread(name, { text: "x", id: "x" }), false, name);
   const channelsTool = f.registry.definitions().find(tool => tool.name === "channels");
   assert.equal(channelsTool?.confirm?.({ action: "remove", channel }), true);
   assert.equal(channelsTool?.confirm?.({ action: "add", channel }), false);
   assert.equal(channelsTool?.confirm?.({ action: "list" }), false);
   assert.equal(channelsTool?.confirm?.({}), false);
-  f.store.close();
 });

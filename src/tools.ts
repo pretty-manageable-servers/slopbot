@@ -119,7 +119,7 @@ export interface ToolInvocation {
 export interface ToolExecutor {
   snapshot?(): ToolExecutor;
   suggest?(message: Message): ToolCall | undefined;
-  schemas?(message?: Message): readonly ModelTool[];
+  schemas(message?: Message): readonly ModelTool[];
   catalog(message?: Message): string;
   execute(message: Message, call: ToolCall, operationId: string, expectedVersion?: number, invocation?: ToolInvocation): Promise<ToolOutput>;
 }

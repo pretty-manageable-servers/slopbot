@@ -56,7 +56,7 @@ test('a multi-tool batch survives background progress import and edits', async t
   const app = new Application(store, { async *stream() {
     yield ++rounds === 1 ? { kind: 'tool_call', payload: [{ name: 'read_one', arguments: {} }, { name: 'read_two', arguments: {} }] } : { kind: 'text', payload: { text: 'Both reads finished.' } };
   } }, { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, {
-    tools: { catalog: () => '', execute: async () => { calls++; return 'Read finished.'; } },
+    tools: { schemas: () => [], catalog: () => '', execute: async () => { calls++; return 'Read finished.'; } },
     onToolActivity: async (_message, activity) => {
       if (activity.status === 'running') await store.ingest(progress);
       else await store.revise({ ...progress, text: `**Working**\n1. \`${activity.name}\`: completed` });
@@ -101,7 +101,7 @@ test('a source edit after an action keeps its actual result and does not replay 
   const { store, filename } = setup(t); let writes = 0, rounds = 0;
   const app = new Application(store, { async *stream() { if (++rounds === 1) yield { kind: 'tool_call', payload: [{ name: 'write', arguments: {} }] }; else yield { kind: 'text', payload: { text: 'Stopped after the correction.' } }; } },
     { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, {
-      tools: { catalog: () => '', execute: async () => { writes++; if (writes === 1) await store.revise({ ...request, text: 'Stop the remaining actions.' }); return { text: `Action ${writes} completed.`, status: 'ok' }; } },
+      tools: { schemas: () => [], catalog: () => '', execute: async () => { writes++; if (writes === 1) await store.revise({ ...request, text: 'Stop the remaining actions.' }); return { text: `Action ${writes} completed.`, status: 'ok' }; } },
     });
   assert.equal((await app.handle(request))?.text, 'Stopped after the correction.');
   assert.equal(writes, 1); assert.equal(rounds, 2);
@@ -113,7 +113,7 @@ test('an edit during a run rebuilds the context and still answers', async t => {
   const { store } = setup(t); let rounds = 0, calls = 0;
   const app = new Application(store, { async *stream() { if (++rounds === 1) yield { kind: 'tool_call', payload: [{ name: 'read_one', arguments: {} }] }; else yield { kind: 'text', payload: { text: 'Answer after the edit.' } }; } },
     { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, {
-      tools: { catalog: () => '', execute: async () => { if (++calls === 1) await store.revise({ ...request, text: 'Edited request.' }); return { text: 'Read finished.', status: 'ok' }; } },
+      tools: { schemas: () => [], catalog: () => '', execute: async () => { if (++calls === 1) await store.revise({ ...request, text: 'Edited request.' }); return { text: 'Read finished.', status: 'ok' }; } },
     });
   assert.equal((await app.handle(request))?.text, 'Answer after the edit.'); assert.equal(calls, 1);
 });
@@ -122,7 +122,7 @@ test('three changes during a run end it with the latest answer, not an error', a
   const { store } = setup(t); let rounds = 0, calls = 0;
   const app = new Application(store, { async *stream() { if (++rounds <= 3) yield { kind: 'tool_call', payload: [{ name: 'read_one', arguments: {} }] }; else yield { kind: 'text', payload: { text: 'Here is my answer.' } }; } },
     { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, {
-      tools: { catalog: () => '', execute: async () => { await store.revise({ ...request, text: `Edit ${++calls}.` }); return { text: 'Read finished.', status: 'ok' }; } },
+      tools: { schemas: () => [], catalog: () => '', execute: async () => { await store.revise({ ...request, text: `Edit ${++calls}.` }); return { text: 'Read finished.', status: 'ok' }; } },
     });
   assert.equal((await app.handle(request))?.text, 'Here is my answer.'); assert.equal(calls, 3);
 });

@@ -269,7 +269,7 @@ test("a run pays for each model call, and past grace it starts no new tool round
   // Each model call costs 60 micro-dollars.
   const llm = { async *stream() { yield { kind: "tool_call" as const, payload: call }; yield { kind: "usage" as const, payload: { prompt_tokens: 60, completion_tokens: 0 } }; } };
   const app = new Application(store, llm, { allowedChannels: [{ server: "s", channel: "c" }] }, undefined,
-    { tools: { catalog: () => "", execute: async () => { toolRuns++; return "Result"; } }, usage: meterFor(limits) });
+    { tools: { schemas: () => [], catalog: () => "", execute: async () => { toolRuns++; return "Result"; } }, usage: meterFor(limits) });
   const reply = await app.handle(request);
   // Round 1 starts at 0 spend and runs its tool. Round 2 runs at 60 and its model call takes spend to 120, past 110.
   assert.equal(toolRuns, 1);
@@ -288,7 +288,7 @@ test("when the user is already past grace, the model answers without tools", asy
     yield { kind: "usage" as const, payload: { prompt_tokens: 10, completion_tokens: 0 } };
   } };
   const app = new Application(store, llm, { allowedChannels: [{ server: "s", channel: "c" }] }, undefined,
-    { tools: { catalog: () => "", execute: async () => { toolRuns++; return "Result"; } }, usage: meterFor(limits) });
+    { tools: { schemas: () => [], catalog: () => "", execute: async () => { toolRuns++; return "Result"; } }, usage: meterFor(limits) });
   assert.equal((await app.handle(request))?.text, "Final answer");
   assert.equal(toolRuns, 0);
   store.close();

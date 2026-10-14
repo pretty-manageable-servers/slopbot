@@ -25,7 +25,7 @@ import {UiRuntime,registerUiTool,registerPollTool} from '../ui/runtime.js';
 import type {UiDocument} from '../ui/schema.js';
 import {discordUi} from './discord-ui.js';
 import { DiscordToolProgress } from './discord-tool-progress.js';
-import { CONFIRM_RECORD, handleConfirm, handleShowCode, postConfirmation, showCodeRows, startCodeMaintenance } from './discord-code.js';
+import { CONFIRM_RECORD, handleConfirm, handleShowCode, postConfirmation, saveConfirmation, showCodeRows, startCodeMaintenance } from './discord-code.js';
 import { toolFooter, toolDisplayMode } from '../presentation/tool-activity.js';
 import type { ToolActivity } from '../tool-activity.js';
 import { discordPresentation, suppressLinkPreviews } from '../presentation/discord.js';
@@ -305,10 +305,10 @@ export class DiscordServer implements ChatGateway {
     }
     registerUsageTool(this.tools, this.limiter);
     // Registered last: run_tools_code lists the tools registered before it in its description.
-    this.tools.register(runToolsCodeTool(this.tools, { store, ...(this.sandboxProfile ? { profile: this.sandboxProfile } : {}), ...(sandboxProvider ? { sandbox: sandboxProvider } : {}), confirmations: { save: async (server, operationId, value) => {
-      const previous = await store.record(server, CONFIRM_RECORD, operationId);
-      await store.putRecord(server, CONFIRM_RECORD, operationId, value, previous?.revision ?? 0);
-    } } }));
+    this.tools.register(runToolsCodeTool(this.tools, { store, ...(this.sandboxProfile ? { profile: this.sandboxProfile } : {}), ...(sandboxProvider ? { sandbox: sandboxProvider } : {}), confirmations: {
+      record: async (server, operationId) => (await store.record(server, CONFIRM_RECORD, operationId))?.value,
+      save: (server, operationId, value) => saveConfirmation(store, server, operationId, value),
+    } }));
     const sandboxPrompt = sandboxPromptLine(this.sandboxProfile);
     this.app = new Application(store, llm, {
       allowedChannels: this.channels.map(channel => ({ server: guildId, channel })),

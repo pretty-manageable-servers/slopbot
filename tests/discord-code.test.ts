@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ButtonInteraction } from 'discord.js';
-import { handleConfirm, handleShowCode, postConfirmation, showCodeRows, type CodeStore } from '../src/adapters/discord-code.js';
+import { handleConfirm, handleShowCode, postConfirmation, saveConfirmation, showCodeRows, type CodeStore } from '../src/adapters/discord-code.js';
 import { codeBlock, codeFitsInline, PROGRAM_CODE_KEEP_MS, SHOW_CODE_INLINE_LINES, SHOW_CODE_MESSAGE_CHARS } from '../src/code-display.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import type { ToolContext, ConfirmationRequired } from '../src/tools.js';
 import type { Json } from '../src/domain.js';
+import type { RecordStore } from '../src/records.js';
 
 interface Saved { value: Json; revision: number }
 
@@ -113,7 +114,7 @@ test('cancel ends the record and never runs the call', async () => {
   const { interaction, log } = fakeInteraction('slopconfirm:op1:no');
   await handleConfirm(interaction, store as unknown as CodeStore, tools as never);
   assert.equal(ran, false);
-  assert.deepEqual(store.records.get('server:tool-confirm:op1')!.value, { done: true });
+  assert.deepEqual(store.records.get('server:tool-confirm:op1')!.value, { done: true, cancelled: true });
   assert.equal((log.at(-1)!.payload as { content: string }).content, 'Cancelled.');
 });
 
@@ -163,4 +164,27 @@ test('prune deletes finished run_tools_code operations older than the cutoff and
   assert.equal(store.operation('old-done'), undefined);
   assert.ok(store.operation('old-started'));
   assert.ok(store.operation('other'));
+});
+
+test('confirm_save_conflict_keeps_pending', async () => {
+  const store = fakeStore();
+  const key = 's:tool-confirm:op';
+  const pending = { name: 'remove', arguments: { id: 'c1' }, channel: 'c', author: 'alice' };
+  const next = { name: 'remove', arguments: { id: 'c2' }, channel: 'c', author: 'alice' };
+  // A stale first read sees no record, so the first write conflicts. The second read sees the real record.
+  const racing = (): typeof store => {
+    let stale = true;
+    return { ...store, async record(server: string, kind: string, id: string) { if (stale) { stale = false; return undefined; } return store.record(server, kind, id); } };
+  };
+  store.records.set(key, { value: pending, revision: 1 });
+  await saveConfirmation(racing() as unknown as RecordStore, 's', 'op', next);
+  assert.deepEqual(store.records.get(key), { value: pending, revision: 1 });
+  // A done record is replaced by the new pending value, written at its current revision.
+  store.records.set(key, { value: { done: true }, revision: 2 });
+  await saveConfirmation(racing() as unknown as RecordStore, 's', 'op', next);
+  assert.deepEqual(store.records.get(key), { value: next, revision: 3 });
+  // With no record, the first save creates the pending value.
+  store.records.delete(key);
+  await saveConfirmation(store as unknown as RecordStore, 's', 'op', next);
+  assert.deepEqual(store.records.get(key), { value: next, revision: 1 });
 });

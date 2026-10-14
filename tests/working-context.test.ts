@@ -87,7 +87,7 @@ for (const invalid of ['prose', 'tool call'] as const) test(`a ${invalid} checkp
     }
     yield { kind: 'text', payload: { text: 'Original evidence: ' + 'h'.repeat(6000) } };
   } }, { allowedChannels: [{ server: 's', channel: 't' }], maxInputChars: 8000, maxOutputTokens: 1024 }, undefined,
-  { tools: { catalog: () => '', execute: async () => { assert.fail('Checkpoint tool calls must never execute'); } } });
+  { tools: { schemas: () => [], catalog: () => '', execute: async () => { assert.fail('Checkpoint tool calls must never execute'); } } });
   await app.handle({ ...message, id: 'earlier' });
   const key = JSON.stringify(['s', 't', 't']);
   const original = await store.taskContext(key);

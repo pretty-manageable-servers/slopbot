@@ -40,7 +40,7 @@ test("spokenText keeps short text", () => {
   assert.equal(spokenText("abc", 3), "abc");
 });
 
-const tools = { catalog: () => "", execute: async () => { throw new Error("not used"); } } as ToolExecutor;
+const tools = { schemas: () => [], catalog: () => "", execute: async () => { throw new Error("not used"); } } as ToolExecutor;
 
 function builder() {
   return new ContextBuilder({ store: { contextVersion: async () => "1", context: async () => [] } as never, tools, counter: { name: "test", count: () => 1 }, inputLimit: 1e6, outputLimit: 1000, prefix: [] });

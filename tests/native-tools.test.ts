@@ -246,3 +246,55 @@ test('voice tools are offered only in voice runs', t => {
   assert.deepEqual(registry.schemas(message).map(item => item.function.name), []);
   assert.deepEqual(registry.schemas().map(item => item.function.name), []);
 });
+
+const twoLookups = () => response([
+  {index:0,delta:{tool_calls:[{index:0,id:'call_one',type:'function',function:{name:'lookup',arguments:'{"query":"one"}'}}]}},
+  {index:0,delta:{tool_calls:[{index:1,id:'call_two',type:'function',function:{name:'lookup',arguments:'{"query":"two"}'}}]},finish_reason:'tool_calls'},
+]);
+const chatRequest = {server:'s',channel:'c',id:'request',author:'alice',text:'Look up the weather',addressed:true};
+const weatherRegistry = (store: SQLiteStore, onFirstCall: () => Promise<void>, ran: string[]) => {
+  const registry = new ToolRegistry(store, async () => true);
+  registry.register({name:'lookup',surface:'top',description:'Look up weather',fields:{query:{type:'string',description:'Search query',required:true}},access:'member',effect:'read',retrySafe:true,
+    async execute(_context, args){ ran.push(String(args.query)); if (ran.length === 1) await onFirstCall(); return {text:'Sunny '+String(args.query)}; }});
+  return {registry, executor: {catalog:()=>registry.catalog(),schemas:()=>registry.schemas(),execute:(m: typeof chatRequest, call: {name:string;arguments:Record<string,import('../src/domain.js').Json>},id:string)=>registry.invokeResult(m,call.name,call.arguments,id,'agent')}};
+};
+
+test('chat_change_skips_remaining_calls', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const ran: string[] = [];
+  await store.ingest({...chatRequest, id:'earlier', author:'bob', text:'Earlier note'});
+  // Editing an earlier message in the channel changes the chat during the first call.
+  const {executor} = weatherRegistry(store, async () => { await store.ingest({...chatRequest, id:'earlier', author:'bob', text:'Earlier note, now edited', revisionTimestamp:2}); }, ran);
+  let requests = 0;
+  const llm = new ChatCompletionsLLM(options, async (_url, init) => {
+    const body = JSON.parse(String(init?.body)); requests++;
+    if (requests === 1) return twoLookups();
+    const tools = body.messages.filter((item: any) => item.role === 'tool');
+    assert.deepEqual(tools.map((item: any) => item.tool_call_id), ['call_one', 'call_two']);
+    assert.match(tools[0].content, /Sunny one/);
+    assert.match(tools[1].content, /Not run: the chat changed\. Decide again with the current messages\./);
+    assert.ok(!/"error"|failed/.test(tools[1].content));
+    return response([{index:0,delta:{content:'Done.'},finish_reason:'stop'}]);
+  });
+  const reply = await new Application(store,llm,{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:executor,harness:store}).handle(chatRequest);
+  assert.equal(reply?.text, 'Done.');
+  assert.deepEqual(ran, ['one']); assert.equal(requests, 2);
+});
+
+test('rebuild_uses_edited_text', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const ran: string[] = [];
+  const {executor} = weatherRegistry(store, async () => { await store.ingest({...chatRequest, text:'Look up the forecast for Oslo', revisionTimestamp:2}); }, ran);
+  let requests = 0;
+  const llm = new ChatCompletionsLLM(options, async (_url, init) => {
+    const body = JSON.parse(String(init?.body)); requests++;
+    if (requests === 1) return twoLookups();
+    const text = JSON.stringify(body.messages);
+    assert.match(text, /Look up the forecast for Oslo/);
+    assert.ok(!text.includes('Look up the weather'));
+    return response([{index:0,delta:{content:'Done.'},finish_reason:'stop'}]);
+  });
+  const reply = await new Application(store,llm,{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:executor,harness:store}).handle(chatRequest);
+  assert.equal(reply?.text, 'Done.'); assert.equal(requests, 2);
+  assert.equal((await store.canonicalMessage('s', 'request'))?.text, 'Look up the forecast for Oslo');
+});

@@ -5,7 +5,7 @@ import { Application } from '../src/application.js';
 import type { Json } from '../src/domain.js';
 import { runToolsCodeTool } from '../src/run-tools-code.js';
 import type { SandboxProvider, SandboxSession } from '../src/sandbox.js';
-import { ToolRegistry, type ToolDefinition, type ToolExecutor, type ToolResult } from '../src/tools.js';
+import { ToolRegistry, type ToolContext, type ToolDefinition, type ToolExecutor, type ToolResult } from '../src/tools.js';
 import type { ToolActivity } from '../src/tool-activity.js';
 import type { LLM } from '../src/ports.js';
 
@@ -129,7 +129,7 @@ test('confirm_tool_stops_program', async t => {
   registry.register({ name: 'remove', description: 'Remove a channel.', fields: { id: { type: 'string', description: 'Channel', required: true } }, access: 'member', effect: 'write', retrySafe: true,
     confirm: () => true, execute: async (_context, args) => { removed++; return { text: 'removed', data: { id: args.id ?? null } }; } });
   registry.register(readTool('other', async () => { other++; return { text: 'other' }; }));
-  registry.register(runToolsCodeTool(registry, { confirmations: { save: async (_server, operationId, value) => { saved.set(operationId, value); } } }));
+  registry.register(runToolsCodeTool(registry, { confirmations: { record: async (_server, operationId) => saved.get(operationId), save: async (_server, operationId, value) => { saved.set(operationId, value); } } }));
   const code = 'try { await tools.remove({id:"c1"}); } catch (error) { text("caught"); } await tools.other({}); text("after");';
   const result = await registry.invokeResult(request, 'run_tools_code', { code }, 'confirm-run', 'agent');
   assert.equal(result.text, 'Waiting for alice to confirm remove. The bot posted Confirm and Cancel buttons.');
@@ -140,6 +140,28 @@ test('confirm_tool_stops_program', async t => {
   // The Confirm button runs that one call with its operation ID.
   await registry.invokeResult(request, 'remove', { id: 'c1' }, operationId!, 'agent');
   assert.equal(removed, 1);
+});
+
+test('cancelled_confirm_not_repeated', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const saved = new Map<string, Json>();
+  const registry = new ToolRegistry(store, async () => true);
+  let removed = 0, asked = 0;
+  registry.register({ name: 'remove', description: 'Remove a channel.', fields: { id: { type: 'string', description: 'Channel', required: true } }, access: 'member', effect: 'write', retrySafe: true,
+    confirm: () => true, execute: async (_context, args) => { removed++; return { text: 'removed', data: { id: args.id ?? null } }; } });
+  const tool = runToolsCodeTool(registry, { confirmations: { record: async (_server, operationId) => saved.get(operationId), save: async (_server, operationId, value) => { asked++; saved.set(operationId, value); } } });
+  registry.register(tool);
+  const code = 'text(await tools.remove({id:"c1"}));';
+  assert.equal((await registry.invokeResult(request, 'run_tools_code', { code }, 'confirm-run', 'agent')).text, 'Waiting for alice to confirm remove. The bot posted Confirm and Cancel buttons.');
+  assert.equal(asked, 1);
+  const [operationId] = [...saved.keys()];
+  // The Cancel button writes the record as done and cancelled.
+  saved.set(operationId!, { done: true, cancelled: true });
+  // The same program runs again with the same parent operation and no child journal entry, as after an interruption.
+  const context = { message: request, operationId: 'confirm-run', isAdmin: true, source: 'agent', toolName: 'run_tools_code', arguments: { code }, resource: null, assertActive: async () => {} } as unknown as ToolContext;
+  const again = await tool.execute(context, { code }) as ToolResult;
+  assert.deepEqual(outputs(again), ['Cancelled by alice. Ask before trying again.']);
+  assert.equal(asked, 1); assert.equal(removed, 0);
 });
 
 test('policy_change_continues', async t => {
@@ -206,7 +228,7 @@ test('the agent loop receives reduced output and child evidence, not intermediat
       yield { kind: 'text', payload: { text: 'The sum is 6.' } };
     }
   } };
-  const executor: ToolExecutor = { catalog: () => registry.catalog(), execute: (message, call, id, version, invocation) => registry.invokeResult(message, call.name, call.arguments, id, 'agent', version, invocation) };
+  const executor: ToolExecutor = { schemas: () => [], catalog: () => registry.catalog(), execute: (message, call, id, version, invocation) => registry.invokeResult(message, call.name, call.arguments, id, 'agent', version, invocation) };
   const app = new Application(store, llm, { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, { tools: executor });
   const reply = await app.handle(request); assert.equal(reply?.text, 'The sum is 6.');
   const result = store.agentTurns(request)[0]!.results['0'] as ToolResult;
@@ -224,7 +246,7 @@ test('interrupting an agent program terminates its worker and stops subsequent r
   registry.register(readTool('read', async () => { calls++; started(); await finish; return { text: 'read', data: {} }; }));
   registry.register(runToolsCodeTool(registry));
   const llm: LLM = { async *stream() { yield { kind: 'tool_call', payload: [{ name: 'run_tools_code', arguments: { code: 'await tools.read({});await tools.read({});text("done");' } }] }; } };
-  const app = new Application(store, llm, { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, { tools: { catalog: () => registry.catalog(), execute: (message, call, id, version, invocation) => registry.invokeResult(message, call.name, call.arguments, id, 'agent', version, invocation) } });
+  const app = new Application(store, llm, { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, { tools: { schemas: () => [], catalog: () => registry.catalog(), execute: (message, call, id, version, invocation) => registry.invokeResult(message, call.name, call.arguments, id, 'agent', version, invocation) } });
   const handle = app.handle(request), interrupted = assert.rejects(handle, /interrupted/);
   await ready; assert.equal(await app.interrupt('s', request.id), true); await interrupted;
   complete(); await new Promise(resolve => setImmediate(resolve)); assert.equal(calls, 1);

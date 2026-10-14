@@ -39,7 +39,7 @@ test('the default round allowance completes ten consecutive tool reads', async t
   const app = new Application(store, { async *stream() {
     // Native tool calls only: the text protocol was removed.
     yield reads < 10 ? { kind: 'tool_call', payload: [{ name: 'read', arguments: {} }] } : { kind: 'text', payload: { text: 'Ten reads finished.' } };
-  } }, { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, { tools: { catalog: () => '', execute: async () => { reads++; return 'Read completed.'; } } });
+  } }, { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, { tools: { catalog: () => '', schemas: () => [], execute: async () => { reads++; return 'Read completed.'; } } });
   assert.equal((await app.handle(request))?.text, 'Ten reads finished.'); assert.equal(reads, 10);
 });
 
