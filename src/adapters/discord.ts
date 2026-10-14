@@ -753,6 +753,19 @@ export class DiscordServer implements ChatGateway {
   async createTaskThread(message: Message, name: string): Promise<string> {
     if (isPrivateChannel(message.channel)) return this.chatGateway.createTaskThread();
     const channel = await this.client.channels.fetch(message.channel);
+    if (channel?.type === ChannelType.GuildVoice) {
+      // A voice request opens its task thread in the text channel where the join was asked.
+      const parentId = this.voice?.taskParent(message.channel);
+      if (!parentId) throw new ToolError("Ask me to join from a text channel to use tasks.");
+      const parent = await this.client.channels.fetch(parentId);
+      if (parent?.type !== ChannelType.GuildText) throw new ToolError("Task parent must be a text channel");
+      const member = await this.client.guilds.fetch(message.server).then(guild => guild.members.fetch(message.author)).catch(() => undefined);
+      const from = member?.displayName ?? message.authorName ?? message.author;
+      const source = await parent.send({ content: `Voice task from ${from}: ${message.text.slice(0, 1500)}`, allowedMentions: { parse: [] } });
+      const thread = await source.startThread({ name, autoArchiveDuration: ThreadAutoArchiveDuration.OneDay });
+      await channel.send({ content: `-# Task thread: <#${thread.id}>`, allowedMentions: { parse: [] } });
+      return thread.id;
+    }
     if (channel?.type !== ChannelType.GuildText) throw new ToolError("Task parent must be a text channel");
     if (message.id.startsWith("command:")) {
       const thread = await channel.threads.create({ name: `${name} ${stableOperationId(message.id).slice(0, 8)}`, autoArchiveDuration: ThreadAutoArchiveDuration.OneDay });

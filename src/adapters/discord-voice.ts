@@ -221,6 +221,22 @@ class TurnSpeech {
   }
 }
 
+/** WP3: the text channel a voice join was asked in: the channel itself, or the parent of a thread. Undefined for other channels. */
+export async function joinOrigin(client: Client, channelId: string): Promise<string | undefined> {
+  // Only task threads use the origin. A failed lookup must not stop the join, so it gives undefined.
+  try {
+    const channel = await client.channels.fetch(channelId);
+    if (channel?.type === ChannelType.GuildText) return channel.id;
+    if (channel?.isThread() && channel.parentId) {
+      const parent = await client.channels.fetch(channel.parentId);
+      if (parent?.type === ChannelType.GuildText) return parent.id;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
 export class DiscordVoice {
   private session: Session | undefined;
   private readonly onVoiceState: (old: import('discord.js').VoiceState, next: import('discord.js').VoiceState) => void;
@@ -316,7 +332,8 @@ export class DiscordVoice {
         await channel.send({ content: replies === 'text'
           ? "Slopbot is joining to listen. Human speech is sent to PMServers for transcription. Each transcript is posted in this channel's chat. Replies are text only: Slopbot does not speak in this session. I handle one speaker at a time. Use /voice action:leave to stop."
           : "Slopbot is joining to listen and reply aloud. Human speech is sent to PMServers for transcription. Each transcript is posted in this channel's chat, and replies use Slopbot's normal model and tools. I handle one speaker at a time. Use /voice action:leave to stop.", allowedMentions: { parse: [] } });
-        await this.join(channel.id, replies);
+        const origin = await joinOrigin(this.client, message.channel);
+        await this.join(channel.id, replies, origin);
         return replies === 'text'
           ? `Joined <#${channel.id}>. I listen to human speakers and post each transcript in this channel's chat. Replies are text only in this session: I do not speak. I handle one speaker at a time. Use /voice action:leave to stop. I leave after five minutes of inactivity.`
           : `Joined <#${channel.id}>. I listen to human speakers, post each transcript in this channel's chat, and reply aloud with Slopbot's normal model and tools, one speaker at a time. Speech is sent to PMServers for processing. Use /voice action:leave to stop. I leave after five minutes of inactivity.`;
@@ -417,7 +434,7 @@ export class DiscordVoice {
     return new PmAudio(this.config.baseUrl, this.config.apiKey, this.config.voice?.voice ?? 'alloy');
   }
 
-  private async join(channel: string, replies: 'voice' | 'text'): Promise<void> {
+  private async join(channel: string, replies: 'voice' | 'text', origin: string | undefined): Promise<void> {
     const guild = await this.client.guilds.fetch(this.server);
     const connection = this.connect({ guildId: guild.id, channelId: channel, adapterCreator: guild.voiceAdapterCreator, selfDeaf: false, selfMute: false });
     const player = this.createPlayer();
@@ -434,7 +451,7 @@ export class DiscordVoice {
         void target.send({ content: `Voice conversation failed. ${errorReply(error)}`, allowedMentions: { parse: [] } }).catch(error => logError('discord_voice_notice_failed', error, { server: this.server, channel }));
       }
     };
-    const session: Session = { channel, connection, abort, player, audio, replies, busy: false, turn: undefined, fillers: undefined, origin: undefined, listening: undefined, listeningAt: Number.NEGATIVE_INFINITY, refresh, fail, stop: () => {
+    const session: Session = { channel, connection, abort, player, audio, replies, busy: false, turn: undefined, fillers: undefined, origin, listening: undefined, listeningAt: Number.NEGATIVE_INFINITY, refresh, fail, stop: () => {
       // Leaving: no listening line for the turn that ends here. The line is removed.
       abort.abort(); clearTimeout(idle); if (session.turn) this.endTurn(session, session.turn); player.stop(true);
       void this.removeListening(session).catch(error => logError('discord_voice_listening_failed', error, { server: this.server, channel }));
@@ -746,7 +763,9 @@ export class DiscordVoice {
   toolStarted(_channel: string, _tool: string): void { /* WP2 */ }
 
   /** WP3: the task parent for a request in `channel`: the session's origin when `channel` is the live voice channel, else undefined. */
-  taskParent(_channel: string): string | undefined { return undefined; /* WP3 */ }
+  taskParent(channel: string): string | undefined {
+    return this.session?.channel === channel ? this.session.origin : undefined;
+  }
 
   leave(): void { const session = this.session; this.session = undefined; session?.stop(); if (session) this.onSession?.(undefined, session.channel); }
   stop(): void { this.leave(); this.client.off(Events.VoiceStateUpdate, this.onVoiceState); this.unlisten(); }
