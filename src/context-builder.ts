@@ -28,7 +28,7 @@ export class ContextBuilder {
     // A private chat has no task threads, so the thread rule in the tool instructions does not apply to it. Only this request says so.
     const privateChat = isPrivateChannel(message.channel) ? { private_web_chat: true, private_chat_rule: privateChatRule } : {};
     const voice = message.source === "voice" ? { voice_channel: true, voice_rule: VOICE_RULE } : {};
-    const requestContext: Record<string, Json> = this.options.tools ? { server_id: message.server, channel_id: message.channel, requester_id: message.author, task_id: message.taskId ?? null, is_task: Boolean(message.taskId), ...privateChat, ...voice } : {};
+    const requestContext: Record<string, Json> = this.options.tools ? { task_id: message.taskId ?? null, is_task: Boolean(message.taskId), ...privateChat, ...voice } : {};
     // Request fields only, to reserve their budget. The full context block is built after the rows are chosen.
     const metadata: PromptItem[] = this.options.tools ? [contextBlock({ request: requestContext, people: [], evidence: [] })] : [];
     let budget = this.options.inputLimit - schemaBudget - this.options.counter.count([...prefix, ...metadata, request]);
@@ -108,9 +108,10 @@ export class ContextBuilder {
       // History is still in inputs only when person evidence did not drop it (see above).
       if (historyItems.length && inputs.includes(historyItems[0]!)) for (const item of historyMessages) authors.add(item.author);
       for (const item of [request, ...inputs]) for (const match of item.content.matchAll(/<@!?(\d{17,20})>/g)) authors.add(match[1]!);
-      for (const author of [...authors].slice(0, 12)) {
+      // Slopbot is not a person in the People section. Its messages are assistant turns or notices.
+      for (const author of [...authors].filter(author => author !== selfId).slice(0, 12)) {
         const profile = await this.options.profiles.profile(message.server, author);
-        const person: ContextPerson = { user_id: author, display_name: profile.name, discord: profile.identity, fields: profile.fields.map(field => ({ field: field.field, value: field.value, self_reported: field.editor === author, source_ids: field.sourceIds })) };
+        const person: ContextPerson = { user_id: author, display_name: profile.name, ...(author === message.author ? { requester: true as const } : {}), discord: profile.identity, fields: profile.fields.map(field => ({ field: field.field, value: field.value, self_reported: field.editor === author, source_ids: field.sourceIds })) };
         const size = this.options.counter.count([{ role: "user", content: personLine(person), contextOnly: true }]);
         if (size <= budget) { people.push(person); budget -= size; for (const field of profile.fields) for (const id of field.sourceIds) sources.add(id); }
       }

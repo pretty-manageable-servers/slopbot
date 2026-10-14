@@ -1,7 +1,7 @@
 import type { Json, PromptItem } from "./domain.js";
 
 export interface ContextField { field: string; value: Json; self_reported: boolean; source_ids: readonly string[] }
-export interface ContextPerson { user_id: string; display_name: string; discord?: Json; fields: readonly ContextField[] }
+export interface ContextPerson { user_id: string; display_name: string; requester?: true; discord?: Json; fields: readonly ContextField[] }
 export interface ContextInput { request: Record<string, Json>; people: readonly ContextPerson[]; evidence: readonly Json[] }
 
 const isEmpty = (value: Json) => value === null || value === false || value === "" ||
@@ -21,7 +21,7 @@ export function personLine(person: ContextPerson): string {
     ...(person.discord !== undefined && !isEmpty(person.discord) ? [`discord=${JSON.stringify(person.discord)}`] : []),
     ...person.fields.map(fieldText),
   ];
-  return `- ${oneLine(person.display_name)} (user_id ${person.user_id})${parts.length ? ` ${parts.join("; ")}` : ""}`;
+  return `- ${oneLine(person.display_name)} (user_id ${person.user_id})${person.requester ? " [requester]" : ""}${parts.length ? ` ${parts.join("; ")}` : ""}`;
 }
 
 /** One line of the Evidence section. Used by contextBlock and by the budget count. */
