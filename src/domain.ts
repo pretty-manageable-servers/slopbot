@@ -26,7 +26,7 @@ export interface Message {
   readonly authorAliases?: readonly string[];
   readonly isBot?: boolean;
   /** "web" marks a Discord webhook post that a signed-in user sent from the web console. */
-  readonly source?: "web";
+  readonly source?: "web" | "voice";
   readonly transient?: boolean;
   /** Web chat only: short-lived links of the images in this message, for the model. In memory; the saved row keeps attachments only. */
   readonly modelImages?: readonly { url: string; label: string }[];
@@ -99,7 +99,7 @@ export function parseMessage(input: unknown): Message {
   }
   if (value.revisionTimestamp !== undefined && (typeof value.revisionTimestamp !== "number" || !Number.isFinite(value.revisionTimestamp))) throw new TypeError("Invalid revision timestamp");
   if (value.isBot !== undefined && typeof value.isBot !== "boolean") throw new TypeError("Invalid bot flag");
-  if (value.source !== undefined && value.source !== "web") throw new TypeError("Invalid message source");
+  if (value.source !== undefined && value.source !== "web" && value.source !== "voice") throw new TypeError("Invalid message source");
   if (value.transient !== undefined && typeof value.transient !== "boolean") throw new TypeError("Invalid transient message flag");
   if (value.authorAliases !== undefined && (!Array.isArray(value.authorAliases) || value.authorAliases.some(alias => typeof alias !== "string"))) throw new TypeError("Invalid author aliases");
   if (value.authorIdentity !== undefined && (!value.authorIdentity || typeof value.authorIdentity !== "object" || Array.isArray(value.authorIdentity) || Object.values(value.authorIdentity).some(item => typeof item !== "string"))) throw new TypeError("Invalid Discord identity");
@@ -114,7 +114,7 @@ export function parseMessage(input: unknown): Message {
     ...(value.authorName ? { authorName: value.authorName as string } : {}),
     ...(value.authorAliases ? { authorAliases: value.authorAliases as string[] } : {}),
     ...(value.isBot !== undefined ? { isBot: value.isBot as boolean } : {}),
-    ...(value.source !== undefined ? { source: "web" as const } : {}),
+    ...(value.source !== undefined ? { source: value.source === "voice" ? "voice" as const : "web" as const } : {}),
     ...(value.revisionTimestamp !== undefined ? { revisionTimestamp: value.revisionTimestamp as number } : {}),
     ...(value.transient !== undefined ? { transient: value.transient as boolean } : {}),
     id: value.id as string, server: value.server as string,

@@ -26,6 +26,7 @@ import type { ChannelReply, ChannelRun, RunSource } from '../conversation-groups
 const CONVERSATION_PRUNE_BATCH = 10000;
 
 import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
+import type { InboxItem } from '../inbox.js';
 import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, listChatShares, revokeShare, revokeAllShares, deleteChatShares } from '../share-store.js';
 import { getWebSession, saveWebSession, deleteWebSession, deleteExpiredWebSessions } from '../web-session-store.js';
 import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatEffort, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../web-chat-store.js';
@@ -33,6 +34,9 @@ import { isPrivateChannel } from '../private-chat.js';
 import type { WebSessionRow } from '../web-session-store.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
 import { promptInventory, saveRunRuntime } from '../run-diagnostics.js';
+function inboxItemFromRow(row: Record<string, any>): InboxItem {
+  return { id: String(row.id), server: String(row.server), target: String(row.target), sender: String(row.sender), channel: String(row.channel), sourceIds: JSON.parse(String(row.source_ids)) as string[], summary: String(row.summary), created_at: Number(row.created_at), done_at: row.done_at === null ? null : Number(row.done_at) };
+}
 function providerKeyRow(row: Record<string, unknown>): ProviderKeyRow {
   return { id: String(row.id), provider: String(row.provider) as KeyedProvider, owner: String(row.owner), label: String(row.label), last4: String(row.last4), secretEncrypted: String(row.secret_encrypted), createdAt: Number(row.created_at) };
 }
@@ -385,6 +389,9 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       CREATE INDEX IF NOT EXISTS web_chats_owner ON web_chats(server,owner,updated);
       CREATE TABLE IF NOT EXISTS web_provider_keys (id TEXT PRIMARY KEY, provider TEXT NOT NULL, owner TEXT NOT NULL, label TEXT NOT NULL, last4 TEXT NOT NULL, secret_encrypted TEXT NOT NULL, created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS web_provider_usage (key_id TEXT NOT NULL, month TEXT NOT NULL, used INTEGER NOT NULL, exhausted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(key_id, month));
+      CREATE TABLE IF NOT EXISTS inbox_items (id TEXT PRIMARY KEY, server TEXT NOT NULL, target TEXT NOT NULL, sender TEXT NOT NULL, channel TEXT NOT NULL, source_ids TEXT NOT NULL, summary TEXT NOT NULL, created_at INTEGER NOT NULL, done_at INTEGER);
+      CREATE INDEX IF NOT EXISTS inbox_items_target ON inbox_items(server,target,done_at,created_at);
+      CREATE INDEX IF NOT EXISTS inbox_items_sender ON inbox_items(server,sender,created_at);
     `);
     if (!this.db.prepare("PRAGMA table_info(web_replies)").all().some(column => column.name === "via")) this.db.exec("ALTER TABLE web_replies ADD COLUMN via TEXT NOT NULL DEFAULT 'webhook'");
     if (!this.db.prepare("PRAGMA table_info(web_chats)").all().some(column => column.name === "effort")) this.db.exec("ALTER TABLE web_chats ADD COLUMN effort TEXT");
@@ -616,6 +623,27 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   async saveSession(row: WebSessionRow): Promise<void> { return saveWebSession(this.db, row); }
   async deleteSession(idHash: string): Promise<void> { return deleteWebSession(this.db, idHash); }
   async deleteExpiredSessions(now: number): Promise<number> { return deleteExpiredWebSessions(this.db, now); }
+  async addInboxItem(item: InboxItem): Promise<void> {
+    this.db.prepare("INSERT INTO inbox_items (id,server,target,sender,channel,source_ids,summary,created_at,done_at) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run(item.id, item.server, item.target, item.sender, item.channel, JSON.stringify(item.sourceIds), item.summary, item.created_at, item.done_at);
+  }
+  async inboxItems(server: string, target: string, options: { includeDone: boolean; limit: number }): Promise<InboxItem[]> {
+    const open = options.includeDone ? "" : " AND done_at IS NULL";
+    return this.db.prepare(`SELECT id,server,target,sender,channel,source_ids,summary,created_at,done_at FROM inbox_items WHERE server=? AND target=?${open} ORDER BY created_at DESC LIMIT ?`)
+      .all(server, target, options.limit).map(inboxItemFromRow);
+  }
+  async markInboxDone(server: string, target: string, ids: string[] | "all", at: number): Promise<number> {
+    if (ids !== "all" && ids.length === 0) return 0;
+    const scope = ids === "all" ? "" : ` AND id IN (${ids.map(() => "?").join(",")})`;
+    const values = ids === "all" ? [] : ids;
+    return Number(this.db.prepare(`UPDATE inbox_items SET done_at=? WHERE server=? AND target=? AND done_at IS NULL${scope}`).run(at, server, target, ...values).changes);
+  }
+  async countInboxSent(server: string, sender: string, since: number): Promise<number> {
+    return Number(this.db.prepare("SELECT COUNT(*) AS n FROM inbox_items WHERE server=? AND sender=? AND created_at>=?").get(server, sender, since)!.n);
+  }
+  async deleteExpiredInbox(before: number): Promise<number> {
+    return Number(this.db.prepare("DELETE FROM inbox_items WHERE created_at<?").run(before).changes);
+  }
   async startRun(runId: string, message: Message, prompt: Prompt): Promise<void> {
     this.db.prepare("INSERT INTO runs(id,message,prompt,status,result,context_version) VALUES(?,?,?,?,NULL,?)")
       .run(runId, JSON.stringify(message), JSON.stringify(prompt), "running", await this.contextVersion(message.server, message.channel));

@@ -37,9 +37,11 @@ LLM_MODEL=nimbus
 
 Restart with `npm start`. The adapter sends streaming requests to `/chat/completions`. The configured model is PMServers’ `nimbus`. Use the exact model ID accepted by the provider. Run `npm run models` to list available IDs when changing models.
 
-Join a Discord voice channel and use `/slopbot voice action:join` to talk with Slopbot. Use `action:leave` to disconnect and `action:status` to check the session. Natural-language requests can also invoke the voice tool. Voice is enabled by default; set `VOICE_ENABLED=false` to disable it or `VOICE_NAME` to choose a Thunder voice, default `alloy`. The AI key needs access to `squall`, the configured chat model, and `thunder`.
+Join a Discord voice channel and use `/slopbot voice action:join` to make Slopbot join it. Use `action:leave` to disconnect and `action:status` to check the session. Natural-language requests can also invoke the voice tool. Voice is enabled by default; set `VOICE_ENABLED=false` to disable it or `VOICE_NAME` to choose a Thunder voice, default `alloy`. The AI key needs access to `squall`, the configured chat model, and `thunder`.
 
-Slopbot needs View Channel, Connect, Speak and Send Messages permissions in the voice channel. It posts a listening notice in that channel's text chat, then processes one human speaker at a time. Listening pauses during reply generation and playback. Each utterance is limited to 30 seconds; transcription, chat and speech-generation costs count toward the speaker's usage limits. Voice history is separate from text conversations, has no tools, and stays in memory for the session. Audio is sent to PMServers for transcription, and replies use its chat and speech endpoints. Slopbot leaves an empty channel or after five minutes of inactivity. Stage channels are unsupported.
+Slopbot needs View Channel, Connect, Speak and Send Messages permissions in the voice channel. It posts a listening notice in that channel's text chat. When a person speaks, Slopbot transcribes the speech and posts it in that text chat as the speaker. It uses a webhook when one exists; otherwise it posts `**Name** (from voice): text`. Slopbot answers with its normal model and tools, posts the answer in the same chat, and reads it aloud. When a tool starts, it says "One moment."
+
+Spoken answers are short: one to three sentences. Speech stops at 600 characters; the full answer stays in the text chat. Slopbot handles one speaker at a time and ignores other speech until its answer is spoken. Each utterance is limited to 30 seconds. Speech and replies count toward the speaker's usage limits. Audio is sent to PMServers for transcription, and replies use its chat and speech endpoints. Slopbot leaves an empty channel or after five minutes of inactivity. Stage channels are unsupported.
 
 
 Test actual continuity: inside a task thread, say "The budget is $200", then ask "What budget did I give you?" Try the same after a restart. Outside the thread, reply to an older bot answer and ask a follow-up; it should use the reference without continuing that task session.
@@ -146,6 +148,17 @@ To add a format, implement `FileReader` and register it in `defaultFileReaders()
 Dependency audit: three moderate findings remain in Mammoth's CLI dependency chain (`argparse` / `sprintf-js`); no patched `sprintf-js` release is available. The bot uses Mammoth's raw-text API in an isolated worker, not its CLI.
 
 The core module boundaries and prioritized follow-up work are documented in [architecture/IMPLEMENTATION.md](architecture/IMPLEMENTATION.md).
+
+### Inbox
+
+Ask `@slop put this in @name's inbox`. Slopbot writes a short summary with links to the source messages.
+
+- Any member can add items for any member of the server.
+- A member can add 20 items each day.
+- An item shows only if the target member can see the channel of its source messages.
+- Read your inbox with `/inbox`. Only you see the reply. You can also ask `@slop what is in my inbox?`, or open the Inbox tab in the web console.
+- Mark items done with `/inbox done:<IDs>`, or use `/inbox done:all`.
+- Items are deleted 30 days after they are made.
 
 ### Web search
 

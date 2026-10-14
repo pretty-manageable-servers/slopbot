@@ -10,15 +10,17 @@ export const WEB_REPLY_WAIT_MS = 10_000;
 export const MANAGE_WEBHOOKS_TTL_MS = 30_000;
 export const WEBHOOK_NAME = "Slopbot web replies";
 const TIMED_OUT = Symbol("timed out");
-const BOT_PREFIX = /^\*\*((?:[^*\\]|\\.)*)\*\* \(from web\): /;
+const BOT_PREFIX = /^\*\*((?:[^*\\]|\\.)*)\*\* \(from (?:web|voice)\): /;
 
 export type WebReplyStatus = "pending" | "posted" | "failed";
 /** "webhook": posted through the channel webhook. "bot": posted as Slopbot itself, without Manage Webhooks. */
 export type WebVia = "webhook" | "bot";
+/** "voice": a transcript from a voice channel. It skips the web transcripts setting, and posts as the bot when there is no key. */
+export type WebReplyKind = "web" | "voice";
 export interface WebWebhookRow { server: string; channel: string; webhook_id: string; token_encrypted: string }
 export interface WebReplyRow { id: string; server: string; channel: string; user_id: string; status: WebReplyStatus; message_id: string | null; created_at: number; via: WebVia }
 export interface WebAuthor { name: string; avatarURL: string; aliases: string[]; identity: Record<string, string> }
-export interface WebOrigin { user: string; author: WebAuthor; via: WebVia }
+export interface WebOrigin { user: string; author: WebAuthor; via: WebVia; kind?: WebReplyKind }
 export interface WebHook { id: string; token: string }
 
 /** Thrown by the Discord adapter when Discord says the webhook does not exist (code 10015, or HTTP 404). */
@@ -63,9 +65,9 @@ export class WebReplyError extends Error {
   constructor(readonly status: number, message: string, readonly resetAt?: number) { super(message); }
 }
 
-type PostResult = { ok: true; messageId: string; user: string; author: WebAuthor; via: WebVia } | { ok: false };
+type PostResult = { ok: true; messageId: string; user: string; author: WebAuthor; via: WebVia; kind: WebReplyKind } | { ok: false };
 /** `via` changes when a webhook post falls back to the bot. It is set before each send. */
-interface Post { via: WebVia; done: Promise<PostResult>; expire(): Promise<void> }
+interface Post { via: WebVia; kind: WebReplyKind; done: Promise<PostResult>; expire(): Promise<void> }
 
 /** Reads WEB_REPLY_KEY: 32 bytes, base64. A missing or bad key turns web replies off. */
 export function webReplyKey(env: NodeJS.ProcessEnv = process.env): { key: Buffer } | { error: string } {
@@ -92,9 +94,9 @@ export function openToken(key: Buffer, sealed: string): string {
 export function escapeMarkdown(text: string): string {
   return text.replace(/[\r\n]+/g, " ").replace(/[\\*_~`|[\]()<>@#]/g, "\\$&");
 }
-/** The content of a bot web reply: `**<display name>** (from web): <text>`. */
-export function botWebContent(name: string, text: string): string {
-  return `**${escapeMarkdown(name)}** (from web): ${text}`;
+/** The content of a bot web reply: `**<display name>** (from web): <text>`. A voice reply says `(from voice)`. */
+export function botWebContent(name: string, text: string, kind: WebReplyKind = "web"): string {
+  return `**${escapeMarkdown(name)}** (from ${kind}): ${text}`;
 }
 /** Removes the bot web reply prefix, so the model sees only the user's text. */
 export function stripBotWebPrefix(text: string): string {
@@ -104,7 +106,7 @@ export function stripBotWebPrefix(text: string): string {
 /** The message as a real user's. Used only for a message that matched its exact returned ID. */
 export function asWebUser(message: Incoming, origin: WebOrigin): Incoming {
   const text = origin.via === "bot" ? stripBotWebPrefix(message.text) : message.text;
-  return { ...message, text, author: origin.user, authorName: origin.author.name, authorAliases: origin.author.aliases, authorIdentity: origin.author.identity, isBot: false, botAuthor: false, addressed: true, source: "web" };
+  return { ...message, text, author: origin.user, authorName: origin.author.name, authorAliases: origin.author.aliases, authorIdentity: origin.author.identity, isBot: false, botAuthor: false, addressed: true, source: origin.kind ?? "web" };
 }
 
 export interface WebRepliesOptions {
@@ -129,6 +131,8 @@ export class WebReplies {
   private readonly inFlight = new Map<string, Set<Post>>();
   private readonly hooks = new Map<string, Promise<WebHook | undefined>>();
   private readonly manage = new Map<string, { allowed: boolean; expires: number }>();
+  /** Message IDs of recent voice posts. The row has no kind column, so a row match reads the kind here. */
+  private readonly voicePosts = new Map<string, number>();
   private readonly waitMs: number;
   private readonly now: () => number;
   constructor(private readonly options: WebRepliesOptions) {
@@ -139,13 +143,15 @@ export class WebReplies {
   private get discord(): WebReplyDiscord { return this.options.discord; }
 
   /** Checks in this order, then posts. Nothing is posted when a check fails. */
-  async reply(input: { user: string; server: string; channel: string; text: string }): Promise<{ id: string; messageId: string; status: "posted" | "failed"; via: WebVia }> {
+  async reply(input: { user: string; server: string; channel: string; text: string; kind?: WebReplyKind }): Promise<{ id: string; messageId: string; status: "posted" | "failed"; via: WebVia }> {
     const { user, server, channel } = input;
+    const kind: WebReplyKind = input.kind ?? "web";
     const secret = this.options.secret;
-    if (!("key" in secret)) throw new WebReplyError(503, secret.error);
+    // A voice reply has no key requirement: without a key it posts as the bot.
+    if (kind === "web" && !("key" in secret)) throw new WebReplyError(503, secret.error);
     const target = await this.discord.channel(server, channel);
     if (!target) throw new WebReplyError(403, "Slopbot cannot see that channel.");
-    if (!this.options.enabled(target.parent)) throw new WebReplyError(403, "Web transcripts are off for this channel.");
+    if (kind === "web" && !this.options.enabled(target.parent)) throw new WebReplyError(403, "Web transcripts are off for this channel.");
     if (!this.options.accepts(channel)) throw new WebReplyError(403, "Slopbot does not answer in this channel.");
     if (!(await this.options.access.check(server, channel, user)).send) throw new WebReplyError(403, "You cannot send messages in this channel.");
     const text = typeof input.text === "string" ? input.text.trim() : "";
@@ -154,9 +160,10 @@ export class WebReplies {
     if (!limit.allowed) throw new WebReplyError(429, "Usage limit reached.", limit.resetAt);
     const author = await this.discord.member(server, user);
     if (!author) throw new WebReplyError(403, "You are not a member of this server.");
-    const hook = await this.hookFor(server, target.parent);
+    // With no key (voice only), there is no webhook and the bot posts. hookFor needs the key, so it is not called.
+    const hook = "key" in secret ? await this.hookFor(server, target.parent) : undefined;
     // Without a webhook, the bot posts. Its content has the name in front, so check the length first.
-    if (!hook && [...botWebContent(author.name, text)].length > 2000) throw new WebReplyError(400, "Write fewer characters. Slopbot needs room for your name.");
+    if (!hook && [...botWebContent(author.name, text, kind)].length > 2000) throw new WebReplyError(400, "Write fewer characters. Slopbot needs room for your name.");
 
     const id = randomUUID();
     const via: WebVia = hook ? "webhook" : "bot";
@@ -164,14 +171,16 @@ export class WebReplies {
     let finish!: (result: PostResult) => void;
     const post: Post = {
       via,
+      kind,
       done: new Promise<PostResult>(resolve => { finish = resolve; }),
       expire: async () => { await this.store.finishWebReply(id, "failed"); },
     };
     this.track(channel, post);
     let outcome: PostResult = { ok: false };
     try {
-      const sent = await this.deliver(post, { server, channel, parent: target.parent, thread: target.thread, hook, author, text });
-      outcome = { ok: true, messageId: sent.messageId, user, author, via: sent.via };
+      const sent = await this.deliver(post, { server, channel, parent: target.parent, thread: target.thread, hook, author, text, kind });
+      outcome = { ok: true, messageId: sent.messageId, user, author, via: sent.via, kind };
+      if (kind === "voice") this.rememberVoice(sent.messageId);
     } catch (error) {
       logError("web_reply_post_failed", error, { stage: "web reply post", server, channel });
     }
@@ -204,7 +213,7 @@ export class WebReplies {
     const row = await this.store.webReplyByMessage(event.server, event.id);
     if (row && row.status === "posted" && row.channel === event.channel && row.via === via) {
       const author = await this.discord.member(event.server, row.user_id);
-      return author ? { user: row.user_id, author, via } : undefined;
+      return author ? { user: row.user_id, author, via, kind: this.voicePosts.has(event.id) ? "voice" : "web" } : undefined;
     }
     if (!posts.length) return undefined;
     const hit = await this.until(posts, event.id);
@@ -212,7 +221,13 @@ export class WebReplies {
       for (const post of posts) await post.expire();
       return undefined;
     }
-    return hit ? { user: hit.user, author: hit.author, via } : undefined;
+    return hit ? { user: hit.user, author: hit.author, via, kind: hit.kind } : undefined;
+  }
+
+  private rememberVoice(messageId: string): void {
+    const now = this.now();
+    for (const [id, at] of this.voicePosts) if (now - at > 10 * 60_000) this.voicePosts.delete(id);
+    this.voicePosts.set(messageId, now);
   }
 
   /** Deletes a channel's web webhook and makes a new one. Old tokens stop working. */
@@ -230,11 +245,11 @@ export class WebReplies {
    * Sends the reply. A webhook that Discord no longer knows is replaced once and the post is retried once.
    * Without a webhook, the bot posts the reply itself.
    */
-  private async deliver(post: Post, input: { server: string; channel: string; parent: string; thread: boolean; hook: WebHook | undefined; author: WebAuthor; text: string }): Promise<{ messageId: string; via: WebVia }> {
-    const { server, channel, parent, thread, author, text } = input;
+  private async deliver(post: Post, input: { server: string; channel: string; parent: string; thread: boolean; hook: WebHook | undefined; author: WebAuthor; text: string; kind: WebReplyKind }): Promise<{ messageId: string; via: WebVia }> {
+    const { server, channel, parent, thread, author, text, kind } = input;
     const sendAsBot = async (): Promise<{ messageId: string; via: WebVia }> => {
       post.via = "bot";
-      return { messageId: await this.discord.sendAsBot(channel, botWebContent(author.name, text)), via: "bot" };
+      return { messageId: await this.discord.sendAsBot(channel, botWebContent(author.name, text, kind)), via: "bot" };
     };
     const hook = input.hook;
     if (!hook) return sendAsBot();

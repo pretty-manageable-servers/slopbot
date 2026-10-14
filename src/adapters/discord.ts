@@ -35,7 +35,7 @@ import { SearxNGSearch } from "./searxng.js";
 import { ReplyRenderer } from "../reply-renderer.js";
 import { registerFileTool, inspectFile } from '../files.js';
 import {
-  Client, Events, GatewayIntentBits, Partials, ThreadAutoArchiveDuration,
+  Client, Events, GatewayIntentBits, Partials, ThreadAutoArchiveDuration, SlashCommandBuilder,
   MessageFlags, PermissionFlagsBits, ChannelType, ActivityType, ActionRowBuilder, ButtonBuilder, ButtonStyle, type ButtonInteraction,
   type ChatInputCommandInteraction, type MessageContextMenuCommandInteraction, type Interaction, type Message as DiscordMessage, type PartialMessage,
 } from "discord.js";
@@ -60,6 +60,7 @@ import { UserLimiter, UserLimitError, limitReply, usageView } from "../user-limi
 import { createUsageMeter, type UsageMeter } from "../usage-meter.js";
 import { registerUsageTool } from "../usage-tools.js";
 import { configuredChannels, registerServerTools, webTranscriptKey, webTranscriptsEnabled } from "../server-tools.js";
+import { Inbox, INBOX_TTL_MS, type InboxItem } from "../inbox.js";
 import { pageItems, type ServerListRow, type ServerPage } from "../admin-panel.js";
 import { ChannelAccess } from "../channel-access.js";
 import { TeamAdmins, discordTeamSource } from "../team-admins.js";
@@ -78,6 +79,32 @@ import { WebChatGateway, type ChatHost } from "../web-chats.js";
 
 /** Slopbot state and services for one Discord server. All servers share one client. */
 interface TranscriptChannel { id: string; name: string; enabled: boolean }
+
+/** The top-level /inbox command. Lists the user's inbox items, or marks them done with done. Its own command, because /slopbot is at Discord's 25 subcommand limit. */
+export function buildInboxCommand() {
+  return new SlashCommandBuilder().setName("inbox").setDescription("See your Slopbot inbox in this server, or mark items done")
+    .addStringOption(option => option.setName("done").setDescription("Item IDs to mark done, comma-separated, or all").setRequired(false))
+    .addBooleanOption(option => option.setName("all").setDescription("Include items you marked done").setRequired(false));
+}
+/** Discord allows 2000 characters per message. The inbox reply stays under this limit. */
+const INBOX_REPLY_LIMIT = 1900;
+const INBOX_LIST_SHOWN = 10;
+/** One line per item: short ID, sender, age, summary and jump link. The summaries are cut when the reply is too long. */
+function inboxReply(items: InboxItem[], server: string): string {
+  if (!items.length) return "Your inbox is empty.";
+  const rows = items.map(item => ({
+    head: `\`${item.id.slice(0, 8)}\` from <@${item.sender}> · <t:${Math.floor(item.created_at / 1000)}:R> · `,
+    summary: item.summary.replace(/\s+/g, " "),
+    link: ` · https://discord.com/channels/${server}/${item.channel}/${item.sourceIds[0]}`,
+  }));
+  const fixed = rows.reduce((total, row) => total + row.head.length + row.link.length + 1, 0);
+  const budget = Math.max(0, Math.floor((INBOX_REPLY_LIMIT - fixed) / rows.length));
+  return rows.map(row => row.head + clipText(row.summary, budget) + row.link).join("\n");
+}
+function clipText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return max > 1 ? `${text.slice(0, max - 1)}…` : "";
+}
 
 export class DiscordServer implements ChatGateway {
   private readonly client: Client;
@@ -99,11 +126,13 @@ export class DiscordServer implements ChatGateway {
   private channels: string[];
   private historyTimer: ReturnType<typeof setInterval> | undefined;
   private readonly voice: DiscordVoice | undefined;
+  private readonly inbox: Inbox;
 
   constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">, private readonly team?: Pick<TeamAdmins, "canEdit">) {
     this.client = client;
     this.renderer = new ReplyRenderer(store, discordPresentation);
     this.chatGateway = new WebChatGateway(store, guildId);
+    this.inbox = new Inbox(store, access);
     this.channels = configuredChannels(config, store, guildId);
     this.history = new HistoryImporter(guildId, store, {
       fetch: async (channel, before, limit) => {
@@ -144,12 +173,8 @@ export class DiscordServer implements ChatGateway {
       }
     });
     this.mcp = new McpManager(guildId, store, this.tools, remoteMcpConnector({ allowPrivate: process.env.MCP_ALLOW_PRIVATE === 'true' }), new McpSecrets(process.env.MCP_SECRET_KEY), message => this.validateChannel(message, message.channel));
-    if (config.voice) {
-      this.voice = new DiscordVoice(client, guildId, config, llm, usage, user => Boolean(mutedUsers(store.setting(guildId, MUTED_USERS_KEY))[user]));
-      this.voice.register(this.tools);
-    }
     registerServerTools(this.tools, {
-      config, server: guildId, store, participation, history: this.history,
+      config, server: guildId, store, participation, history: this.history, inbox: this.inbox,
       isTeamEditor: async user => team ? await team.canEdit(user).catch(() => false) : false,
       channels: () => this.channels,
       setChannels: channels => this.setChannels(channels),
@@ -253,6 +278,11 @@ export class DiscordServer implements ChatGateway {
       enabled: parent => webTranscriptsEnabled(store, guildId, parent),
       accepts: channel => this.bot.accepts(guildId, channel),
     });
+    // Voice posts transcripts through webReplies, so it is made after webReplies.
+    if (config.voice) {
+      this.voice = new DiscordVoice(client, guildId, config, this.webReplies, usage, user => Boolean(mutedUsers(store.setting(guildId, MUTED_USERS_KEY))[user]));
+      this.voice.register(this.tools);
+    }
     registerUsageTool(this.tools, this.limiter);
     this.tools.register(programTool(this.tools));
     this.app = new Application(store, llm, {
@@ -268,7 +298,10 @@ export class DiscordServer implements ChatGateway {
       await this.toolProgress.update(JSON.stringify([message.server,message.channel,message.id]), activity, async content => {
         const channel = await this.client.channels.fetch(message.channel);
         if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Status channel unavailable");
-        return channel.send({content,embeds:[{footer:{text:toolProgressFooter}}],...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? {reply:{messageReference:message.id,failIfNotExists:false}} : {}),allowedMentions:{parse:[],repliedUser:false}});
+        const sent = await channel.send({content,embeds:[{footer:{text:toolProgressFooter}}],...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? {reply:{messageReference:message.id,failIfNotExists:false}} : {}),allowedMentions:{parse:[],repliedUser:false}});
+        // The first progress post is the one that tells a voice user the bot is working.
+        if (message.source === "voice") void this.voice?.cue(message.channel).catch(error => logError("discord_voice_cue_failed", error, { server: message.server, channel: message.channel }));
+        return sent;
       });
     }, presentation: discordPresentation, profiles: store, harness: store, tools: {
       catalog: message => this.tools.catalog(message), schemas: message => this.tools.schemas(message), suggest: message => this.tools.suggest(message),
@@ -319,7 +352,7 @@ export class DiscordServer implements ChatGateway {
     this.reminders.start();
     this.fixWatches?.start();
     sync(); this.historyTimer = setInterval(sync, 60000);
-    void this.registerCommands().catch(error => logError("Could not register /slopbot, /usage, /stop and message app commands. Check application command permissions.", error, { server: this.guildId }));
+    void this.registerCommands().catch(error => logError("Could not register /slopbot, /usage, /stop, /inbox and message app commands. Check application command permissions.", error, { server: this.guildId }));
   }
   interaction(interaction: Interaction): void {
     if ((interaction.isButton() || interaction.isStringSelectMenu()) && interaction.customId.startsWith('slopui:')) {
@@ -329,6 +362,7 @@ export class DiscordServer implements ChatGateway {
     if (interaction.isChatInputCommand() && interaction.commandName === "usage") void this.usageCommand(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isButton() && interaction.customId.startsWith("slopstop:")) void this.continueButton(interaction).catch(error => logError("Continue button failed.", error));
     if (interaction.isChatInputCommand() && interaction.commandName === "stop") void this.stopCommand(interaction).catch(error => logError("Command failed.", error));
+    if (interaction.isChatInputCommand() && interaction.commandName === "inbox") void this.inboxCommand(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isMessageContextMenuCommand() && interaction.commandName === CONTINUE_IN_WEB) void this.continueInWeb(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isMessageContextMenuCommand() && interaction.commandName in MESSAGE_APPS) void this.messageApp(interaction).catch(error => logError("Command failed.", error));
   }
@@ -375,7 +409,7 @@ export class DiscordServer implements ChatGateway {
     const guild = await this.client.guilds.fetch(this.guildId);
     // set() replaces the whole list, so commands from older versions are removed.
     // /usage is a separate command, so /slopbot stays as it is.
-    await guild.commands.set([buildToolCommands(this.tools).toJSON(), buildUsageCommand().toJSON(), buildStopCommand().toJSON(), ...buildMessageApps().map(app => app.toJSON())]);
+    await guild.commands.set([buildToolCommands(this.tools).toJSON(), buildUsageCommand().toJSON(), buildStopCommand().toJSON(), buildInboxCommand().toJSON(), ...buildMessageApps().map(app => app.toJSON())]);
     // Slopbot registers no global commands. Old global commands stay visible and fail, so remove them.
     const global = await this.client.application?.commands.fetch();
     if (global?.size) await this.client.application!.commands.set([]);
@@ -458,6 +492,31 @@ export class DiscordServer implements ChatGateway {
     const resumed = await this.bot.resume(this.guildId, interaction.channelId, jobId, interaction.user.id, await this.stopAdmin(interaction.user.id, manager));
     if (!resumed) { await interaction.reply({ content: "This response cannot continue. You can continue only the responses that you started.", flags: MessageFlags.Ephemeral }); return; }
     await interaction.update({ content: "Slopbot's response was interrupted. Continued.", components: [] });
+  }
+  /** The /inbox command. Ephemeral. Lists the newest 10 items, or marks items done by their 8-character ID prefixes. */
+  private async inboxCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (interaction.guildId !== this.guildId) return;
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    try {
+      const user = interaction.user.id;
+      const done = interaction.options.getString("done");
+      let content: string;
+      if (done !== null) {
+        const tokens = done.split(",").map(part => part.trim()).filter(Boolean);
+        // Each prefix maps to the full ID of an open item. Unknown prefixes are ignored.
+        const open = await this.inbox.list(this.guildId, user, false);
+        const ids: string[] | "all" = tokens.some(token => token.toLowerCase() === "all") ? "all" : [...new Set(open.filter(item => tokens.some(token => item.id.startsWith(token))).map(item => item.id))];
+        const count = ids === "all" || ids.length ? await this.inbox.done(this.guildId, user, ids) : 0;
+        content = `Marked ${count} items done.`;
+      } else {
+        const items = (await this.inbox.list(this.guildId, user, interaction.options.getBoolean("all") === true)).slice(0, INBOX_LIST_SHOWN);
+        content = inboxReply(items, this.guildId);
+      }
+      await interaction.editReply({ content, allowedMentions: { parse: [] } });
+    } catch (error) {
+      logError("command_failed", error, { stage: "inbox command", server: this.guildId, messageId: interaction.id });
+      await interaction.editReply({ content: errorReply(error), allowedMentions: { parse: [] } });
+    }
   }
   /**
    * The /usage command. Read-only, so it never checks the UserLimiter gate: a user over the limit
@@ -662,6 +721,7 @@ export class DiscordServer implements ChatGateway {
     const runIds = await this.store.requestRunIds(message.server, message.id);
     for (const output of outputs) await publishMessage(this.store, output, runIds, this.members).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
     delivered = true;
+    if (message.source === "voice") void this.voice?.speak(message.channel, text).catch(error => logError("discord_voice_speak_failed", error, { server: message.server, channel: message.channel }));
     return outputs;
     } finally {
     requestTimings.end(message, "delivery");
@@ -695,8 +755,16 @@ export class DiscordServer implements ChatGateway {
     const send = () => { void pulse().catch(error => logError("discord_typing_failed", error, { channel: channelId }, true)); }; send();
     const timer = setInterval(send, 8000); timer.unref(); return () => clearInterval(timer);
   }
+  /** The user's inbox items in this server. Open items unless includeDone. */
+  consoleInbox(user: string, includeDone = false): Promise<InboxItem[]> {
+    return this.inbox.list(this.guildId, user, includeDone);
+  }
+  /** Marks the user's inbox items done in this server. Returns the count changed. */
+  consoleInboxDone(user: string, ids: string[] | "all"): Promise<number> {
+    return this.inbox.done(this.guildId, user, ids);
+  }
   async consoleSnapshot(user: string): Promise<unknown> {
-    const guild = this.client.guilds.cache.get(this.guildId) ?? await this.client.guilds.fetch(this.guildId);
+    const guild =this.client.guilds.cache.get(this.guildId) ?? await this.client.guilds.fetch(this.guildId);
     // One member fetch and one bot fetch for the whole list. Each channel is then checked from the cache, with no REST call.
     const [member, bot, all] = await Promise.all([guild.members.fetch({ user, force: true }), guild.members.fetchMe(), guild.channels.fetch()]);
     const admin = member.permissions.has(PermissionFlagsBits.ManageGuild);
@@ -821,6 +889,8 @@ export class DiscordAdapter {
   readonly members: MemberDirectory;
   /** Custom status with today's reply count and the server count. Started when the client is ready. */
   private readonly presence: PresenceUpdater;
+  /** Deletes inbox items past INBOX_TTL_MS. Started by start(), cleared by stop(). */
+  private inboxTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(private readonly config: Config, private readonly store: RuntimeStore, private readonly llm: LLM, client?: Client) {
     this.usage = createUsageMeter(config, store);
@@ -956,6 +1026,14 @@ export class DiscordAdapter {
     if (!chosen) throw new ToolError(guildId ? "You and Slopbot are not both in that server." : "You and Slopbot do not share a server yet.", "rejected");
     return this.servers.get(chosen.id)!;
   }
+  /** Inbox items of the signed-in user in one server. Open items unless includeDone. Members only. */
+  async consoleInbox(user: string, server: string, includeDone = false): Promise<InboxItem[]> {
+    return (await this.server(user, server)).consoleInbox(user, includeDone);
+  }
+  /** Marks the user's inbox items done in one server. Returns the count changed. Members only. */
+  async consoleInboxDone(user: string, server: string, ids: string[] | "all"): Promise<number> {
+    return (await this.server(user, server)).consoleInboxDone(user, ids);
+  }
   async consoleSnapshot(user: string, guildId?: string): Promise<unknown> {
     const servers = await this.consoleServers(user);
     if (!servers.length) return { user, servers, server: null };
@@ -1031,8 +1109,21 @@ export class DiscordAdapter {
     const member = await guild.members.fetch({ user, force: true }).catch(() => undefined);
     return member?.permissions.has(PermissionFlagsBits.ManageGuild) ?? false;
   }
-  async start(): Promise<void> { await this.client.login(this.config.discordToken); }
+  async start(): Promise<void> {
+    this.startInboxCleanup();
+    await this.client.login(this.config.discordToken);
+  }
+  /** Runs once now and then every hour. The timer is unref'd, so it never keeps the process alive. */
+  private startInboxCleanup(): void {
+    const sweep = async (): Promise<void> => {
+      try { await this.store.deleteExpiredInbox(Date.now() - INBOX_TTL_MS); } catch (error) { logError("inbox_cleanup_failed", error); }
+    };
+    void sweep();
+    this.inboxTimer = setInterval(() => void sweep(), 60 * 60_000);
+    this.inboxTimer.unref();
+  }
   async stop(): Promise<void> {
+    if (this.inboxTimer) clearInterval(this.inboxTimer);
     this.presence.stop();
     await Promise.all([...this.servers.keys()].map(id => this.close(id)));
     await this.client.destroy();
