@@ -234,7 +234,7 @@ export class DiscordServer implements ChatGateway {
     registerReportTools(this.tools,{store,llm,authorize:authorizeFeature,usage});
     registerPollTool(this.tools);
     registerTaskTools(this.tools,{store,authorize:authorizeFeature});
-    registerReminderTools(this.tools,{store,authorize:authorizeFeature});
+    registerReminderTools(this.tools,{store,authorize:authorizeFeature,reminderChannel:message=>message.source==='voice'?this.voice?.taskParent(message.channel):undefined});
     this.reminders=new ReminderWorker(guildId,store,async(message,text,id)=>{await this.reply(message,text,id);},authorizeFeature);
     registerUiTool(this.tools);
     registerProfileTools(this.tools, store);

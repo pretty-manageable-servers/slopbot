@@ -17,6 +17,8 @@ export function registerReminderTools(
   services: {
     store: RecordStore;
     authorize(message: Message, channel: string): Promise<void>;
+    /** The text channel a reminder from this request posts in. Undefined keeps the request channel. */
+    reminderChannel?: (message: Message) => string | undefined;
   },
   now = Date.now,
 ): void {
@@ -106,9 +108,12 @@ export function registerReminderTools(
         );
       if (!String(args.text ?? "").trim())
         throw new ToolError("Reminder text is required.");
+      // A voice request posts in the text channel where the join was asked. Check that channel too.
+      const channel = services.reminderChannel?.(context.message) ?? context.message.channel;
+      if (channel !== context.message.channel) await services.authorize(context.message, channel);
       const id = uiKey(context.operationId);
       const reminder: Reminder = {
-        channel: context.message.channel,
+        channel,
         owner: context.message.author,
         text: String(args.text),
         at,
