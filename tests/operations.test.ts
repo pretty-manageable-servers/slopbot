@@ -47,12 +47,12 @@ class FakeClient implements OperationsClient {
   ]; }
   async events() { return []; }
 }
-async function fixture(t: { after(fn: () => void): void }) {
+async function fixture(t: { after(fn: () => void): void }, servers = ['s']) {
   const store = new SQLiteStore(); t.after(() => store.close());
   const client = new FakeClient(); let admin = true; const denied = new Set<string>(['hidden']);
   const authorize = async (_message: Message, channel: string) => { if (denied.has(channel)) throw new Error('Channel access denied'); };
   const registry = new ToolRegistry(store, async () => admin);
-  const ops = registerOperationsTools(registry, { store, client, config: { servers: ['s'], repository: 'o/r', containers: ['slopbot'] }, authorize });
+  const ops = registerOperationsTools(registry, { store, client, config: { servers, repository: 'o/r', containers: ['slopbot'] }, authorize }, 's');
   await store.ingest(request); await store.ingest(output);
   await store.startRun('run', request, { prefixVersion: 'v', prefix: [{ role: 'system', content: 'secret system prompt' }], history: [], inputs: [{ role: 'user', content: request.text }] });
   await store.fail('run', 'DECODE_FAILED secret=github_pat_abcdefghijklmnop');
@@ -103,17 +103,34 @@ test('unresolved writes stay blocked and do not blindly create another issue', a
   assert.equal(f.client.creates, 1);
 });
 
-test('operational writes and reads enforce admin, guild and task evidence boundaries', async t => {
+test('member reports preserve guild/task boundaries while infrastructure remains admin-only', async t => {
   const f = await fixture(t); const e = await f.evidence();
   f.setAdmin(false);
-  await assert.rejects(f.invoke('issue_report', reportArgs(e.evidence_id), 'no-admin'), /Manage Server/);
+  await f.invoke('github_issue_read', { query: 'attachment' }, 'member-search');
+  await f.invoke('issue_report', reportArgs(e.evidence_id), 'member-report');
+  assert.equal(f.client.creates, 1);
   await assert.rejects(f.invoke('deployment_inspect', {}, 'infra-no-admin'), /Manage Server/);
   await f.invoke('interaction_inspect', { message_id: output.id }, 'member');
   f.setAdmin(true);
   await assert.rejects(f.invoke('issue_report', reportArgs(e.evidence_id), 'foreign-task', { ...report, channel: 'another' }), /another task/);
   await assert.rejects(f.invoke('deployment_inspect', {}, 'foreign-guild', { ...report, server: 'foreign' }), /not enabled/);
   await assert.rejects(f.invoke('pipeline_read', { path: '.env' }, 'env-file'), /Invalid choice/);
-  assert.equal(f.client.creates, 0);
+  assert.equal(f.client.creates, 1);
+});
+
+test('dynamic servers can file member reports without a guild allowlist; admin diagnostics stay unavailable', async t => {
+  const f = await fixture(t, []);
+  f.setAdmin(false);
+  assert.deepEqual(f.registry.definitions().map(d => d.name).sort(), ['github_issue_read', 'interaction_inspect', 'issue_report']);
+  const e = await f.evidence();
+  await f.invoke('github_issue_read', { query: 'attachment' }, 'dynamic-search');
+  await f.invoke('issue_report', reportArgs(e.evidence_id), 'dynamic-report');
+  assert.equal(f.client.creates, 1);
+  f.setAdmin(true);
+  await assert.rejects(f.invoke('deployment_inspect', {}, 'dynamic-infra'), /Unknown tool/);
+  f.denied.add('source');
+  await assert.rejects(f.invoke('issue_report', reportArgs(e.evidence_id), 'revoked-report'), /denied/);
+  assert.equal(f.client.creates, 1);
 });
 
 test('PMServers logs exclude other guilds and inaccessible channels, then recheck access on publication', async t => {
@@ -121,6 +138,17 @@ test('PMServers logs exclude other guilds and inaccessible channels, then rechec
   assert.match(logs.text, /DECODE_FAILED/); assert.ok(!logs.text.includes('other server private')); assert.ok(!logs.text.includes('hidden channel')); assert.ok(!logs.text.includes('github_pat_'));
   f.denied.add('source');
   await assert.rejects(f.invoke('issue_report', reportArgs((logs.data as { evidence_id: string }).evidence_id), 'publish-logs'), /denied/);
+});
+
+test('members cannot publish administrator diagnostic snapshots, including saved reports on replay', async t => {
+  const f = await fixture(t);
+  const snapshot = await f.invoke('deployment_inspect', {}, 'admin-snapshot');
+  const id = (snapshot.data as { evidence_id: string }).evidence_id;
+  await f.invoke('issue_report', reportArgs(id), 'admin-report');
+  f.setAdmin(false);
+  await assert.rejects(f.invoke('issue_report', reportArgs(id), 'member-infra'), /Manage Server/);
+  await assert.rejects(f.invoke('issue_report', reportArgs(id), 'admin-report'), /Manage Server/);
+  assert.equal(f.client.creates, 1); assert.equal(f.client.commentsWritten, 0);
 });
 
 test('behavioral verification requires the deployed fix and an interaction executed after deployment', async t => {
@@ -156,7 +184,8 @@ test('fix watch stays quiet on unchanged state and reuses durable delivery inten
 
 test('operator configuration requires explicit server scope and never reuses CI/sandbox tokens', () => {
   assert.equal(loadOperationsConfig({ PMS_TOKEN: 'ci-token', E2B_API_KEY: 'sandbox-token' }), undefined);
-  assert.throws(() => loadOperationsConfig({ SLOPBOT_GITHUB_TOKEN: 'secret' }), /GUILD_IDS/);
+  assert.deepEqual(loadOperationsConfig({ SLOPBOT_GITHUB_TOKEN: 'secret' })?.servers, []);
+  assert.throws(() => loadOperationsConfig({ SLOPBOT_PMS_TOKEN: 'secret', SLOPBOT_PMS_PROJECT_ID: 'project' }), /GUILD_IDS/);
   assert.throws(() => loadOperationsConfig({ SLOPBOT_OPERATIONS_GUILD_IDS: '12345678901234567', SLOPBOT_PMS_TOKEN: 'secret' }), /PROJECT_ID/);
   assert.throws(() => loadOperationsConfig({ SLOPBOT_OPERATIONS_GUILD_IDS: '12345678901234567', SLOPBOT_GITHUB_REPOSITORY: 'o/..' }), /owner\/repository/);
   assert.equal(loadOperationsConfig({ SLOPBOT_OPERATIONS_GUILD_IDS: '12345678901234567' })?.repository, 'pretty-manageable-servers/slopbot');

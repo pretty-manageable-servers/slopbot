@@ -11,17 +11,18 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 const evidenceId = (context: ToolContext) => hash(`${context.message.channel}:${context.operationId}`);
 const marker = (context: ToolContext) => `<!-- slopbot-operation:${hash(context.operationId)} -->`;
 // Preserve line breaks while using the existing credential redactor on every line.
-export const diagnosticText = (text: string, max = 16000) => text.split('\n').map(line => redactErrorText(line).replace(/@(everyone|here)/gi, '@\u200b$1')).join('\n').slice(0, max);
+export const diagnosticText = (text: string, max = 16000) => text.replace(/-----BEGIN (?:RSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA )?PRIVATE KEY-----/g, '[redacted]').split('\n').map(line => redactErrorText(line).replace(/@(everyone|here)/gi, '@\u200b$1')).join('\n').slice(0, max);
 const json = (value: unknown): Json => JSON.parse(JSON.stringify(value)) as Json;
 export function safeDiagnosticData(value: Json): Json {
   if (typeof value === 'string') return diagnosticText(value);
   if (Array.isArray(value)) return value.map(safeDiagnosticData);
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, /token|secret|password|authorization|cookie|api[_-]?key/i.test(key) ? '[redacted]' : safeDiagnosticData(item)]));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, /token|secret|password|authorization|cookie|api[_-]?key|private[_-]?key/i.test(key) ? '[redacted]' : safeDiagnosticData(item)]));
   return value;
 }
 const messageLink = (m: Pick<Message, 'server' | 'channel' | 'id'>) => /^\d+$/.test(m.id) ? `https://discord.com/channels/${m.server}/${m.channel}/${m.id}` : undefined;
 const integer = (description: string, max = Number.MAX_SAFE_INTEGER) => ({ type: 'integer' as const, description, min: 1, max });
 const text = (description: string, max = 2000, required = false) => ({ type: 'string' as const, description, max, required });
+const memberReportingTools = new Set(['interaction_inspect', 'github_issue_read', 'issue_report']);
 
 interface Evidence {
   channel: string; owner: string; capturedAt: number; kind: string; data: Json;
@@ -43,7 +44,7 @@ export interface OperationsServices {
 export class Operations {
   constructor(readonly services: OperationsServices) {}
   async authorize(context: ToolContext) {
-    if (!this.services.config.servers.includes(context.message.server)) throw new ToolError('Operational access is not enabled for this server');
+    if (!memberReportingTools.has(context.toolName) && !this.services.config.servers.includes(context.message.server)) throw new ToolError('Operational access is not enabled for this server');
     await this.services.authorize(context.message, context.message.channel);
   }
   async evidence(message: Message, id: string): Promise<Evidence> {
@@ -75,7 +76,11 @@ export class Operations {
   }
   async selectedEvidence(context: ToolContext, args: ToolArgs) {
     if (!Array.isArray(args.evidence_ids) || args.evidence_ids.length < 1 || args.evidence_ids.length > 8 || args.evidence_ids.some(id => typeof id !== 'string')) throw new ToolError('Choose 1–8 captured evidence IDs from this task');
-    return Promise.all((args.evidence_ids as string[]).map(async id => ({ id, value: await this.evidence(context.message, id) })));
+    return Promise.all((args.evidence_ids as string[]).map(async id => {
+      const value = await this.evidence(context.message, id);
+      if (!context.isAdmin && value.kind !== 'interaction') throw new ToolError('Manage Server permission is required to publish repository or infrastructure evidence');
+      return { id, value };
+    }));
   }
   async interaction(context: ToolContext, args: ToolArgs) {
     let origin = context.message;
@@ -134,7 +139,7 @@ export class Operations {
   }
 }
 
-export function registerOperationsTools(registry: ToolRegistry, services: OperationsServices): Operations {
+export function registerOperationsTools(registry: ToolRegistry, services: OperationsServices, server?: string): Operations {
   const ops = new Operations(services);
   const base = { scope: 'discord' as const, access: 'admin' as const, effect: 'read' as const, retrySafe: true,
     authorize: async (context: ToolContext) => {
@@ -142,7 +147,10 @@ export function registerOperationsTools(registry: ToolRegistry, services: Operat
       const saved = await services.store.record(context.message.server, 'diagnostic_evidence', evidenceId(context));
       if (saved) await ops.evidence(context.message, saved.id);
     } };
-  const add = (definition: ToolDefinition) => registry.register(definition.effect === 'read' ? { ...definition, programmatic: true, outputSchema: { type: 'object' } } : definition);
+  const add = (definition: ToolDefinition) => {
+    if (server && !services.config.servers.includes(server) && !memberReportingTools.has(definition.name)) return;
+    registry.register(definition.effect === 'read' ? { ...definition, programmatic: true, outputSchema: { type: 'object' } } : definition);
+  };
   add({ ...base, name: 'interaction_inspect', access: 'member', description: 'Collect durable evidence for a reported bot interaction. Reply to the affected message or supply its ID. Returns saved runs, tool statuses, failures, context inventory, timings and the version at execution. Text excerpts require include_text:true; use only relevant excerpts when filing an issue. Raw prompts and reasoning are excluded.',
     fields: { message_id: text('Affected request or response ID'), include_text: { type: 'boolean', description: 'Include selected message/response excerpts for the report, default false' } }, execute: (context, args) => ops.interaction(context, args) });
   add({ ...base, name: 'deployment_inspect', description: 'Inspect actual production container image/status and recent GitHub deployment workflow runs. Running does not prove the bot behavior is healthy. Saves evidence with observation time; historical interactions have their own version.', fields: {},
@@ -190,14 +198,14 @@ export function registerOperationsTools(registry: ToolRegistry, services: Operat
       }
       return ops.capture(context, 'service_logs', { container: args.container ?? services.config.containers[0]!, previous: args.previous ?? false, lines, limitations: 'Bounded, permission-filtered excerpt; may omit earlier events. No raw prompt journal.' }, [], [...channels]);
     } });
-  add({ ...base, name: 'github_issue_read', description: 'Search existing issues before reporting a bug, or read a specific issue and its first 100 comments. Repo is fixed by operator configuration. Preserve relevant issue links; searches return at most 20 matches.',
+  add({ ...base, name: 'github_issue_read', access: 'member', description: 'Search existing issues before reporting a bug, or read a specific issue and its first 100 comments. Repo is fixed by operator configuration. Preserve relevant issue links; searches return at most 20 matches.',
     fields: { query: text('Issue search terms; used for duplicate detection'), number: integer('Issue number to read') },
     async execute(_context, args) {
       const data = args.number ? { issue: await services.client.issue(Number(args.number)), comments: await services.client.comments(Number(args.number)), commentsLimit: 100 } : await services.client.searchIssues(String(args.query ?? 'is:open'));
       const safe = safeDiagnosticData(json(data));
       return { text: diagnosticText(JSON.stringify(safe, null, 2)), data: safe };
     } });
-  add({ ...base, name: 'issue_report', effect: 'write', retrySafe: false, resource: () => `github-issues:${services.config.repository}`,
+  add({ ...base, name: 'issue_report', access: 'member', effect: 'write', retrySafe: false, resource: () => `github-issues:${services.config.repository}`,
     description: 'When the requester asks to file a bug, create an evidence-backed GitHub issue or append evidence to issue_number. Search existing issues first. Exact title matches are reused. Include expected/actual behavior, steps, acceptance check, facts, hypotheses and missing evidence. Only selected snapshots from this task are attached, with secrets redacted. Reconciliation prevents duplicate writes after a lost response. Does not change code.',
     fields: { title: text('Concrete bug title', 200, true), expected: text('Expected behavior', 2000, true), actual: text('Observed behavior', 2000, true), steps: text('Reproduction steps or explicitly unknown', 3000, true), acceptance: text('Concrete check a coding agent can use to verify the fix', 2000, true), hypotheses: text('Suspected causes, clearly unconfirmed', 2000), missing: text('Missing evidence or uncertainty', 2000), issue_number: integer('Existing issue to append evidence to'), evidence_ids: { type: 'json', description: '1–8 diagnostic evidence IDs collected in this task', required: true, schema: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 8 } } },
     authorize: async (context, args) => { await ops.authorize(context); await ops.selectedEvidence(context, args); },

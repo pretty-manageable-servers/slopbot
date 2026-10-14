@@ -1,3 +1,4 @@
+import { sign } from 'node:crypto';
 import type { Json } from '../domain.js';
 import type { OperationsConfig } from '../operations-config.js';
 import { redactErrorText, ToolError } from '../errors.js';
@@ -46,14 +47,52 @@ export async function boundedBody(response: Response, max = 1024 * 1024, truncat
 /** Fixed API origins, fixed repository, GET-only PMServers. No shell or general HTTP tool. */
 export class HttpOperationsClient implements OperationsClient {
   readonly repository: string;
-  constructor(private readonly config: OperationsConfig, private readonly fetcher: typeof fetch = fetch) { this.repository = config.repository; }
-  private async response(path: string, method = 'GET', body?: Json): Promise<Response> {
-    const token = this.config.githubToken;
+  private installationToken: { token: string; expiresAt: number } | undefined;
+  private refreshing: Promise<string> | undefined;
+  constructor(private readonly config: OperationsConfig, private readonly fetcher: typeof fetch = fetch, private readonly now: () => number = Date.now) { this.repository = config.repository; }
+  private async githubToken(): Promise<string | undefined> {
+    const app = this.config.githubApp;
+    if (!app) return this.config.githubToken;
+    if (this.installationToken && this.installationToken.expiresAt > this.now() + 60000) return this.installationToken.token;
+    if (this.refreshing) return this.refreshing;
+    this.refreshing = (async () => {
+      try {
+        const seconds = Math.floor(this.now() / 1000);
+        const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+        const payload = `${encode({ alg: 'RS256', typ: 'JWT' })}.${encode({ iat: seconds - 60, exp: seconds + 540, iss: app.id })}`;
+        const jwt = `${payload}.${sign('RSA-SHA256', Buffer.from(payload), app.privateKey).toString('base64url')}`;
+        const response = await this.fetcher(`https://api.github.com/app/installations/${app.installationId}/access_tokens`, {
+          method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(15000),
+          headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'slopbot-operations', Authorization: `Bearer ${jwt}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repositories: [this.repository.split('/')[1]], permissions: { contents: 'read', actions: 'read', pull_requests: 'read', issues: 'write' } }),
+        });
+        if (!response.ok) { await response.body?.cancel(); throw new ToolError(`GitHub App authentication returned HTTP ${response.status}. Check installation access and permissions.`, 'failed'); }
+        const data = JSON.parse((await boundedBody(response, 16000)).text) as { token?: string; expires_at?: string };
+        const expiresAt = Date.parse(data.expires_at ?? '');
+        if (!data.token || !Number.isFinite(expiresAt) || expiresAt <= this.now() + 60000) throw new ToolError('GitHub App returned an invalid installation token', 'failed');
+        this.installationToken = { token: data.token, expiresAt };
+        return data.token;
+      } catch (error) {
+        // Authentication fails before any repository write; never expose JWTs, keys or response bodies.
+        if (error instanceof ToolError) throw error;
+        throw new ToolError('GitHub App authentication failed. Check the private key, installation and network access.', 'failed');
+      }
+    })();
+    try { return await this.refreshing; } finally { this.refreshing = undefined; }
+  }
+  private async response(path: string, method = 'GET', body?: Json, refreshed = false): Promise<Response> {
+    const token = await this.githubToken();
     const response = await this.fetcher(`https://api.github.com${path}`, {
       method, redirect: 'manual', signal: AbortSignal.timeout(15000),
       headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'slopbot-operations', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
+    // A 401 is a definite authentication rejection, so even a POST has not executed.
+    if (response.status === 401 && this.config.githubApp && !refreshed) {
+      await response.body?.cancel();
+      if (this.installationToken?.token === token) this.installationToken = undefined;
+      return this.response(path, method, body, true);
+    }
     if (!response.ok && response.status !== 302) {
       await response.body?.cancel();
       // Server failures after a POST can have an unknown outcome. Leave them for reconciliation.
@@ -77,11 +116,11 @@ export class HttpOperationsClient implements OperationsClient {
   issue(number: number) { return this.gh<Issue>(`/issues/${number}`); }
   comments(number: number, page = 1) { return this.gh<Issue[]>(`/issues/${number}/comments?per_page=100&page=${page}`); }
   createIssue(title: string, body: string) {
-    if (!this.config.githubToken) throw new ToolError('Configure SLOPBOT_GITHUB_TOKEN with Issues write permission');
+    if (!this.config.githubToken && !this.config.githubApp) throw new ToolError('Configure GitHub App credentials or SLOPBOT_GITHUB_TOKEN with Issues write permission');
     return this.gh<Issue>('/issues', 'POST', { title, body });
   }
   comment(number: number, body: string) {
-    if (!this.config.githubToken) throw new ToolError('Configure SLOPBOT_GITHUB_TOKEN with Issues write permission');
+    if (!this.config.githubToken && !this.config.githubApp) throw new ToolError('Configure GitHub App credentials or SLOPBOT_GITHUB_TOKEN with Issues write permission');
     return this.gh<Issue>(`/issues/${number}/comments`, 'POST', { body });
   }
   async findIssue(marker: string) {

@@ -224,9 +224,9 @@ export class DiscordServer implements ChatGateway {
     };
     this.uiRuntime = new UiRuntime(store,this.tools,authorizeFeature);
     registerTimingTools(this.tools, { store, authorize: authorizeFeature });
-    if (config.operations?.servers.includes(guildId)) {
-      const operations = registerOperationsTools(this.tools, { store, config: config.operations, client: new HttpOperationsClient(config.operations), authorize: authorizeFeature });
-      this.fixWatches = new FixWatchWorker(guildId, operations, async message => {
+    if (config.operations) {
+      const operations = registerOperationsTools(this.tools, { store, config: config.operations, client: new HttpOperationsClient(config.operations), authorize: authorizeFeature }, guildId);
+      if (config.operations.servers.includes(guildId)) this.fixWatches = new FixWatchWorker(guildId, operations, async message => {
         await authorizeFeature(message, message.channel);
         await this.tools.checkAccess(message, 'fix_watch');
       }, async (message, text, id) => { await this.reply(message, text, id); });
