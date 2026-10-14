@@ -31,6 +31,10 @@ export interface Message {
   /** Web chat only: short-lived links of the images in this message, for the model. In memory; the saved row keeps attachments only. */
   readonly modelImages?: readonly { url: string; label: string }[];
   readonly revisionTimestamp?: number;
+  /** Set on a request the bot answers. Its non-image files are copied to the sandbox before the run. */
+  readonly uploadFiles?: true;
+  /** Set by the worker after the upload: sandbox paths written, and failures as "name: reason". */
+  readonly uploads?: { readonly files: readonly string[]; readonly failed: readonly string[] };
 }
 
 export interface PromptItem {
@@ -117,6 +121,8 @@ export function parseMessage(input: unknown): Message {
     ...(value.source !== undefined ? { source: value.source === "voice" ? "voice" as const : "web" as const } : {}),
     ...(value.revisionTimestamp !== undefined ? { revisionTimestamp: value.revisionTimestamp as number } : {}),
     ...(value.transient !== undefined ? { transient: value.transient as boolean } : {}),
+    ...(value.uploadFiles === true ? { uploadFiles: true as const } : {}),
+    ...(value.uploads ? { uploads: value.uploads as { files: string[]; failed: string[] } } : {}),
     id: value.id as string, server: value.server as string,
     channel: value.channel as string, author: value.author as string, text: value.text as string,
     ...(value.replyTo !== undefined ? { replyTo: value.replyTo as string } : {}),

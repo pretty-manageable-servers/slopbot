@@ -8,7 +8,7 @@ test('diagnostics retain the stage, code, cause chain and frames without credent
   process.env.TEST_API_KEY = secret;
   t.after(() => { if (before === undefined) delete process.env.TEST_API_KEY; else process.env.TEST_API_KEY = before; });
   const cause = Object.assign(new Error(`connect failed at postgres://user:db-password@db.local/app?token=query-secret Authorization: Bearer header-secret ${secret}`), { code: 'ECONNREFUSED' });
-  const error = errorContext(new ToolError('Sandbox connection failed.', 'failed', { cause }), { stage: 'sandbox connect', jobId: 'job-1', tool: 'sandbox' });
+  const error = errorContext(new ToolError('Sandbox connection failed.', 'failed', { cause }), { stage: 'sandbox connect', jobId: 'job-1', tool: 'shell' });
   const info = describeError(error);
   assert.equal(info.code, 'TOOL_FAILED');
   assert.equal(info.context.stage, 'sandbox connect');

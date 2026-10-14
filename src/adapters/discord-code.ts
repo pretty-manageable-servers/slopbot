@@ -10,7 +10,7 @@ import { codeBlock, codeFitsInline, PROGRAM_CODE_KEEP_MS, SHOW_CODE_MESSAGE_CHAR
 const PROGRAM_TOOL = "run_tools_code";
 const CODE_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 const CONFIRM_ARGS_CHARS = 1500;
-const CONFIRM_RECORD = "tool-confirm";
+export const CONFIRM_RECORD = "tool-confirm";
 const CONFIRM_ID = /^slopconfirm:(.+):(yes|no)$/;
 
 /** The record store and the operation journal that the code buttons read and write. */

@@ -276,8 +276,10 @@ export class AgentRunner {
     let directAnswer: string | undefined;
     let ui: import('./ui/schema.js').UiDocument | undefined;
     const activity: ToolActivity[] = [];
-    const report = async (event: ToolActivity) => {
-      const existing = activity.findIndex(item => item.id === event.id);
+    const report = async (update: ToolActivity) => {
+      const existing = activity.findIndex(item => item.id === update.id);
+      // A later status update keeps the fields it does not repeat, such as the code of a run_tools_code call.
+      const event: ToolActivity = existing < 0 ? update : { ...activity[existing]!, ...update };
       if (existing < 0) activity.push(event); else activity[existing] = event;
       try { if (this.services.onToolActivity) await requestTimings.wait("Discord tool status", () => this.services.onToolActivity!(message, event)); } catch (error) { logError("tool_status_display_failed", error, { stage: "Discord tool status", server: message.server, channel: message.channel, messageId: message.id, tool: event.name }, true); }
     };

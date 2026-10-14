@@ -132,8 +132,9 @@ export interface StorageServices {
   fetcher?: FileFetcher;
   inspect(context: ToolContext, file: StoredFile, bytes: Uint8Array, question: string): Promise<string>;
   send(context: ToolContext, file: StoredFile, bytes: Uint8Array): Promise<void>;
-  sandbox?: { read(context: ToolContext, path: string): Promise<Uint8Array>; write(context: ToolContext, path: string, bytes: Uint8Array): Promise<void> };
-  /** Needed by to_sandbox. Without both, to_sandbox returns "Sandbox is not configured.". */
+  /** Needed by save_sandbox: reads a file of the task sandbox. */
+  sandbox?: { read(context: ToolContext, path: string): Promise<Uint8Array> };
+  /** Needed by to_sandbox. Without both, to_sandbox returns "Sandbox is not configured.". Passed by the Discord adapter. */
   store?: RecordStore;
   provider?: SandboxProvider;
 }

@@ -10,12 +10,6 @@ import type { SandboxProvider } from './sandbox.js';
 import { ConfirmationRequired, ToolError, stableOperationId, toolResult, type ToolArgs, type ToolDefinition, type ToolRegistry, type ToolResult } from './tools.js';
 
 export const RUN_TOOLS_CODE = 'run_tools_code';
-/** Program code is kept this long, then deleted. */
-export const PROGRAM_CODE_KEEP_MS = 14 * 24 * 60 * 60 * 1000;
-/** A program at most this many lines long is shown inline by tool_display: full. */
-export const SHOW_CODE_INLINE_LINES = 15;
-/** Program code longer than this is sent as a file, not as a message. */
-export const SHOW_CODE_MESSAGE_CHARS = 1900;
 
 export interface RunToolsCodeOptions {
   runtime?: ProgramRuntime;
@@ -148,9 +142,4 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
         sources: [...sources.values()], artifacts: [...artifacts.values()] };
     },
   };
-}
-
-/** Same as runToolsCodeTool. Kept so existing callers still compile. */
-export function programTool(registry: ToolRegistry, options?: RunToolsCodeOptions): ToolDefinition {
-  return runToolsCodeTool(registry, options);
 }

@@ -371,7 +371,7 @@ test("file inspection is charged to the member who asked, at the model price", a
   const inspect = message("inspect", { text: "What is this?" });
   await store.ingest(inspect);
   const text = await inspectFile({ store, llm, usage: meter, decoder: { read: async () => ({ text: "contents", images: [] }) } },
-    { message: inspect, operationId: "inspect-op", isAdmin: false, source: "agent", toolName: "file_read", arguments: {}, resource: null, assertActive: async () => {} },
+    { message: inspect, operationId: "inspect-op", isAdmin: false, source: "agent", toolName: "file_store", arguments: {}, resource: null, assertActive: async () => {} },
     "notes.txt", "text/plain", new Uint8Array(), "What is this?");
   assert.equal(text, "A file.");
   assert.equal(await spentBy(limits), 10 * 1 + 5 * 2);

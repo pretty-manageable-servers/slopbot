@@ -2,13 +2,15 @@ import { LocalDiskStorage } from "../web-chat-images.js";
 import { ChatFileFetcher } from "../web-chat-files.js";
 import { DiscordVoice, voiceTurnSkipped } from './discord-voice.js';
 import { containsSkipMarker, splitSpeak, VOICE_INSTRUCTIONS_KEY, VOICE_NAME_DEFAULT, VOICE_SKIP, voiceInstructions } from "../voice-rules.js";
-import { contextChangedError, legacyToolProgress, sourceFingerprint, stableAttachmentUrl, toolProgressFooter } from "../source-context.js";
+import { legacyToolProgress, sourceFingerprint, stableAttachmentUrl, toolProgressFooter } from "../source-context.js";
 import { errorReply, logError } from "../errors.js";
-import { sandboxTool, readSandboxFile } from "../sandbox.js";
+import { sandboxManageTool, readSandboxFile } from "../sandbox.js";
+import { sandboxFileTools } from "../sandbox-tools.js";
+import { uploadRequestFiles } from "../sandbox-uploads.js";
 import { objectStorageTool, UserFileStorage, MAX_STORED_FILE_BYTES, fileStorageScope } from '../object-storage.js';
 import { sendStoredFile } from './discord-storage.js';
 import { S3StorageProvider } from './s3-storage.js';
-import { programTool } from '../run-tools-code.js';
+import { runToolsCodeTool } from '../run-tools-code.js';
 import { McpManager, McpSecrets } from '../mcp.js';
 import { remoteMcpConnector } from './mcp-client.js';
 import { E2BSandboxProvider } from "./e2b-sandbox.js";
@@ -22,7 +24,7 @@ import {UiRuntime,registerUiTool,registerPollTool} from '../ui/runtime.js';
 import type {UiDocument} from '../ui/schema.js';
 import {discordUi} from './discord-ui.js';
 import { DiscordToolProgress } from './discord-tool-progress.js';
-import { handleConfirm, handleShowCode } from './discord-code.js';
+import { CONFIRM_RECORD, handleConfirm, handleShowCode, postConfirmation, showCodeRows, startCodeMaintenance } from './discord-code.js';
 import { toolFooter, toolDisplayMode } from '../presentation/tool-activity.js';
 import type { ToolActivity } from '../tool-activity.js';
 import { discordPresentation, suppressLinkPreviews } from '../presentation/discord.js';
@@ -36,7 +38,7 @@ import { FirecrawlScrape, FirecrawlSearch } from "./firecrawl.js";
 import { PlainFetch } from "./plain-fetch.js";
 import { SearxNGSearch } from "./searxng.js";
 import { ReplyRenderer } from "../reply-renderer.js";
-import { registerFileTool, inspectFile } from '../files.js';
+import { inspectFile } from '../files.js';
 import {
   Client, Events, GatewayIntentBits, Partials, ThreadAutoArchiveDuration, SlashCommandBuilder,
   MessageFlags, PermissionFlagsBits, ChannelType, ActivityType, ActionRowBuilder, ButtonBuilder, ButtonStyle, type ButtonInteraction,
@@ -135,6 +137,7 @@ export class DiscordServer implements ChatGateway {
   private readonly chatGateway: WebChatGateway;
   private channels: string[];
   private historyTimer: ReturnType<typeof setInterval> | undefined;
+  private codeMaintenance: (() => void) | undefined;
   private readonly voice: DiscordVoice | undefined;
   private readonly inbox: Inbox;
 
@@ -257,14 +260,15 @@ export class DiscordServer implements ChatGateway {
       const channel = await this.client.channels.fetch(known.channel);
       if (!channel || !channel.isTextBased() || !("messages" in channel)) throw new ToolError("Source channel unavailable");
       const fresh = this.normalize(await channel.messages.fetch(id));
-      if (sourceFingerprint(fresh) !== sourceFingerprint(known)) { await this.store.revise(fresh); throw contextChangedError(request, { reason: "file_source_changed", sourceId: id }); }
+      // A changed source is saved and used as it is now. The run does not stop for it.
+      if (sourceFingerprint(fresh) !== sourceFingerprint(known)) await this.store.revise(fresh);
       return fresh;
     };
     const chatFiles = new ChatFileFetcher(objectStorageProvider ?? new LocalDiskStorage());
-    registerFileTool(this.tools, { store, llm, resolve: resolveAttachment, usage, fetcher: chatFiles });
     const sandboxProvider = config.sandboxApiKey ? new E2BSandboxProvider({ apiKey: config.sandboxApiKey, apiUrl: config.sandboxApiUrl!, sandboxUrl: config.sandboxUrl!, ...(config.sandboxTemplate ? { template: config.sandboxTemplate } : {}) }) : undefined;
     const storage = new UserFileStorage(store, objectStorageProvider);
-    this.tools.register(sandboxTool(store, sandboxProvider, { resolve: (request, id) => resolveAttachment(request, id, true), fetcher: chatFiles }, storage));
+    this.tools.register(sandboxManageTool(store, sandboxProvider));
+    for (const tool of sandboxFileTools(store, sandboxProvider)) this.tools.register(tool);
     this.tools.register(objectStorageTool({
       storage,
       fetcher: chatFiles,
@@ -276,12 +280,9 @@ export class DiscordServer implements ChatGateway {
         if (current.file.key !== file.key) throw new ToolError('Stored file changed before sending. Request its current version.');
         await sendStoredFile(this.client, context, file, bytes);
       },
-      ...(sandboxProvider ? { sandbox: {
+      // to_sandbox and save_sandbox need the sandbox. Without a provider, both report that it is not configured.
+      ...(sandboxProvider ? { store, provider: sandboxProvider, sandbox: {
         read: (context, path) => readSandboxFile(store, sandboxProvider, context, path, MAX_STORED_FILE_BYTES),
-        write: async (context, path, _bytes) => {
-          const output = await this.tools.invokeResult(context.message, 'sandbox', { action: 'import_storage', path, storage_path: context.arguments.path!, ...(context.arguments.storage_scope ? { storage_scope: context.arguments.storage_scope } : {}), ...(context.arguments.owner ? { owner: context.arguments.owner } : {}) }, `${context.operationId}:sandbox-import`, context.source);
-          if (output.status === 'failed' || output.status === 'rejected') throw new ToolError(output.reason ?? output.text, output.status);
-        },
       } } : {}),
     }));
     this.limiter = usage.limiter;
@@ -297,7 +298,11 @@ export class DiscordServer implements ChatGateway {
       this.voice.onSession = (channel, previous) => { if (previous) this.bot.closeVoiceChannel(previous); if (channel) this.bot.openVoiceChannel(guildId, channel); };
     }
     registerUsageTool(this.tools, this.limiter);
-    this.tools.register(programTool(this.tools));
+    // Registered last: run_tools_code lists the tools registered before it in its description.
+    this.tools.register(runToolsCodeTool(this.tools, { store, ...(sandboxProvider ? { sandbox: sandboxProvider } : {}), confirmations: { save: async (server, operationId, value) => {
+      const previous = await store.record(server, CONFIRM_RECORD, operationId);
+      await store.putRecord(server, CONFIRM_RECORD, operationId, value, previous?.revision ?? 0);
+    } } }));
     this.app = new Application(store, llm, {
       allowedChannels: this.channels.map(channel => ({ server: guildId, channel })),
       recentMessages: savedLimit("reply_context", config.replyContextMessages, 100),
@@ -309,6 +314,8 @@ export class DiscordServer implements ChatGateway {
       publishTool(message, activity);
       // A private chat shows tool progress in its own stream, not in Discord.
       if (isPrivateChannel(message.channel)) return;
+      // A run_tools_code program stopped at a call that needs Confirm. Its pending record is already saved.
+      if (activity.parentId && activity.status === "rejected" && activity.reason?.includes("confirmation_required")) void this.postCodeConfirmation(message, activity);
       await this.toolProgress.update(JSON.stringify([message.server,message.channel,message.id]), activity, async content => {
         const channel = await this.client.channels.fetch(message.channel);
         if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Status channel unavailable");
@@ -337,7 +344,14 @@ export class DiscordServer implements ChatGateway {
         return { runId: operationId, text: result, contextVersion: await store.contextVersion(message.server, message.channel) };
       }
       const stop = this.typing(message.channel);
-      try { return await this.app.handle(message, true); } finally { stop(); }
+      try {
+        // A request copies its non-image files to the sandbox before the run. A failure does not stop the run.
+        const uploads = message.uploadFiles && sandboxProvider ? await uploadRequestFiles({ store, provider: sandboxProvider, fetcher: chatFiles }, message).catch(error => {
+          logError("sandbox_upload_failed", error, { stage: "sandbox upload", server: message.server, channel: message.channel, messageId: message.id }, true);
+          return undefined;
+        }) : undefined;
+        return await this.app.handle(uploads ? { ...message, uploads } : message, true);
+      } finally { stop(); }
     }, (message, reply, id) => this.bot.deliver(message, reply, id), message => this.bot.accepts(message.server, message.channel), 3, async (job, error) => {
       if (!this.bot.accepts(job.message.server, job.message.channel)) return;
       await this.reply(job.message, errorReply(error, job.id), `job-error:${job.id}`);
@@ -360,6 +374,7 @@ export class DiscordServer implements ChatGateway {
     // Reopens the private chats of this server, so a restart keeps them answering.
     for (const channel of await this.store.liveWebChatChannels(this.guildId)) this.bot.openPrivateChat(this.guildId, channel);
     this.worker.start();
+    this.codeMaintenance = startCodeMaintenance(this.store);
     const sync = () => { for (const channel of this.channels) void this.history.start(channel).catch(error => logError("History import startup failed", error, { server: this.guildId })); };
     this.reminders.start();
     this.fixWatches?.start();
@@ -380,6 +395,16 @@ export class DiscordServer implements ChatGateway {
     if (interaction.isChatInputCommand() && interaction.commandName === "inbox") void this.inboxCommand(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isMessageContextMenuCommand() && interaction.commandName === CONTINUE_IN_WEB) void this.continueInWeb(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isMessageContextMenuCommand() && interaction.commandName in MESSAGE_APPS) void this.messageApp(interaction).catch(error => logError("Command failed.", error));
+  }
+  /** Posts Confirm and Cancel for a stopped run_tools_code call. Only the pending record of that call is read. */
+  private async postCodeConfirmation(message: Message, activity: ToolActivity): Promise<void> {
+    try {
+      const pending = await this.store.record(message.server, CONFIRM_RECORD, activity.id);
+      if (!pending || (pending.value as { done?: boolean } | undefined)?.done === true || !activity.parentId) return;
+      const channel = await this.client.channels.fetch(message.channel);
+      if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Channel cannot receive confirmations");
+      await postConfirmation(channel, { name: activity.name, arguments: activity.arguments ?? {}, operationId: activity.id, parentOperationId: activity.parentId }, message.author);
+    } catch (error) { logError("code_confirmation_post_failed", error, { stage: "confirmation", server: message.server, channel: message.channel, messageId: message.id }, true); }
   }
   messageCreate(message: DiscordMessage): void { void this.receive(message).catch(error => logError("Discord event failed. Check channel permissions.", error)); }
   messageUpdate(updated: DiscordMessage | PartialMessage): void {
@@ -714,6 +739,9 @@ export class DiscordServer implements ChatGateway {
     const rendered = await this.renderer.render(message.server, chat + toolFooter(activity, toolDisplayMode(this.store.setting(message.server, "tool_display"))) + footer);
     const flags = suppressLinkPreviews(rendered) ? MessageFlags.SuppressEmbeds : undefined;
     const payloads: import('discord.js').MessageCreateOptions[] = chat ? splitReply(rendered).map(content=>({content,flags})) : [];
+    // Show code buttons for the programs of this reply. They go on the first part of the reply.
+    const codeRows = showCodeRows(activity, toolDisplayMode(this.store.setting(message.server, "tool_display")));
+    if (payloads.length && codeRows.length) payloads[0] = { ...payloads[0]!, components: codeRows };
     if(ui){const state=await this.uiRuntime.prepare(message,ui,deliveryId??message.id);payloads.push(discordUi(ui,state.id,state.revision));}
     for (const payload of payloads) {
       const content = payload.content ?? JSON.stringify(payload);
@@ -896,6 +924,7 @@ export class DiscordServer implements ChatGateway {
   async stop(): Promise<void> {
     this.voice?.stop();
     if (this.historyTimer) clearInterval(this.historyTimer);
+    this.codeMaintenance?.();
     await this.reminders.stop();
     await this.fixWatches?.stop();
     await this.history.stop(); await this.worker.stop(); await this.mcp.close();

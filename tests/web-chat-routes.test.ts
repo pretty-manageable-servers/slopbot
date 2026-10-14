@@ -600,7 +600,7 @@ test("send with file adds attachment label for the model", async t => {
   const fileId = (await uploadFile(f, ALICE, id, Buffer.from("a,b\n"), "data.csv", "text/csv")).json.fileId as string;
   const sent = await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "look", files: [fileId] });
   assert.equal(sent.status, 201);
-  const label = `[Attachment data.csv, type text/csv: web-file:${SERVER}/${id}/${fileId}; content not inspected; read with file_read, or if file_read cannot read this type, use sandbox import_attachment]`;
+  const label = `[Attachment data.csv, type text/csv: web-file:${SERVER}/${id}/${fileId}; content not inspected]`;
   const saved = await f.store.canonicalMessage(SERVER, sent.json.id);
   assert.equal(saved!.text, `look\n${label}`, "the saved text has the label after the body");
   assert.equal(f.received.at(-1)!.text, `look\n${label}`, "the model gets the label");
