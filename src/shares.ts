@@ -3,6 +3,7 @@ import type { Json, Message } from "./domain.js";
 import { webTranscriptsEnabled } from "./server-tools.js";
 import { PRIVATE_CHANNEL_PREFIX, isPrivateChannel, privateChannel } from "./private-chat.js";
 import { CHAT_IMAGE_ID, CHAT_IMAGE_MAX_BYTES, chatImageContentType, chatImageKey, imageAttachments } from "./web-chat-images.js";
+import { fileAttachments } from "./web-chat-files.js";
 import type { ObjectStorageProvider } from "./object-storage.js";
 
 /** One share link. The body is a frozen snapshot, stored as JSON text. */
@@ -33,6 +34,8 @@ export interface ShareMessage {
   author: string; bot: boolean; at?: number; text: string; attachments: number;
   /** Web chat images in this frozen copy. Only these IDs are served on the share's image route. */
   images?: { imageId: string; name: string }[];
+  /** Web chat files in this frozen copy: names and sizes only. Shares never serve file bytes. */
+  files?: { name: string; size: number }[];
   tools: ShareToolLine[]; thinking?: string;
 }
 /** Chat shares do not show thinking or avatars. Owners share the answer text and tool labels. */
@@ -137,6 +140,7 @@ export function buildMessages(messages: readonly Message[], events: readonly { r
       text: scrubText(message.text),
       attachments: message.attachments?.length ?? 0,
       ...(imageAttachments(message.attachments).length ? { images: imageAttachments(message.attachments).map(({ imageId, name }) => ({ imageId, name: scrubText(name) })) } : {}),
+      ...(fileAttachments(message.attachments).length ? { files: fileAttachments(message.attachments).map(({ name, size }) => ({ name: scrubText(name), size })) } : {}),
       tools: [],
     };
     const request = message.isBot ? message.replyTo : undefined;
@@ -333,7 +337,8 @@ export function renderSharePage(snapshot: ShareSnapshot): string {
       tools: message.tools.map(tool => tool.status),
       thinking: message.thinking ?? "",
       images: (message.images ?? []).map(image => ({ src: `/s/${snapshot.id}/images/${image.imageId}`, name: image.name })),
-      other: Math.max(0, message.attachments - (message.images?.length ?? 0)),
+      files: (message.files ?? []).map(file => ({ name: file.name, size: file.size })),
+      other: Math.max(0, message.attachments - (message.images?.length ?? 0) - (message.files?.length ?? 0)),
     })),
   };
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="robots" content="noindex"><meta name="referrer" content="no-referrer"><title>Shared conversation · Slopbot</title><link rel="icon" href="/console/assets/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/console/style.css"><link rel="stylesheet" href="/console/chat.css"><link rel="stylesheet" href="/console/shares.css"><link rel="stylesheet" href="/console/katex/katex.min.css"><script src="/console/katex/katex.min.js" defer></script></head><body class="share-page"><main class="share"><header class="share-top"><p class="share-note"><strong>Shared from Slopbot.</strong> This is a frozen copy. Later messages are not included.</p><div class="share-actions"><button id="share-theme" type="button">Light</button><button id="share-continue" type="button">Continue in Slopbot</button></div></header><p id="share-status" class="share-status" role="status" hidden></p><div class="chat share-chat"><div id="share-log" class="chat-log share-log" role="log"></div></div><noscript><p class="share-status">Turn on JavaScript to read this conversation.</p></noscript></main><script type="application/json" id="share-data">${jsonForScript(data)}</script><script src="/console/highlight.min.js" defer></script><script src="/console/markdown.js" defer></script><script src="/console/shares.js" defer></script></body></html>`;
