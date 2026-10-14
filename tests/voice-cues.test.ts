@@ -513,6 +513,44 @@ test('voice_say in text mode speaks nothing', async t => {
   assert.equal(r.speeches.length, 0);
 });
 
+test('speak block is spoken and removed from chat', async t => {
+  const r = await rig(t);
+  r.talk();
+  await until(() => r.posts.length === 1);
+  await r.voice.speak('channel', 'Here are details.\n<speak>It is sunny.</speak>');
+  assert.deepEqual(r.speeches, ['It is sunny.']);
+});
+
+test('a reply that starts with a speak block is spoken once', async t => {
+  const r = await rig(t);
+  r.talk();
+  await until(() => r.posts.length === 1);
+  reply('run-1', ['<speak>It is sunny.</speak>']);
+  await r.voice.speak('channel', '<speak>It is sunny.</speak>');
+  assert.deepEqual(r.speeches, ['It is sunny.']);
+});
+
+test('final answer spoken after a tool when voice_say came before it', async t => {
+  const r = await rig(t);
+  r.talk();
+  await until(() => r.posts.length === 1);
+  assert.equal(await r.say('Let me check.'), 'Speaking.');
+  r.voice.toolStarted('channel', 'web_fetch');
+  await r.voice.speak('channel', '**Sunny** today. More details here.');
+  assert.deepEqual(r.speeches, ['Let me check.', 'Sunny today. More details here.']);
+});
+
+test('no extra speech when voice_say came after the tool', async t => {
+  const r = await rig(t);
+  r.talk();
+  await until(() => r.posts.length === 1);
+  assert.equal(await r.say('Let me check.'), 'Speaking.');
+  r.voice.toolStarted('channel', 'web_fetch');
+  assert.equal(await r.say('It is sunny.'), 'Speaking.');
+  await r.voice.speak('channel', '**Sunny** today. More details here.');
+  assert.deepEqual(r.speeches, ['Let me check.', 'It is sunny.']);
+});
+
 test('voice_skip beats voice_say', async t => {
   const r = await rig(t);
   r.talk();

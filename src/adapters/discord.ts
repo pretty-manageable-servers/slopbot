@@ -1,6 +1,6 @@
 import { LocalDiskStorage } from "../web-chat-images.js";
 import { DiscordVoice, voiceTurnSkipped } from './discord-voice.js';
-import { containsSkipMarker, VOICE_INSTRUCTIONS_KEY, VOICE_NAME_DEFAULT, VOICE_SKIP, voiceInstructions } from "../voice-rules.js";
+import { containsSkipMarker, splitSpeak, VOICE_INSTRUCTIONS_KEY, VOICE_NAME_DEFAULT, VOICE_SKIP, voiceInstructions } from "../voice-rules.js";
 import { contextChangedError, legacyToolProgress, sourceFingerprint, stableAttachmentUrl, toolProgressFooter } from "../source-context.js";
 import { errorReply, logError } from "../errors.js";
 import { sandboxTool, readSandboxFile } from "../sandbox.js";
@@ -300,6 +300,7 @@ export class DiscordServer implements ChatGateway {
       maxContextTokens: config.contextTokens, maxInputChars: config.contextTokens,
       maxOutputTokens: config.outputTokens, checkpointTokens: config.checkpointTokens, maxToolRounds: config.maxToolRounds,
     }, store, { usage, onToolActivity: async (message, activity) => {
+      if (message.source === "voice" && activity.status === "running") this.voice?.toolStarted(message.channel, activity.name);
       if (!this.bot.accepts(message.server, message.channel)) return;
       publishTool(message, activity);
       // A private chat shows tool progress in its own stream, not in Discord.
@@ -702,9 +703,11 @@ export class DiscordServer implements ChatGateway {
     // Freeze the footer in the existing delivery journal so retries keep identical content.
     const timingRecordId = deliveryId ?? `reply:${message.channel}:${message.id}`;
     const footer = await savedTimingFooter(this.store, message, timingRecordId);
-    const rendered = await this.renderer.render(message.server, text + toolFooter(activity, toolDisplayMode(this.store.setting(message.server, "tool_display"))) + footer);
+    // A voice reply posts only its chat part: <speak> blocks are spoken, not posted. With no chat part, nothing is posted.
+    const chat = message.source === "voice" ? splitSpeak(text).chat : text;
+    const rendered = await this.renderer.render(message.server, chat + toolFooter(activity, toolDisplayMode(this.store.setting(message.server, "tool_display"))) + footer);
     const flags = suppressLinkPreviews(rendered) ? MessageFlags.SuppressEmbeds : undefined;
-    const payloads: import('discord.js').MessageCreateOptions[] = splitReply(rendered).map(content=>({content,flags}));
+    const payloads: import('discord.js').MessageCreateOptions[] = chat ? splitReply(rendered).map(content=>({content,flags})) : [];
     if(ui){const state=await this.uiRuntime.prepare(message,ui,deliveryId??message.id);payloads.push(discordUi(ui,state.id,state.revision));}
     for (const payload of payloads) {
       const content = payload.content ?? JSON.stringify(payload);

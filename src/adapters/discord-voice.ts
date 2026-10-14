@@ -9,7 +9,7 @@ import type { Message } from '../domain.js';
 import { errorReply, logError } from '../errors.js';
 import type { UsageMeter } from '../usage-meter.js';
 import type { WebReplies } from '../web-replies.js';
-import { containsSkipMarker, cutSpoken, heldSkipLength, isErrorReply, plainSpoken, SentenceSplitter, spokenText, VOICE_FILLER_GAP_MS, VOICE_FILLER_MAX, VOICE_FILLER_TEXTS, VOICE_INSTRUCTIONS_MAX, VOICE_SPOKEN_MAX, VOICE_TURN_TIMEOUT_MS } from '../voice-rules.js';
+import { containsSkipMarker, cutSpoken, heldSkipLength, isErrorReply, plainSpoken, SentenceSplitter, splitSpeak, spokenText, VOICE_FILLER_GAP_MS, VOICE_FILLER_MAX, VOICE_FILLER_TEXTS, VOICE_INSTRUCTIONS_MAX, VOICE_SPOKEN_MAX, VOICE_TURN_TIMEOUT_MS } from '../voice-rules.js';
 import { liveText, type LiveTextEvent } from '../live-text.js';
 import { PmAudio, speechPcm } from './audio.js';
 
@@ -271,6 +271,7 @@ export class DiscordVoice {
         const plain = cutSpoken(full, room);
         this.queueSentences(session, turn, [...splitter.push(plain), ...splitter.flush()]);
         if (plain !== full.trim()) turn.speech.capped = true;
+        turn.toolAfterSay = false;
         return 'Speaking.';
       },
     });
@@ -485,9 +486,13 @@ export class DiscordVoice {
     if (session.replies === 'text') { this.endTurn(session, turn, true); session.refresh(); return; }
     try {
       const speech = turn.speech;
+      const { spoken, chat } = splitSpeak(text);
+      // A <speak> block is the spoken answer. After a tool that came after voice_say, the chat answer is spoken too.
+      if (!skipped && spoken !== undefined) this.queueFinal(session, turn, plainSpoken(spoken));
+      else if (!skipped && turn.toolAfterSay) this.queueFinal(session, turn, spokenText(chat));
       // Nothing was streamed (an error reply, or no sentence): speak the whole reply once.
-      if (!speech.streamed && !skipped && !turn.said) {
-        const said = spokenText(text);
+      else if (!speech.streamed && !skipped && !turn.said) {
+        const said = spokenText(chat);
         if (said) this.queueSpeech(session, turn, said);
       }
       await speech.settled();
@@ -559,6 +564,8 @@ export class DiscordVoice {
     run.raw += text;
     // A [SKIP] marker anywhere in the reply skips the turn. Text sent before the marker arrived cannot be recalled.
     if (containsSkipMarker(run.raw)) { run.mode = 'skip'; this.skipTurn(run.turn); return; }
+    // A <speak> block is spoken by speak() from the final reply. This run stops streaming; the turn is not skipped.
+    if (/<speak/i.test(run.raw)) { run.mode = 'skip'; return; }
     if (run.mode === 'undecided') {
       run.head += text;
       if (!this.decide(run, false)) return;
@@ -581,10 +588,23 @@ export class DiscordVoice {
   /** Decides from the start of a reply whether it is read aloud. An error code is not read; the fallback speaks the error text. */
   private decide(run: RunState, final: boolean): boolean {
     const head = run.head.trimStart();
+    const lower = head.toLowerCase();
+    // A <speak> block is not streamed. speak() reads it from the final reply.
+    if (lower.startsWith('<speak')) { run.mode = 'skip'; return true; }
     // A "[" might start an error code or a skip marker. Wait for the closing "]" or for enough text.
-    if (!final && (!head || (/^\\?\[/.test(head) && !head.includes(']') && head.length < 40))) return false;
+    // A "<" might start a <speak> block. Wait until it is clear.
+    if (!final && (!head || '<speak'.startsWith(lower) || (/^\\?\[/.test(head) && !head.includes(']') && head.length < 40))) return false;
     run.mode = isErrorReply(run.head) ? 'skip' : 'stream';
     return true;
+  }
+
+  /** Queues plain final text, such as a <speak> block or the chat answer after a tool. It is cut to the room left in the turn. */
+  private queueFinal(session: Session, turn: Turn, plain: string): void {
+    const room = VOICE_SPOKEN_MAX - turn.speech.spokenChars;
+    const cut = cutSpoken(plain, room);
+    if (cut !== plain.trim()) turn.speech.capped = true;
+    const splitter = new SentenceSplitter();
+    this.queueSentences(session, turn, [...splitter.push(cut), ...splitter.flush()]);
   }
 
   private queueSentences(session: Session, turn: Turn, sentences: string[]): void {
@@ -733,8 +753,11 @@ export class DiscordVoice {
 
   /** Called with the channel when a session starts, and with undefined when it ends. */
   onSession: ((channel: string | undefined, previous: string | undefined) => void) | undefined;
-  /** WP2: a tool started in a voice turn. The tool progress hook in discord.ts calls it. */
-  toolStarted(_channel: string, _tool: string): void { /* WP2 */ }
+  /** A tool started in a voice turn. The tool progress hook in discord.ts calls it. After voice_say, the final answer is spoken too. */
+  toolStarted(channel: string, tool: string): void {
+    const turn = this.session?.channel === channel ? this.session.turn : undefined;
+    if (turn?.said && tool !== 'voice_say' && tool !== 'voice_skip') turn.toolAfterSay = true;
+  }
 
   /** WP3: the task parent for a request in `channel`: the session's origin when `channel` is the live voice channel, else undefined. */
   taskParent(_channel: string): string | undefined { return undefined; /* WP3 */ }
