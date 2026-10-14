@@ -6,7 +6,8 @@ import { ToolError, discordOnlyMessage, type ToolContext, type ToolDefinition } 
 import { isPrivateChannel } from './private-chat.js';
 import { DiscordFileFetcher, type FileFetcher } from './files.js';
 import { sourceFingerprint } from './source-context.js';
-import { sandboxSession } from './sandbox-session.js';
+import type { SandboxProfile } from './sandbox-profile.js';
+import { resolveSandboxPath, sandboxSession } from './sandbox-session.js';
 import type { SandboxProvider } from './sandbox.js';
 
 export const MAX_STORED_FILE_BYTES = 10 * 1024 * 1024;
@@ -137,6 +138,8 @@ export interface StorageServices {
   /** Needed by to_sandbox. Without both, to_sandbox returns "Sandbox is not configured.". Passed by the Discord adapter. */
   store?: RecordStore;
   provider?: SandboxProvider;
+  /** The probed profile. Its home is where relative to_sandbox paths start. */
+  profile?: SandboxProfile;
 }
 const readActions = ['list', 'info', 'read', 'link'];
 export function objectStorageTool(services: StorageServices): ToolDefinition {
@@ -180,7 +183,7 @@ export function objectStorageTool(services: StorageServices): ToolDefinition {
       if (args.destination_scope !== undefined && args.action !== 'copy') throw new ToolError('destination_scope is only valid for copy.');
       if (args.action === 'copy') storagePath(args.destination);
       if (args.action === 'write' && typeof args.text !== 'string') throw new ToolError('write requires text.');
-      if (['save_sandbox', 'to_sandbox'].includes(String(args.action)) &&(typeof args.sandbox_path !== 'string' || !args.sandbox_path.startsWith('/') || args.sandbox_path.includes('\0'))) throw new ToolError('Provide an absolute sandbox_path.');
+      if (['save_sandbox', 'to_sandbox'].includes(String(args.action)) && (typeof args.sandbox_path !== 'string' || !args.sandbox_path.trim() || args.sandbox_path.length > 1024 || args.sandbox_path.includes('\0'))) throw new ToolError('Provide a sandbox_path: a relative path, ~, ~/name or an absolute path.');
       if (args.content_type !== undefined && (typeof args.content_type !== 'string' || !/^[\w.+-]+\/[\w.+-]+(?:;[\x20-\x7e]+)?$/.test(args.content_type))) throw new ToolError('Provide a valid MIME content_type.');
       return args;
     },
@@ -220,9 +223,10 @@ export function objectStorageTool(services: StorageServices): ToolDefinition {
         if (args.action === 'to_sandbox') {
           const store = services.store, provider = services.provider;
           if (!store || !provider) return 'Sandbox is not configured.';
-          const { session } = await sandboxSession(store, provider, context.message, context.operationId);
-          await session.write(String(args.sandbox_path), bytes);
-          return `Copied ${path} to sandbox ${args.sandbox_path}.`;
+          const { session, home } = await sandboxSession(store, provider, context.message, context.operationId);
+          const target = resolveSandboxPath(String(args.sandbox_path), services.profile?.home ?? home);
+          await session.write(target, bytes);
+          return `Copied ${path} to sandbox ${target}.`;
         }
         const saved = await services.storage.save(context, String(args.destination), bytes, file.contentType, args.overwrite === true, (args.destination_scope ?? scope) as StorageScope);
         return { text: `Copied ${scope}:${owner}/${path} to ${fileStorageScope(saved)}:${saved.path} (${saved.public ? 'shared' : 'private'}).`, data: metadata(saved) };

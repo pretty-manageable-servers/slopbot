@@ -4,7 +4,7 @@ import { SQLiteStore } from '../src/adapters/sqlite.js';
 import type { Message } from '../src/domain.js';
 import type { FileFetcher } from '../src/files.js';
 import { contextBlock } from '../src/context-block.js';
-import { SANDBOX_UPLOAD_DIR } from '../src/sandbox-session.js';
+import { SANDBOX_HOME } from '../src/sandbox-session.js';
 import type { SandboxProvider, SandboxSession } from '../src/sandbox.js';
 import { isUploadable, uniqueNames, uploadName, uploadRequestFiles } from '../src/sandbox-uploads.js';
 import { ToolError } from '../src/tools.js';
@@ -39,9 +39,9 @@ function fixture(options: { fetch?: (url: string) => Promise<Uint8Array>; create
 test('request_uploads_files writes each non-image file to the upload directory before the run', async t => {
   const f = fixture(); t.after(f.close);
   const result = await uploadRequestFiles({ store: f.store, provider: f.provider, fetcher: f.fetcher }, message);
-  assert.deepEqual(result, { files: [`${SANDBOX_UPLOAD_DIR}/report.pdf`, `${SANDBOX_UPLOAD_DIR}/data.csv`], failed: [] });
-  assert.equal(new TextDecoder().decode(f.written.get(`${SANDBOX_UPLOAD_DIR}/report.pdf`)), 'report.pdf');
-  assert.ok(f.commands.some(command => command === `mkdir -p ${SANDBOX_UPLOAD_DIR}`));
+  assert.deepEqual(result, { files: [`${SANDBOX_HOME}/uploads/report.pdf`, `${SANDBOX_HOME}/uploads/data.csv`], failed: [] });
+  assert.equal(new TextDecoder().decode(f.written.get(`${SANDBOX_HOME}/uploads/report.pdf`)), 'report.pdf');
+  assert.ok(f.commands.some(command => command === `mkdir -p ${SANDBOX_HOME}/uploads`));
 });
 
 test('non_request_no_upload: a message without files returns nothing and writes nothing', async t => {
@@ -70,13 +70,13 @@ test('name_clash_suffix adds -1 and -2 before the extension for one message', as
   const f = fixture(); t.after(f.close);
   const twins: Message = { ...message, attachments: [message.attachments![0]!, { ...message.attachments![0]! }] };
   const result = await uploadRequestFiles({ store: f.store, provider: f.provider, fetcher: f.fetcher }, twins);
-  assert.deepEqual(result?.files, [`${SANDBOX_UPLOAD_DIR}/report.pdf`, `${SANDBOX_UPLOAD_DIR}/report-1.pdf`]);
+  assert.deepEqual(result?.files, [`${SANDBOX_HOME}/uploads/report.pdf`, `${SANDBOX_HOME}/uploads/report-1.pdf`]);
 });
 
 test('upload_failure_continues: a failed download is reported by name and the other files are written', async t => {
   const f = fixture({ fetch: async url => { if (url.endsWith('report.pdf')) throw new ToolError('File exceeds 10 MiB'); return new TextEncoder().encode('ok'); } }); t.after(f.close);
   const result = await uploadRequestFiles({ store: f.store, provider: f.provider, fetcher: f.fetcher }, message);
-  assert.deepEqual(result, { files: [`${SANDBOX_UPLOAD_DIR}/data.csv`], failed: ['report.pdf: File exceeds 10 MiB'] });
+  assert.deepEqual(result, { files: [`${SANDBOX_HOME}/uploads/data.csv`], failed: ['report.pdf: File exceeds 10 MiB'] });
 });
 
 test('upload_failure_continues: a sandbox that cannot start reports every file as failed without throwing', async t => {
@@ -86,7 +86,15 @@ test('upload_failure_continues: a sandbox that cannot start reports every file a
 });
 
 test('uploaded_files appear in the request context block', () => {
-  const block = contextBlock({ request: { channel_id: 'task', uploaded_files: [`${SANDBOX_UPLOAD_DIR}/a.pdf`], upload_failed: ['b.zip: File exceeds 10 MiB'] }, people: [], evidence: [] });
+  const block = contextBlock({ request: { channel_id: 'task', uploaded_files: [`${SANDBOX_HOME}/uploads/a.pdf`], upload_failed: ['b.zip: File exceeds 10 MiB'] }, people: [], evidence: [] });
   assert.match(block.content, /uploaded_files: \["\/home\/user\/uploads\/a\.pdf"\]/);
   assert.match(block.content, /upload_failed: \["b\.zip: File exceeds 10 MiB"\]/);
+});
+
+test('upload_uses_home: uploads go under the home of the profile', async t => {
+  const f = fixture(); t.after(f.close);
+  const profile = { template: 'base', user: 'ubuntu', home: '/home/ubuntu', os: 'Ubuntu 24.04.1 LTS', installed: [] };
+  const result = await uploadRequestFiles({ store: f.store, provider: f.provider, fetcher: f.fetcher, profile }, message);
+  assert.deepEqual(result, { files: ['/home/ubuntu/uploads/report.pdf', '/home/ubuntu/uploads/data.csv'], failed: [] });
+  assert.ok(f.commands.includes('mkdir -p /home/ubuntu/uploads'));
 });

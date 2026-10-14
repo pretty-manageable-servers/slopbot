@@ -7,6 +7,7 @@ import { errorReply, logError } from "../errors.js";
 import { sandboxManageTool, readSandboxFile } from "../sandbox.js";
 import { sandboxFileTools } from "../sandbox-tools.js";
 import { uploadRequestFiles } from "../sandbox-uploads.js";
+import { probeSandboxProfile, sandboxPromptLine, type SandboxProfile } from "../sandbox-profile.js";
 import { objectStorageTool, UserFileStorage, MAX_STORED_FILE_BYTES, fileStorageScope } from '../object-storage.js';
 import { sendStoredFile } from './discord-storage.js';
 import { S3StorageProvider } from './s3-storage.js';
@@ -118,6 +119,11 @@ function clipText(text: string, max: number): string {
   return max > 1 ? `${text.slice(0, max - 1)}…` : "";
 }
 
+/** The sandbox provider from the operator settings, or undefined when no sandbox key is set. */
+function sandboxProviderFor(config: Config): E2BSandboxProvider | undefined {
+  return config.sandboxApiKey ? new E2BSandboxProvider({ apiKey: config.sandboxApiKey, apiUrl: config.sandboxApiUrl!, sandboxUrl: config.sandboxUrl!, ...(config.sandboxTemplate ? { template: config.sandboxTemplate } : {}) }) : undefined;
+}
+
 export class DiscordServer implements ChatGateway {
   private readonly client: Client;
   private readonly bot: Bot;
@@ -141,7 +147,7 @@ export class DiscordServer implements ChatGateway {
   private readonly voice: DiscordVoice | undefined;
   private readonly inbox: Inbox;
 
-  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">, private readonly team?: Pick<TeamAdmins, "canEdit">) {
+  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">, private readonly team?: Pick<TeamAdmins, "canEdit">, private readonly sandboxProfile?: SandboxProfile) {
     this.client = client;
     this.renderer = new ReplyRenderer(store, discordPresentation);
     this.chatGateway = new WebChatGateway(store, guildId);
@@ -265,10 +271,10 @@ export class DiscordServer implements ChatGateway {
       return fresh;
     };
     const chatFiles = new ChatFileFetcher(objectStorageProvider ?? new LocalDiskStorage());
-    const sandboxProvider = config.sandboxApiKey ? new E2BSandboxProvider({ apiKey: config.sandboxApiKey, apiUrl: config.sandboxApiUrl!, sandboxUrl: config.sandboxUrl!, ...(config.sandboxTemplate ? { template: config.sandboxTemplate } : {}) }) : undefined;
+    const sandboxProvider = sandboxProviderFor(config);
     const storage = new UserFileStorage(store, objectStorageProvider);
     this.tools.register(sandboxManageTool(store, sandboxProvider));
-    for (const tool of sandboxFileTools(store, sandboxProvider)) this.tools.register(tool);
+    for (const tool of sandboxFileTools(store, sandboxProvider, this.sandboxProfile)) this.tools.register(tool);
     this.tools.register(objectStorageTool({
       storage,
       fetcher: chatFiles,
@@ -281,8 +287,8 @@ export class DiscordServer implements ChatGateway {
         await sendStoredFile(this.client, context, file, bytes);
       },
       // to_sandbox and save_sandbox need the sandbox. Without a provider, both report that it is not configured.
-      ...(sandboxProvider ? { store, provider: sandboxProvider, sandbox: {
-        read: (context, path) => readSandboxFile(store, sandboxProvider, context, path, MAX_STORED_FILE_BYTES),
+      ...(sandboxProvider ? { store, provider: sandboxProvider, ...(this.sandboxProfile ? { profile: this.sandboxProfile } : {}), sandbox: {
+        read: (context, path) => readSandboxFile(store, sandboxProvider, context, path, MAX_STORED_FILE_BYTES, this.sandboxProfile?.home),
       } } : {}),
     }));
     this.limiter = usage.limiter;
@@ -299,10 +305,11 @@ export class DiscordServer implements ChatGateway {
     }
     registerUsageTool(this.tools, this.limiter);
     // Registered last: run_tools_code lists the tools registered before it in its description.
-    this.tools.register(runToolsCodeTool(this.tools, { store, ...(sandboxProvider ? { sandbox: sandboxProvider } : {}), confirmations: { save: async (server, operationId, value) => {
+    this.tools.register(runToolsCodeTool(this.tools, { store, ...(this.sandboxProfile ? { profile: this.sandboxProfile } : {}), ...(sandboxProvider ? { sandbox: sandboxProvider } : {}), confirmations: { save: async (server, operationId, value) => {
       const previous = await store.record(server, CONFIRM_RECORD, operationId);
       await store.putRecord(server, CONFIRM_RECORD, operationId, value, previous?.revision ?? 0);
     } } }));
+    const sandboxPrompt = sandboxPromptLine(this.sandboxProfile);
     this.app = new Application(store, llm, {
       allowedChannels: this.channels.map(channel => ({ server: guildId, channel })),
       recentMessages: savedLimit("reply_context", config.replyContextMessages, 100),
@@ -322,7 +329,7 @@ export class DiscordServer implements ChatGateway {
         const sent = await channel.send({content,embeds:[{footer:{text:toolProgressFooter}}],...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? {reply:{messageReference:message.id,failIfNotExists:false}} : {}),allowedMentions:{parse:[],repliedUser:false}});
         return sent;
       });
-    }, presentation: discordPresentation, profiles: store, harness: store, tools: {
+    }, presentation: discordPresentation, ...(sandboxPrompt ? { sandboxPrompt } : {}), profiles: store, harness: store, tools: {
       catalog: message => this.tools.catalog(message), schemas: message => this.tools.schemas(message), suggest: message => this.tools.suggest(message),
       execute: (message, call, id, version, invocation) => this.bot.executeTool(message, call, id, version, invocation),
       snapshot: () => {
@@ -346,7 +353,7 @@ export class DiscordServer implements ChatGateway {
       const stop = this.typing(message.channel);
       try {
         // A request copies its non-image files to the sandbox before the run. A failure does not stop the run.
-        const uploads = message.uploadFiles && sandboxProvider ? await uploadRequestFiles({ store, provider: sandboxProvider, fetcher: chatFiles }, message).catch(error => {
+        const uploads = message.uploadFiles && sandboxProvider ? await uploadRequestFiles({ store, provider: sandboxProvider, fetcher: chatFiles, ...(this.sandboxProfile ? { profile: this.sandboxProfile } : {}) }, message).catch(error => {
           logError("sandbox_upload_failed", error, { stage: "sandbox upload", server: message.server, channel: message.channel, messageId: message.id }, true);
           return undefined;
         }) : undefined;
@@ -936,6 +943,8 @@ export class DiscordServer implements ChatGateway {
 const MEMBER_TTL_MS = 60_000;
 
 export class DiscordAdapter {
+  /** The sandbox profile probed at startup. Undefined when no sandbox is set or the probe failed. */
+  private sandboxProfile: SandboxProfile | undefined;
   /** Users known to be members of a server, kept for MEMBER_TTL_MS. Only "yes" is kept, so a Discord error or a "no" is always checked again. */
   private readonly signInCache = new Map<string, number>();
   private readonly memberCache = new Map<string, { at: number; servers: { id: string; name: string; icon: string | null; admin: boolean }[] }>();
@@ -1001,7 +1010,7 @@ export class DiscordAdapter {
     if (existing) return existing;
     if (!this.allowed(guildId)) return Promise.reject(new ToolError("Slopbot is not enabled for this server."));
     const opening = (async () => {
-      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage, this.access, this.members, this.team);
+      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage, this.access, this.members, this.team, this.sandboxProfile);
       server.webChat = this.webChat;
       await server.start();
       await server.ready(this.botUser!);
@@ -1178,6 +1187,9 @@ export class DiscordAdapter {
     return member?.permissions.has(PermissionFlagsBits.ManageGuild) ?? false;
   }
   async start(): Promise<void> {
+    // Probed before login, so the first run already has the profile. A failed probe only leaves it out.
+    const probe = sandboxProviderFor(this.config);
+    if (probe) this.sandboxProfile = await probeSandboxProfile(probe);
     this.startInboxCleanup();
     await this.client.login(this.config.discordToken);
   }

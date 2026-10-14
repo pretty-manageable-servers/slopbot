@@ -1,11 +1,11 @@
-import { posix } from 'node:path';
 import { errorSummary, logError } from './errors.js';
 import type { Json } from './domain.js';
 import { isPrivateChannel } from './private-chat.js';
 import { stableJson } from './prompt-cache.js';
 import { ProgramRuntime, programBuiltins, type ProgramDispatch } from './program-runtime.js';
 import type { RecordStore } from './records.js';
-import { SANDBOX_HOME, sandboxSession } from './sandbox-session.js';
+import type { SandboxProfile } from './sandbox-profile.js';
+import { resolveSandboxPath, sandboxSession } from './sandbox-session.js';
 import type { SandboxProvider } from './sandbox.js';
 import { ConfirmationRequired, ToolError, stableOperationId, toolResult, type ToolArgs, type ToolDefinition, type ToolRegistry, type ToolResult } from './tools.js';
 
@@ -17,6 +17,8 @@ export interface RunToolsCodeOptions {
   store?: RecordStore;
   /** Needed by save_to_sandbox. */
   sandbox?: SandboxProvider;
+  /** The probed profile. Its home is where relative save_to_sandbox paths start. */
+  profile?: SandboxProfile;
   /** Stores the pending call of a confirmation. Without it the program still stops at the call. */
   confirmations?: { save(server: string, operationId: string, value: Json): Promise<void> };
 }
@@ -47,7 +49,7 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
   const runtime = options.runtime ?? new ProgramRuntime();
   return {
     name: RUN_TOOLS_CODE, surface: 'top', access: 'member', effect: 'read', retrySafe: true,
-    description: 'Compose bot tools in JavaScript using top-level await, Promise.all, loops, and conditions. Call tools.NAME(arguments) for any tool in the catalog below or any tool that list_tools() returns; each call returns the tool structured data, or { text } for a tool without structured data. Built-ins: list_tools() returns the tools you can use; describe_tool(name) returns a tool full argument schema; save_to_sandbox(path, data) writes a string, or JSON for other data, to a file in the sandbox under /home/user. Writes are allowed. A write that needs confirmation stops the program: the requester gets Confirm and Cancel buttons. Emit a compact JSON-serializable result with text(value), including URLs or message IDs needed for evidence. No Node, imports, network, filesystem, processes, timers, or persistent state. Limits: 64 calls, 4 simultaneous calls, 60 seconds elapsed, 2 seconds guest CPU, 32 MiB guest memory, 1 MB total tool data, 16 KB emitted output. Tool failures reject their promises; caught failures are still reported. Core catalog:\n' + catalogLines(registry),
+    description: 'Compose bot tools in JavaScript using top-level await, Promise.all, loops, and conditions. Call tools.NAME(arguments) for any tool in the catalog below or any tool that list_tools() returns; each call returns the tool structured data, or { text } for a tool without structured data. Built-ins: list_tools() returns the tools you can use; describe_tool(name) returns a tool full argument schema; save_to_sandbox(path, data) writes a string, or JSON for other data, to a file in the sandbox, relative to the sandbox home directory. Writes are allowed. A write that needs confirmation stops the program: the requester gets Confirm and Cancel buttons. Emit a compact JSON-serializable result with text(value), including URLs or message IDs needed for evidence. No Node, imports, network, filesystem, processes, timers, or persistent state. Limits: 64 calls, 4 simultaneous calls, 60 seconds elapsed, 2 seconds guest CPU, 32 MiB guest memory, 1 MB total tool data, 16 KB emitted output. Tool failures reject their promises; caught failures are still reported. Core catalog:\n' + catalogLines(registry),
     fields: {
       code: { type: 'string', required: true, max: 16000, description: 'JavaScript async function body. Emit the reduced result with text(...).' },
     },
@@ -85,11 +87,12 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
         // save_to_sandbox
         const path = input.path, data = input.data;
         if (typeof path !== 'string' || path.length > 1024 || !('data' in input)) throw new ToolError('save_to_sandbox needs a path string and data.');
-        const full = posix.normalize(path.startsWith('/') ? path : posix.join(SANDBOX_HOME, path));
-        if (!full.startsWith(`${SANDBOX_HOME}/`)) throw new ToolError(`Path must be inside ${SANDBOX_HOME}: ${path}`);
         if (!options.store || !options.sandbox) throw new ToolError('The sandbox is not available.', 'failed');
         const text = typeof data === 'string' ? data : JSON.stringify(data);
-        const { session } = await sandboxSession(options.store, options.sandbox, message, stableOperationId(parentId, 'sandbox', String(index), full));
+        const { session, home: sessionHome } = await sandboxSession(options.store, options.sandbox, message, stableOperationId(parentId, 'sandbox', String(index), path));
+        const home = options.profile?.home ?? sessionHome;
+        const full = resolveSandboxPath(path, home);
+        if (!full.startsWith(`${home}/`)) throw new ToolError(`Path must be inside ${home}: ${path}`);
         await session.write(full, text);
         return { path: full, bytes: Buffer.byteLength(text) };
       };
