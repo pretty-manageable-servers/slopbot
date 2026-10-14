@@ -77,9 +77,9 @@ test('inbox command marks done by id prefix', async t => {
   const now = Date.now();
   await addItem(f, first, 'First item', now - 60_000);
   await addItem(f, second, 'Second item', now - 120_000);
-  assert.equal((await runInbox(f, { done: 'aaaaaaaa, zzzzzzzz' })).reply, 'Marked 1 items done.', 'an unknown prefix is ignored');
+  assert.equal((await runInbox(f, { done: 'aaaaaaaa, zzzzzzzz' })).reply, 'Marked 1 item done.', 'an unknown prefix is ignored');
   assert.match((await runInbox(f)).reply, /^`bbbbbbbb` from /, 'the other item is still open');
-  assert.equal((await runInbox(f, { done: 'all' })).reply, 'Marked 1 items done.');
+  assert.equal((await runInbox(f, { done: 'all' })).reply, 'Marked 1 item done.');
   assert.equal((await runInbox(f)).reply, 'Your inbox is empty.');
 });
 

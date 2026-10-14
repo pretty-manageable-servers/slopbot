@@ -20,7 +20,8 @@ export function discordWebReplies(client: Client): WebReplyDiscord {
       const found = await client.channels.fetch(channel).catch(() => undefined);
       if (!found || found.isDMBased() || found.guildId !== server) return undefined;
       if (found.isThread()) return found.parentId ? { parent: found.parentId, thread: true } : undefined;
-      return found.type === ChannelType.GuildText ? { parent: found.id, thread: false } : undefined;
+      // A voice channel has its own text chat. Voice transcripts are posted there.
+      return found.type === ChannelType.GuildText || found.type === ChannelType.GuildVoice ? { parent: found.id, thread: false } : undefined;
     },
     async member(server, user) {
       const guild = await client.guilds.fetch(server).catch(() => undefined);
@@ -36,14 +37,14 @@ export function discordWebReplies(client: Client): WebReplyDiscord {
     },
     async canManageWebhooks(server, parent) {
       const channel = await client.channels.fetch(parent).catch(() => undefined);
-      if (channel?.type !== ChannelType.GuildText) return false;
+      if (channel?.type !== ChannelType.GuildText && channel?.type !== ChannelType.GuildVoice) return false;
       const guild = await client.guilds.fetch(server).catch(() => undefined);
       const me = await guild?.members.fetchMe({ force: true }).catch(() => undefined);
       return Boolean(me && channel.permissionsFor(me)?.has(PermissionFlagsBits.ManageWebhooks));
     },
     async createWebhook(parent) {
       const channel = await client.channels.fetch(parent);
-      if (channel?.type !== ChannelType.GuildText) throw new Error("Web replies need a server text channel.");
+      if (channel?.type !== ChannelType.GuildText && channel?.type !== ChannelType.GuildVoice) throw new Error("Web replies need a server text or voice channel.");
       let hook;
       try {
         hook = await channel.createWebhook({ name: WEBHOOK_NAME });

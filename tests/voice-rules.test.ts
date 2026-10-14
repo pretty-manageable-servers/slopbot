@@ -50,3 +50,14 @@ test("web request has no voice_rule", async () => {
   assert.equal("voice_rule" in context, false);
   assert.equal("voice_channel" in context, false);
 });
+
+test("spokenText speaks a short sentence for an error reply", async () => {
+  const { spokenText, VOICE_ERROR_TEXT } = await import("../src/voice-rules.js");
+  assert.equal(spokenText("\\[ACTION\\_UNCERTAIN\\] Discord delivery: Job ID 123"), VOICE_ERROR_TEXT);
+  assert.equal(spokenText("[PROVIDER_HTTP_404] AI provider returned HTTP 404"), VOICE_ERROR_TEXT);
+});
+
+test("spokenText drops markdown, links and mentions", async () => {
+  const { spokenText } = await import("../src/voice-rules.js");
+  assert.equal(spokenText("**Paris** is the [capital](https://example.com) of `France`, <@123456789012345678>. See https://x.y/z"), "Paris is the capital of France, . See");
+});
