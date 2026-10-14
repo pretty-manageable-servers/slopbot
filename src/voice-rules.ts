@@ -31,3 +31,13 @@ export const DEFAULT_VOICE_INSTRUCTIONS = "A calm, clear adult man with a low vo
 export function voiceInstructions(setting: string | undefined, envDefault?: string): string {
   return setting?.trim() || envDefault?.trim() || DEFAULT_VOICE_INSTRUCTIONS;
 }
+
+/**
+ * Splits streamed reply text into sentences for speech. push() returns the sentences that are complete;
+ * flush() returns the rest. A sentence ends at . ! ? followed by a space or newline, or at a blank line.
+ * WP-S2 implements it.
+ */
+export class SentenceSplitter {
+  push(_delta: string): string[] { return []; }
+  flush(): string[] { return []; }
+}

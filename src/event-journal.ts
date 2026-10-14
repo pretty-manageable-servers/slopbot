@@ -2,6 +2,7 @@ import type { Message, ModelEvent } from "./domain.js";
 import type { Store } from "./ports.js";
 import { requestTimings } from "./request-timing.js";
 import { publishModelEvent, publishRunEnd, publishRunStart } from "./run-events.js";
+import { liveText } from "./live-text.js";
 
 // Preserve original payloads/order. Batch bounded writes; flush even on stream failure.
 export class EventJournal {
@@ -20,7 +21,7 @@ export class EventJournal {
     private readonly phase: string,
   ) {
     this.live = phase === "model";
-    if (this.live) publishRunStart(this.message, this.runId);
+    if (this.live) { publishRunStart(this.message, this.runId); liveText.emit({ kind: "start", message: this.message, runId: this.runId }); }
     this.timer = setInterval(() => {
       void this.flush().catch((error) => {
         this.failure = error;
@@ -30,7 +31,10 @@ export class EventJournal {
   }
   async append(event: ModelEvent): Promise<void> {
     if (this.failure) throw this.failure;
-    if (this.live) publishModelEvent(this.message, this.runId, event);
+    if (this.live) {
+      publishModelEvent(this.message, this.runId, event);
+      if (event.kind === "text" && event.payload.text) liveText.emit({ kind: "text", message: this.message, runId: this.runId, text: event.payload.text });
+    }
     this.pending.push(event);
     this.bytes += Buffer.byteLength(JSON.stringify(event));
     if (this.pending.length >= 32 || this.bytes >= 65536) await this.flush();
@@ -63,7 +67,7 @@ export class EventJournal {
   }
   async close(): Promise<void> {
     clearInterval(this.timer);
-    if (this.live) publishRunEnd(this.message, this.runId, this.failure ? "failed" : "done");
+    if (this.live) { publishRunEnd(this.message, this.runId, this.failure ? "failed" : "done"); liveText.emit({ kind: "end", message: this.message, runId: this.runId, status: this.failure ? "failed" : "done" }); }
     await requestTimings.wait("journal durability", () => this.flush());
     if (this.failure) throw this.failure;
   }
