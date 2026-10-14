@@ -30,6 +30,33 @@ const oneLine = (text: string): string => {
   return end >= 0 ? flat.slice(0, end + 1) : flat;
 };
 
+const isArgs = (value: unknown): value is ToolArgs => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** The argument names of a tool: its fields, or the properties of its input schema for a tool that has no fields (MCP). */
+function argumentNames(tool: ToolDefinition): { name: string; required: boolean }[] {
+  const fields = Object.entries(tool.fields);
+  if (fields.length) return fields.map(([name, field]) => ({ name, required: field.required === true }));
+  const schema = tool.inputSchema as unknown as { properties?: Record<string, unknown>; required?: string[] } | undefined;
+  const required = schema?.required ?? [];
+  return Object.keys(schema?.properties ?? {}).map(name => ({ name, required: required.includes(name) }));
+}
+
+/** Reads the value a program gave as tool arguments. No value is {}. A bare value is wrapped as { name: value } when the tool has exactly one required argument, or exactly one argument. */
+function normalizeArgs(tool: ToolDefinition | undefined, input: unknown): unknown {
+  if (input === undefined || input === null) return {};
+  if (isArgs(input) || !tool) return input;
+  const names = argumentNames(tool);
+  const required = names.filter(item => item.required);
+  const only = required.length === 1 ? required[0] : names.length === 1 ? names[0] : undefined;
+  return only ? { [only.name]: input as Json } : input;
+}
+
+/** The error for an argument value that is not an object. It lists the argument names the tool takes. */
+function argumentError(tool: ToolDefinition): ToolError {
+  const names = argumentNames(tool).map(item => item.required ? `${item.name} (required)` : item.name);
+  return new ToolError(`Tool arguments must be an object. ${tool.name} takes: ${names.length ? names.join(', ') : 'no arguments'}.`);
+}
+
 /** Every tool a program may call: all tools except the top-level ones and run_tools_code. */
 function callableTools(registry: ToolRegistry): ToolDefinition[] {
   return registry.definitions().filter(tool => tool.name !== RUN_TOOLS_CODE && tool.surface !== 'top');
@@ -49,7 +76,7 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
   const runtime = options.runtime ?? new ProgramRuntime();
   return {
     name: RUN_TOOLS_CODE, surface: 'top', access: 'member', effect: 'read', retrySafe: true,
-    description: 'Compose bot tools in JavaScript using top-level await, Promise.all, loops, and conditions. Call tools.NAME(arguments) for any tool in the catalog below or any tool that list_tools() returns; each call returns the tool structured data, or { text } for a tool without structured data. Built-ins: list_tools() returns the tools you can use; describe_tool(name) returns a tool full argument schema; save_to_sandbox(path, data) writes a string, or JSON for other data, to a file in the sandbox, relative to the sandbox home directory. Writes are allowed. A write that needs confirmation stops the program: the requester gets Confirm and Cancel buttons. Emit a compact JSON-serializable result with text(value), including URLs or message IDs needed for evidence. No Node, imports, network, filesystem, processes, timers, or persistent state. Limits: 64 calls, 4 simultaneous calls, 60 seconds elapsed, 2 seconds guest CPU, 32 MiB guest memory, 1 MB total tool data, 16 KB emitted output. Tool failures reject their promises; caught failures are still reported. Core catalog:\n' + catalogLines(registry),
+    description: 'Compose bot tools in JavaScript using top-level await, Promise.all, loops, and conditions. Call tools as tools.NAME({...}) or NAME({...}) for any tool in the catalog below or any tool that list_tools() returns; each call returns the tool structured data, or { text } for a tool without structured data. Built-ins: list_tools() returns the tools you can use; describe_tool(name) returns a tool full argument schema; save_to_sandbox(path, data) writes a string, or JSON for other data, to a file in the sandbox, relative to the sandbox home directory. Writes are allowed. A write that needs confirmation stops the program: the requester gets Confirm and Cancel buttons. Emit a compact JSON-serializable result with text(value), including URLs or message IDs needed for evidence. No Node, imports, network, filesystem, processes, timers, or persistent state. Limits: 64 calls, 4 simultaneous calls, 60 seconds elapsed, 2 seconds guest CPU, 32 MiB guest memory, 1 MB total tool data, 16 KB emitted output. Tool failures reject their promises; caught failures are still reported. Core catalog:\n' + catalogLines(registry),
     fields: {
       code: { type: 'string', required: true, max: 16000, description: 'JavaScript async function body. Emit the reduced result with text(...).' },
     },
@@ -72,7 +99,8 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
       };
       await report({ id: parentId, name: RUN_TOOLS_CODE, arguments: args, status: 'running', code, startedAt: Date.now() });
       const usable = async (tool: ToolDefinition): Promise<boolean> => !(tool.access === 'admin' && !context.isAdmin) && !(isPrivateChannel(message.channel) && tool.scope === 'discord');
-      const builtin = async (name: string, input: ToolArgs, index: number): Promise<Json> => {
+      const builtin = async (name: string, raw: unknown, index: number): Promise<Json> => {
+        const input: ToolArgs = isArgs(raw) ? raw : {};
         if (name === 'builtin:list_tools') {
           const list: Json[] = [];
           for (const tool of callableTools(registry)) if (await usable(tool)) list.push({ name: tool.name, description: tool.description });
@@ -100,17 +128,19 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
         await context.assertActive();
         if (builtinNames.has(name)) return builtin(name, input, index);
         // The tool is looked up now, so a definition that changed during the run is used. Access is checked per call.
-        const clean = registry.validate(name, input);
+        const current = registry.definitions().find(item => item.name === name);
+        const values = normalizeArgs(current, input);
+        if (current && !isArgs(values)) throw argumentError(current);
+        const clean = registry.validate(name, values);
         const operationId = stableOperationId(parentId, 'program', String(index), name, stableJson(clean));
         const call = { name, operationId, status: 'running' }; childCalls.push(call);
         const started = performance.now();
         const childReport = (status: 'running' | 'completed' | 'rejected' | 'failed', reused = false, reason?: string) => report({ id: operationId, name, arguments: clean, status, reused, parentId, ...(reason ? { reason } : {}), ...(status !== 'running' ? { durationMs: Math.round(performance.now() - started) } : {}) });
         await childReport('running');
         try {
-          const tool = registry.definitions().find(item => item.name === name);
           const previous = await registry.recordedOperation(operationId);
           // A confirmation is asked once: a call that already has a journal entry is replayed, not asked again.
-          if (!previous && tool?.confirm?.(clean)) {
+          if (!previous && current?.confirm?.(clean)) {
             await options.confirmations?.save(message.server, operationId, { name, arguments: clean, parentOperationId: parentId, channel: message.channel, author: message.author, createdAt: Date.now() });
             throw new ConfirmationRequired({ name, arguments: clean, operationId, parentOperationId: parentId });
           }
