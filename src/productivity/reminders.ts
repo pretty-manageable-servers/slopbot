@@ -8,7 +8,7 @@ export interface Reminder {
   owner: string;
   text: string;
   at: number;
-  status: "scheduled" | "sending" | "sent" | "cancelled";
+  status: "scheduled" | "sending" | "sent" | "cancelled" | "failed";
   retryAt?: number;
   error?: string;
 }
@@ -84,6 +84,8 @@ export function registerReminderTools(
           throw new ToolError("Only the reminder owner can cancel it.");
         if (reminder.channel !== channel)
           throw new ToolError("Use the reminder’s original channel.");
+        if (reminder.status === "failed")
+          throw new ToolError(`Reminder already failed: ${reminder.error ?? "unknown error"}.`);
         if (reminder.status === "sending" || reminder.status === "sent")
           throw new ToolError("Reminder delivery has already started.");
         if (
@@ -141,6 +143,15 @@ export function registerReminderTools(
     },
   });
 }
+// Discord errors that do not change on retry: Unknown Channel, Missing Access, Missing Permissions.
+const permanentDiscordCodes = new Set([10003, 50001, 50013]);
+
+// Read the numeric code from the original error. DiscordAPIError has it as `code`.
+function isPermanentDiscordError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "number" && permanentDiscordCodes.has(code);
+}
+
 export class ReminderWorker {
   private timer: ReturnType<typeof setInterval> | undefined;
   private active: Promise<void> | undefined;
@@ -177,6 +188,24 @@ export class ReminderWorker {
     this.timer = undefined;
     await this.active;
   }
+  // Stop retrying. Keep the record with status "failed" so the owner can see why.
+  private async markFailed(id: string, reminder: Reminder, error: unknown, revision: number): Promise<void> {
+    const context = { stage: "reminder", server: this.server, channel: reminder.channel, operationId: id, final: true };
+    logError("reminder_failed", error, context);
+    await this.store.putRecord(
+      this.server,
+      "reminder",
+      id,
+      {
+        ...reminder,
+        status: "failed",
+        retryAt: 0,
+        error: errorSummary(error),
+      } as unknown as Json,
+      revision,
+    );
+  }
+
   async tick(): Promise<void> {
     for (const record of await this.store.records(this.server, "reminder")) {
       const reminder = record.value as unknown as Reminder;
@@ -197,6 +226,10 @@ export class ReminderWorker {
       try {
         await this.authorize(message, reminder.channel);
       } catch (error) {
+        if (isPermanentDiscordError(error)) {
+          await this.markFailed(record.id, reminder, error, record.revision);
+          continue;
+        }
         logError("reminder_failed", error, { stage: "reminder", server: this.server, channel: reminder.channel, operationId: record.id });
         await this.store.putRecord(
           this.server,
@@ -240,6 +273,10 @@ export class ReminderWorker {
           record.revision + 1,
         );
       } catch (error) {
+        if (isPermanentDiscordError(error)) {
+          await this.markFailed(record.id, reminder, error, record.revision + 1);
+          continue;
+        }
         logError("reminder_failed", error, { stage: "reminder", server: this.server, channel: reminder.channel, operationId: record.id });
         await this.store.putRecord(
           this.server,
