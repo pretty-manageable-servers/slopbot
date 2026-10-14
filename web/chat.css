@@ -317,3 +317,5 @@ html[data-view-dir=back]::view-transition-new(chat-side),html[data-view-dir=back
 .chat .inbox-actions button,.chat .inbox-done-mark{margin-left:auto;min-height:32px;padding:4px 10px;font-size:13px}
 .chat .inbox-done-mark{color:var(--muted)}
 .chat .inbox-empty{margin:24px 0;text-align:center;color:var(--muted)}
+.math-block{overflow-x:auto}
+.math-src{white-space:pre-wrap;overflow-wrap:anywhere}

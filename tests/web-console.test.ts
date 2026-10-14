@@ -129,6 +129,30 @@ test('landing serves the static export, console serves under /console, and trave
   assert.equal((await fetch(base+'/style.css')).status,404);
   assert.equal((await fetch(base+'/assets/logo-light.svg')).status,404);
 });
+test('serves katex files',async t=>{
+  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:'site/out'},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});
+  server.listen(0,'127.0.0.1');await once(server,'listening');
+  t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
+  const address=server.address();assert.ok(address&&typeof address!=='string');
+  const base=`http://127.0.0.1:${address.port}`;
+  assert.equal((await fetch(base+'/console/katex/katex.min.js')).headers.get('content-type'),'text/javascript');
+  assert.equal((await fetch(base+'/console/katex/katex.min.css')).headers.get('content-type'),'text/css');
+  assert.equal((await fetch(base+'/console/katex/fonts/KaTeX_Main-Regular.woff2')).headers.get('content-type'),'font/woff2');
+});
+test('rejects other katex paths',async t=>{
+  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:'site/out'},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});
+  server.listen(0,'127.0.0.1');await once(server,'listening');
+  t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
+  const address=server.address();assert.ok(address&&typeof address!=='string');
+  const base=`http://127.0.0.1:${address.port}`;
+  assert.equal((await fetch(base+'/console/katex/LICENSE')).status,404);
+  assert.equal((await fetch(base+'/console/katex/katex.js')).status,404);
+  assert.equal((await fetch(base+'/console/katex/fonts/KaTeX_Main-Regular.woff')).status,404);
+  assert.equal((await fetch(base+'/console/katex/fonts/KaTeX_Main-Regular.ttf')).status,404);
+  assert.equal((await fetch(base+'/console/katex/fonts/evil.woff2')).status,404);
+  assert.equal((await fetch(base+'/console/katex/fonts/%2e%2e%2fkatex.min.js')).status,404);
+  assert.equal((await fetch(base+'/console/katex/fonts/KaTeX_Main-Regular.woff2/..')).status,404);
+});
 test('landing returns 404 when site/out is missing',async t=>{
   const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:join(tmpdir(),'slopbot-no-such-site')},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});
   server.listen(0,'127.0.0.1');await once(server,'listening');
