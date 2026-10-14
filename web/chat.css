@@ -253,6 +253,9 @@ html[data-view-dir=back]::view-transition-new(chat-side),html[data-view-dir=back
 .chat .chat-image-chip{font-size:13px;color:var(--muted);padding:4px 8px;border:1px solid var(--line);border-radius:8px}
 .chat .chat-images{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;margin-bottom:6px}
 .chat .chat-images img{max-width:180px;max-height:180px;border-radius:10px;border:1px solid var(--line)}
+.chat .chat-file-chip{display:inline-block;max-width:min(260px,100%);font-size:13px;color:var(--muted);text-decoration:none;overflow-wrap:anywhere;padding:4px 8px;border:1px solid var(--line);border-radius:8px}
+.chat a.chat-file-chip:hover{text-decoration:underline}
+.chat .chat-files{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;margin-bottom:6px}
 .chat .chat-attach{border:0;background:transparent;color:var(--muted);font-size:22px;cursor:pointer;padding:0 8px}
 .chat .chat-form.dragging .chat-input{outline:2px dashed var(--accent)}
 

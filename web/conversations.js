@@ -1144,6 +1144,7 @@ function messageNode(m) {
     if (m.timestamp) bubble.title = timeLabel(m.timestamp);
     renderText(bubble, m.text);
     if (m.images && m.images.length) article.append(imageStrip(m));
+    if (m.files && m.files.length) article.append(fileChips(m));
     article.append(bubble);
     if (m.editedAt) article.append(textNode('span', 'edited', 'chat-edited'));
     return article;
@@ -1859,9 +1860,10 @@ function spoilerClick(event) {
 // The composer of a chat. With id null it is the blank chat: the chat is made on the first send, then opened.
 // A message that is not saved yet. The saved message from the stream replaces it (see upsertMessage).
 let pendingSeq = 0;
-function pendingBubble(text, images = [], chatId = '') {
+function pendingBubble(text, shown = [], chatId = '') {
   const log = $('conv-log');
-  const node = messageNode({ id: `pending-${++pendingSeq}`, author: state.user, text, timestamp: Date.now(), ...(images.length ? { images, channel: 'web:' + chatId } : {}) });
+  const images = shown.filter(item => item.imageId), files = shown.filter(item => item.fileId);
+  const node = messageNode({ id: `pending-${++pendingSeq}`, author: state.user, text, timestamp: Date.now(), ...(shown.length ? { images, files, channel: 'web:' + chatId } : {}) });
   node.dataset.pending = text;
   log.append(node);
   regroup(log);
@@ -1977,7 +1979,7 @@ function chatComposer(id) {
     event.preventDefault();
     const text = field.value.trim();
     if ((!text && !pics.ids().length) || sending) return;
-    if (pics.uploading()) { status.textContent = 'Wait for the images to finish uploading.'; return; }
+    if (pics.uploading()) { status.textContent = 'Wait for the files to finish uploading.'; return; }
     const shown = pics.take();
     field.value = ''; sync(); status.textContent = '';
     deliver(text, shown);
@@ -2004,7 +2006,7 @@ function chatComposer(id) {
         chatId = await ensureChat(); fresh = true;
       }
       if (!id && effort.chosen) await sendJson('PATCH', `/api/chats/${enc(chatId)}`, { effort: effort.chosen }).catch(() => {});
-      const response = await fetch(`/api/chats/${enc(chatId)}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ text, images: shown.map(item => item.imageId) }) });
+      const response = await fetch(`/api/chats/${enc(chatId)}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ text, images: shown.filter(item => item.imageId).map(item => item.imageId), files: shown.filter(item => item.fileId).map(item => item.fileId) }) });
       const data = await response.json().catch(() => ({}));
       if (response.status === 401) { dropPendingCard(true); showScreen('login'); return; }
       if (!response.ok) {
@@ -2223,11 +2225,14 @@ function effortPicker(id, current_id = () => id) {
   return wrap;
 }
 
-// Chat images. The server stores them privately and sends them to the model. The page loads them from the chat's image route.
+// Chat images and files. The server stores them privately. Images go to the image route and the model reads them. Other files go to the file route.
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
-const IMAGE_MAX_COUNT = 10;
+const FILE_MAX_BYTES = 10 * 1024 * 1024;
+const ATTACHMENT_MAX_COUNT = 10;
 const imageUrl = (chat, imageId) => `/api/chats/${enc(chat)}/images/${enc(imageId)}`;
+const fileUrl = (chat, fileId) => `/api/chats/${enc(chat)}/files/${enc(fileId)}`;
+const attachmentUrl = (kind, chat, id) => kind === 'file' ? fileUrl(chat, id) : imageUrl(chat, id);
 const sizeLabel = bytes => bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 
 // Thumbnails of a sent message. After a reload they come from the stored image.
@@ -2244,42 +2249,60 @@ function imageStrip(m) {
   return strip;
 }
 
-// Paste, drop and attach for the composer. Each image uploads at once; the message sends only the image IDs.
+// Chips of the files of a sent message. A chip with a fileId downloads the file. A chip without one (a share) is text only.
+function fileChips(m) {
+  const strip = textNode('div', '', 'chat-files');
+  const chat = String(m.channel || '').replace(/^web:/, '');
+  for (const file of m.files) {
+    const label = `${file.name} (${sizeLabel(file.size)})`;
+    if (!file.fileId || !chat) { strip.append(textNode('span', label, 'chat-file-chip')); continue; }
+    const link = textNode('a', label, 'chat-file-chip');
+    link.href = fileUrl(chat, file.fileId); link.download = file.name;
+    strip.append(link);
+  }
+  return strip;
+}
+
+// Paste, drop and attach for the composer. Each file uploads at once; the message sends only the IDs.
 function imageTray(form, box, field, status, ensure) {
   const tray = textNode('div', '', 'chat-tray');
   tray.hidden = true;
   const items = [];
   const input = document.createElement('input');
-  input.type = 'file'; input.accept = 'image/*'; input.multiple = true; input.hidden = true;
+  input.type = 'file'; input.multiple = true; input.hidden = true;
   const attach = document.createElement('button');
   attach.type = 'button'; attach.className = 'chat-attach'; attach.textContent = '+';
-  attach.setAttribute('aria-label', 'Attach images'); attach.title = 'Attach images';
+  attach.setAttribute('aria-label', 'Attach files'); attach.title = 'Attach files';
   box.querySelector('textarea').after(attach);
   form.append(input);
   const show = () => { tray.hidden = items.length === 0; };
+  const discard = item => fetch(attachmentUrl(item.kind, item.chat, item.id), { method: 'DELETE', headers: { 'X-CSRF-Token': csrf } }).catch(() => {});
   const remove = item => {
     items.splice(items.indexOf(item), 1); item.node.remove(); show();
-    if (item.id) fetch(imageUrl(item.chat, item.id), { method: 'DELETE', headers: { 'X-CSRF-Token': csrf } }).catch(() => {});
+    if (item.id) discard(item);
   };
   const add = async file => {
-    if (!IMAGE_TYPES.includes(file.type)) { status.textContent = `${file.name || 'This file'} is not a PNG, JPEG, GIF or WebP image.`; return; }
-    if (file.size > IMAGE_MAX_BYTES) { status.textContent = `${file.name || 'This image'} is larger than 25 MB.`; return; }
-    if (items.length >= IMAGE_MAX_COUNT) { status.textContent = `Attach ${IMAGE_MAX_COUNT} images or fewer.`; return; }
-    const item = { id: null, chat: null, node: textNode('div', '', 'chat-thumb') };
-    const label = textNode('span', `${file.name || 'image'} (uploading…)`, 'chat-image-chip');
+    const isImage = IMAGE_TYPES.includes(file.type);
+    const kind = isImage ? 'image' : 'file';
+    if (isImage && file.size > IMAGE_MAX_BYTES) { status.textContent = `${file.name || 'This image'} is larger than 25 MB.`; return; }
+    if (!isImage && file.size > FILE_MAX_BYTES) { status.textContent = `${file.name || 'This file'} is larger than 10 MB.`; return; }
+    if (items.length >= ATTACHMENT_MAX_COUNT) { status.textContent = `Attach ${ATTACHMENT_MAX_COUNT} files or images or fewer.`; return; }
+    const item = { id: null, kind, chat: null, node: textNode('div', '', 'chat-thumb') };
+    const label = textNode('span', `${file.name || kind} (uploading…)`, isImage ? 'chat-image-chip' : 'chat-file-chip');
     const close = document.createElement('button');
-    close.type = 'button'; close.textContent = '\u00d7'; close.setAttribute('aria-label', `Remove ${file.name || 'image'}`);
+    close.type = 'button'; close.textContent = '\u00d7'; close.setAttribute('aria-label', `Remove ${file.name || kind}`);
     close.addEventListener('click', () => remove(item));
     item.node.append(label, close); items.push(item); tray.append(item.node); show();
     item.upload = (async () => {
       try {
         item.chat = await ensure();
         const chat = item.chat;
-        const response = await fetch(`/api/chats/${enc(chat)}/images?name=${enc(file.name || '')}`, { method: 'POST', headers: { 'Content-Type': file.type, 'X-CSRF-Token': csrf }, body: file });
+        const response = await fetch(`/api/chats/${enc(chat)}/${isImage ? 'images' : 'files'}?name=${enc(file.name || '')}`, { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-CSRF-Token': csrf }, body: file });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(response.status === 429 ? 'Limit reached.' : data.error || 'Upload failed.');
-        item.id = data.imageId; item.name = data.name; item.size = data.size;
-        if (!items.includes(item)) { fetch(imageUrl(chat, item.id), { method: 'DELETE', headers: { 'X-CSRF-Token': csrf } }).catch(() => {}); return; }
+        item.id = isImage ? data.imageId : data.fileId; item.name = data.name; item.size = data.size;
+        if (!items.includes(item)) { discard(item); return; }
+        if (!isImage) { label.textContent = `${data.name} (${sizeLabel(data.size)})`; return; }
         const img = document.createElement('img');
         img.src = imageUrl(chat, item.id); img.alt = data.name; img.title = `${data.name} (${sizeLabel(data.size)})`;
         label.replaceWith(img);
@@ -2293,7 +2316,7 @@ function imageTray(form, box, field, status, ensure) {
   attach.addEventListener('click', () => input.click());
   input.addEventListener('change', () => { addAll([...input.files]); input.value = ''; });
   field.addEventListener('paste', event => {
-    const files = [...(event.clipboardData ? event.clipboardData.files : [])].filter(file => file.type.startsWith('image/'));
+    const files = [...(event.clipboardData ? event.clipboardData.files : [])];
     if (files.length) { event.preventDefault(); addAll(files); }
   });
   const hasFiles = event => event.dataTransfer && [...event.dataTransfer.types].includes('Files');
@@ -2310,7 +2333,7 @@ function imageTray(form, box, field, status, ensure) {
     tray,
     ids: () => items.filter(item => item.id).map(item => item.id),
     uploading: () => items.some(item => !item.done),
-    // The images of a send. The tray empties at once; the server keeps the uploads for the send.
-    take: () => { const taken = items.filter(item => item.id).map(item => ({ imageId: item.id, name: item.name, size: item.size })); items.splice(0); tray.replaceChildren(); show(); return taken; },
+    // The images and files of a send. The tray empties at once; the server keeps the uploads for the send.
+    take: () => { const taken = items.filter(item => item.id).map(item => item.kind === 'file' ? { fileId: item.id, name: item.name, size: item.size } : { imageId: item.id, name: item.name, size: item.size }); items.splice(0); tray.replaceChildren(); show(); return taken; },
   };
 }
