@@ -1,5 +1,5 @@
 /** Rules for a voice turn. The reply is posted in chat and read aloud by text to speech. */
-export const VOICE_RULE = "This request was spoken in a Discord voice channel. Call voice_say with what to say aloud (one to three short spoken sentences, plain words). Before a slow tool you may first call voice_say with one short line on what you will do, then call it again with the answer. Then write the full answer for the chat; it is not read aloud, so it may contain code, links and details. A voice channel has no task threads: never call task_start here. If the transcript is only noise, a filler word or cut-off speech with no request, call voice_skip and write no reply.";
+export const VOICE_RULE = "This request was spoken in a Discord voice channel. Call voice_say with what to say aloud (one to three short spoken sentences, plain words). Before a slow tool you may first call voice_say with one short line on what you will do. After tools, call voice_say again with the answer, or put the spoken answer in the reply inside <speak>...</speak> (plain words, removed from the chat post). Then write the full answer for the chat; it is not read aloud, so it may contain code, links and details. Task threads for voice requests open in the text channel where Slopbot was asked to join. If the transcript is only noise, a filler word or cut-off speech with no request, call voice_skip and write no reply.";
 export const VOICE_SPOKEN_MAX = 600;
 /** Fillers spoken in order when a turn is silent while the bot works. */
 export const VOICE_FILLER_TEXTS = ["One moment.", "Still working on it.", "Almost there."] as const;
@@ -139,4 +139,13 @@ export class SentenceSplitter {
 function isAbbreviation(before: string): boolean {
   const token = /[A-Za-z.]+$/.exec(before)?.[0].toLowerCase();
   return token !== undefined && ABBREVIATIONS.has(token);
+}
+
+/** The spoken block of a voice reply: <speak>...</speak>. */
+export const SPEAK_BLOCK = /<speak>([\s\S]*?)<\/speak>/gi;
+
+/** Splits a voice reply. `spoken` joins all <speak> blocks (undefined when there are none). `chat` is the reply without them, trimmed. */
+export function splitSpeak(text: string): { spoken: string | undefined; chat: string } {
+  const blocks = [...text.matchAll(SPEAK_BLOCK)].map(match => match[1]!.trim()).filter(Boolean);
+  return { spoken: blocks.length ? blocks.join(' ') : undefined, chat: text.replace(SPEAK_BLOCK, '').replace(/\n{3,}/g, '\n\n').trim() };
 }

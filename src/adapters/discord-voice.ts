@@ -60,6 +60,10 @@ interface Turn {
   fillers: number;
   /** Time (ms since epoch) the silence counts from, before any audio plays. */
   quietFrom: number;
+  /** WP1: true when the voice tool's leave ran in this turn. The session leaves after the reply has finished playing. */
+  leaveAfter: boolean;
+  /** WP2: true when a tool other than voice_say or voice_skip started after the last voice_say. */
+  toolAfterSay: boolean;
   /** True once the model skipped the turn (voice_skip, or a [SKIP] marker). Its speech stops and is not started again. */
   skipped: boolean;
   /** The chat message that holds the transcript, once it is posted. Its reactions show the turn state. */
@@ -79,6 +83,8 @@ interface Session {
   busy: boolean;
   /** 'voice' reads replies aloud. 'text' only captures speech and posts transcripts. */
   replies: 'voice' | 'text';
+  /** WP3: the text channel where the join was asked. Task threads of voice requests open here. Undefined when there is none. */
+  origin: string | undefined;
   turn: Turn | undefined;
   /** Message ID of the "Listening" line in the voice channel chat, if one is up. */
   listening: string | undefined;
@@ -422,7 +428,7 @@ export class DiscordVoice {
         void target.send({ content: `Voice conversation failed. ${errorReply(error)}`, allowedMentions: { parse: [] } }).catch(error => logError('discord_voice_notice_failed', error, { server: this.server, channel }));
       }
     };
-    const session: Session = { channel, connection, abort, player, audio, replies, busy: false, turn: undefined, fillers: undefined, listening: undefined, listeningAt: Number.NEGATIVE_INFINITY, refresh, fail, stop: () => {
+    const session: Session = { channel, connection, abort, player, audio, replies, busy: false, turn: undefined, fillers: undefined, origin: undefined, listening: undefined, listeningAt: Number.NEGATIVE_INFINITY, refresh, fail, stop: () => {
       // Leaving: no listening line for the turn that ends here. The line is removed.
       abort.abort(); clearTimeout(idle); if (session.turn) this.endTurn(session, session.turn); player.stop(true);
       void this.removeListening(session).catch(error => logError('discord_voice_listening_failed', error, { server: this.server, channel }));
@@ -613,7 +619,7 @@ export class DiscordVoice {
   }
 
   private startTurn(session: Session, user: string): Turn {
-    const turn: Turn = { user, channel: session.channel, fillers: 0, quietFrom: Date.now(), skipped: false, said: false, speech: new TurnSpeech(session.player, session.abort.signal, error => session.fail(error)), timer: setTimeout(() => this.endTurn(session, turn, true), VOICE_TURN_TIMEOUT_MS) };
+    const turn: Turn = { user, channel: session.channel, fillers: 0, quietFrom: Date.now(), leaveAfter: false, toolAfterSay: false, skipped: false, said: false, speech: new TurnSpeech(session.player, session.abort.signal, error => session.fail(error)), timer: setTimeout(() => this.endTurn(session, turn, true), VOICE_TURN_TIMEOUT_MS) };
     turn.timer.unref();
     session.busy = true; session.turn = turn;
     return turn;
@@ -727,6 +733,12 @@ export class DiscordVoice {
 
   /** Called with the channel when a session starts, and with undefined when it ends. */
   onSession: ((channel: string | undefined, previous: string | undefined) => void) | undefined;
+  /** WP2: a tool started in a voice turn. The tool progress hook in discord.ts calls it. */
+  toolStarted(_channel: string, _tool: string): void { /* WP2 */ }
+
+  /** WP3: the task parent for a request in `channel`: the session's origin when `channel` is the live voice channel, else undefined. */
+  taskParent(_channel: string): string | undefined { return undefined; /* WP3 */ }
+
   leave(): void { const session = this.session; this.session = undefined; session?.stop(); if (session) this.onSession?.(undefined, session.channel); }
   stop(): void { this.leave(); this.client.off(Events.VoiceStateUpdate, this.onVoiceState); this.unlisten(); }
 }
