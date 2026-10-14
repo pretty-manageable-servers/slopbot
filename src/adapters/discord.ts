@@ -1,6 +1,6 @@
 import { LocalDiskStorage } from "../web-chat-images.js";
-import { DiscordVoice } from './discord-voice.js';
-import { VOICE_INSTRUCTIONS_KEY, voiceInstructions } from "../voice-rules.js";
+import { DiscordVoice, voiceTurnSkipped } from './discord-voice.js';
+import { containsSkipMarker, VOICE_INSTRUCTIONS_KEY, VOICE_NAME_DEFAULT, VOICE_SKIP, voiceInstructions } from "../voice-rules.js";
 import { contextChangedError, legacyToolProgress, sourceFingerprint, stableAttachmentUrl, toolProgressFooter } from "../source-context.js";
 import { errorReply, logError } from "../errors.js";
 import { sandboxTool, readSandboxFile } from "../sandbox.js";
@@ -86,6 +86,13 @@ export function buildInboxCommand() {
   return new SlashCommandBuilder().setName("inbox").setDescription("See your Slopbot inbox in this server, or mark items done")
     .addStringOption(option => option.setName("done").setDescription("Item IDs to mark done, comma-separated, or all").setRequired(false))
     .addBooleanOption(option => option.setName("all").setDescription("Include items you marked done").setRequired(false));
+}
+/** The top-level /voice command. /slopbot takes only the first 24 tools, and the voice tool is not among them. It runs the voice tool. */
+export function buildVoiceCommand() {
+  return new SlashCommandBuilder().setName("voice").setDescription("Make Slopbot join your voice channel, leave it, show status, or set its voice")
+    .addStringOption(option => option.setName("action").setDescription("What to do").setRequired(true).addChoices(...["join", "leave", "status", "style", "propose"].map(value => ({ name: value, value }))))
+    .addStringOption(option => option.setName("reply").setDescription("For join: voice reads replies aloud (default), text posts them only").setRequired(false).addChoices({ name: "voice", value: "voice" }, { name: "text", value: "text" }))
+    .addStringOption(option => option.setName("instructions").setDescription("For style or propose: describe the voice, or default").setRequired(false).setMaxLength(1000));
 }
 /** Discord allows 2000 characters per message. The inbox reply stays under this limit. */
 const INBOX_REPLY_LIMIT = 1900;
@@ -281,7 +288,7 @@ export class DiscordServer implements ChatGateway {
     });
     // Voice posts transcripts through webReplies, so it is made after webReplies.
     if (config.voice) {
-      this.voice = new DiscordVoice(client, guildId, config, this.webReplies, usage, user => Boolean(mutedUsers(store.setting(guildId, MUTED_USERS_KEY))[user]), () => voiceInstructions(store.setting(guildId, VOICE_INSTRUCTIONS_KEY) as string | undefined, config.voice?.instructions), value => store.setSetting(guildId, VOICE_INSTRUCTIONS_KEY, value));
+      this.voice = new DiscordVoice(client, guildId, config, this.webReplies, usage, user => Boolean(mutedUsers(store.setting(guildId, MUTED_USERS_KEY))[user]), () => voiceInstructions(store.setting(guildId, VOICE_INSTRUCTIONS_KEY) as string | undefined, config.voice?.instructions, (config.voice?.voice ?? VOICE_NAME_DEFAULT) !== VOICE_NAME_DEFAULT), value => store.setSetting(guildId, VOICE_INSTRUCTIONS_KEY, value));
       this.voice.register(this.tools);
       this.voice.onSession = (channel, previous) => { if (previous) this.bot.closeVoiceChannel(previous); if (channel) this.bot.openVoiceChannel(guildId, channel); };
     }
@@ -354,13 +361,13 @@ export class DiscordServer implements ChatGateway {
     this.reminders.start();
     this.fixWatches?.start();
     sync(); this.historyTimer = setInterval(sync, 60000);
-    void this.registerCommands().catch(error => logError("Could not register /slopbot, /usage, /stop, /inbox and message app commands. Check application command permissions.", error, { server: this.guildId }));
+    void this.registerCommands().catch(error => logError("Could not register /slopbot, /usage, /stop, /inbox, /voice and message app commands. Check application command permissions.", error, { server: this.guildId }));
   }
   interaction(interaction: Interaction): void {
     if ((interaction.isButton() || interaction.isStringSelectMenu()) && interaction.customId.startsWith('slopui:')) {
       void handleDiscordUi(interaction,this.uiRuntime).catch(error => logError('UI interaction display failed.', error));
     }
-    if (interaction.isChatInputCommand() && interaction.commandName === "slopbot") void this.command(interaction).catch(error => logError("Command failed.", error));
+    if (interaction.isChatInputCommand() && (interaction.commandName === "slopbot" || interaction.commandName === "voice")) void this.command(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isChatInputCommand() && interaction.commandName === "usage") void this.usageCommand(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isButton() && interaction.customId.startsWith("slopstop:")) void this.continueButton(interaction).catch(error => logError("Continue button failed.", error));
     if (interaction.isButton() && interaction.customId.startsWith("slopvoice:")) void this.voice?.button(interaction).catch(error => logError("Voice button failed.", error));
@@ -401,7 +408,9 @@ export class DiscordServer implements ChatGateway {
       return;
     }
     const channel = await this.client.channels.fetch(channelId);
-    if (!channel || !(channel.type === ChannelType.GuildText || (!parentOnly && channel.isThread())) || channel.guildId !== message.server || message.server !== this.guildId) throw new ToolError("Choose a text channel in this server.");
+    // A voice channel's own text chat counts while a voice session is live there, for requests made in it.
+    const liveVoiceChat = channel?.type === ChannelType.GuildVoice && channelId === message.channel && this.bot.accepts(message.server, channelId);
+    if (!channel || !(channel.type === ChannelType.GuildText || liveVoiceChat || (!parentOnly && channel.isThread())) || channel.guildId !== message.server || message.server !== this.guildId) throw new ToolError("Choose a text channel in this server.");
     const guild = await this.client.guilds.fetch(message.server);
     const member = await guild.members.fetch({ user: message.author, force: true });
     const bot = await guild.members.fetchMe();
@@ -412,7 +421,7 @@ export class DiscordServer implements ChatGateway {
     const guild = await this.client.guilds.fetch(this.guildId);
     // set() replaces the whole list, so commands from older versions are removed.
     // /usage is a separate command, so /slopbot stays as it is.
-    await guild.commands.set([buildToolCommands(this.tools).toJSON(), buildUsageCommand().toJSON(), buildStopCommand().toJSON(), buildInboxCommand().toJSON(), ...buildMessageApps().map(app => app.toJSON())]);
+    await guild.commands.set([buildToolCommands(this.tools).toJSON(), buildUsageCommand().toJSON(), buildStopCommand().toJSON(), buildInboxCommand().toJSON(), buildVoiceCommand().toJSON(), ...buildMessageApps().map(app => app.toJSON())]);
     // Slopbot registers no global commands. Old global commands stay visible and fail, so remove them.
     const global = await this.client.application?.commands.fetch();
     if (global?.size) await this.client.application!.commands.set([]);
@@ -540,7 +549,7 @@ export class DiscordServer implements ChatGateway {
     if (interaction.guildId !== this.guildId) return;
     let ephemeral = true;
     try {
-      const subcommand = interaction.options.getSubcommand();
+      const subcommand = interaction.commandName === "voice" ? "voice" : interaction.options.getSubcommand();
       const name = subcommand === "run" ? interaction.options.getString("tool", true) : subcommand;
       const definition = this.tools.definitions().find(tool => tool.name === name);
       const args = subcommand === "run" ? JSON.parse(interaction.options.getString("arguments") ?? "{}") : { action: interaction.options.getString("action") ?? "get" };
@@ -548,7 +557,7 @@ export class DiscordServer implements ChatGateway {
     } catch { /* Malformed requests receive private errors. */ }
     await interaction.deferReply(ephemeral ? { flags: MessageFlags.Ephemeral } : {});
     try {
-      const subcommand = interaction.options.getSubcommand();
+      const subcommand = interaction.commandName === "voice" ? "voice" : interaction.options.getSubcommand();
       const name = subcommand === "run" ? interaction.options.getString("tool", true) : subcommand;
       const definition = this.tools.definitions().find(tool => tool.name === name);
       if (!definition) throw new ToolError("Unknown Slopbot tool");
@@ -682,6 +691,13 @@ export class DiscordServer implements ChatGateway {
     const outputs: Message[] = [];
     try {
     if (!this.bot.accepts(message.server, message.channel)) throw new ToolError("Channel was disabled before sending");
+    // A skipped voice turn posts nothing: no send, no delivery record, no ingest. Only the progress status is cleared.
+    if (message.source === "voice" && (voiceTurnSkipped(message) || containsSkipMarker(text))) {
+      await requestTimings.wait("Discord status cleanup", () => this.toolProgress.finish(JSON.stringify([message.server,message.channel,message.id])));
+      delivered = true;
+      void this.voice?.speak(message.channel, VOICE_SKIP).catch(error => logError("discord_voice_speak_failed", error, { server: message.server, channel: message.channel }));
+      return outputs;
+    }
     const channel = await requestTimings.wait("Discord channel fetch", () => this.client.channels.fetch(message.channel));
     if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Channel cannot receive replies");
     let part = 0;

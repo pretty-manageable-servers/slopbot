@@ -9,13 +9,28 @@ import type { Message } from '../domain.js';
 import { errorReply, logError } from '../errors.js';
 import type { UsageMeter } from '../usage-meter.js';
 import type { WebReplies } from '../web-replies.js';
-import { spokenText, VOICE_CUE_TEXT, VOICE_INSTRUCTIONS_MAX, VOICE_TURN_TIMEOUT_MS } from '../voice-rules.js';
+import { containsSkipMarker, cutSpoken, heldSkipLength, isErrorReply, plainSpoken, SentenceSplitter, spokenText, VOICE_CUE_TEXT, VOICE_INSTRUCTIONS_MAX, VOICE_SPOKEN_MAX, VOICE_TURN_TIMEOUT_MS } from '../voice-rules.js';
+import { HEARD_CUE, READY_CUE } from '../voice-sounds.js';
+import { liveText, type LiveTextEvent } from '../live-text.js';
 import { PmAudio, speechPcm } from './audio.js';
 
 const MAX_AUDIO_BYTES = 30 * 192000;
 const IDLE_MS = 5 * 60_000;
 const PROPOSAL_MS = 15 * 60_000;
 const PREVIEW_TEXT = 'Hi, this is my new voice.';
+/** Voice channels whose live turn is skipped. A channel ID is unique in Discord, so one set serves every server. */
+const skippedChannels = new Set<string>();
+
+/** True while the live voice turn in the message's channel is skipped. reply() then posts nothing for it. */
+export function voiceTurnSkipped(message: Message): boolean {
+  return message.source === 'voice' && skippedChannels.has(message.channel);
+}
+
+/** The chat line that tells users Slopbot is listening. At most one per session, posted at most once per window. */
+const LISTENING_LINE = '-# 🎙️ Listening';
+const LISTENING_GAP_MS = 3000;
+/** Reactions on a transcript: 👂 while it is handled, 💤 when the turn is skipped. */
+const EAR = '👂', SLEEP = '💤';
 
 /** A voice description drafted by the model, waiting for a server admin to apply it. */
 interface Proposal { instructions: string; proposer: string; expiresAt: number }
@@ -34,7 +49,22 @@ function previewFile(wav: Buffer): AttachmentBuilder { return new AttachmentBuil
 export interface VoicePoster { reply: WebReplies["reply"] }
 
 /** One speaker's turn. It starts at capture and ends after the spoken reply, a timeout, or an early stop. */
-interface Turn { user: string; timer: ReturnType<typeof setTimeout>; cued: boolean }
+interface Turn {
+  user: string;
+  /** True once voice_say queued the spoken text. The reply text is then not read aloud. */
+  said: boolean;
+  channel: string;
+  timer: ReturnType<typeof setTimeout>;
+  cued: boolean;
+  /** True once the model skipped the turn (voice_skip, or a [SKIP] marker). Its speech stops and is not started again. */
+  skipped: boolean;
+  /** The chat message that holds the transcript, once it is posted. Its reactions show the turn state. */
+  transcript?: { channel: string; messageId: string };
+  speech: TurnSpeech;
+}
+
+/** One reply run's text, read as it streams. `mode` decides once whether the reply is read aloud. `raw` is all the text seen. */
+interface RunState { turn: Turn; splitter: SentenceSplitter; head: string; held: string; raw: string; mode: 'undecided' | 'stream' | 'skip' }
 
 interface Session {
   channel: string;
@@ -43,7 +73,13 @@ interface Session {
   player: AudioPlayer;
   audio: PmAudio;
   busy: boolean;
+  /** 'voice' reads replies aloud. 'text' only captures speech and posts transcripts. */
+  replies: 'voice' | 'text';
   turn: Turn | undefined;
+  /** Message ID of the "Listening" line in the voice channel chat, if one is up. */
+  listening: string | undefined;
+  /** Time (ms since epoch) of the last "Listening" post. */
+  listeningAt: number;
   /** The cue clip for one set of voice instructions. Made again when the instructions change. Plays do not bill. */
   cue: { instructions: string; clip: Promise<Buffer> } | undefined;
   refresh(): void;
@@ -51,13 +87,135 @@ interface Session {
   stop(): void;
 }
 
+/** Discord playback PCM: 48 kHz, 2 channels, 16 bit. That is 192 bytes per millisecond. */
+const PCM_BYTES_PER_MS = 192;
+
+/** Resolves at `time` (ms since epoch), or at once when `signal` aborts. */
+function sleepUntil(time: number, signal: AbortSignal): Promise<void> {
+  const wait = time - Date.now();
+  if (wait <= 0 || signal.aborted) return Promise.resolve();
+  return new Promise(resolve => {
+    const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); };
+    const timer = setTimeout(done, wait);
+    signal.addEventListener('abort', done, { once: true });
+  });
+}
+
+/** 48 kHz stereo 16-bit is 192 bytes per ms. Thunder's first chunks double in size (80, 160, 320, 640 ms), so about 700 ms must be buffered to play without gaps. */
+const START_BUFFER_BYTES = 750 * 192;
+const REBUFFER_BYTES = 500 * 192;
+/** The Discord player stops after this many 20 ms frames with no data (its default is 5). A reply waits for TTS, so allow 60 s. */
+const MAX_MISSED_FRAMES = 3000;
+
+/**
+ * Live PCM for one turn, with a jitter buffer. The player waits through short gaps (MAX_MISSED_FRAMES);
+ * so this stream sends 20 ms of silence while it waits for the next audio. It ends only after end() and the queue is empty.
+ */
+export class LiveAudio extends Readable {
+  private readonly chunks: Buffer[] = [];
+  private bytes = 0;
+  private ended = false;
+  /** True while the stream holds audio back to build a buffer. The player waits meanwhile (see MAX_MISSED_FRAMES). */
+  private buffering = true;
+  private target = START_BUFFER_BYTES;
+  private pending = false;
+  get writableEnded(): boolean { return this.ended; }
+  write(pcm: Buffer): void {
+    if (this.ended || this.destroyed) return;
+    this.chunks.push(pcm); this.bytes += pcm.length;
+    this.wake();
+  }
+  /** A source finished (for example one sentence): play what is buffered, do not wait for more. */
+  release(): void { this.buffering = false; this.wake(); }
+  end(): void { this.ended = true; this.buffering = false; this.wake(); }
+  override _read(): void {
+    // TTS sends audio in bursts that start small. Hold audio back until enough is buffered, so playback does not run dry.
+    if (this.buffering && this.bytes >= this.target) this.buffering = false;
+    if (!this.buffering) {
+      const chunk = this.chunks.shift();
+      if (chunk) { this.bytes -= chunk.length; this.pending = false; this.push(chunk); return; }
+      if (this.ended) { this.pending = false; this.push(null); return; }
+      // Ran dry: build a smaller buffer again before audio continues.
+      this.buffering = true; this.target = REBUFFER_BYTES;
+    }
+    // No audio to give yet. Do not push silence: it would queue in front of audio that arrives later.
+    this.pending = true;
+  }
+  private wake(): void { if (this.pending) this._read(); }
+}
+
+/**
+ * One reply's speech. One stream plays the cue and every sentence in order, so there is no gap between them.
+ * Jobs run one at a time. Job N waits until job N-2 has finished playing, so at most one request is ahead of the one playing.
+ */
+class TurnSpeech {
+  /** The one audio resource of the turn. It is played when the first audio is written. */
+  private readonly out = new LiveAudio();
+  private readonly controller = new AbortController();
+  readonly signal: AbortSignal;
+  private chain: Promise<void> = Promise.resolve();
+  private readonly ends: number[] = [];
+  private count = 0;
+  private started = false;
+  /** Time (ms since epoch) when the audio written so far has finished playing. */
+  playEndsAt = 0;
+  /** Sentences sent to TTS, in code points. The total is capped at VOICE_SPOKEN_MAX. */
+  spokenChars = 0;
+  capped = false;
+  /** True once a sentence was queued for TTS. */
+  streamed = false;
+
+  constructor(private readonly player: AudioPlayer, session: AbortSignal, private readonly onError: (error: unknown) => void) {
+    this.signal = AbortSignal.any([session, this.controller.signal]);
+  }
+
+  /** Queues one job. The job calls write() with each PCM chunk it gets. A failed job reports once and stops the speech. */
+  queue(job: (write: (pcm: Buffer) => void) => Promise<void>): void {
+    const index = this.count++;
+    this.chain = this.chain.then(async () => {
+      try {
+        if (index >= 2) await sleepUntil(this.ends[index - 2]!, this.signal);
+        if (!this.signal.aborted) await job(pcm => this.write(pcm));
+        // The sentence is complete: play its tail now. The next sentence builds its own buffer when the stream runs dry.
+        this.out.release();
+      } catch (error) {
+        if (!this.signal.aborted) this.onError(error);
+        this.close();
+      } finally {
+        this.ends[index] = this.playEndsAt;
+      }
+    });
+  }
+
+  /** Resolves when every queued job has run. The chain never rejects. */
+  settled(): Promise<void> { return this.chain; }
+
+  /** Ends the stream. Audio already written still plays. */
+  end(): void { if (!this.out.writableEnded) this.out.end(); }
+
+  /** Stops the turn: abort jobs in flight, drop queued jobs, end the stream. */
+  close(): void { this.controller.abort(); this.end(); }
+
+  private write(pcm: Buffer): void {
+    if (this.signal.aborted || this.out.writableEnded || pcm.length === 0) return;
+    if (!this.started) {
+      this.started = true;
+      this.player.play(createAudioResource(this.out, { inputType: StreamType.Raw }));
+    }
+    this.playEndsAt = Math.max(this.playEndsAt, Date.now()) + pcm.length / PCM_BYTES_PER_MS;
+    this.out.write(pcm);
+  }
+}
+
 export class DiscordVoice {
   private session: Session | undefined;
   private readonly onVoiceState: (old: import('discord.js').VoiceState, next: import('discord.js').VoiceState) => void;
   private readonly proposals = new Map<string, Proposal>();
+  private readonly runs = new Map<string, RunState>();
+  private readonly unlisten: () => void;
 
   /** `instructions` returns the voice description for this server. `saveInstructions` stores a new one; "" clears it. */
-  constructor(private readonly client: Client, private readonly server: string, private readonly config: Config, private readonly poster: VoicePoster, private readonly usage: UsageMeter, private readonly muted: (user: string) => boolean, private readonly instructions: () => string, private readonly saveInstructions: (value: string) => void | Promise<void>, private readonly connect: typeof joinVoiceChannel = joinVoiceChannel) {
+  constructor(private readonly client: Client, private readonly server: string, private readonly config: Config, private readonly poster: VoicePoster, private readonly usage: UsageMeter, private readonly muted: (user: string) => boolean, private readonly instructions: () => string, private readonly saveInstructions: (value: string) => void | Promise<void>, private readonly connect: typeof joinVoiceChannel = joinVoiceChannel, private readonly createPlayer: () => AudioPlayer = () => createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Stop, maxMissedFrames: MAX_MISSED_FRAMES } })) {
     this.onVoiceState = (_old, next) => {
       if (next.guild.id !== server || !this.session) return;
       if (next.id === client.user?.id && next.channelId !== this.session.channel) { this.leave(); return; }
@@ -65,13 +223,45 @@ export class DiscordVoice {
       if (channel?.type === ChannelType.GuildVoice && !channel.members.some(member => !member.user.bot)) this.leave();
     };
     client.on(Events.VoiceStateUpdate, this.onVoiceState);
+    this.unlisten = liveText.subscribe(event => this.onLiveText(event));
   }
 
   register(registry: ToolRegistry): void {
+    registry.register({ name: 'voice_skip', description: 'Call this when a voice transcript is only noise, a filler word or cut-off speech with no request. Slopbot then says and posts nothing for this turn. Do not write a reply after calling it.', scope: 'discord',
+      fields: {},
+      access: 'member', effect: 'read', execution: 'inline', retrySafe: true,
+      execute: async ({ message }) => {
+        const session = this.session, turn = session?.turn;
+        if (!session || !turn || message.source !== 'voice' || message.channel !== session.channel) return 'Nothing to skip.';
+        this.skipTurn(turn);
+        return 'Skipped. Write no reply.';
+      },
+    });
+
+    registry.register({ name: 'voice_say', description: 'Say these words aloud in the voice channel. Call it first, once, for every voice request: one to three short spoken sentences, at most 60 words, plain words only (no markdown, code, emoji or URLs; say numbers as words). Then write the full answer for the chat with code, links and details as needed; the chat answer is not read aloud.', scope: 'discord',
+      fields: {
+        text: { type: 'string', description: 'The words to say aloud. One to three short spoken sentences, plain words.', required: true, max: VOICE_SPOKEN_MAX },
+      },
+      access: 'member', effect: 'read', execution: 'inline', retrySafe: true,
+      execute: async ({ message }, args) => {
+        const session = this.session, turn = session?.turn;
+        if (!session || !turn || message.source !== 'voice' || message.channel !== session.channel) return 'Not in a voice turn.';
+        if (session.replies === 'text') return 'Text-only session; not spoken.';
+        if (turn.skipped) return 'Skipped. Nothing is spoken.';
+        if (turn.said) return 'Already speaking.';
+        turn.said = true;
+        const splitter = new SentenceSplitter();
+        const plain = cutSpoken(plainSpoken(String(args.text ?? '')), VOICE_SPOKEN_MAX);
+        this.queueSentences(session, turn, [...splitter.push(plain), ...splitter.flush()]);
+        return 'Speaking.';
+      },
+    });
+
     registry.register({ name: 'voice', description: "Join your voice channel to talk, leave it, or show voice status and the voice style. Use propose when a user asks to change how Slopbot's voice sounds: draft a concrete description (gender, age, pitch, pace, tone) and never name a real person; a server admin then applies it. style sets the voice directly and is for server admins only.", scope: 'discord',
       fields: {
         action: { type: 'string', description: 'Voice action. style sets the voice (server admins). propose posts a voice for an admin to apply.', choices: ['join', 'leave', 'status', 'style', 'propose'], required: true },
         instructions: { type: 'string', description: `Voice description for style or propose, for example "A calm adult woman with a warm, medium pitch, a steady pace and a friendly tone." Up to ${VOICE_INSTRUCTIONS_MAX} characters. For style, "default" restores the default voice.`, max: VOICE_INSTRUCTIONS_MAX },
+        reply: { type: 'string', description: 'For join. voice (default) reads Slopbot\'s replies aloud. text only posts transcripts and replies in chat: no audio and no Thunder calls.', choices: ['voice', 'text'] },
       },
       access: 'member', effect: 'write', execution: 'inline', retrySafe: true,
       resource: () => `voice:${this.server}`, writes: args => args.action !== 'status',
@@ -98,16 +288,28 @@ export class DiscordVoice {
           if (this.session.channel === channel.id) return `Already listening in <#${channel.id}>.`;
           throw new ToolError('Leave the existing voice session before joining another channel.');
         }
-        await channel.send({ content: "Slopbot is joining to listen and reply aloud. Human speech is sent to PMServers for transcription. Each transcript is posted in this channel's chat, and replies use Slopbot's normal model and tools. I handle one speaker at a time. Use /slopbot voice action:leave to stop.", allowedMentions: { parse: [] } });
-        await this.join(channel.id);
-        return `Joined <#${channel.id}>. I listen to human speakers, post each transcript in this channel's chat, and reply aloud with Slopbot's normal model and tools, one speaker at a time. Speech is sent to PMServers for processing. Use /slopbot voice action:leave to stop. I leave after five minutes of inactivity.`;
+        const replies = args.reply === 'text' ? 'text' : 'voice';
+        await channel.send({ content: replies === 'text'
+          ? "Slopbot is joining to listen. Human speech is sent to PMServers for transcription. Each transcript is posted in this channel's chat. Replies are text only: Slopbot does not speak in this session. I handle one speaker at a time. Use /voice action:leave to stop."
+          : "Slopbot is joining to listen and reply aloud. Human speech is sent to PMServers for transcription. Each transcript is posted in this channel's chat, and replies use Slopbot's normal model and tools. I handle one speaker at a time. Use /voice action:leave to stop.", allowedMentions: { parse: [] } });
+        await this.join(channel.id, replies);
+        return replies === 'text'
+          ? `Joined <#${channel.id}>. I listen to human speakers and post each transcript in this channel's chat. Replies are text only in this session: I do not speak. I handle one speaker at a time. Use /voice action:leave to stop. I leave after five minutes of inactivity.`
+          : `Joined <#${channel.id}>. I listen to human speakers, post each transcript in this channel's chat, and reply aloud with Slopbot's normal model and tools, one speaker at a time. Speech is sent to PMServers for processing. Use /voice action:leave to stop. I leave after five minutes of inactivity.`;
       },
     });
   }
 
   private status(): string {
-    const session = this.session ? `Voice session in <#${this.session.channel}>.` : 'No active voice session.';
-    return `${session}\nVoice style: ${this.instructions()}`;
+    if (!this.session) return `No active voice session.\nVoice style: ${this.instructions() || `preset ${this.config.voice?.voice}`}`;
+    const { channel, replies, turn } = this.session;
+    const state = turn ? `Busy (replying to ${this.speakerName(turn.user)})` : 'Listening';
+    return `Voice session in <#${channel}>.\nReplies: ${replies}\nState: ${state}\nVoice style: ${this.instructions() || `preset ${this.config.voice?.voice}`}`;
+  }
+
+  /** The display name of a speaker in this server, or the user ID when it is not cached. */
+  private speakerName(user: string): string {
+    return this.client.guilds.cache.get(this.server)?.members.cache.get(user)?.displayName ?? user;
   }
 
   /** The voice style set by an admin. "default" or empty clears it. Plays or posts a preview. */
@@ -166,6 +368,8 @@ export class DiscordVoice {
 
   /** Thunder preview of a voice style, as WAV. Returns undefined when it fails; the failure is logged. */
   private async previewWav(user: string, instructions: string): Promise<Buffer | undefined> {
+    // A text session plays no audio, so it makes no preview.
+    if (this.session?.replies === 'text') return undefined;
     try {
       const wav = await this.audio().speakWav(PREVIEW_TEXT, new AbortController().signal, instructions);
       // Thunder is billed at $10/1M characters.
@@ -178,10 +382,7 @@ export class DiscordVoice {
   private async playOrPost(channel: string, wav: Buffer, content: string): Promise<void> {
     const session = this.session;
     try {
-      if (session) {
-        void this.play(session, speechPcm(wav)).catch(error => { if (!session.abort.signal.aborted) logError('discord_voice_preview_failed', error, { server: this.server, channel: session.channel }); });
-        return;
-      }
+      if (session) { this.playClip(session, speechPcm(wav)); return; }
       const target = await this.client.channels.fetch(channel);
       if (!target?.isTextBased() || !target.isSendable()) throw new Error('Preview channel unavailable');
       await target.send({ content, files: [previewFile(wav)], allowedMentions: { parse: [] } });
@@ -192,10 +393,10 @@ export class DiscordVoice {
     return new PmAudio(this.config.baseUrl, this.config.apiKey, this.config.voice?.voice ?? 'alloy');
   }
 
-  private async join(channel: string): Promise<void> {
+  private async join(channel: string, replies: 'voice' | 'text'): Promise<void> {
     const guild = await this.client.guilds.fetch(this.server);
     const connection = this.connect({ guildId: guild.id, channelId: channel, adapterCreator: guild.voiceAdapterCreator, selfDeaf: false, selfMute: false });
-    const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Stop } });
+    const player = this.createPlayer();
     const abort = new AbortController(), captures = new Set<AudioReceiveStream>();
     const audio = new PmAudio(this.config.baseUrl, this.config.apiKey, this.config.voice?.voice ?? 'alloy');
     let idle: ReturnType<typeof setTimeout>, lastError = 0;
@@ -209,8 +410,10 @@ export class DiscordVoice {
         void target.send({ content: `Voice conversation failed. ${errorReply(error)}`, allowedMentions: { parse: [] } }).catch(error => logError('discord_voice_notice_failed', error, { server: this.server, channel }));
       }
     };
-    const session: Session = { channel, connection, abort, player, audio, busy: false, turn: undefined, cue: undefined, refresh, fail, stop: () => {
-      abort.abort(); clearTimeout(idle); clearTimeout(session.turn?.timer); session.turn = undefined; player.stop(true);
+    const session: Session = { channel, connection, abort, player, audio, replies, busy: false, turn: undefined, cue: undefined, listening: undefined, listeningAt: Number.NEGATIVE_INFINITY, refresh, fail, stop: () => {
+      // Leaving: no ready cue and no listening line for the turn that ends here. The line is removed.
+      abort.abort(); clearTimeout(idle); if (session.turn) this.endTurn(session, session.turn); player.stop(true);
+      void this.removeListening(session).catch(error => logError('discord_voice_listening_failed', error, { server: this.server, channel }));
       for (const capture of captures) capture.destroy();
       if (connection.state.status !== VoiceConnectionStatus.Destroyed) connection.destroy();
     } };
@@ -228,7 +431,7 @@ export class DiscordVoice {
     connection.receiver.speaking.on('start', user => {
       if (session.busy || abort.signal.aborted || this.muted(user)) return;
       const turn = this.startTurn(session, user);
-      let posted = false;
+      let posted = false, failed = false;
       void (async () => {
         // Subscribe at the speaking event; a REST fetch here can lose the first words.
         const member = guild.members.cache.get(user);
@@ -237,77 +440,252 @@ export class DiscordVoice {
         const pcm = await this.capture(connection, user, captures, abort.signal);
         if (pcm.length < 19200 || member.voice.channelId !== channel || this.muted(user)) return;
         if (!(await this.usage.limiter.check(user)).allowed) return;
+        // The capture is accepted: the heard cue plays now, before transcription.
+        this.hear(session, turn);
         const transcript = await audio.transcribe(pcm, abort.signal);
         // Squall is billed at $0.004/minute, independent of token prices.
         await this.usage.limiter.record(user, Math.ceil(pcm.length / 192000 / 60 * 4000));
         if (!transcript || await this.usage.overGrace({ server: this.server, user })) return;
         if (session.turn !== turn || abort.signal.aborted) return;
-        await this.poster.reply({ user, server: this.server, channel, text: transcript.slice(0, 2000), kind: 'voice' });
+        const sent = await this.poster.reply({ user, server: this.server, channel, text: transcript.slice(0, 2000), kind: 'voice' });
         posted = true;
-      })().catch(fail).finally(() => { if (!posted) this.endTurn(session, turn); });
+        turn.transcript = { channel, messageId: sent.messageId };
+        void this.signTranscript(turn, EAR);
+      })().catch(error => { failed = true; fail(error); }).finally(() => { if (!posted) this.endTurn(session, turn, !failed && !abort.signal.aborted); });
     });
     try { await entersState(connection, VoiceConnectionStatus.Ready, 20_000); }
     catch (error) { if (this.session === session) this.leave(); throw error; }
+    this.listen(session);
   }
 
-  /** Reads the bot's reply aloud. It plays only for a pending turn in this channel. */
+  /** Reads the bot's reply aloud. Sentences already spoken as the model streamed them are not spoken again. */
   async speak(channel: string, text: string): Promise<void> {
     const session = this.session, turn = session?.turn;
     if (!session || session.channel !== channel || !turn) return;
+    // A skipped turn (voice_skip, or a [SKIP] marker in the reply) speaks nothing and ends silently.
+    const skipped = turn.skipped || containsSkipMarker(text);
+    if (skipped) { this.skipTurn(turn); void this.signTranscript(turn, SLEEP, EAR); }
+    if (session.replies === 'text') { this.endTurn(session, turn, true); session.refresh(); return; }
     try {
-      const said = spokenText(text);
-      if (!said || await this.usage.overGrace({ server: this.server, user: turn.user })) { this.endTurn(session, turn); return; }
-      const speech = await session.audio.speak(said, session.abort.signal, this.instructions());
-      // Thunder is billed at $10/1M characters.
-      await this.usage.limiter.record(turn.user, Array.from(said).length * 10);
-      if (session.turn !== turn || session.abort.signal.aborted) return;
-      await this.play(session, speech);
-      this.endTurn(session, turn);
+      const speech = turn.speech;
+      // Nothing was streamed (an error reply, or no sentence): speak the whole reply once.
+      if (!speech.streamed && !skipped && !turn.said) {
+        const said = spokenText(text);
+        if (said) this.queueSpeech(session, turn, said);
+      }
+      await speech.settled();
+      speech.end();
+      await sleepUntil(speech.playEndsAt, session.abort.signal);
+      // Silence padding is not in the estimate. Wait until the player has really finished.
+      if (session.player.state && session.player.state.status !== AudioPlayerStatus.Idle) await entersState(session.player, AudioPlayerStatus.Idle, AbortSignal.any([session.abort.signal, AbortSignal.timeout(60_000)])).catch(() => undefined);
+      if (session.turn !== turn) return;
+      this.endTurn(session, turn, true);
       session.refresh();
     } catch (error) { session.fail(error); this.endTurn(session, turn); }
   }
 
-  /** Plays a short cue while the bot works. Once per turn; the clip is made once per session. */
+  /** Plays a short cue while the bot works. Once per turn; the clip is made once per session. Text sessions play nothing. */
   async cue(channel: string): Promise<void> {
     const session = this.session, turn = session?.turn;
-    if (!session || session.channel !== channel || !turn || turn.cued) return;
+    if (!session || session.channel !== channel || !turn || turn.cued || turn.skipped || turn.said || session.replies === 'text') return;
     turn.cued = true;
-    try {
-      const instructions = this.instructions();
-      let cue = session.cue;
-      if (!cue || cue.instructions !== instructions) {
-        const clip = session.audio.speak(VOICE_CUE_TEXT, session.abort.signal, instructions).then(async pcm => {
-          // Thunder is billed at $10/1M characters.
-          await this.usage.limiter.record(turn.user, Array.from(VOICE_CUE_TEXT).length * 10);
-          return pcm;
-        });
-        cue = { instructions, clip };
-        session.cue = cue;
-        clip.catch(() => { if (session.cue === cue) session.cue = undefined; });
-      }
-      const pcm = await cue.clip;
-      if (session.turn !== turn) return;
-      await this.play(session, pcm);
-    } catch (error) { session.fail(error); }
+    const instructions = this.instructions();
+    let cue = session.cue;
+    if (!cue || cue.instructions !== instructions) {
+      const clip = session.audio.speak(VOICE_CUE_TEXT, session.abort.signal, instructions).then(async pcm => {
+        // Thunder is billed at $10/1M characters.
+        await this.usage.limiter.record(turn.user, Array.from(VOICE_CUE_TEXT).length * 10);
+        return pcm;
+      });
+      cue = { instructions, clip };
+      session.cue = cue;
+      clip.catch(() => { if (session.cue === cue) session.cue = undefined; });
+    }
+    const clip = cue.clip;
+    // The cue goes in the turn's stream, before any sentence. A failed cue is reported, and the reply still plays.
+    turn.speech.queue(async write => {
+      const pcm = await clip.catch(error => { session.fail(error); });
+      // A skip that came first leaves the cue unplayed.
+      if (pcm && !turn.skipped && !turn.said) write(pcm);
+    });
+    await turn.speech.settled();
   }
 
-  private async play(session: Session, speech: Buffer): Promise<void> {
-    session.player.play(createAudioResource(Readable.from([speech]), { inputType: StreamType.Raw }));
-    await entersState(session.player, AudioPlayerStatus.Playing, 5000);
-    await entersState(session.player, AudioPlayerStatus.Idle, session.abort.signal);
+  /** Live reply text. Sentences of a reply in a voice turn are queued for speech as the model streams them. */
+  private onLiveText(event: LiveTextEvent): void {
+    const run = this.runs.get(event.runId) ?? this.openRun(event);
+    if (!run) return;
+    const session = this.session;
+    if (event.kind === 'text') { if (session) this.runText(session, run, event.text); return; }
+    if (event.kind === 'end') { this.runs.delete(event.runId); if (session) this.endRun(session, run); }
+  }
+
+  /** A run of a pending voice turn in this channel. Other runs are not read. */
+  private openRun(event: LiveTextEvent): RunState | undefined {
+    const session = this.session, turn = session?.turn;
+    if (!session || !turn || session.replies !== 'voice' || session.abort.signal.aborted) return undefined;
+    if (event.message.source !== 'voice' || event.message.channel !== session.channel) return undefined;
+    const run: RunState = { turn, splitter: new SentenceSplitter(), head: '', held: '', raw: '', mode: 'undecided' };
+    this.runs.set(event.runId, run);
+    return run;
+  }
+
+  private runText(session: Session, run: RunState, text: string): void {
+    if (run.mode === 'skip' || run.turn.skipped || run.turn.said) return;
+    run.raw += text;
+    // A [SKIP] marker anywhere in the reply skips the turn. Text sent before the marker arrived cannot be recalled.
+    if (containsSkipMarker(run.raw)) { run.mode = 'skip'; this.skipTurn(run.turn); return; }
+    if (run.mode === 'undecided') {
+      run.head += text;
+      if (!this.decide(run, false)) return;
+      text = run.head; run.head = '';
+    }
+    if (run.mode !== 'stream') return;
+    // Hold back the end that might still become "[SKIP]", until a later delta shows it is not.
+    const all = run.held + text;
+    const hold = heldSkipLength(all);
+    run.held = all.slice(all.length - hold);
+    this.queueSentences(session, run.turn, run.splitter.push(all.slice(0, all.length - hold)));
+  }
+
+  private endRun(session: Session, run: RunState): void {
+    if (run.mode === 'undecided') this.decide(run, true);
+    if (run.mode === 'stream') this.queueSentences(session, run.turn, [...run.splitter.push(run.held + run.head), ...run.splitter.flush()]);
+    run.head = ''; run.held = '';
+  }
+
+  /** Decides from the start of a reply whether it is read aloud. An error code is not read; the fallback speaks the error text. */
+  private decide(run: RunState, final: boolean): boolean {
+    const head = run.head.trimStart();
+    // A "[" might start an error code or a skip marker. Wait for the closing "]" or for enough text.
+    if (!final && (!head || (/^\\?\[/.test(head) && !head.includes(']') && head.length < 40))) return false;
+    run.mode = isErrorReply(run.head) ? 'skip' : 'stream';
+    return true;
+  }
+
+  private queueSentences(session: Session, turn: Turn, sentences: string[]): void {
+    for (const sentence of sentences) {
+      const speech = turn.speech;
+      if (speech.capped || turn.skipped) return;
+      let said = plainSpoken(sentence);
+      const room = VOICE_SPOKEN_MAX - speech.spokenChars;
+      if (Array.from(said).length > room) { said = cutSpoken(said, room); speech.capped = true; }
+      if (!said) continue;
+      speech.spokenChars += Array.from(said).length;
+      speech.streamed = true;
+      this.queueSpeech(session, turn, said);
+    }
+  }
+
+  /** One TTS request for `text`, streamed into the turn's speech. Thunder is billed per character, to the turn user. */
+  private queueSpeech(session: Session, turn: Turn, text: string): void {
+    const speech = turn.speech;
+    if (turn.skipped) return;
+    speech.queue(async write => {
+      if (await this.usage.overGrace({ server: this.server, user: turn.user })) { speech.capped = true; return; }
+      for await (const pcm of session.audio.speakStream(text, speech.signal, this.instructions())) write(pcm);
+      // Thunder is billed at $10/1M characters.
+      await this.usage.limiter.record(turn.user, Array.from(text).length * 10);
+    });
+  }
+
+  /** Plays a clip now, instead of the audio that plays. Used for a voice preview in a live session. */
+  private playClip(session: Session, pcm: Buffer): void {
+    session.player.play(createAudioResource(Readable.from([pcm]), { inputType: StreamType.Raw }));
   }
 
   private startTurn(session: Session, user: string): Turn {
-    const turn: Turn = { user, cued: false, timer: setTimeout(() => this.endTurn(session, turn), VOICE_TURN_TIMEOUT_MS) };
+    const turn: Turn = { user, channel: session.channel, cued: false, skipped: false, said: false, speech: new TurnSpeech(session.player, session.abort.signal, error => session.fail(error)), timer: setTimeout(() => this.endTurn(session, turn, true), VOICE_TURN_TIMEOUT_MS) };
     turn.timer.unref();
     session.busy = true; session.turn = turn;
     return turn;
   }
 
-  private endTurn(session: Session, turn: Turn): void {
+  /** The heard cue: the first audio of the turn's stream. In text mode there is no speech, so the cue plays alone. */
+  private hear(session: Session, turn: Turn): void {
+    if (session.replies === 'text') { this.playClip(session, HEARD_CUE); return; }
+    turn.speech.queue(async write => { if (!turn.skipped) write(HEARD_CUE); });
+  }
+
+  /**
+   * Ends a turn. `normal` is true when the reply was spoken, posted, skipped, empty, or timed out.
+   * A leave or an abort ends it without the ready cue and without the listening line.
+   */
+  private endTurn(session: Session, turn: Turn, normal = false): void {
     if (session.turn !== turn) return;
     clearTimeout(turn.timer); session.turn = undefined; session.busy = false;
+    skippedChannels.delete(turn.channel);
+    turn.speech.close();
+    for (const [id, run] of this.runs) if (run.turn === turn) this.runs.delete(id);
+    if (normal) { this.listen(session); void this.readyCue(session); }
   }
+
+  /** Marks the turn skipped: its queued and in-flight speech stops. Audio already written still plays. */
+  private skipTurn(turn: Turn): void {
+    if (turn.skipped) return;
+    turn.skipped = true;
+    skippedChannels.add(turn.channel);
+    turn.speech.close();
+  }
+
+  /** The ready cue, once the player is idle. It never plays over a new turn or after a leave. */
+  private async readyCue(session: Session): Promise<void> {
+    try {
+      if (session.player.state && session.player.state.status !== AudioPlayerStatus.Idle) await entersState(session.player, AudioPlayerStatus.Idle, AbortSignal.any([session.abort.signal, AbortSignal.timeout(60_000)]));
+      if (session.turn || session.abort.signal.aborted || this.session !== session) return;
+      this.playClip(session, READY_CUE);
+    } catch { /* The wait ended early (leave or timeout). No ready cue. */ }
+  }
+
+  /** The text channel of the session, or undefined when the bot cannot post there. */
+  private async textChannel(id: string) {
+    const channel = await this.client.channels.fetch(id).catch(() => undefined);
+    return channel?.isTextBased() && channel.isSendable() ? channel : undefined;
+  }
+
+  /** Posts the "Listening" line. The previous line of this session is deleted first. At most one post per window. */
+  private listen(session: Session): void {
+    const now = Date.now();
+    if (now - session.listeningAt < LISTENING_GAP_MS) return;
+    session.listeningAt = now;
+    const previous = session.listening;
+    session.listening = undefined;
+    void this.postListening(session, previous).catch(error => logError('discord_voice_listening_failed', error, { server: this.server, channel: session.channel }));
+  }
+
+  private async postListening(session: Session, previous: string | undefined): Promise<void> {
+    const channel = await this.textChannel(session.channel);
+    if (!channel) return;
+    if (previous) await channel.messages.fetch(previous).then(message => message.delete()).catch(error => logError('discord_voice_listening_failed', error, { server: this.server, channel: session.channel }));
+    const sent = await channel.send({ content: LISTENING_LINE, allowedMentions: { parse: [] } });
+    // The session left while the line was posted: it does not stay up.
+    if (session.abort.signal.aborted) await sent.delete().catch(error => logError('discord_voice_listening_failed', error, { server: this.server, channel: session.channel }));
+    else session.listening = sent.id;
+  }
+
+  /** Deletes the session's "Listening" line, if one is up. Used on leave. */
+  private async removeListening(session: Session): Promise<void> {
+    const id = session.listening;
+    session.listening = undefined;
+    if (!id) return;
+    const channel = await this.textChannel(session.channel);
+    if (channel) await channel.messages.fetch(id).then(message => message.delete());
+  }
+
+  /** Adds `add` to the turn's transcript message and removes `remove` from it. Reaction errors are logged, not thrown. */
+  private async signTranscript(turn: Turn, add: string, remove?: string): Promise<void> {
+    const at = turn.transcript;
+    if (!at) return;
+    try {
+      const channel = await this.client.channels.fetch(at.channel);
+      if (!channel?.isTextBased() || !('messages' in channel)) throw new Error('Transcript channel unavailable');
+      const message = await channel.messages.fetch(at.messageId);
+      const reaction = remove ? message.reactions.cache.get(remove) : undefined;
+      if (reaction && this.client.user) await reaction.users.remove(this.client.user.id);
+      await message.react(add);
+    } catch (error) { logError('discord_voice_sign_failed', error, { server: this.server, channel: at.channel, messageId: at.messageId }); }
+  }
+
 
   private capture(connection: VoiceConnection, user: string, captures: Set<AudioReceiveStream>, signal: AbortSignal): Promise<Buffer> {
     return new Promise((resolve, reject) => {
@@ -339,5 +717,5 @@ export class DiscordVoice {
   /** Called with the channel when a session starts, and with undefined when it ends. */
   onSession: ((channel: string | undefined, previous: string | undefined) => void) | undefined;
   leave(): void { const session = this.session; this.session = undefined; session?.stop(); if (session) this.onSession?.(undefined, session.channel); }
-  stop(): void { this.leave(); this.client.off(Events.VoiceStateUpdate, this.onVoiceState); }
+  stop(): void { this.leave(); this.client.off(Events.VoiceStateUpdate, this.onVoiceState); this.unlisten(); }
 }

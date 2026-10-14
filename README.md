@@ -37,7 +37,7 @@ LLM_MODEL=nimbus
 
 Restart with `npm start`. The adapter sends streaming requests to `/chat/completions`. The configured model is PMServers’ `nimbus`. Use the exact model ID accepted by the provider. Run `npm run models` to list available IDs when changing models.
 
-Join a Discord voice channel and use `/slopbot voice action:join` to make Slopbot join it. Use `action:leave` to disconnect and `action:status` to check the session. Natural-language requests can also invoke the voice tool. Voice is enabled by default; set `VOICE_ENABLED=false` to disable it or `VOICE_NAME` to choose a Thunder voice, default `alloy`. The AI key needs access to `squall`, the configured chat model, and `thunder`.
+Join a Discord voice channel and use `/voice action:join` to make Slopbot join it. Use `action:leave` to disconnect and `action:status` to check the session. Natural-language requests can also invoke the voice tool. Voice is enabled by default; set `VOICE_ENABLED=false` to disable it or `VOICE_NAME` to choose a Thunder voice, default `alloy`. The AI key needs access to `squall`, the configured chat model, and `thunder`.
 
 Slopbot needs View Channel, Connect, Speak and Send Messages permissions in the voice channel. It posts a listening notice in that channel's text chat. When a person speaks, Slopbot transcribes the speech and posts it in that text chat as the speaker. It uses a webhook when one exists; otherwise it posts `**Name** (from voice): text`. Slopbot answers with its normal model and tools, posts the answer in the same chat, and reads it aloud. When a tool starts, it says "One moment."
 

@@ -64,13 +64,14 @@ test("requester marked in people", async () => {
   assert.ok(people.some(row => row.startsWith("- Bob (user_id bob) discord=") && !row.includes("[requester]")));
 });
 
-test("request context has no raw ids", async () => {
+test("request context has channel id only", async () => {
   const built = await builder().build(message(), undefined, 0, async () => []);
   const content = built.inputs.find(item => item.contextOnly)!.content;
   const request = content.slice(0, content.indexOf("\n\n"));
   assert.ok(request.startsWith("Request context:\n"));
-  assert.ok(!/server_id|channel_id|requester_id/.test(request));
-  assert.ok(!/\d{17,20}/.test(request));
+  // Channel tools need the current channel ID. Server and requester IDs stay hidden.
+  assert.ok(request.includes("channel_id: "));
+  assert.ok(!/server_id|requester_id/.test(request));
   assert.ok(request.split("\n").includes("is_task: false"));
 });
 

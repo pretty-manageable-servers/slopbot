@@ -33,7 +33,7 @@ export class ContextBuilder {
     // A private chat has no task threads, so the thread rule in the tool instructions does not apply to it. Only this request says so.
     const privateChat = isPrivateChannel(message.channel) ? { private_web_chat: true, private_chat_rule: privateChatRule } : {};
     const voice = message.source === "voice" ? { voice_channel: true, voice_rule: VOICE_RULE } : {};
-    const requestContext: Record<string, Json> = this.options.tools ? { task_id: message.taskId ?? null, is_task: Boolean(message.taskId), ...privateChat, ...voice } : {};
+    const requestContext: Record<string, Json> = this.options.tools ? { channel_id: message.channel, task_id: message.taskId ?? null, is_task: Boolean(message.taskId), ...privateChat, ...voice } : {};
     // Request fields only, to reserve their budget. The full context block is built after the rows are chosen.
     const metadata: PromptItem[] = this.options.tools ? [contextBlock({ request: requestContext, people: [], evidence: [] })] : [];
     let budget = this.options.inputLimit - schemaBudget - this.options.counter.count([...prefix, ...metadata, request]);
