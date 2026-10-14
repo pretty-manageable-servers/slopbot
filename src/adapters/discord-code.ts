@@ -71,6 +71,16 @@ function pendingOf(value: Json | undefined): PendingConfirmation | undefined {
   return { name: record.name, arguments: args as ToolArgs, channel: record.channel, author: record.author };
 }
 
+/** Saves a pending confirmation. A record that is still pending is kept, so its Confirm and Cancel buttons still work. A done record is replaced. Retries a revision conflict, and throws rather than losing the record. */
+export async function saveConfirmation(store: RecordStore, server: string, operationId: string, value: Json): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const previous = await store.record(server, CONFIRM_RECORD, operationId);
+    if (previous && (previous.value as Record<string, Json> | undefined)?.done !== true) return;
+    if (await store.putRecord(server, CONFIRM_RECORD, operationId, value, previous?.revision ?? 0)) return;
+  }
+  throw new Error("Confirmation record kept changing while it was saved");
+}
+
 /** Routes a slopconfirm button. Only the requester may click. Yes runs the saved call once; Cancel only ends the record. */
 export async function handleConfirm(interaction: ButtonInteraction, store: CodeStore, tools: CodeRunner): Promise<void> {
   const match = CONFIRM_ID.exec(interaction.customId);
@@ -85,7 +95,8 @@ export async function handleConfirm(interaction: ButtonInteraction, store: CodeS
   if (pending.channel !== interaction.channelId) { await notice("This confirmation belongs to another channel."); return; }
   if (interaction.user.id !== pending.author) { await notice("Only the requester can confirm this action."); return; }
   // The record is marked done before the call runs, so a second click cannot run it again.
-  if (!await store.putRecord(server, CONFIRM_RECORD, operationId, { done: true }, record.revision)) { await notice("This confirmation was already handled."); return; }
+  // A Cancel is marked, so the program does not ask the same call again.
+  if (!await store.putRecord(server, CONFIRM_RECORD, operationId, choice === "no" ? { done: true, cancelled: true } : { done: true }, record.revision)) { await notice("This confirmation was already handled."); return; }
   if (choice === "no") { await interaction.editReply({ content: "Cancelled.", components: [], allowedMentions: { parse: [] } }); return; }
   const message: Message = { server, channel: pending.channel, author: pending.author, id: `interaction:${interaction.id}`, text: `Confirmed ${pending.name}`, timestamp: Date.now() };
   let content: string;

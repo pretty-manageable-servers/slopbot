@@ -195,7 +195,7 @@ async function changedRun(t: { after(fn: () => void): void }, change: (store: SQ
   let rounds = 0, changed = false;
   const llm = { async *stream() { if (++rounds === 1) yield { kind: "tool_call", payload: [{ name: "read_one", arguments: {} }] }; else yield { kind: "text", payload: { text: "Answer after the change." } }; } };
   const app = new Application(store, llm as never, { allowedChannels: [{ server: "s", channel: "c" }] }, undefined, {
-    tools: { catalog: () => "", execute: async () => { if (!changed) { changed = true; await change(store); } return { text: "Read finished.", status: "ok" }; } },
+    tools: { schemas: () => [], catalog: () => "", execute: async () => { if (!changed) { changed = true; await change(store); } return { text: "Read finished.", status: "ok" }; } },
   });
   const outputs: string[] = [];
   const gateway: ChatGateway = {

@@ -96,6 +96,7 @@ function recordingTools(): { tools: ToolExecutor; executed: Record<string, unkno
   const executed: Record<string, unknown>[] = [];
   const tools = {
     catalog: () => "",
+    schemas: () => [],
     execute: async (_message: unknown, call: { arguments: Record<string, unknown> }) => { executed.push(call.arguments); return { text: "Result" }; },
   } as unknown as ToolExecutor;
   return { tools, executed };

@@ -125,7 +125,7 @@ test("malformed Gemma text is shown as text and never executed", async t => {
   let requests=0,searches=0;
   const reply='<|tool_call>call:web_search{\\"query\\":\\"what is openclaw\\"}\n';
   const llm=new ChatCompletionsLLM(options,async()=>{requests++;return new Response(`data: ${JSON.stringify({choices:[{index:0,delta:{content:reply},finish_reason:'stop'}]})}\n\ndata: [DONE]\n\n`);});
-  const app=new Application(store,llm,{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:{catalog:()=>'',execute:async()=>{searches++;return {text:'actual results',sources:[{kind:'web',url:'https://example.com/',title:'Result'}]};}}});
+  const app=new Application(store,llm,{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:{schemas: () => [], catalog:()=>'',execute:async()=>{searches++;return {text:'actual results',sources:[{kind:'web',url:'https://example.com/',title:'Result'}]};}}});
   assert.equal((await app.handle({id:'m',server:'s',channel:'c',author:'a',text:'search what is openclaw'}))?.text,reply);
   assert.equal(searches,0);assert.equal(requests,1);
 });
@@ -142,7 +142,7 @@ test('tool rounds and subsequent task turns append identical wire prefixes',asyn
   return new Response(`data: ${JSON.stringify(replies[requests.length-1])}\n\ndata: [DONE]\n\n`);
  });
  let calls=0;
- const app=new Application(store,llm,{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:{catalog:()=>'',execute:async()=>({text:`Result ${++calls}: `+'evidence '.repeat(10000)})}});
+ const app=new Application(store,llm,{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:{schemas: () => [], catalog:()=>'',execute:async()=>({text:`Result ${++calls}: `+'evidence '.repeat(10000)})}});
  await app.handle({id:'one',server:'s',channel:'c',author:'alice',text:'Investigate',taskId:'task'});
  await app.handle({id:'two',server:'s',channel:'c',author:'bob',text:'Continue',taskId:'task'});
  assert.equal(calls,2);assert.equal(requests.length,4);

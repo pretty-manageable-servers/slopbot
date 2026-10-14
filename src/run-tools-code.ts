@@ -19,8 +19,8 @@ export interface RunToolsCodeOptions {
   sandbox?: SandboxProvider;
   /** The probed profile. Its home is where relative save_to_sandbox paths start. */
   profile?: SandboxProfile;
-  /** Stores the pending call of a confirmation. Without it the program still stops at the call. */
-  confirmations?: { save(server: string, operationId: string, value: Json): Promise<void> };
+  /** Stores the pending call of a confirmation. Without it the program still stops at the call. record reads the saved state of a call's confirmation. */
+  confirmations?: { record(server: string, operationId: string): Promise<Json | undefined>; save(server: string, operationId: string, value: Json): Promise<void> };
 }
 
 const builtinNames = new Set<string>(programBuiltins);
@@ -31,6 +31,9 @@ const oneLine = (text: string): string => {
 };
 
 const isArgs = (value: unknown): value is ToolArgs => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** True when the requester clicked Cancel on this call's confirmation. The record is written as { done: true, cancelled: true }. */
+const isCancelled = (value: Json | undefined): boolean => isArgs(value) && (value as Record<string, Json>).done === true && (value as Record<string, Json>).cancelled === true;
 
 /** The argument names of a tool: its fields, or the properties of its input schema for a tool that has no fields (MCP). */
 function argumentNames(tool: ToolDefinition): { name: string; required: boolean }[] {
@@ -141,8 +144,17 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
           const previous = await registry.recordedOperation(operationId);
           // A confirmation is asked once: a call that already has a journal entry is replayed, not asked again.
           if (!previous && current?.confirm?.(clean)) {
-            await options.confirmations?.save(message.server, operationId, { name, arguments: clean, parentOperationId: parentId, channel: message.channel, author: message.author, createdAt: Date.now() });
-            throw new ConfirmationRequired({ name, arguments: clean, operationId, parentOperationId: parentId });
+            const saved = await options.confirmations?.record(message.server, operationId);
+            // Cancel ended this call. The program gets a normal result, and no new confirmation is posted.
+            if (isCancelled(saved)) {
+              call.status = 'rejected'; await childReport('rejected', false, 'cancelled');
+              return `Cancelled by ${message.author}. Ask before trying again.`;
+            }
+            // Confirm was given. Its result is in the journal, so the call below uses it.
+            if ((saved as Record<string, Json> | undefined)?.done !== true) {
+              await options.confirmations?.save(message.server, operationId, { name, arguments: clean, parentOperationId: parentId, channel: message.channel, author: message.author, createdAt: Date.now() });
+              throw new ConfirmationRequired({ name, arguments: clean, operationId, parentOperationId: parentId });
+            }
           }
           const reused = Boolean(await registry.recordedResult(operationId));
           const output = toolResult(await registry.invokeResult(message, name, clean, operationId, context.source, context.invocation?.expectedVersion, { signal }));

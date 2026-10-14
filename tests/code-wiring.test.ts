@@ -42,6 +42,7 @@ test('activity_keeps_code: a final status update keeps the code of a run_tools_c
     onToolActivity: async (_message, activity) => { seen.push(activity); },
     tools: {
       catalog: () => '',
+      schemas: () => [],
       execute: async (_message, call, id, _version, invocation) => {
         // The program reports its own running status with its code, as runToolsCodeTool does.
         await invocation?.onActivity?.({ id, name: call.name, arguments: call.arguments, status: 'running', code });

@@ -178,9 +178,9 @@ test('new requests see runtime tools while active requests retain their catalog 
   const store = new SQLiteStore(); t.after(() => store.close());
   const registry = new ToolRegistry(store, async () => true), manager = new McpManager('s', store, registry, async () => ({ listTools: async () => [tool], callTool: async () => ({ content: [], structuredContent: { count: 1 } }), close: async () => {} }));
   t.after(() => manager.close());
-  const executor: ToolExecutor = { catalog: () => registry.catalog(), execute: (m, call, id) => registry.invokeResult(m, call.name, call.arguments, id, 'agent'), snapshot: () => {
+  const executor: ToolExecutor = { schemas: () => [], catalog: () => registry.catalog(), execute: (m, call, id) => registry.invokeResult(m, call.name, call.arguments, id, 'agent'), snapshot: () => {
     const snapshot = registry.capture();
-    return { catalog: snapshot.catalog, execute: (m, call, id) => { snapshot.assertCurrent(call.name); return executor.execute(m, call, id); } };
+    return { catalog: snapshot.catalog, schemas: snapshot.schemas, execute: (m, call, id) => { snapshot.assertCurrent(call.name); return executor.execute(m, call, id); } };
   } };
   let requests = 0, firstVersion = '';
   const llm: LLM = { async *stream(prompt) {

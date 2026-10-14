@@ -66,7 +66,7 @@ test("resuming a failed agent run reuses completed tool results and retains the 
     else { assert.ok(prompt.inputs.some(item => item.content.includes("set to 5"))); yield { kind: "text", payload: { text: "Done." } }; }
   } };
   const app = new Application(store, llm, { allowedChannels: [{ server: "s", channel: "t" }] }, undefined,
-    { tools: { catalog: () => registry.catalog(), execute: (message, call, id) => registry.invoke(message, call.name, call.arguments, id, "agent") } });
+    { tools: { schemas: () => [], catalog: () => registry.catalog(), execute: (message, call, id) => registry.invoke(message, call.name, call.arguments, id, "agent") } });
   await assert.rejects(app.handle(message), /disconnected/);
   assert.equal(writes, 1);
   assert.equal((await app.handle(message, true))?.text, "Done.");
@@ -117,7 +117,7 @@ test("tool JSON in model text is shown as text and never executed", async t => {
     yield { kind: "text", payload: { text } };
   } };
   const app = new Application(store, llm, { allowedChannels: [{ server: "s", channel: "t" }] }, undefined,
-    { tools: { catalog: () => registry.catalog(), execute: (m,c,id) => registry.invoke(m,c.name,c.arguments,id,"agent") } });
+    { tools: { schemas: () => [], catalog: () => registry.catalog(), execute: (m,c,id) => registry.invoke(m,c.name,c.arguments,id,"agent") } });
   assert.equal((await app.handle(message))?.text, text);
   assert.equal(reads, 0);
   assert.equal(rounds, 1);
@@ -130,6 +130,6 @@ test("known read intents return the tool result without model guessing", async t
     matchRead: () => ({}), async execute() { return "700 messages indexed"; } });
   const llm: LLM = { async *stream() { throw new Error("model should not choose a different tool"); } };
   const app = new Application(store, llm, { allowedChannels: [{ server: "s", channel: "t" }] }, undefined,
-    { tools: { catalog: () => registry.catalog(), suggest: m => registry.suggest(m), execute: (m,c,id) => registry.invoke(m,c.name,c.arguments,id,"agent") } });
+    { tools: { schemas: () => [], catalog: () => registry.catalog(), suggest: m => registry.suggest(m), execute: (m,c,id) => registry.invoke(m,c.name,c.arguments,id,"agent") } });
   assert.equal((await app.handle(message))?.text, "700 messages indexed");
 });

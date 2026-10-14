@@ -7,7 +7,7 @@ import type { Evidence } from "../src/memory.js";
 import type { ToolExecutor } from "../src/tools.js";
 import { VOICE_RULE } from "../src/voice-rules.js";
 
-const tools = { catalog: () => "", execute: async () => { throw new Error("not used"); } } as ToolExecutor;
+const tools = { schemas: () => [], catalog: () => "", execute: async () => { throw new Error("not used"); } } as ToolExecutor;
 
 const evidence: Evidence = { content: "Alice said she likes tea.", sourceIds: ["src-1"], author: "bob", kind: "message", authorName: "Bob" };
 

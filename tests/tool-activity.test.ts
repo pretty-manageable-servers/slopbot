@@ -54,7 +54,7 @@ for (const returned of [false, true]) test(`runner explains execution failures f
   let rounds = 0;
   const app = new Application(store, {async *stream(){rounds++;yield rounds === 1 ? {kind:'tool_call',payload:[{name:'remote_read',arguments:{}}]} : {kind:'text',payload:{text:'The remote service is unavailable.'}};}},
     {allowedChannels:[{server:'s',channel:'c'}]}, undefined,
-    {harness:store,tools:{catalog:()=>'',execute:async()=>{
+    {harness:store,tools:{schemas: () => [], catalog:()=>'',execute:async()=>{
       if (returned) return {text:'Remote service unavailable',status:'failed',reason:'Remote service unavailable'};
       throw new ToolError('Remote service unavailable', 'failed');
     }}});
@@ -89,7 +89,7 @@ for (const rejected of [false,true]) test(`execution reports ${rejected ? 'rejec
   try {
     const app = new Application(store, {async *stream(){yield ++rounds === 1 ? {kind:'tool_call',payload:[{name:'web_search',arguments:{query:'weather'}}]} : {kind:'text',payload:{text:'Answer'}};}},
       {allowedChannels:[{server:'s',channel:'c'}]}, undefined,
-      {onToolActivity:async (_message,event)=>{events.push(event);},tools:{catalog:()=>'',execute:async()=>{if(rejected)throw new ToolError('Unavailable');return 'Search results';}}});
+      {onToolActivity:async (_message,event)=>{events.push(event);},tools:{schemas: () => [], catalog:()=>'',execute:async()=>{if(rejected)throw new ToolError('Unavailable');return 'Search results';}}});
     const reply = await app.handle({server:'s',channel:'c',author:'person',id:'request',text:'Find information',addressed:true});
     assert.deepEqual(events.map(event=>event.status),['running',rejected ? 'rejected' : 'completed']);
     assert.equal(reply?.toolActivity?.length,1);
@@ -109,7 +109,7 @@ test('a failed status display does not prevent tool execution', async () => {
   try {
     const app = new Application(store,{async *stream(){yield {kind:'text',payload:{text:'unused'}};}},
       {allowedChannels:[{server:'s',channel:'c'}]},undefined,
-      {onToolActivity:async()=>{throw new Error('Discord unavailable');},tools:{catalog:()=>'',suggest:()=>({name:'read',arguments:{}}),execute:async()=>{executed=true;return 'Confirmed';}}});
+      {onToolActivity:async()=>{throw new Error('Discord unavailable');},tools:{schemas: () => [], catalog:()=>'',suggest:()=>({name:'read',arguments:{}}),execute:async()=>{executed=true;return 'Confirmed';}}});
     const reply = await app.handle({server:'s',channel:'c',author:'person',id:'request',text:'Check status',addressed:true});
     assert.equal(executed,true);
     assert.equal(reply?.toolActivity?.[0]?.status,'completed');

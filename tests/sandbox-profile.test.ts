@@ -40,7 +40,7 @@ test('prompt_same_bytes_across_requests: every run gets the same sandbox line, a
     const prefixes: string[] = [];
     const llm = { async *stream(prompt: { prefix: readonly { content: string }[] }) { prefixes.push(prompt.prefix.map(item => item.content).join('\n')); yield { kind: 'text' as const, payload: { text: 'ok' } }; } };
     const app = new Application(store, llm as never, { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, {
-      tools: { catalog: () => '', execute: async () => ({ text: 'x' }) }, ...(sandboxPrompt ? { sandboxPrompt } : {}),
+      tools: { schemas: () => [], catalog: () => '', execute: async () => ({ text: 'x' }) }, ...(sandboxPrompt ? { sandboxPrompt } : {}),
     });
     await app.handle({ id: 'm1', server: 's', channel: 'c', author: 'a', text: 'one' });
     await app.handle({ id: 'm2', server: 's', channel: 'c', author: 'a', text: 'two' });

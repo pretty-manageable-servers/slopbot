@@ -240,7 +240,7 @@ export class AgentRunner {
 
   private async runActive(message: Message, machine: HarnessMachine, step: (event: HarnessEvent) => Promise<void>, signal: AbortSignal, taskKey?: string, partial?: string): Promise<Reply> {
     const tools = this.services.tools?.snapshot?.() ?? this.services.tools;
-    const modelTools = tools?.schemas?.(message);
+    const modelTools = tools?.schemas(message);
     const native = modelTools !== undefined;
     const base = this.systemPrefix();
     // The sandbox line comes from the profile probed at startup. It is the same text for every run until restart.
@@ -249,11 +249,21 @@ export class AgentRunner {
     const inputLimit = this.inputLimit - schemaBudget;
     let rebuilds = 0;
     const canRebuild = (): boolean => rebuilds < MAX_CONTEXT_REBUILDS;
-    // A change during the build counts as a rebuild, and the build starts again.
+    // The request as stored. A rebuild reads it again, so an edited request uses its new text and attachments. Its id stays the same.
+    let request: Message = message;
+    const loadRequest = async (): Promise<void> => {
+      // A deleted request has no context to rebuild from. Its run stops quietly.
+      const lookup = (this.store as { canonicalMessage?(server: string, id: string): unknown }).canonicalMessage;
+      if (!lookup) return;
+      const stored = await lookup.call(this.store, message.server, message.id) as Message | undefined;
+      if (!stored) throw new RequestGone();
+      request = stored;
+    };
+    // A change during the build counts as a rebuild, and the build starts again on the stored request.
     const buildContext = async () => {
       for (;;) {
-        try { return await requestTimings.measure(message, "context", () => this.contextBuilder.build(message, taskKey, this.recentMessages, (message, key, limit) => this.boundedHistory(message, key, limit, canRebuild), prefix, tools, schemaBudget)); }
-        catch (error) { if (!(error instanceof ContextMoved)) throw error; rebuilds++; }
+        try { return await requestTimings.measure(message, "context", () => this.contextBuilder.build(request, taskKey, this.recentMessages, (message, key, limit) => this.boundedHistory(message, key, limit, canRebuild), prefix, tools, schemaBudget)); }
+        catch (error) { if (!(error instanceof ContextMoved)) throw error; rebuilds++; await loadRequest(); }
       }
     };
     let built = await buildContext();
@@ -266,9 +276,7 @@ export class AgentRunner {
     let knownUsers: ReadonlySet<string> = built.knownUsers;
     // Rebuilds the context for the current message. Tool results already done stay in trace.
     const refreshContext = async (): Promise<void> => {
-      // A deleted request has no context to rebuild from. Its run stops quietly.
-      const lookup = (this.store as { canonicalMessage?(server: string, id: string): unknown }).canonicalMessage;
-      if (lookup && !(await lookup.call(this.store, message.server, message.id))) throw new RequestGone();
+      await loadRequest();
       built = await buildContext();
       ({ sourceVersion, history, inputs, quoteAnswer, clarificationAnswer, suggested, quotes } = built);
       for (const id of built.sources) sources.add(id);
@@ -319,7 +327,7 @@ export class AgentRunner {
       console.log(JSON.stringify({ type: "working_context_checkpoint", server: message.server, channel: message.channel, messageId: message.id, runId, before: used, after, inputLimit, schemaBudget }));
     };
     let failedToolRounds = 0;
-    const appendTurn = async (turn: AgentTurn): Promise<void> => {
+    const appendTurn = async (turn: AgentTurn): Promise<boolean> => {
       // A turn saved on an older chat state rebuilds the context. Its calls then run on the rebuilt context.
       if (turn.version !== sourceVersion && canRebuild()) { rebuilds++; await refreshContext(); }
       if (signal.aborted) throw new HarnessInterrupted("Request interrupted");
@@ -328,11 +336,15 @@ export class AgentRunner {
       const callIds = turn.calls.map((call, index) => call.id ?? `call_${stableOperationId(turn.id, String(index))}`);
       trace.push({ role: "assistant", content: native && turn.calls.every(call => !call.id) ? "" : turn.text, ...(native ? { toolCalls: turn.calls.map((call, index) => ({ id: callIds[index]!, name: call.name, arguments: call.arguments })) } : {}) });
       let batchFailed = false;
+      // Set when a refresh runs because the chat changed during a call. The calls after it are not run.
+      let chatChanged = false;
       for (let index = 0; index < turn.calls.length; index++) {
         if (signal.aborted) throw new HarnessInterrupted("Request interrupted before next tool");
         const id = `${turn.id}:${index}`;
         let result = turn.results[String(index)];
         const reused = result !== undefined;
+        const skipped = result === undefined && chatChanged;
+        if (skipped) { result = { text: "Not run: the chat changed. Decide again with the current messages.", status: "ok" }; await this.store.agentResult(turn.id, index, result); }
         let durationMs: number | undefined;
         let startedAt: number | undefined;
         await step({ type: "ToolDecision", id, decision: "approve" });
@@ -358,25 +370,27 @@ export class AgentRunner {
         const output = toolResult(result);
         batchFailed ||= toolFailed(output);
         if (output.ui) ui = output.ui;
-        await report({ id, name: call.name, arguments: call.arguments, status: toolFailed(output) ? output.status as "rejected" | "failed" : output.handoff ? "delegated" : "completed", ...(toolFailed(output) ? { reason: output.reason ?? output.text } : {}), reused, ...(durationMs !== undefined ? { durationMs } : {}), ...(startedAt !== undefined ? { startedAt } : {}) });
+        if (!skipped) await report({ id, name: call.name, arguments: call.arguments, status: toolFailed(output) ? output.status as "rejected" | "failed" : output.handoff ? "delegated" : "completed", ...(toolFailed(output) ? { reason: output.reason ?? output.text } : {}), reused, ...(durationMs !== undefined ? { durationMs } : {}), ...(startedAt !== undefined ? { startedAt } : {}) });
         if (signal.aborted) throw new HarnessInterrupted("Tool execution ended after interruption; its actual result is retained");
         if (machine.state.kind === "ToolPhase" && machine.state.calls.find(call => call.id === id)?.state === "Running") {
           // A failed execution is still a result the model must receive.
           await step({ type: "ToolResult", id });
         }
         // A change during this call rebuilds the context. The actual result stays journaled and in trace.
-        if (!reused && sourceVersion !== await this.store.contextVersion(message.server, message.channel) && canRebuild()) { rebuilds++; await refreshContext(); }
+        if (!skipped && !reused && sourceVersion !== await this.store.contextVersion(message.server, message.channel) && canRebuild()) { rebuilds++; await refreshContext(); chatChanged = true; }
         for (const source of output.sources ?? []) if (source.kind === "message" && source.server === message.server) sources.add(source.id);
-        if (suggested && turn.calls[index]!.name === suggested.name && !toolFailed(output)) directAnswer = displayToolResult(output);
+        if (!skipped && suggested && turn.calls[index]!.name === suggested.name && !toolFailed(output)) directAnswer = displayToolResult(output);
         if (!message.taskId && output.handoff) directAnswer = `Task started in <#${output.handoff.threadId}>. Updates will appear there.`;
         trace.push(appendToolEvidence(turn.calls[index]!.name, output, [...prefix, ...history, ...inputs, ...trace], this.counter, Number.POSITIVE_INFINITY, native ? callIds[index] : undefined));
       }
       failedToolRounds = batchFailed ? failedToolRounds + 1 : 0;
       await compactWorkingContext(latestBatchStart);
+      return chatChanged;
     };
     for (const turn of turns) {
-      await appendTurn(turn);
-      if (machine.state.kind === "ToolResultsHeld") break;
+      // A changed chat ends the saved turns too. The model generates again on the rebuilt context.
+      const changed = await appendTurn(turn);
+      if (changed || machine.state.kind === "ToolResultsHeld") break;
     }
     const maxRounds = this.policy.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
     for (let round = 0; round <= maxRounds; round++) {
