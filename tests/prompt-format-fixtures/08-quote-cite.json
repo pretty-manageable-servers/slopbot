@@ -1,0 +1,90 @@
+{
+  "name": "08-quote-cite",
+  "description": "Quote request that needs a message ref in a tool call.",
+  "serverId": "1300000000000000001",
+  "channelId": "1300000000000000002",
+  "selfId": "1400000000000000001",
+  "kind": "chat",
+  "modelReplies": {},
+  "notices": [],
+  "history": [
+    {
+      "id": "1500000000000001701",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1200000000000000001",
+      "text": "We should ship on Friday",
+      "timestamp": 1791900000000,
+      "authorName": "Alice",
+      "authorIdentity": {
+        "discord_handle": "alice"
+      },
+      "authorAliases": [
+        "alice"
+      ],
+      "addressed": false,
+      "isBot": false,
+      "attachments": []
+    },
+    {
+      "id": "1500000000000001702",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1200000000000000002",
+      "text": "Friday is too risky, ship Monday",
+      "timestamp": 1791900060000,
+      "authorName": "Bob",
+      "authorIdentity": {
+        "discord_handle": "bob"
+      },
+      "authorAliases": [
+        "bob"
+      ],
+      "addressed": false,
+      "isBot": false,
+      "attachments": []
+    },
+    {
+      "id": "1500000000000001703",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1200000000000000003",
+      "text": "Agree with Bob",
+      "timestamp": 1791900120000,
+      "authorName": "Carol",
+      "authorIdentity": {
+        "discord_handle": "carol"
+      },
+      "authorAliases": [
+        "carol"
+      ],
+      "addressed": false,
+      "isBot": false,
+      "attachments": []
+    }
+  ],
+  "request": {
+    "id": "1500000000000001704",
+    "server": "1300000000000000001",
+    "channel": "1300000000000000002",
+    "author": "1200000000000000001",
+    "text": "quote what Bob said about shipping",
+    "timestamp": 1791900180000,
+    "authorName": "Alice",
+    "authorIdentity": {
+      "discord_handle": "alice"
+    },
+    "authorAliases": [
+      "alice"
+    ],
+    "addressed": true,
+    "isBot": false,
+    "attachments": []
+  },
+  "expect": {
+    "toolRef": {
+      "messageIndex": 1,
+      "note": "quote tool uses message ref m2, not a real ID"
+    }
+  }
+}

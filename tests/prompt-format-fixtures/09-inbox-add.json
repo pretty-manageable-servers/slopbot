@@ -1,0 +1,93 @@
+{
+  "name": "09-inbox-add",
+  "description": "inbox_add with several source messages (comma separated source_ids).",
+  "serverId": "1300000000000000001",
+  "channelId": "1300000000000000002",
+  "selfId": "1400000000000000001",
+  "kind": "chat",
+  "modelReplies": {},
+  "notices": [],
+  "history": [
+    {
+      "id": "1500000000000001801",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1200000000000000001",
+      "text": "Todo: renew the domain",
+      "timestamp": 1791900000000,
+      "authorName": "Alice",
+      "authorIdentity": {
+        "discord_handle": "alice"
+      },
+      "authorAliases": [
+        "alice"
+      ],
+      "addressed": false,
+      "isBot": false,
+      "attachments": []
+    },
+    {
+      "id": "1500000000000001802",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1200000000000000002",
+      "text": "Also fix the backup job",
+      "timestamp": 1791900060000,
+      "authorName": "Bob",
+      "authorIdentity": {
+        "discord_handle": "bob"
+      },
+      "authorAliases": [
+        "bob"
+      ],
+      "addressed": false,
+      "isBot": false,
+      "attachments": []
+    },
+    {
+      "id": "1500000000000001803",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1200000000000000003",
+      "text": "lunch?",
+      "timestamp": 1791900120000,
+      "authorName": "Carol",
+      "authorIdentity": {
+        "discord_handle": "carol"
+      },
+      "authorAliases": [
+        "carol"
+      ],
+      "addressed": false,
+      "isBot": false,
+      "attachments": []
+    }
+  ],
+  "request": {
+    "id": "1500000000000001804",
+    "server": "1300000000000000001",
+    "channel": "1300000000000000002",
+    "author": "1200000000000000001",
+    "text": "add the first two to my inbox",
+    "timestamp": 1791900180000,
+    "authorName": "Alice",
+    "authorIdentity": {
+      "discord_handle": "alice"
+    },
+    "authorAliases": [
+      "alice"
+    ],
+    "addressed": true,
+    "isBot": false,
+    "attachments": []
+  },
+  "expect": {
+    "toolRef": {
+      "messageIndexes": [
+        0,
+        1
+      ],
+      "note": "inbox_add source_ids uses refs m1,m2"
+    }
+  }
+}

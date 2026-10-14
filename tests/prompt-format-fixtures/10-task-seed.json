@@ -1,0 +1,93 @@
+{
+  "name": "10-task-seed",
+  "description": "Task seed built by startTask from a source channel (refs s1, s2).",
+  "serverId": "1300000000000000001",
+  "channelId": "1300000000000000002",
+  "selfId": "1400000000000000001",
+  "kind": "task_seed",
+  "modelReplies": {
+    "1500000000000001901": {
+      "runId": "run-3",
+      "text": "I can set that up in a task thread."
+    }
+  },
+  "notices": [],
+  "history": [
+    {
+      "id": "1500000000000001902",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1200000000000000001",
+      "text": "The report needs the Q3 numbers",
+      "timestamp": 1791900000000,
+      "authorName": "Alice",
+      "authorIdentity": {
+        "discord_handle": "alice"
+      },
+      "authorAliases": [
+        "alice"
+      ],
+      "addressed": false,
+      "isBot": false,
+      "attachments": []
+    },
+    {
+      "id": "1500000000000001901",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1400000000000000001",
+      "text": "I can set that up in a task thread.",
+      "timestamp": 1791900060000,
+      "authorName": "Slopbot",
+      "authorIdentity": {
+        "discord_handle": "slopbot"
+      },
+      "authorAliases": [],
+      "isBot": true,
+      "attachments": []
+    },
+    {
+      "id": "1500000000000001903",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1200000000000000002",
+      "text": "Use the finance sheet",
+      "timestamp": 1791900120000,
+      "authorName": "Bob",
+      "authorIdentity": {
+        "discord_handle": "bob"
+      },
+      "authorAliases": [
+        "bob"
+      ],
+      "addressed": false,
+      "isBot": false,
+      "attachments": []
+    }
+  ],
+  "request": {
+    "id": "1500000000000001904",
+    "server": "1300000000000000001",
+    "channel": "1300000000000000002",
+    "author": "1200000000000000001",
+    "text": "do it",
+    "timestamp": 1791900180000,
+    "authorName": "Alice",
+    "authorIdentity": {
+      "discord_handle": "alice"
+    },
+    "authorAliases": [
+      "alice"
+    ],
+    "addressed": true,
+    "isBot": false,
+    "attachments": []
+  },
+  "goal": "build the Q3 report",
+  "threadId": "1500000000000009999",
+  "expect": {
+    "toolRef": {
+      "note": "task tools cite sources as s1..s3"
+    }
+  }
+}

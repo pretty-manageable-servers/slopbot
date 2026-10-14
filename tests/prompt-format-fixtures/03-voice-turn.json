@@ -1,0 +1,52 @@
+{
+  "name": "03-voice-turn",
+  "description": "A voice turn (source voice).",
+  "serverId": "1300000000000000001",
+  "channelId": "1300000000000000002",
+  "selfId": "1400000000000000001",
+  "kind": "chat",
+  "modelReplies": {},
+  "notices": [],
+  "history": [
+    {
+      "id": "1500000000000001201",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1200000000000000001",
+      "text": "We are in the call now",
+      "timestamp": 1791900000000,
+      "authorName": "Alice",
+      "authorIdentity": {
+        "discord_handle": "alice"
+      },
+      "authorAliases": [
+        "alice"
+      ],
+      "addressed": false,
+      "isBot": false,
+      "attachments": []
+    }
+  ],
+  "request": {
+    "id": "1500000000000001202",
+    "server": "1300000000000000001",
+    "channel": "1300000000000000002",
+    "author": "1200000000000000002",
+    "text": "what time is the meeting tomorrow",
+    "timestamp": 1791900060000,
+    "authorName": "Bob",
+    "authorIdentity": {
+      "discord_handle": "bob"
+    },
+    "authorAliases": [
+      "bob"
+    ],
+    "addressed": true,
+    "isBot": false,
+    "attachments": [],
+    "source": "voice"
+  },
+  "expect": {
+    "shortSpokenAnswer": true
+  }
+}

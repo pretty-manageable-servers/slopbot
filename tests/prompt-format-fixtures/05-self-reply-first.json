@@ -1,0 +1,89 @@
+{
+  "name": "05-self-reply-first",
+  "description": "The first history message is a Slopbot reply.",
+  "serverId": "1300000000000000001",
+  "channelId": "1300000000000000002",
+  "selfId": "1400000000000000001",
+  "kind": "chat",
+  "modelReplies": {
+    "1500000000000001401": {
+      "runId": "run-1",
+      "text": "Rust is a systems language with no garbage collector."
+    }
+  },
+  "notices": [],
+  "history": [
+    {
+      "id": "1500000000000001401",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1400000000000000001",
+      "text": "Rust is a systems language with no garbage collector.",
+      "timestamp": 1791900000000,
+      "authorName": "Slopbot",
+      "authorIdentity": {
+        "discord_handle": "slopbot"
+      },
+      "authorAliases": [],
+      "isBot": true,
+      "attachments": []
+    },
+    {
+      "id": "1500000000000001402",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1200000000000000001",
+      "text": "ok and what about Go?",
+      "timestamp": 1791900060000,
+      "authorName": "Alice",
+      "authorIdentity": {
+        "discord_handle": "alice"
+      },
+      "authorAliases": [
+        "alice"
+      ],
+      "addressed": false,
+      "isBot": false,
+      "attachments": []
+    },
+    {
+      "id": "1500000000000001403",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1200000000000000002",
+      "text": "Go has a GC",
+      "timestamp": 1791900120000,
+      "authorName": "Bob",
+      "authorIdentity": {
+        "discord_handle": "bob"
+      },
+      "authorAliases": [
+        "bob"
+      ],
+      "addressed": false,
+      "isBot": false,
+      "attachments": []
+    }
+  ],
+  "request": {
+    "id": "1500000000000001404",
+    "server": "1300000000000000001",
+    "channel": "1300000000000000002",
+    "author": "1200000000000000001",
+    "text": "so which one for a CLI tool?",
+    "timestamp": 1791900180000,
+    "authorName": "Alice",
+    "authorIdentity": {
+      "discord_handle": "alice"
+    },
+    "authorAliases": [
+      "alice"
+    ],
+    "addressed": true,
+    "isBot": false,
+    "attachments": []
+  },
+  "expect": {
+    "noRepeat": "Rust is a systems language"
+  }
+}

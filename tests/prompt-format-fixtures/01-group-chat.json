@@ -1,0 +1,105 @@
+{
+  "name": "01-group-chat",
+  "description": "Three people talk; Carol asks Slopbot about Bob's point.",
+  "serverId": "1300000000000000001",
+  "channelId": "1300000000000000002",
+  "selfId": "1400000000000000001",
+  "kind": "chat",
+  "modelReplies": {},
+  "notices": [],
+  "history": [
+    {
+      "id": "1500000000000001001",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1200000000000000001",
+      "text": "Anyone up for a game tonight?",
+      "timestamp": 1791900000000,
+      "authorName": "Alice",
+      "authorIdentity": {
+        "discord_handle": "alice"
+      },
+      "authorAliases": [
+        "alice"
+      ],
+      "addressed": false,
+      "isBot": false,
+      "attachments": []
+    },
+    {
+      "id": "1500000000000001002",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1200000000000000002",
+      "text": "I can do 9pm, but only if we play Rust",
+      "timestamp": 1791900060000,
+      "authorName": "Bob",
+      "authorIdentity": {
+        "discord_handle": "bob"
+      },
+      "authorAliases": [
+        "bob"
+      ],
+      "addressed": false,
+      "isBot": false,
+      "attachments": []
+    },
+    {
+      "id": "1500000000000001003",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1200000000000000003",
+      "text": "Rust again? I want something relaxed",
+      "timestamp": 1791900120000,
+      "authorName": "Carol",
+      "authorIdentity": {
+        "discord_handle": "carol"
+      },
+      "authorAliases": [
+        "carol"
+      ],
+      "addressed": false,
+      "isBot": false,
+      "attachments": []
+    },
+    {
+      "id": "1500000000000001004",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1200000000000000001",
+      "text": "Bob, 9pm works. Carol, we can pick after",
+      "timestamp": 1791900180000,
+      "authorName": "Alice",
+      "authorIdentity": {
+        "discord_handle": "alice"
+      },
+      "authorAliases": [
+        "alice"
+      ],
+      "addressed": false,
+      "isBot": false,
+      "attachments": []
+    }
+  ],
+  "request": {
+    "id": "1500000000000001005",
+    "server": "1300000000000000001",
+    "channel": "1300000000000000002",
+    "author": "1200000000000000003",
+    "text": "<@1300000000000000099> what did Bob want to play?",
+    "timestamp": 1791900240000,
+    "authorName": "Carol",
+    "authorIdentity": {
+      "discord_handle": "carol"
+    },
+    "authorAliases": [
+      "carol"
+    ],
+    "addressed": true,
+    "isBot": false,
+    "attachments": []
+  },
+  "expect": {
+    "answerMentions": "Rust"
+  }
+}

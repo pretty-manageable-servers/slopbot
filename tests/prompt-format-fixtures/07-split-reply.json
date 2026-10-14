@@ -1,0 +1,108 @@
+{
+  "name": "07-split-reply",
+  "description": "One Slopbot run was sent as two Discord messages.",
+  "serverId": "1300000000000000001",
+  "channelId": "1300000000000000002",
+  "selfId": "1400000000000000001",
+  "kind": "chat",
+  "modelReplies": {
+    "1500000000000001601": {
+      "runId": "run-2",
+      "text": "Here is part one of the explanation: the cache is keyed by user.\n\nPart two: entries expire after ten minutes."
+    },
+    "1500000000000001602": {
+      "runId": "run-2",
+      "text": "Here is part one of the explanation: the cache is keyed by user.\n\nPart two: entries expire after ten minutes."
+    }
+  },
+  "notices": [],
+  "history": [
+    {
+      "id": "1500000000000001603",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1200000000000000001",
+      "text": "how does the cache work?",
+      "timestamp": 1791900000000,
+      "authorName": "Alice",
+      "authorIdentity": {
+        "discord_handle": "alice"
+      },
+      "authorAliases": [
+        "alice"
+      ],
+      "addressed": false,
+      "isBot": false,
+      "attachments": []
+    },
+    {
+      "id": "1500000000000001601",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1400000000000000001",
+      "text": "Here is part one of the explanation: the cache is keyed by user.",
+      "timestamp": 1791900060000,
+      "authorName": "Slopbot",
+      "authorIdentity": {
+        "discord_handle": "slopbot"
+      },
+      "authorAliases": [],
+      "isBot": true,
+      "attachments": []
+    },
+    {
+      "id": "1500000000000001602",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1400000000000000001",
+      "text": "Part two: entries expire after ten minutes.",
+      "timestamp": 1791900060000,
+      "authorName": "Slopbot",
+      "authorIdentity": {
+        "discord_handle": "slopbot"
+      },
+      "authorAliases": [],
+      "isBot": true,
+      "attachments": []
+    },
+    {
+      "id": "1500000000000001604",
+      "server": "1300000000000000001",
+      "channel": "1300000000000000002",
+      "author": "1200000000000000002",
+      "text": "thanks",
+      "timestamp": 1791900120000,
+      "authorName": "Bob",
+      "authorIdentity": {
+        "discord_handle": "bob"
+      },
+      "authorAliases": [
+        "bob"
+      ],
+      "addressed": false,
+      "isBot": false,
+      "attachments": []
+    }
+  ],
+  "request": {
+    "id": "1500000000000001605",
+    "server": "1300000000000000001",
+    "channel": "1300000000000000002",
+    "author": "1200000000000000001",
+    "text": "and how long do entries live?",
+    "timestamp": 1791900180000,
+    "authorName": "Alice",
+    "authorIdentity": {
+      "discord_handle": "alice"
+    },
+    "authorAliases": [
+      "alice"
+    ],
+    "addressed": true,
+    "isBot": false,
+    "attachments": []
+  },
+  "expect": {
+    "answer": "ten minutes"
+  }
+}
