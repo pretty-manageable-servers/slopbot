@@ -18,6 +18,11 @@ interface ContextOptions {
   store: Store; recall?: Recall; profiles?: ProfileStore; tools?: ToolExecutor;
   counter: TokenCounter; inputLimit: number; outputLimit: number; prefix: readonly PromptItem[];
 }
+/** One person of the People section, with the fields of their profile. The requester is marked. */
+async function personFor(profiles: ProfileStore, message: Message, author: string): Promise<ContextPerson> {
+  const profile = await profiles.profile(message.server, author);
+  return { user_id: author, display_name: profile.name, ...(author === message.author ? { requester: true as const } : {}), discord: profile.identity, fields: profile.fields.map(field => ({ field: field.field, value: field.value, self_reported: field.editor === author, source_ids: field.sourceIds })) };
+}
 export class ContextBuilder {
   constructor(private readonly options: ContextOptions) {}
   async build(message: Message, taskKey: string | undefined, recentMessages: number,
@@ -43,6 +48,15 @@ export class ContextBuilder {
     request = headed;
     // Slopbot's own ID comes from the store setting. Without a setting store, no message counts as Slopbot's own.
     const selfId = "setting" in this.options.store && typeof this.options.store.setting === "function" ? slopbotId(this.options.store as Pick<ConversationEventStore, "setting">, message.server) : undefined;
+    // The requester is always in People. Its line is counted here, before history, evidence and other people use the budget.
+    let requester: ContextPerson | undefined;
+    if (this.options.profiles && message.author !== selfId) {
+      const full = await personFor(this.options.profiles, message, message.author);
+      // When the full line does not fit, its fields are dropped. The ID and the name always stay.
+      requester = this.options.counter.count([{ role: "user", content: personLine(full), contextOnly: true }]) <= budget ? full : { user_id: full.user_id, display_name: full.display_name, requester: true, fields: [] };
+      budget -= this.options.counter.count([{ role: "user", content: personLine(requester), contextOnly: true }]);
+      if (budget < 0) throw new RequestError("CONTEXT_BUDGET", "Request and requester exceed the context budget.", "Reduce the request or increase CONTEXT_TOKENS.", { inputLimit: this.options.inputLimit, schemaBudget });
+    }
     const targetReplies = (target ? await this.options.store.modelReplies?.(message.server, [target.id]) : undefined) ?? new Map<string, { runId: string; text: string }>();
     const targetReserve = target ? this.options.counter.count(renderTranscript([target], selfId, targetReplies, message.replyTo).items) : 0;
     // Reserve working space before history selection, not after it has filled the budget.
@@ -52,6 +66,7 @@ export class ContextBuilder {
     budget -= this.options.counter.count(history);
     const inputs: PromptItem[] = [];
     const sources = new Set([message.id]);
+    for (const field of requester?.fields ?? []) for (const id of field.source_ids) sources.add(id);
     let historyMessages: readonly Message[] = [];
     let historyItems: PromptItem[] = [];
     let refs = new Map<string, string>();
@@ -102,24 +117,25 @@ export class ContextBuilder {
       const size = this.options.counter.count([{ role: "user", content: evidenceLine(evidence as unknown as Json), contextOnly: true }]);
       if (size <= budget) { inputs.push(entry); evidenceRows.set(entry, evidence as unknown as Json); budget -= size; for (const id of evidence.sourceIds) sources.add(id); }
     }
-    const people: ContextPerson[] = [];
+    const people: ContextPerson[] = requester ? [requester] : [];
     if (this.options.profiles) {
+      const profiles = this.options.profiles;
       const authors = new Set([message.author, ...recalled.map(item => item.author)]);
       // History is still in inputs only when person evidence did not drop it (see above).
       if (historyItems.length && inputs.includes(historyItems[0]!)) for (const item of historyMessages) authors.add(item.author);
       for (const item of [request, ...inputs]) for (const match of item.content.matchAll(/<@!?(\d{17,20})>/g)) authors.add(match[1]!);
-      // Slopbot is not a person in the People section. Its messages are assistant turns or notices.
-      for (const author of [...authors].filter(author => author !== selfId).slice(0, 12)) {
-        const profile = await this.options.profiles.profile(message.server, author);
-        const person: ContextPerson = { user_id: author, display_name: profile.name, ...(author === message.author ? { requester: true as const } : {}), discord: profile.identity, fields: profile.fields.map(field => ({ field: field.field, value: field.value, self_reported: field.editor === author, source_ids: field.sourceIds })) };
+      // Slopbot is not a person in the People section. Its messages are assistant turns or notices. The requester is already in people.
+      for (const author of [...authors].filter(author => author !== selfId && author !== message.author).slice(0, 12 - people.length)) {
+        const person = await personFor(profiles, message, author);
         const size = this.options.counter.count([{ role: "user", content: personLine(person), contextOnly: true }]);
-        if (size <= budget) { people.push(person); budget -= size; for (const field of profile.fields) for (const id of field.sourceIds) sources.add(id); }
+        if (size <= budget) { people.push(person); budget -= size; for (const field of person.fields) for (const id of field.source_ids) sources.add(id); }
       }
     }
     const evidenceItems = [...evidenceRows.values()];
     const block = this.options.tools || people.length || evidenceItems.length ? [contextBlock({ request: requestContext, people, evidence: evidenceItems })] : [];
     inputs.splice(0, inputs.length, ...inputs.filter(item => !evidenceRows.has(item)), ...block, request);
     const suggested = suggestRequestTool(tools, message, target);
-    return { sourceVersion, history, inputs, sources, quoteAnswer, clarificationAnswer, suggested, metadata: block, quotes, refs };
+    const knownUsers = new Set(people.map(person => person.user_id));
+    return { sourceVersion, history, inputs, sources, quoteAnswer, clarificationAnswer, suggested, metadata: block, quotes, refs, knownUsers };
   }
 }

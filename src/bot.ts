@@ -264,8 +264,8 @@ export class Bot {
       author: message.author, text: `Task goal: ${resolvedGoal}\nSource-channel context:\n${contextText}`,
       taskId: thread, addressed: true,
     };
-    // Task runs resolve these "s" refs. Saved before the seed is queued.
-    await saveTaskRefs(this.store as SettingsPort, message.server, thread, seedRefs);
+    // Task runs resolve these "s" refs, and link them to the source channel. Saved before the seed is queued.
+    await saveTaskRefs(this.store as SettingsPort, message.server, thread, seedRefs, message.channel);
     await this.store.linkOutput(seed, undefined, message.id);
     for (const source of context) await this.store.linkOutput(seed, undefined, source.id);
     if (this.options.worker) await this.options.worker.enqueue(seed);
