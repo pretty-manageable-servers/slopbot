@@ -261,6 +261,9 @@
     if (message.images.length) {
       article.append(el('div', { class: 'chat-images' }, ...message.images.map(image => el('img', { src: image.src, alt: image.name, title: image.name, loading: 'lazy' }))));
     }
+    if (message.files.length) {
+      article.append(el('div', { class: 'chat-files' }, ...message.files.map(file => el('span', { class: 'chat-file-chip' }, `${file.name} (${fileSize(file.size)})`))));
+    }
     if (message.text) {
       const body = el('div', { class: 'chat-text' });
       setMarkdown(body, message.text);
@@ -268,6 +271,13 @@
     }
     if (message.other) article.append(el('p', { class: 'share-att' }, `${message.other} attachment${message.other === 1 ? '' : 's'} not shown`));
     return article;
+  }
+
+  // KB under 1 MB, else MB with one decimal. Shown as text only.
+  function fileSize(bytes) {
+    const kb = bytes / 1024;
+    if (kb < 1024) return `${Math.max(1, Math.round(kb))} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 
   function messageTime(at) {

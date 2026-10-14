@@ -13,7 +13,7 @@ import { HistoryImporter } from "../src/history.js";
 import { privateChannel } from "../src/private-chat.js";
 import type { ParticipationGate } from "../src/participation.js";
 import { registerReportTools } from "../src/search/reports.js";
-import { ShareError, ShareService, buildMessages } from "../src/shares.js";
+import { ShareError, ShareService, buildMessages, renderSharePage } from "../src/shares.js";
 import { transcriptMessage } from "../src/run-events.js";
 import { fileUrl } from "../src/web-chat-files.js";
 import { ChatError, WebChatService, type ChatHost } from "../src/web-chats.js";
@@ -255,6 +255,18 @@ test("share shows file names without file ids", () => {
   const [item] = buildMessages([message], [], { show_thinking: false });
   assert.deepEqual(item?.files, [{ name: "report.pdf", size: 2048 }], "the share keeps the name and size");
   assert.ok(!JSON.stringify(item).includes(fileId), "the share never holds the file ID");
+});
+
+test("share page data has files", () => {
+  const page = renderSharePage({
+    id: "share1", created_at: 1, options: { show_avatars: false, show_thinking: false },
+    messages: [{ author: "Alice", bot: false, text: "report", attachments: 2, tools: [], files: [{ name: "report.pdf", size: 2048 }] }],
+  });
+  const match = /<script type="application\/json" id="share-data">([\s\S]*?)<\/script>/.exec(page);
+  assert.ok(match, "the page has its data");
+  const data = JSON.parse(match[1]!) as { messages: { files: unknown[]; other: number }[] };
+  assert.deepEqual(data.messages[0]!.files, [{ name: "report.pdf", size: 2048 }], "the page gets the file name and size");
+  assert.equal(data.messages[0]!.other, 1, "a file is not counted as an attachment not shown");
 });
 
 test("Postgres queries keep private chats out of the channel list, author lookup and memory index", () => {
