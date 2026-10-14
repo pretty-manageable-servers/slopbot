@@ -1,6 +1,6 @@
 import { LocalDiskStorage } from "../web-chat-images.js";
 import { DiscordVoice, voiceTurnSkipped } from './discord-voice.js';
-import { containsSkipMarker, VOICE_INSTRUCTIONS_KEY, VOICE_SKIP, voiceInstructions } from "../voice-rules.js";
+import { containsSkipMarker, VOICE_INSTRUCTIONS_KEY, VOICE_NAME_DEFAULT, VOICE_SKIP, voiceInstructions } from "../voice-rules.js";
 import { contextChangedError, legacyToolProgress, sourceFingerprint, stableAttachmentUrl, toolProgressFooter } from "../source-context.js";
 import { errorReply, logError } from "../errors.js";
 import { sandboxTool, readSandboxFile } from "../sandbox.js";
@@ -281,7 +281,7 @@ export class DiscordServer implements ChatGateway {
     });
     // Voice posts transcripts through webReplies, so it is made after webReplies.
     if (config.voice) {
-      this.voice = new DiscordVoice(client, guildId, config, this.webReplies, usage, user => Boolean(mutedUsers(store.setting(guildId, MUTED_USERS_KEY))[user]), () => voiceInstructions(store.setting(guildId, VOICE_INSTRUCTIONS_KEY) as string | undefined, config.voice?.instructions), value => store.setSetting(guildId, VOICE_INSTRUCTIONS_KEY, value));
+      this.voice = new DiscordVoice(client, guildId, config, this.webReplies, usage, user => Boolean(mutedUsers(store.setting(guildId, MUTED_USERS_KEY))[user]), () => voiceInstructions(store.setting(guildId, VOICE_INSTRUCTIONS_KEY) as string | undefined, config.voice?.instructions, (config.voice?.voice ?? VOICE_NAME_DEFAULT) !== VOICE_NAME_DEFAULT), value => store.setSetting(guildId, VOICE_INSTRUCTIONS_KEY, value));
       this.voice.register(this.tools);
       this.voice.onSession = (channel, previous) => { if (previous) this.bot.closeVoiceChannel(previous); if (channel) this.bot.openVoiceChannel(guildId, channel); };
     }

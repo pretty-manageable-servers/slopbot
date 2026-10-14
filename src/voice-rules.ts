@@ -66,8 +66,14 @@ export const VOICE_INSTRUCTIONS_MAX = 1000;
 /** Used when neither the server setting nor env VOICE_INSTRUCTIONS is set. */
 export const DEFAULT_VOICE_INSTRUCTIONS = "A clear, warm young adult American woman with a medium pitch, a smooth and even pace, crisp articulation and a calm, friendly, helpful assistant tone.";
 /** The instructions sent with each speech request for a server. */
-export function voiceInstructions(setting: string | undefined, envDefault?: string): string {
-  return setting?.trim() || envDefault?.trim() || DEFAULT_VOICE_INSTRUCTIONS;
+/** The TTS voice name when VOICE_NAME is not set. Any other name is a voice preset on the TTS server. */
+export const VOICE_NAME_DEFAULT = "alloy";
+/**
+ * The instructions sent with each speech request for a server. A voice preset (VOICE_NAME) fixes the voice by itself,
+ * so then only a server's own style or VOICE_INSTRUCTIONS is sent, never the built-in default. Empty means none.
+ */
+export function voiceInstructions(setting: string | undefined, envDefault?: string, preset = false): string {
+  return setting?.trim() || envDefault?.trim() || (preset ? "" : DEFAULT_VOICE_INSTRUCTIONS);
 }
 
 const CLOSERS = "\"')]}”’»";
