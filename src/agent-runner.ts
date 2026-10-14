@@ -12,7 +12,7 @@ import { ContextBuilder } from "./context-builder.js";
 import { ReplyRenderer } from "./reply-renderer.js";
 import { randomUUID } from "node:crypto";
 import { parseEffort, type Effort, type Json, type Message, type Prompt, type PromptItem, type Reply } from "./domain.js";
-import { refListParts, resolveRefs } from "./transcript.js";
+import { loadTaskRefs, refListParts, resolveRefs, type SettingsPort } from "./transcript.js";
 import type { AgentTurn, LLM, Store } from "./ports.js";
 import type { Recall } from "./memory.js";
 import { attribution, streamMetered, type UsageMeter } from "./usage-meter.js";
@@ -36,7 +36,7 @@ export function fullSystemText(base: string, presentation?: PresentationPolicy):
  */
 export function unknownMessageRef(args: Json, refs: ReadonlyMap<string, string>): string | undefined {
   if (refs.size === 0) return undefined;
-  if (typeof args === "string") return (refListParts(args) ?? [args]).find(part => /^#?m\d+$/.test(part) && !refs.has(part.replace(/^#/, "")));
+  if (typeof args === "string") return (refListParts(args) ?? [args]).find(part => /^#?[ms]\d+$/.test(part) && !refs.has(part.replace(/^#/, "")));
   if (Array.isArray(args)) return args.map(item => unknownMessageRef(item, refs)).find(found => found !== undefined);
   if (args !== null && typeof args === "object") return Object.values(args).map(value => unknownMessageRef(value, refs)).find(found => found !== undefined);
   return undefined;
@@ -236,7 +236,8 @@ export class AgentRunner {
     const inputLimit = this.inputLimit - schemaBudget;
     const built = await requestTimings.measure(message, "context", () => this.contextBuilder.build(message, taskKey, this.recentMessages, (message, key, limit) => this.boundedHistory(message, key, limit), prefix, tools, schemaBudget));
     let { sourceVersion, history, inputs, sources, quoteAnswer, clarificationAnswer, suggested, quotes } = built;
-    const refs: ReadonlyMap<string, string> = (built as { refs?: Map<string, string> }).refs ?? new Map();
+    // A task run also gets the refs of its seed, saved when the task started.
+    const refs: ReadonlyMap<string, string> = new Map([...await loadTaskRefs(this.store as SettingsPort, message.server, message.taskId), ...((built as { refs?: Map<string, string> }).refs ?? [])]);
     let directAnswer: string | undefined;
     let ui: import('./ui/schema.js').UiDocument | undefined;
     const activity: ToolActivity[] = [];
