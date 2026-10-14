@@ -38,10 +38,10 @@ const profiles = fixture => {
   };
 };
 
-async function buildPrompt(build, fixture) {
+async function buildPrompt(build, fixture, realPrefix) {
   const store = fakeStore(fixture);
   const counter = new build.ByteTokenCounter();
-  const prefix = [{ role: "system", content: "You are Slopbot, a helpful Discord assistant." }];
+  const prefix = realPrefix ?? [{ role: "system", content: "You are Slopbot, a helpful Discord assistant." }];
   const builder = new build.ContextBuilder({ store, profiles: profiles(fixture), tools: {}, counter, inputLimit: 100000, outputLimit: 8000, prefix });
   let request = fixture.request, taskKey;
   if (fixture.kind === "task_seed") {
@@ -109,8 +109,33 @@ for (const fixture of fixtures) {
   }
   rows.push({ name: fixture.name, ...result });
 }
-const modelKey = process.env.PMS_AI_KEY || existsSync(join(process.env.HOME, "jokes/pmservers/scratchpad/pms/key.json"));
-const modelNote = modelKey ? "key found, model check not run by this script" : "skipped: no key";
+// Model check (new build only). Needs the key file (field "secret") or PMS_AI_KEY. The key is never printed.
+const keyFile = join(process.env.HOME, "jokes/pmservers/scratchpad/pms/key.json");
+const apiKey = process.env.PMS_AI_KEY || (existsSync(keyFile) ? JSON.parse(readFileSync(keyFile, "utf8")).secret : undefined);
+const modelResults = new Map();
+if (apiKey && process.env.MODEL_CHECK === "1") {
+  const baseUrl = (process.env.LLM_BASE_URL || "https://api.pmservers.org/ai/v1").replace(/\/$/, "");
+  const model = process.env.LLM_MODEL || "nimbus";
+  const instructions = (await load(newDist, "agent-runner.js")).DEFAULT_INSTRUCTIONS + "\n" + (await load(newDist, "tools.js")).nativeToolInstructions;
+  // Tool schemas as the app builds them (schemasOf in src/tools.ts) for the tools these cases can use.
+  const tool = (name, description, props, required) => ({ type: "function", function: { name, description: `${description} Access: member. Effect: write.`, parameters: { type: "object", properties: props, required, additionalProperties: false } } });
+  const str = description => ({ type: "string", description, minLength: 1, maxLength: 4000 });
+  const tools = [
+    tool("task_start", "Move sustained work or an action request into a dedicated task thread", { goal: str("Task goal") }, ["goal"]),
+    tool("inbox_add", "Put a summary in another member's inbox, when a member asks to put something in someone's inbox. Runs directly: do not call task_start first. Write a plain summary of at most 1000 characters: who said what and what the target must act on. Use the source message IDs from context.", { target: str("Discord user ID of the member whose inbox gets the item"), summary: str("Plain summary, at most 1000 characters"), source_ids: str("Comma-separated Discord message IDs that the summary covers") }, ["target", "summary", "source_ids"]),
+  ];
+  for (const fixture of fixtures) {
+    const built = await buildPrompt(builds.new, fixture, [{ role: "system", content: instructions }]);
+    // No temperature is sent: the app does not set one.
+    const response = await fetch(`${baseUrl}/chat/completions`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` }, body: JSON.stringify({ model, messages: built.wire, tools, tool_choice: "auto", stream: false, max_tokens: 1500 }) });
+    const body = await response.json().catch(() => ({}));
+    const choice = body.choices?.[0]?.message;
+    const calls = (choice?.tool_calls ?? []).map(c => { let args; try { args = JSON.parse(c.function.arguments); } catch { args = c.function.arguments; } return { name: c.function.name, args, resolved: builds.new.transcript.resolveRefs(args, built.refs) }; });
+    modelResults.set(fixture.name, { status: response.status, text: choice?.content ?? "", calls, refs: Object.fromEntries(built.refs), error: response.ok ? undefined : JSON.stringify(body).slice(0, 300), usage: body.usage });
+  }
+  if (process.env.MODEL_OUT) writeFileSync(process.env.MODEL_OUT, JSON.stringify([...modelResults], null, 2));
+}
+const modelNote = apiKey ? "see model results" : "skipped: no key";
 const lines = ["| case | old tokens | new tokens | old chars/4 | new chars/4 | new checks | old checks | model notes |", "|---|---|---|---|---|---|---|---|"];
 for (const r of rows) lines.push(`| ${r.name} | ${r.old.tokens} | ${r.new.tokens} | ${r.old.chars4} | ${r.new.chars4} | ${r.new.failures.length ? "FAIL" : "pass"} | ${r.old.failures.length ? `fail (${r.old.failures.length})` : "pass"} | ${modelNote} |`);
 const sum = k => rows.reduce((a, r) => a + r[k].tokens, 0);
