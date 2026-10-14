@@ -164,7 +164,7 @@ test("slow background embeddings do not block another server or resurrect delete
  assert.equal((await store.agentTurns(m))[0]?.id,turn.id);
  await store.ingest({...m,text:'Corrected',revisionTimestamp:20});
  assert.equal((await store.canonicalMessage(m.server,m.id))?.text,'Corrected');
- await assert.rejects(store.agentTurns(m),error=>error instanceof Error && 'code' in error && error.code==='CONTEXT_CHANGED');
+ assert.deepEqual(await store.agentTurns(m),[]);
  await store.revise({...m,text:'Stale',revisionTimestamp:15});
  assert.equal((await store.canonicalMessage(m.server,m.id))?.text,'Corrected');
  const last=await store.lastContextChange(m.server,m.channel) as {reason:string;sourceId:string};assert.equal(last.reason,'message_edited');assert.equal(last.sourceId,m.id);

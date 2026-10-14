@@ -171,11 +171,11 @@ export class DiscordServer implements ChatGateway {
       const guild = await this.client.guilds.fetch(guildId);
       const member = await guild.members.fetch({ user: message.author, force: true });
       return member.permissions.has(PermissionFlagsBits.ManageGuild);
-    }, async (context, expectedVersion) => {
+    }, async context => {
+      // Only an edited or deleted request stops a write. A changed chat version does not.
       if (context.source !== "agent") return;
       const message = context.message, source = (await store.canonicalMessage(message.server, message.id));
       if (!source || source.text !== message.text || !this.bot.accepts(message.server, message.channel)) throw new ToolError("Source or channel changed before the action");
-      if (expectedVersion !== undefined && expectedVersion !== await store.contextVersion(message.server, message.channel)) throw contextChangedError(message, await store.lastContextChange?.(message.server, message.channel), { expectedVersion, actualVersion: await store.contextVersion(message.server, message.channel) });
       if (this.tools.effect(context.toolName, context.arguments) === "write" && context.toolName !== "task_retry") {
         if ((await store.hasBlocked(message.server, message.channel))) throw new ToolError("This task has an uncertain action; reconcile it before new writes");
         if (message.taskId && (await store.hasPendingOther(message.server, message.channel, message.id))) throw new ToolError("New contributions are queued; review them before further actions");

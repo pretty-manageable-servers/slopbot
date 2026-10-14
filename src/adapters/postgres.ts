@@ -298,7 +298,6 @@ export class PostgresStore {
         try {
             (await this.db.prepare("INSERT INTO profile_events(id,server,user_id,field,value,editor,sources) VALUES(?,?,?,?,?,?,?)").run(operation, message.server, user, field, JSON.stringify(value), message.author, JSON.stringify(sources)));
             (await this.db.prepare("INSERT INTO profile_current VALUES(?,?,?,?) ON CONFLICT(server,user_id,field) DO UPDATE SET event_id=excluded.event_id").run(message.server, user, field, operation));
-            (await this.db.prepare("UPDATE context_versions SET version=version+1 WHERE server=?").run(message.server));
             (await this.db.exec("COMMIT"));
         }
         catch (error) {
@@ -405,8 +404,7 @@ export class PostgresStore {
         return row ? JSON.parse(String(row.value)) : undefined;
     }
     async agentTurns(message: Message): Promise<AgentTurn[]> {
-        if ((await this.db.prepare("SELECT 1 FROM agent_turns WHERE server=? AND message_id=? AND valid=0").get(message.server, message.id)))
-            throw contextChangedError(message, await this.lastContextChange(message.server, message.channel));
+        // Invalid turns are kept as history. Only valid turns are returned, so a changed chat does not stop the run.
         return (await this.db.prepare("SELECT * FROM agent_turns WHERE server=? AND message_id=? AND valid=1 ORDER BY sequence")
             .all(message.server, message.id)).map(row => ({ id: String(row.id), text: String(row.text), calls: JSON.parse(String(row.calls)), results: JSON.parse(String(row.results)), version: Number(row.version) }));
     }
@@ -1048,7 +1046,6 @@ export class PostgresStore {
             (await this.db.prepare("INSERT INTO memories VALUES(?,?,?,?,?,?,?)")
                 .run(memory.id, memory.server, memory.channel, memory.author, memory.content, memory.status, Date.now()));
             (await this.db.prepare("INSERT INTO memory_sources VALUES(?,?,?)").run(memory.id, memory.server, message.id));
-            (await this.bumpVersion(message.server, message.channel));
             (await this.db.exec("COMMIT"));
         }
         catch (error) {

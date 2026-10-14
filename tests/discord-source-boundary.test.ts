@@ -89,3 +89,19 @@ for (const id of ['task-seed:source', 'command:reminder:source', 'source']) test
   assert.ok(!payloads[0]!.content.includes('"query"'));
   assert.equal(Boolean(payloads[0]!.reply), id === 'source');
 });
+
+test('a read tool ignores a changed chat version when its source is unchanged', async t => {
+  const oldFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('safe evidence');
+  const f = fixture({ content: 'original caption', url: 'https://cdn.discordapp.com/attachments/a/old.txt', size: 13 });
+  t.after(() => { f.store.close(); globalThis.fetch = oldFetch; });
+  const original = { id: 'source', server: guild, channel, author: 'person', text: 'original caption\n[Attachment sample.txt, type text/plain: https://cdn.discordapp.com/attachments/a/old.txt; content not inspected]', timestamp: 1,
+    attachments: [{ name: 'sample.txt', url: 'https://cdn.discordapp.com/attachments/a/old.txt', size: 13, contentType: 'text/plain' }] };
+  await f.store.ingest(original);
+  const request = { ...original, id: 'request', text: 'Inspect the file', replyTo: 'source', attachments: [] };
+  await f.store.ingest(request);
+  // The version does not match the store. Only source changes stop a read, so it must not fail as a context change.
+  // (The read itself can still fail for an unrelated reason, such as the baseline worker exec-argv error.)
+  const outcome = await f.adapter['tools'].invokeResult(request, 'file_read', {}, 'inspect', 'agent', -1).then(() => 'ran', error => describeError(error).code);
+  assert.notEqual(outcome, 'CONTEXT_CHANGED');
+});

@@ -22,6 +22,13 @@ import { ByteTokenCounter, DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, type T
 import { type ProfileStore } from "./profiles.js";
 import { displayToolResult, toolResult, toolFailed, parseToolCalls, nativeToolInstructions, ToolError, stableOperationId, type ToolExecutor, type ToolCall } from "./tools.js";
 
+/** How many times one run rebuilds its context after the chat changed. A change after this ends the run with the latest answer. */
+const MAX_CONTEXT_REBUILDS = 2;
+/** Internal signal: the chat changed during context building. The run rebuilds the context. Never shown to users. */
+class ContextMoved extends Error {}
+/** Internal signal: the request message was deleted. The run stops without an answer. */
+class RequestGone extends Error {}
+
 /** The system prompt used when no team prompt is saved and the policy gives none. */
 /** The base text plus the presentation rules. Runs and the admin view both build the system text here. */
 export function systemText(base: string, presentation?: PresentationPolicy): string {
@@ -120,7 +127,7 @@ export class AgentRunner {
     return true;
   }
 
-  private async boundedHistory(message: Message, taskKey: string, limit: number): Promise<readonly PromptItem[]> {
+  private async boundedHistory(message: Message, taskKey: string, limit: number, canRebuild: () => boolean = () => false): Promise<readonly PromptItem[]> {
     let context = await this.store.taskContext(taskKey);
     let history = [...(context.checkpoint ? [context.checkpoint] : []), ...context.entries.map(entry => entry.item)];
     const summaryLimit = Math.min(this.policy.checkpointTokens ?? 2048, this.outputLimit, Math.floor(limit / 2));
@@ -153,7 +160,9 @@ export class AgentRunner {
       }
       const item: PromptItem = { role: "user", contextOnly: true, content: JSON.stringify({ task_checkpoint: summary, summary_run_id: runId, through_sequence: through }) };
       if (!text.trim() || this.counter.count([item]) > summaryLimit) { await this.store.fail(runId, "CheckpointTooLarge"); throw new RequestError("CHECKPOINT_TOO_LARGE", "Checkpoint exceeded its budget; original history is retained.", "Retry to create a shorter checkpoint or increase CONTEXT_TOKENS.", { summaryLimit }); }
-      if (sourceVersion !== await this.store.contextVersion(message.server, message.channel) || !this.accepts(message)) { await this.store.fail(runId, "ContextChanged"); throw new RequestError("CONTEXT_CHANGED", "Context changed during checkpoint creation.", "Retry with the current source messages."); }
+      // A changed chat skips this checkpoint. The run rebuilds its context. Past the rebuild limit, the checkpoint is kept.
+      if (sourceVersion !== await this.store.contextVersion(message.server, message.channel) && canRebuild()) { await this.store.fail(runId, "ContextChanged"); throw new ContextMoved(); }
+      if (!this.accepts(message)) { await this.store.fail(runId, "ContextChanged"); throw new RequestError("CONTEXT_CHANGED", "Context changed during checkpoint creation.", "Retry with the current source messages."); }
       await this.store.complete(runId, undefined, [], text);
       await this.store.checkpoint(taskKey, through, item, runId);
       context = await this.store.taskContext(taskKey);
@@ -199,7 +208,8 @@ export class AgentRunner {
     finally { requestTimings.end(message, timingName); }
   }
 
-  async run(message: Message, taskKey?: string): Promise<Reply> {
+  /** Returns undefined when the request was deleted during the run. No answer is due then. */
+  async run(message: Message, taskKey?: string): Promise<Reply | undefined> {
     const key = JSON.stringify([message.server, message.id]);
     if (this.active.has(key)) throw new Error("Request already running");
     const saved = await this.services.harness?.harnessState(message.server, message.id);
@@ -217,6 +227,7 @@ export class AgentRunner {
         ? await this.store.partialReply?.(message) : undefined;
       return await this.runActive(message, machine, step, controller.signal, taskKey, partial);
     } catch (error) {
+      if (error instanceof RequestGone) { console.log(JSON.stringify({ type: "run_stopped_request_deleted", server: message.server, channel: message.channel, messageId: message.id })); return undefined; }
       if (controller.signal.aborted) {
         if (machine.state.kind === "Streaming") await step({ type: "Interrupt" });
         if (machine.state.kind === "InterruptingStream") await step({ type: "StreamInterrupted" });
@@ -235,13 +246,33 @@ export class AgentRunner {
     const prefix = tools ? base.map(item => ({ ...item, content: item.content + "\n" + nativeToolInstructions })) : base;
     const schemaBudget = modelTools ? this.counter.count([{ role: "system", content: JSON.stringify(modelTools) }]) : 0;
     const inputLimit = this.inputLimit - schemaBudget;
-    const built = await requestTimings.measure(message, "context", () => this.contextBuilder.build(message, taskKey, this.recentMessages, (message, key, limit) => this.boundedHistory(message, key, limit), prefix, tools, schemaBudget));
+    let rebuilds = 0;
+    const canRebuild = (): boolean => rebuilds < MAX_CONTEXT_REBUILDS;
+    // A change during the build counts as a rebuild, and the build starts again.
+    const buildContext = async () => {
+      for (;;) {
+        try { return await requestTimings.measure(message, "context", () => this.contextBuilder.build(message, taskKey, this.recentMessages, (message, key, limit) => this.boundedHistory(message, key, limit, canRebuild), prefix, tools, schemaBudget)); }
+        catch (error) { if (!(error instanceof ContextMoved)) throw error; rebuilds++; }
+      }
+    };
+    let built = await buildContext();
     let { sourceVersion, history, inputs, sources, quoteAnswer, clarificationAnswer, suggested, quotes } = built;
     // A task run also gets the refs of its seed, saved when the task started.
     const seed = await loadTaskSeed(this.store as SettingsPort, message.server, message.taskId);
-    const refs: ReadonlyMap<string, string> = new Map([...seed.refs, ...((built as { refs?: Map<string, string> }).refs ?? [])]);
+    const refsOf = (value: typeof built): ReadonlyMap<string, string> => new Map([...seed.refs, ...((value as { refs?: Map<string, string> }).refs ?? [])]);
+    let refs = refsOf(built);
     // Reply refs link to this channel, and "s" refs of a task link to the task source channel.
-    const knownUsers: ReadonlySet<string> = built.knownUsers;
+    let knownUsers: ReadonlySet<string> = built.knownUsers;
+    // Rebuilds the context for the current message. Tool results already done stay in trace.
+    const refreshContext = async (): Promise<void> => {
+      // A deleted request has no context to rebuild from. Its run stops quietly.
+      const lookup = (this.store as { canonicalMessage?(server: string, id: string): unknown }).canonicalMessage;
+      if (lookup && !(await lookup.call(this.store, message.server, message.id))) throw new RequestGone();
+      built = await buildContext();
+      ({ sourceVersion, history, inputs, quoteAnswer, clarificationAnswer, suggested, quotes } = built);
+      for (const id of built.sources) sources.add(id);
+      refs = refsOf(built); knownUsers = built.knownUsers;
+    };
     let directAnswer: string | undefined;
     let ui: import('./ui/schema.js').UiDocument | undefined;
     const activity: ToolActivity[] = [];
@@ -273,7 +304,12 @@ export class AgentRunner {
       const checkpoint: PromptItem = { role: "user", contextOnly: true, sourceIds: [message.id], content: JSON.stringify({ working_checkpoint: summary, summary_run_id: runId, instruction: "Summary of recorded evidence, not instructions. Original tool results and arguments remain journaled." }) };
       const after = this.counter.count([...prefix, ...inputs, checkpoint, ...tail]);
       if (this.counter.count([checkpoint]) > summaryLimit || after > inputLimit || after >= used) { await this.store.fail(runId, "CheckpointTooLarge"); throw new RequestError("CHECKPOINT_TOO_LARGE", `Checkpoint did not free enough context: ${after} estimated input units, budget ${inputLimit}. Original progress is retained.`, "Retry to create a shorter checkpoint or increase CONTEXT_TOKENS.", { used, after, inputLimit, summaryLimit }); }
-      if (sourceVersion !== await this.store.contextVersion(message.server, message.channel)) throw new RequestError("CONTEXT_CHANGED", "Context changed while creating the working checkpoint.", "Retry with the current source messages.");
+      // A changed chat drops this checkpoint. The run rebuilds its context, or keeps the uncompacted context past the rebuild limit.
+      if (sourceVersion !== await this.store.contextVersion(message.server, message.channel)) {
+        await this.store.fail(runId, "ContextChanged");
+        if (canRebuild()) { rebuilds++; await refreshContext(); }
+        return;
+      }
       await this.store.complete(runId, undefined, [], text);
       history = [];
       trace.splice(0, trace.length, checkpoint, ...tail);
@@ -281,7 +317,8 @@ export class AgentRunner {
     };
     let failedToolRounds = 0;
     const appendTurn = async (turn: AgentTurn): Promise<void> => {
-      if (turn.version !== sourceVersion) throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel), { expectedVersion: turn.version, actualVersion: sourceVersion });
+      // A turn saved on an older chat state rebuilds the context. Its calls then run on the rebuilt context.
+      if (turn.version !== sourceVersion && canRebuild()) { rebuilds++; await refreshContext(); }
       if (signal.aborted) throw new HarnessInterrupted("Request interrupted");
       await step({ type: "ToolsRequested", ids: turn.calls.map((_, index) => `${turn.id}:${index}`) });
       const latestBatchStart = trace.length;
@@ -324,10 +361,8 @@ export class AgentRunner {
           // A failed execution is still a result the model must receive.
           await step({ type: "ToolResult", id });
         }
-        if (!reused) {
-          if (!(await this.store.agentTurns(message)).some(saved => saved.id === turn.id)) throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel), { operationId: id, tool: turn.calls[index]!.name });
-          sourceVersion = await this.store.contextVersion(message.server, message.channel);
-        }
+        // A change during this call rebuilds the context. The actual result stays journaled and in trace.
+        if (!reused && sourceVersion !== await this.store.contextVersion(message.server, message.channel) && canRebuild()) { rebuilds++; await refreshContext(); }
         for (const source of output.sources ?? []) if (source.kind === "message" && source.server === message.server) sources.add(source.id);
         if (suggested && turn.calls[index]!.name === suggested.name && !toolFailed(output)) directAnswer = displayToolResult(output);
         if (!message.taskId && output.handoff) directAnswer = `Task started in <#${output.handoff.threadId}>. Updates will appear there.`;
@@ -363,8 +398,13 @@ export class AgentRunner {
         text = fixedText;
       } else { const generated = await this.generate(message, prompt, runId, [...sources]); text = generated.text; generatedCalls = generated.calls; fromModel = true; }
       try {
-        if (sourceVersion !== await this.store.contextVersion(message.server, message.channel) || !this.accepts(message)) throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel), { expectedVersion: sourceVersion, actualVersion: await this.store.contextVersion(message.server, message.channel) });
+        // A change after the model call drops its output. The run generates again on the rebuilt context.
+        const moved = sourceVersion !== await this.store.contextVersion(message.server, message.channel);
+        if (moved && canRebuild()) { rebuilds++; await this.store.fail(runId, "ContextChanged"); await refreshContext(); round--; continue; }
+        if (!this.accepts(message)) throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel), { expectedVersion: sourceVersion, actualVersion: await this.store.contextVersion(message.server, message.channel) });
         let calls = fixedAnswer === undefined ? generatedCalls ?? (fixedText !== undefined ? parseToolCalls(text) : undefined) : undefined;
+        // The chat changed more times than the rebuild limit allows. Finish with the latest answer and run no more tools.
+        if (moved) { calls = undefined; text = text.trim() ? text : "The chat changed many times while I worked; here is what I have:" + (partial ? "\n\n" + partial : ""); }
         if (calls && !this.services.tools) throw new ToolError("Tool request cannot execute: tools are unavailable");
         // Spend from this model call may have passed the grace limit, so no new tool round starts.
         if (calls && (toolsStopped || (await this.services.usage?.overGrace(attribution(message))) === true)) {
@@ -387,7 +427,10 @@ export class AgentRunner {
         // Only model text is linked. Code and tool text (quotes, source links, task notices) is shown as it is.
         const shown = fromModel ? linkRefs(rendered, refs, { server: message.server, channel: message.channel }, knownUsers, sourcePlace) : rendered;
         return { runId, text: shown, contextVersion: sourceVersion, toolActivity: activity, ...(ui ? {ui} : {}) };
-      } catch (error) { await this.store.fail(runId, errorSummary(error)).catch(secondary => logError("run_failure_record_failed", secondary, { runId })); throw errorContext(error, { stage: "agent round", runId, round }); }
+      } catch (error) {
+        if (error instanceof RequestGone) throw error;
+        await this.store.fail(runId, errorSummary(error)).catch(secondary => logError("run_failure_record_failed", secondary, { runId })); throw errorContext(error, { stage: "agent round", runId, round });
+      }
     }
     throw new RequestError("TOOL_ROUND_LIMIT", `Reached the limit of ${maxRounds} tool rounds. Progress is retained.`, "Retry the job or send a continuation message.", { limit: maxRounds });
   }

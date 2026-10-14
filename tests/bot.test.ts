@@ -187,3 +187,33 @@ test('long tool argument blocks keep code fences balanced across Discord message
   }
   assert.equal(chunks.join('').replace(/\n``````json\n/g, ''), text);
 });
+
+// A run whose tool call changes the chat once. The reply path must still deliver, unless the request itself is deleted.
+async function changedRun(t: { after(fn: () => void): void }, change: (store: SQLiteStore) => Promise<void>) {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  await store.ingest({ id: "other", server: "s", channel: "c", author: "bob", text: "Unrelated message.", timestamp: 1 });
+  let rounds = 0, changed = false;
+  const llm = { async *stream() { if (++rounds === 1) yield { kind: "tool_call", payload: [{ name: "read_one", arguments: {} }] }; else yield { kind: "text", payload: { text: "Answer after the change." } }; } };
+  const app = new Application(store, llm as never, { allowedChannels: [{ server: "s", channel: "c" }] }, undefined, {
+    tools: { catalog: () => "", execute: async () => { if (!changed) { changed = true; await change(store); } return { text: "Read finished.", status: "ok" }; } },
+  });
+  const outputs: string[] = [];
+  const gateway: ChatGateway = {
+    async reply(message, text) { outputs.push(text); return [{ id: `out:${outputs.length}`, server: "s", channel: message.channel, author: "bot", text }]; },
+    async createTaskThread() { return "thread"; },
+    typing() { return () => undefined; },
+  };
+  const bot = new Bot(app, store, store, gateway, "s", ["c"]);
+  await bot.receive(incoming("req", "hello", { mentionsBot: true }));
+  return outputs;
+}
+
+test("a chat change during a run still delivers the answer", async t => {
+  const outputs = await changedRun(t, store => store.remove("s", "c", "other"));
+  assert.deepEqual(outputs, ["Answer after the change."]);
+});
+
+test("a request deleted during its run gets no answer", async t => {
+  const outputs = await changedRun(t, store => store.remove("s", "c", "req"));
+  assert.deepEqual(outputs, []);
+});
