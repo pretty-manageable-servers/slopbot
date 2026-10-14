@@ -170,7 +170,7 @@ test("an old reply target has priority over recent background under a small budg
   await store.ingest(message("old", "The reply target describes repairing a bicycle.", { timestamp: 1 }));
   for (let i = 2; i < 12; i++) await store.ingest(message(String(i), "unrelated indexing status ".repeat(15), { timestamp: i }));
   await app.handle(message("current", "what is he doing there", { replyTo: "old", timestamp: 12 }));
-  const target = llm.prompts[0]!.inputs.find(item => item.content.includes('"context_role":"reply_target"'));
+  const target = llm.prompts[0]!.inputs.find(item => item.content.includes("[reply target]"));
   assert.ok(target?.content.includes("repairing a bicycle"));
 });
 
@@ -197,7 +197,7 @@ test("task-thread replies retain the exact referenced bot message", async t => {
   const app = new Application(store,llm,{allowedChannels:scopes});
   await store.ingest(message("profile", "Rice Farmer (<@12345678901234567>) Discord identity: ...", {channel:"thread",author:"bot",isBot:true,timestamp:1}));
   await app.handle(message("correction","his name is Oscar",{channel:"thread",taskId:"thread",replyTo:"profile",timestamp:2}));
-  assert.ok(llm.prompts[0]?.inputs.some(item=>item.content.includes('"context_role":"reply_target"')&&item.content.includes("Rice Farmer")));
+  assert.ok(llm.prompts[0]?.inputs.some(item=>item.content.includes("[reply target]")&&item.content.includes("Rice Farmer")));
 });
 
 test("explicit references still resolve when recent-chat context is disabled", async t => {

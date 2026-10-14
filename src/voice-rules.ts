@@ -21,3 +21,13 @@ export function spokenText(text: string, max = VOICE_SPOKEN_MAX): string {
   }
   return head.join("").trim();
 }
+
+/** Server setting that holds the TTS voice instructions. Empty or unset means the default. */
+export const VOICE_INSTRUCTIONS_KEY = "voice_instructions";
+export const VOICE_INSTRUCTIONS_MAX = 1000;
+/** Used when neither the server setting nor env VOICE_INSTRUCTIONS is set. */
+export const DEFAULT_VOICE_INSTRUCTIONS = "A calm, clear adult man with a low voice and a dry, friendly delivery.";
+/** The instructions sent with each speech request for a server. */
+export function voiceInstructions(setting: string | undefined, envDefault?: string): string {
+  return setting?.trim() || envDefault?.trim() || DEFAULT_VOICE_INSTRUCTIONS;
+}

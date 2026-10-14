@@ -5,7 +5,7 @@ import { defaultDecisionThresholds, type DecisionThresholds } from './participat
 import { loadOperationsConfig, type OperationsConfig } from './operations-config.js';
 
 export interface Config {
-  voice?: { voice: string };
+  voice?: { voice: string; instructions?: string };
   operations?: OperationsConfig;
   objectStorage?: import("./adapters/s3-storage.js").S3StorageOptions;
   sandboxApiKey?: string;
@@ -120,8 +120,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (accessId || accessSecret) {
     if (!accessId || !accessSecret || !env.SEARXNG_URL || new URL(env.SEARXNG_URL).protocol !== "https:") throw new Error("Protected search requires HTTPS SEARXNG_URL and both SEARXNG_ACCESS_CLIENT_ID and SEARXNG_ACCESS_CLIENT_SECRET");
   }
+  if ([...(env.VOICE_INSTRUCTIONS?.trim() ?? '')].length > 1000) throw new Error('VOICE_INSTRUCTIONS must be at most 1000 characters');
   return {
-    ...(enabled('VOICE_ENABLED', true) ? { voice: { voice: env.VOICE_NAME?.trim() || 'alloy' } } : {}),
+    ...(enabled('VOICE_ENABLED', true) ? { voice: { voice: env.VOICE_NAME?.trim() || 'alloy', ...(env.VOICE_INSTRUCTIONS?.trim() ? { instructions: env.VOICE_INSTRUCTIONS.trim() } : {}) } } : {}),
     ...(operations ? { operations } : {}),
     ...(objectStorage ? { objectStorage } : {}),
     ...(accessId && accessSecret ? { searxngAccess: { clientId: accessId, clientSecret: accessSecret } } : {}),

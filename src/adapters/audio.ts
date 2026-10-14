@@ -53,9 +53,16 @@ export class PmAudio {
     return result.text.trim();
   }
 
-  async speak(text: string, signal: AbortSignal): Promise<Buffer> {
+  /** Thunder speech as the API's own WAV bytes (24 kHz mono). `instructions` describes the voice; without it the model picks a random speaker. */
+  async speakWav(text: string, signal: AbortSignal, instructions?: string): Promise<Buffer> {
     if (!text.length || text.length > 4096) throw new Error('Speech requires 1 to 4096 characters');
-    const response = await this.request('speech', JSON.stringify({ model: 'thunder', input: text, voice: this.voice, response_format: 'wav' }), true, signal);
-    return speechPcm(Buffer.from(await response.arrayBuffer()));
+    const body = { model: 'thunder', input: text, voice: this.voice, response_format: 'wav', ...(instructions ? { instructions } : {}) };
+    const response = await this.request('speech', JSON.stringify(body), true, signal);
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  /** Thunder speech converted to Discord's playback format. */
+  async speak(text: string, signal: AbortSignal, instructions?: string): Promise<Buffer> {
+    return speechPcm(await this.speakWav(text, signal, instructions));
   }
 }
