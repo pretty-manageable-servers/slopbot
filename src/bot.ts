@@ -290,8 +290,16 @@ export class Bot {
     return result;
   }
   async deliver(message: Message, reply: import("./domain.js").Reply, deliveryId: string): Promise<void> {
-    if (!this.accepts(message.server, message.channel) || reply.contextVersion !== await this.store.contextVersion(message.server, message.channel)) throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel), { expectedVersion: reply.contextVersion ?? "unknown", actualVersion: await this.store.contextVersion(message.server, message.channel) });
+    if (!this.accepts(message.server, message.channel)) throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel));
+    if (await this.requestDeleted(message)) return;
     await this.send(message, reply.text || "The AI returned no answer.", reply.runId, deliveryId, reply.toolActivity, reply.ui);
+  }
+  /** A deleted request gets no answer. A changed chat still gets its answer. */
+  private async requestDeleted(message: Message): Promise<boolean> {
+    const lookup = (this.store as { canonicalMessage?(server: string, id: string): unknown }).canonicalMessage;
+    if (!lookup || await lookup.call(this.store, message.server, message.id)) return false;
+    console.log(JSON.stringify({ type: "reply_dropped_request_deleted", server: message.server, channel: message.channel, messageId: message.id }));
+    return true;
   }
 
   private async enqueue(message: Message): Promise<void> {
@@ -310,10 +318,7 @@ export class Bot {
     const stopTyping = this.gateway.typing(message.channel);
     try {
       const reply = await this.app.handle(message, ingested);
-      if (reply && reply.contextVersion !== await this.store.contextVersion(message.server, message.channel)) {
-        throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel), { expectedVersion: reply.contextVersion ?? "unknown", actualVersion: await this.store.contextVersion(message.server, message.channel) });
-      }
-      if (reply) await this.send(message, reply.text || "The AI returned no answer. Please try again.", reply.runId, undefined, reply.toolActivity, reply.ui);
+      if (reply && !(await this.requestDeleted(message))) await this.send(message, reply.text || "The AI returned no answer. Please try again.", reply.runId, undefined, reply.toolActivity, reply.ui);
     } catch (error) {
       logError("request_failed", error, { server: message.server, channel: message.channel, messageId: message.id });
       const explanation = errorReply(error);

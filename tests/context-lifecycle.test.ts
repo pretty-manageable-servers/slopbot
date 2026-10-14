@@ -7,7 +7,6 @@ import { DatabaseSync } from 'node:sqlite';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { Application } from '../src/application.js';
 import { parseMessage } from '../src/domain.js';
-import { describeError } from '../src/errors.js';
 import type { TestContext } from 'node:test';
 
 const request = { server: 's', channel: 'c', id: 'request', author: 'person', text: 'Complete both reads', addressed: true };
@@ -66,13 +65,12 @@ test('a multi-tool batch survives background progress import and edits', async t
   assert.equal((await app.handle(request))?.text, 'Both reads finished.'); assert.equal(calls, 2);
 });
 
-test('a genuine source correction produces a specific context error with its source ID', async t => {
+test('a genuine source correction hides the stale turns and records its source ID', async t => {
   const { store } = setup(t); await store.ingest(request);
   store.addAgentTurn(request, '', [{ name: 'read_one', arguments: {} }]);
   await store.revise({ ...request, text: 'Corrected instructions.' });
-  assert.throws(() => store.agentTurns(request), error => {
-    const info = describeError(error); assert.equal(info.code, 'CONTEXT_CHANGED'); assert.equal(info.details?.sourceId, request.id); return true;
-  });
+  assert.deepEqual(store.agentTurns(request), []);
+  assert.equal((store.lastContextChange('s', 'c') as { sourceId?: string }).sourceId, request.id);
 });
 
 test('attachment changes invalidate source context even when message text is unchanged', async t => {
@@ -80,7 +78,7 @@ test('attachment changes invalidate source context even when message text is unc
   const source = { ...request, attachments: [{ name: 'evidence.png', url: 'https://cdn.discordapp.com/attachments/a/old.png', size: 10 }] };
   await store.ingest(source); store.addAgentTurn(source, '', [{ name: 'file_read', arguments: {} }]);
   await store.revise({ ...source, attachments: [{ ...source.attachments[0]!, url: 'https://cdn.discordapp.com/attachments/a/new.png' }] });
-  assert.throws(() => store.agentTurns(source), error => describeError(error).code === 'CONTEXT_CHANGED');
+  assert.deepEqual(store.agentTurns(source), []);
 });
 
 test('deleting the requester invalidates its saved plan even after the canonical row is gone', async t => {
@@ -88,7 +86,7 @@ test('deleting the requester invalidates its saved plan even after the canonical
   const turn = store.addAgentTurn(request, '', [{ name: 'read_one', arguments: {} }]);
   store.agentResult(turn.id, 0, { text: 'Completed evidence remains journaled.' });
   await store.remove('s', 'c', request.id);
-  assert.throws(() => store.agentTurns(request), error => describeError(error).code === 'CONTEXT_CHANGED');
+  assert.deepEqual(store.agentTurns(request), []);
 });
 
 test('Discord attachment signature refresh preserves semantic context', async t => {
@@ -99,18 +97,48 @@ test('Discord attachment signature refresh preserves semantic context', async t 
   assert.equal(store.agentTurns(source)[0]?.id, turn.id);
 });
 
-test('a source edit after an action preserves its actual result and prevents replay', async t => {
-  const { store, filename } = setup(t); let writes = 0; const activity: string[] = [];
-  const app = new Application(store, { async *stream() { yield { kind: 'text', payload: { text: '{"tool_calls":[{"name":"write","arguments":{}},{"name":"write","arguments":{}}]}' } }; } },
+test('a source edit after an action keeps its actual result and does not replay it', async t => {
+  const { store, filename } = setup(t); let writes = 0, rounds = 0;
+  const app = new Application(store, { async *stream() { yield { kind: 'text', payload: { text: ++rounds === 1 ? '{"tool_calls":[{"name":"write","arguments":{}}]}' : 'Stopped after the correction.' } }; } },
     { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, {
-      tools: { catalog: () => '', execute: async () => { writes++; await store.revise({ ...request, text: 'Stop the remaining actions.' }); return { text: 'First action completed.', status: 'ok' }; } },
-      onToolActivity: async (_message, event) => { activity.push(event.status); },
+      tools: { catalog: () => '', execute: async () => { writes++; if (writes === 1) await store.revise({ ...request, text: 'Stop the remaining actions.' }); return { text: `Action ${writes} completed.`, status: 'ok' }; } },
     });
-  await assert.rejects(app.handle(request), error => describeError(error).code === 'CONTEXT_CHANGED');
-  assert.equal(writes, 1); assert.deepEqual(activity, ['running', 'completed']);
+  assert.equal((await app.handle(request))?.text, 'Stopped after the correction.');
+  assert.equal(writes, 1); assert.equal(rounds, 2);
   const db = new DatabaseSync(filename);
-  try { assert.match(String(db.prepare('SELECT results FROM agent_turns').get()?.results), /First action completed/); } finally { db.close(); }
-  await assert.rejects(app.handle(request, true), error => describeError(error).code === 'CONTEXT_CHANGED'); assert.equal(writes, 1);
+  try { assert.match(String(db.prepare('SELECT results FROM agent_turns').get()?.results), /Action 1 completed/); } finally { db.close(); }
+});
+
+test('an edit during a run rebuilds the context and still answers', async t => {
+  const { store } = setup(t); let rounds = 0, calls = 0;
+  const app = new Application(store, { async *stream() { yield { kind: 'text', payload: { text: ++rounds === 1 ? '{"tool_calls":[{"name":"read_one","arguments":{}}]}' : 'Answer after the edit.' } }; } },
+    { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, {
+      tools: { catalog: () => '', execute: async () => { if (++calls === 1) await store.revise({ ...request, text: 'Edited request.' }); return { text: 'Read finished.', status: 'ok' }; } },
+    });
+  assert.equal((await app.handle(request))?.text, 'Answer after the edit.'); assert.equal(calls, 1);
+});
+
+test('three changes during a run end it with the latest answer, not an error', async t => {
+  const { store } = setup(t); let rounds = 0, calls = 0;
+  const app = new Application(store, { async *stream() { yield { kind: 'text', payload: { text: ++rounds <= 3 ? '{"tool_calls":[{"name":"read_one","arguments":{}}]}' : 'Here is my answer.' } }; } },
+    { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, {
+      tools: { catalog: () => '', execute: async () => { await store.revise({ ...request, text: `Edit ${++calls}.` }); return { text: 'Read finished.', status: 'ok' }; } },
+    });
+  assert.equal((await app.handle(request))?.text, 'Here is my answer.'); assert.equal(calls, 3);
+});
+
+test('a profile write does not change the context version', async t => {
+  const { store } = setup(t); await store.ingest(request);
+  const before = await store.contextVersion('s', 'c');
+  store.editProfile(request, 'person', 'city', 'Oslo', 'profile-op-1');
+  assert.equal(await store.contextVersion('s', 'c'), before);
+});
+
+test('remembering a fact does not change the context version', async t => {
+  const { store } = setup(t); await store.ingest(request);
+  const before = await store.contextVersion('s', 'c');
+  await store.remember(request, 'The team uses Oslo time.');
+  assert.equal(await store.contextVersion('s', 'c'), before);
 });
 
 test('another bot\'s status-like message remains semantic evidence', async t => {
@@ -118,7 +146,7 @@ test('another bot\'s status-like message remains semantic evidence', async t => 
   const external = { ...progress, author: 'other-bot', transient: false };
   await store.ingest(external); store.addAgentTurn(request, '', [{ name: 'read_one', arguments: {} }]);
   await store.revise({ ...external, text: '**Working**\n1. `history_read`: completed' });
-  assert.throws(() => store.agentTurns(request), error => describeError(error).code === 'CONTEXT_CHANGED');
+  assert.deepEqual(store.agentTurns(request), []);
 });
 
 test('history reimport refreshes an authoritative newer source edit missed by live events', async t => {
@@ -128,7 +156,7 @@ test('history reimport refreshes an authoritative newer source edit missed by li
   const corrected = { ...original, text: 'Corrected source from history.', revisionTimestamp: 20 };
   await store.ingest(corrected);
   assert.equal((await store.canonicalMessage('s', request.id))?.text, 'Corrected source from history.');
-  assert.throws(() => store.agentTurns(original), error => describeError(error).code === 'CONTEXT_CHANGED');
+  assert.deepEqual(store.agentTurns(original), []);
 });
 
 test('an older source snapshot cannot roll back newer canonical content', async t => {
