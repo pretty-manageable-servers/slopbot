@@ -64,7 +64,7 @@ export function spokenText(text: string, max = VOICE_SPOKEN_MAX): string {
 export const VOICE_INSTRUCTIONS_KEY = "voice_instructions";
 export const VOICE_INSTRUCTIONS_MAX = 1000;
 /** Used when neither the server setting nor env VOICE_INSTRUCTIONS is set. */
-export const DEFAULT_VOICE_INSTRUCTIONS = "A calm, clear adult man with a low voice and a dry, friendly delivery.";
+export const DEFAULT_VOICE_INSTRUCTIONS = "A clear, warm young adult American woman with a medium pitch, a smooth and even pace, crisp articulation and a calm, friendly, helpful assistant tone.";
 /** The instructions sent with each speech request for a server. */
 export function voiceInstructions(setting: string | undefined, envDefault?: string): string {
   return setting?.trim() || envDefault?.trim() || DEFAULT_VOICE_INSTRUCTIONS;

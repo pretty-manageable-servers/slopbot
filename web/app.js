@@ -403,7 +403,7 @@ function renderSettings() {
   }
 }
 // The Voice card for the server tab. Save is the first button, so run() shows its loader on Save. Reset is bound in renderSettings.
-const VOICE_DEFAULT = 'A calm, clear adult man with a low voice and a dry, friendly delivery.';
+const VOICE_DEFAULT = 'A clear, warm young adult American woman with a medium pitch, a smooth and even pace, crisp articulation and a calm, friendly, helpful assistant tone.';
 const voiceCard = () => `<form class="card" id="voice"><h2>Voice</h2><p class="scope">Applies to voice channels in this server</p><p class="small" id="voice-status">Loading current voice…</p><label>Voice instructions<textarea name="instructions" maxlength="1000" rows="3" placeholder="${esc(VOICE_DEFAULT)}"></textarea></label><p class="small">Describe how Slopbot sounds in voice channels: gender, age, pitch, pace and tone. Leave empty for the default.</p><button class="primary">Save</button> <button type="button" id="voice-reset">Reset to default</button></form>`;
 // The settings snapshot does not hold the voice instructions, so the current text comes from the voice status action.
 async function loadVoiceStatus() {
