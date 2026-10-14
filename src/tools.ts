@@ -56,6 +56,10 @@ export interface ToolContext {
 }
 export interface ToolDefinition {
   programmatic?: boolean;
+  /** Where the model sees the tool. top: a native function tool. catalog: listed in the run_tools_code description. discovery: only through list_tools and describe_tool. Default: catalog. */
+  surface?: "top" | "catalog" | "discovery";
+  /** True when a call with these arguments needs the requester to click Confirm first. */
+  confirm?(args: ToolArgs): boolean;
   name: string;
   provider?: string;
   inputSchema?: Json;
@@ -100,6 +104,8 @@ export interface ToolJournal {
   expireOperations(resource: string, startedBefore: number, exceptId: string, result: string): void | Promise<void>;
   beginOperation(context: ToolContext, name: string, args: ToolArgs): void | Promise<void>;
   endOperation(id: string, result: string, failed?: boolean): void | Promise<void>;
+  /** Deletes finished operations of this tool that started before startedBefore. Returns the count. */
+  pruneOperations?(name: string, startedBefore: number): number | Promise<number>;
 }
 export interface ToolCall { name: string; arguments: ToolArgs; id?: string }
 export interface ToolInvocation {
@@ -116,6 +122,15 @@ export interface ToolExecutor {
   execute(message: Message, call: ToolCall, operationId: string, expectedVersion?: number, invocation?: ToolInvocation): Promise<ToolOutput>;
 }
 export { ToolError, UncertainActionError } from "./errors.js";
+
+/** The tools the model gets as native function tools. All other tools are called from run_tools_code. */
+export const TOP_LEVEL_TOOLS = ["edit", "read", "run_tools_code", "shell", "task_start", "ui_publish", "voice_say", "voice_skip", "web_fetch", "web_search", "write"] as const;
+/** Stops a run_tools_code program at a call that needs the requester to confirm it. */
+export class ConfirmationRequired extends ToolError {
+  constructor(readonly call: { name: string; arguments: ToolArgs; operationId: string; parentOperationId: string }) {
+    super(`confirmation_required: ${call.name}`, "rejected");
+  }
+}
 
 /** Returned when a private chat calls a Discord-scoped tool. */
 export const discordOnlyMessage = "This action is only available in Discord.";
