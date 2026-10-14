@@ -53,12 +53,12 @@ test("task order includes publication, while other channels can run independentl
   worker.start();
   worker.enqueue(message("1")); worker.enqueue(message("2")); worker.enqueue(message("3", "other"));
   await started;
-  assert.ok(!llm.prompts.some(prompt => prompt.inputs.at(-1)?.content === "request 2"));
+  assert.ok(!llm.prompts.some(prompt => prompt.inputs.at(-1)?.content.endsWith("[current request]: request 2")));
   release(); await worker.idle();
   assert.ok(delivered.indexOf("1") < delivered.indexOf("2"));
-  const second = llm.prompts.find(prompt => prompt.inputs.at(-1)?.content === "request 2")!;
+  const second = llm.prompts.find(prompt => prompt.inputs.at(-1)?.content.endsWith("[current request]: request 2"))!;
   assert.equal(second.history[0]?.author, "alice");
-  const other = llm.prompts.find(prompt => prompt.inputs.at(-1)?.content === "request 3")!;
+  const other = llm.prompts.find(prompt => prompt.inputs.at(-1)?.content.endsWith("[current request]: request 3"))!;
   assert.deepEqual(other.history, []);
 });
 

@@ -103,7 +103,7 @@ test("new memories append after existing task history without changing its prefi
   const source = msg("2", "!remember budget"); await store.ingest(source); await store.remember(source, "budget");
   await app.handle(msg("3", "continue", { taskId: "t" }));
   assert.deepEqual(llm.prompts[1]!.prefix, llm.prompts[0]!.prefix);
-  assert.ok(llm.prompts[1]!.history.some(item => item.content === "plan"));
+  assert.ok(llm.prompts[1]!.history.some(item => item.content.endsWith("[current request]: plan")));
   assert.ok(llm.prompts[1]!.inputs.some(item => item.content.includes('"kind":"memory"')));
 });
 
