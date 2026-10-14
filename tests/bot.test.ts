@@ -193,7 +193,7 @@ async function changedRun(t: { after(fn: () => void): void }, change: (store: SQ
   const store = new SQLiteStore(); t.after(() => store.close());
   await store.ingest({ id: "other", server: "s", channel: "c", author: "bob", text: "Unrelated message.", timestamp: 1 });
   let rounds = 0, changed = false;
-  const llm = { async *stream() { yield { kind: "text", payload: { text: ++rounds === 1 ? '{"tool_calls":[{"name":"read_one","arguments":{}}]}' : "Answer after the change." } }; } };
+  const llm = { async *stream() { if (++rounds === 1) yield { kind: "tool_call", payload: [{ name: "read_one", arguments: {} }] }; else yield { kind: "text", payload: { text: "Answer after the change." } }; } };
   const app = new Application(store, llm as never, { allowedChannels: [{ server: "s", channel: "c" }] }, undefined, {
     tools: { catalog: () => "", execute: async () => { if (!changed) { changed = true; await change(store); } return { text: "Read finished.", status: "ok" }; } },
   });

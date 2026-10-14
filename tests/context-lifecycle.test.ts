@@ -54,7 +54,7 @@ for (const action of ['edit', 'delete', 'reimport'] as const) test(`legacy progr
 test('a multi-tool batch survives background progress import and edits', async t => {
   const { store } = setup(t); let rounds = 0, calls = 0;
   const app = new Application(store, { async *stream() {
-    yield { kind: 'text', payload: { text: ++rounds === 1 ? '{"tool_calls":[{"name":"read_one","arguments":{}},{"name":"read_two","arguments":{}}]}' : 'Both reads finished.' } };
+    yield ++rounds === 1 ? { kind: 'tool_call', payload: [{ name: 'read_one', arguments: {} }, { name: 'read_two', arguments: {} }] } : { kind: 'text', payload: { text: 'Both reads finished.' } };
   } }, { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, {
     tools: { catalog: () => '', execute: async () => { calls++; return 'Read finished.'; } },
     onToolActivity: async (_message, activity) => {
@@ -99,7 +99,7 @@ test('Discord attachment signature refresh preserves semantic context', async t 
 
 test('a source edit after an action keeps its actual result and does not replay it', async t => {
   const { store, filename } = setup(t); let writes = 0, rounds = 0;
-  const app = new Application(store, { async *stream() { yield { kind: 'text', payload: { text: ++rounds === 1 ? '{"tool_calls":[{"name":"write","arguments":{}}]}' : 'Stopped after the correction.' } }; } },
+  const app = new Application(store, { async *stream() { if (++rounds === 1) yield { kind: 'tool_call', payload: [{ name: 'write', arguments: {} }] }; else yield { kind: 'text', payload: { text: 'Stopped after the correction.' } }; } },
     { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, {
       tools: { catalog: () => '', execute: async () => { writes++; if (writes === 1) await store.revise({ ...request, text: 'Stop the remaining actions.' }); return { text: `Action ${writes} completed.`, status: 'ok' }; } },
     });
@@ -111,7 +111,7 @@ test('a source edit after an action keeps its actual result and does not replay 
 
 test('an edit during a run rebuilds the context and still answers', async t => {
   const { store } = setup(t); let rounds = 0, calls = 0;
-  const app = new Application(store, { async *stream() { yield { kind: 'text', payload: { text: ++rounds === 1 ? '{"tool_calls":[{"name":"read_one","arguments":{}}]}' : 'Answer after the edit.' } }; } },
+  const app = new Application(store, { async *stream() { if (++rounds === 1) yield { kind: 'tool_call', payload: [{ name: 'read_one', arguments: {} }] }; else yield { kind: 'text', payload: { text: 'Answer after the edit.' } }; } },
     { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, {
       tools: { catalog: () => '', execute: async () => { if (++calls === 1) await store.revise({ ...request, text: 'Edited request.' }); return { text: 'Read finished.', status: 'ok' }; } },
     });
@@ -120,7 +120,7 @@ test('an edit during a run rebuilds the context and still answers', async t => {
 
 test('three changes during a run end it with the latest answer, not an error', async t => {
   const { store } = setup(t); let rounds = 0, calls = 0;
-  const app = new Application(store, { async *stream() { yield { kind: 'text', payload: { text: ++rounds <= 3 ? '{"tool_calls":[{"name":"read_one","arguments":{}}]}' : 'Here is my answer.' } }; } },
+  const app = new Application(store, { async *stream() { if (++rounds <= 3) yield { kind: 'tool_call', payload: [{ name: 'read_one', arguments: {} }] }; else yield { kind: 'text', payload: { text: 'Here is my answer.' } }; } },
     { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, {
       tools: { catalog: () => '', execute: async () => { await store.revise({ ...request, text: `Edit ${++calls}.` }); return { text: 'Read finished.', status: 'ok' }; } },
     });

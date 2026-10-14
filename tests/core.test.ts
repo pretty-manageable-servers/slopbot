@@ -175,7 +175,7 @@ test("an old reply target has priority over recent background under a small budg
 });
 
 test("tool JSON cannot be published when no executor is configured", async t => {
-  const llm: LLM = { async *stream() { yield { kind: "text", payload: { text: '{"tool_calls":[{"name":"index","arguments":{"action":"status"}}]}' } }; } };
+  const llm: LLM = { async *stream() { yield { kind: 'tool_call', payload: [{"name":"index","arguments":{"action":"status"}}] }; } };
   const { app, store } = fixture(llm); t.after(() => store.close());
   await assert.rejects(app.handle(message("request")), /tools are unavailable/);
 });

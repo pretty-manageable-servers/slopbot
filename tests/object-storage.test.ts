@@ -38,7 +38,7 @@ test('files persist in isolated user directories and writes cannot impersonate o
   assert.equal(Buffer.from(a.bytes).toString(), 'Alice private'); assert.equal(Buffer.from(b.bytes).toString(), 'Bob private');
   assert.ok(a.file.key.startsWith(`servers/s/users/${alice}/`));
   assert.notEqual(a.file.key, b.file.key);
-  for (const action of ['info', 'read', 'link', 'send', 'copy', 'load_sandbox']) {
+  for (const action of ['info', 'read', 'link', 'send', 'copy', 'to_sandbox']) {
     await assert.rejects(f.call({ action, path: 'notes/file.txt', owner: alice, destination: 'copy', sandbox_path: '/tmp/file' }, bob), /not found or not shared/);
   }
   for (const action of ['write', 'save_attachment', 'save_sandbox', 'publish', 'unpublish', 'delete']) {
@@ -158,14 +158,18 @@ test('unconfigured storage explains setup instead of pretending to save files', 
   await assert.rejects(new UserFileStorage(store).list('s', alice, 'mine', ''), /OBJECT_STORAGE_BUCKET/);
 });
 
-test('sandbox outputs can be saved persistently and loaded with their original binary content', async t => {
-  const f = setup(); t.after(() => f.store.close()); let loads = 0;
+test('sandbox outputs can be saved persistently and copied back into a sandbox with their binary content', async t => {
+  const f = setup(); t.after(() => f.store.close());
+  const written: { path: string; bytes: unknown }[] = [];
+  const session = { id: 'sandbox-1', run: async () => ({ stdout: '', stderr: '', exitCode: 0 }), read: async () => '', readBytes: async () => new Uint8Array(), write: async (path: string, bytes: unknown) => { written.push({ path, bytes }); }, renew: async () => {}, close: async () => {} };
+  const provider = { defaultTemplate: 'base', create: async () => session, connect: async () => session } as unknown as SandboxProvider;
   const registry = new ToolRegistry(f.store, async () => true);
-  registry.register(objectStorageTool({ ...f.services, sandbox: {
+  registry.register(objectStorageTool({ ...f.services, store: f.store, provider, sandbox: {
     read: async (_context, path) => { assert.equal(path, '/tmp/generated.bin'); return f.binary; },
-    write: async (_context, path, bytes) => { assert.equal(path, '/tmp/loaded.bin'); assert.deepEqual(bytes, f.binary); loads++; },
+    write: async () => { throw new Error('load_sandbox is removed; use to_sandbox'); },
   } }));
   await registry.invokeResult(message, 'file_store', { action: 'save_sandbox', path: 'outputs/generated.bin', sandbox_path: '/tmp/generated.bin' }, 'save-sandbox', 'agent');
-  await registry.invokeResult(message, 'file_store', { action: 'load_sandbox', path: 'outputs/generated.bin', sandbox_path: '/tmp/loaded.bin' }, 'load-sandbox', 'agent');
-  assert.equal(loads, 1); assert.deepEqual((await f.storage.read('s', alice, alice, 'outputs/generated.bin')).bytes, f.binary);
+  await registry.invokeResult(message, 'file_store', { action: 'to_sandbox', path: 'outputs/generated.bin', sandbox_path: '/tmp/loaded.bin' }, 'to-sandbox', 'agent');
+  assert.equal(written.length, 1); assert.equal(written[0]!.path, '/tmp/loaded.bin'); assert.deepEqual(written[0]!.bytes, f.binary);
+  assert.deepEqual((await f.storage.read('s', alice, alice, 'outputs/generated.bin')).bytes, f.binary);
 });

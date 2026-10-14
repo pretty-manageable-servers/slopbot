@@ -20,7 +20,7 @@ import { attribution, streamMetered, type UsageMeter } from "./usage-meter.js";
 import { GLOBAL_SETTINGS_SCOPE } from "./usage-cost.js";
 import { ByteTokenCounter, DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, type TokenCounter } from "./context.js";
 import { type ProfileStore } from "./profiles.js";
-import { displayToolResult, toolResult, toolFailed, parseToolCalls, toolInstructions, nativeToolInstructions, ToolError, stableOperationId, type ToolExecutor, type ToolCall } from "./tools.js";
+import { displayToolResult, toolResult, toolFailed, parseToolCalls, nativeToolInstructions, ToolError, stableOperationId, type ToolExecutor, type ToolCall } from "./tools.js";
 
 /** How many times one run rebuilds its context after the chat changed. A change after this ends the run with the latest answer. */
 const MAX_CONTEXT_REBUILDS = 2;
@@ -243,7 +243,7 @@ export class AgentRunner {
     const modelTools = tools?.schemas?.(message);
     const native = modelTools !== undefined;
     const base = this.systemPrefix();
-    const prefix = tools ? base.map(item => ({ ...item, content: item.content + "\n" + (native ? nativeToolInstructions : toolInstructions + tools.catalog(message)) })) : base;
+    const prefix = tools ? base.map(item => ({ ...item, content: item.content + "\n" + nativeToolInstructions })) : base;
     const schemaBudget = modelTools ? this.counter.count([{ role: "system", content: JSON.stringify(modelTools) }]) : 0;
     const inputLimit = this.inputLimit - schemaBudget;
     let rebuilds = 0;
@@ -376,7 +376,6 @@ export class AgentRunner {
       if (machine.state.kind === "ToolResultsHeld") break;
     }
     const maxRounds = this.policy.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
-    let protocolRepairs = 0;
     for (let round = 0; round <= maxRounds; round++) {
       if (signal.aborted) throw new HarnessInterrupted("Request interrupted");
       if (machine.state.kind === "ToolResultsHeld") directAnswer = "Slopbot could not complete these tool calls:\n" + toolFailureSummary(activity) + "\nNo further tool calls were run.";
@@ -403,14 +402,7 @@ export class AgentRunner {
         const moved = sourceVersion !== await this.store.contextVersion(message.server, message.channel);
         if (moved && canRebuild()) { rebuilds++; await this.store.fail(runId, "ContextChanged"); await refreshContext(); round--; continue; }
         if (!this.accepts(message)) throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel), { expectedVersion: sourceVersion, actualVersion: await this.store.contextVersion(message.server, message.channel) });
-        let calls;
-        try { calls = fixedAnswer === undefined ? generatedCalls ?? (fixedText !== undefined || !native ? parseToolCalls(text) : undefined) : undefined; }
-        catch (error) {
-          if (!(error instanceof ToolError) || !this.services.tools || protocolRepairs++ >= 2 || round === maxRounds) throw error;
-          await this.store.fail(runId, "InvalidToolProtocol");
-          trace.push({ role: "assistant", content: text }, { role: "user", contextOnly: true, content: "Your tool response was invalid and no action was executed. Reissue only a valid tool_calls JSON object with no surrounding prose, or answer normally without tool syntax. Do not claim an action succeeded." });
-          continue;
-        }
+        let calls = fixedAnswer === undefined ? generatedCalls ?? (fixedText !== undefined ? parseToolCalls(text) : undefined) : undefined;
         // The chat changed more times than the rebuild limit allows. Finish with the latest answer and run no more tools.
         if (moved) { calls = undefined; text = text.trim() ? text : "The chat changed many times while I worked; here is what I have:" + (partial ? "\n\n" + partial : ""); }
         if (calls && !this.services.tools) throw new ToolError("Tool request cannot execute: tools are unavailable");

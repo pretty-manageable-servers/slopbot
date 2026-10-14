@@ -82,11 +82,10 @@ test('all three scopes support attachment saves, inspection, links, DM and sandb
     assert.equal((await f.call({ ...base, action: 'read' })).text, 'attachment');
     assert.equal((await f.call({ ...base, action: 'link' })).artifacts?.length, 1);
     await f.call({ ...base, action: 'send' });
-    await f.call({ ...base, action: 'load_sandbox', sandbox_path: '/tmp/input' });
     await f.call({ storage_scope, action: 'save_sandbox', path: 'output.bin', sandbox_path: '/tmp/output' });
     assert.equal((await f.call({ storage_scope, action: 'read', path: 'output.bin' })).text, 'sandbox');
   }
-  assert.deepEqual(f.loaded, ['user', 'server', 'user_server']); assert.equal(f.sent.length, 3);
+  assert.equal(f.sent.length, 3);
 });
 
 test('copy explicitly transfers between every scope and enforces destination permissions', async t => {

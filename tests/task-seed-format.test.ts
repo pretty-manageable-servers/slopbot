@@ -85,7 +85,7 @@ function scriptedLLM(call: string): { llm: LLM; prompts: Prompt[] } {
   const llm: LLM = {
     async *stream(prompt: Prompt): AsyncIterable<ModelEvent> {
       prompts.push(prompt);
-      yield { kind: "text", payload: { text: rounds++ === 0 ? call : "Done" } };
+      yield rounds++ === 0 ? { kind: "tool_call", payload: JSON.parse(call).tool_calls } : { kind: "text", payload: { text: "Done" } };
     },
   };
   return { llm, prompts };

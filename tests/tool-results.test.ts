@@ -6,7 +6,7 @@ import {ToolRegistry} from '../src/tools.js';
 const request={id:'m',server:'s',channel:'c',author:'a',text:'do it'};
 test('structured handoffs work regardless of display wording',async t=>{
  const store=new SQLiteStore();t.after(()=>store.close());
- const app=new Application(store,{async *stream(){yield {kind:'text',payload:{text:'{"tool_calls":[{"name":"task_start","arguments":{}}]}'}};}},{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:{catalog:()=>'',execute:async()=>({text:'Completely different wording',handoff:{threadId:'123'}})}});
+ const app=new Application(store,{async *stream(){yield { kind: 'tool_call', payload: [{"name":"task_start","arguments":{}}] };}},{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:{catalog:()=>'',execute:async()=>({text:'Completely different wording',handoff:{threadId:'123'}})}});
  assert.equal((await app.handle(request))?.text,'Task started in <#123>. Updates will appear there.');
  assert.equal(typeof store.agentTurns(request)[0]?.results['0'],'object');
 });
@@ -29,14 +29,14 @@ test('request context changes during a tool still abort before another model tur
  const { RequestError } = await import('../src/errors.js');
  const store=new SQLiteStore();t.after(()=>store.close());let rounds=0;
  const failure=new RequestError('CONTEXT_CHANGED','Source edited','Retry with fresh context');
- const app=new Application(store,{async *stream(){rounds++;yield {kind:'text',payload:{text:'{"tool_calls":[{"name":"read","arguments":{}}]}'}};}},{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:{catalog:()=>'',execute:async()=>{throw failure;}}});
+ const app=new Application(store,{async *stream(){rounds++;yield { kind: 'tool_call', payload: [{"name":"read","arguments":{}}] };}},{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:{catalog:()=>'',execute:async()=>{throw failure;}}});
  await assert.rejects(app.handle(request),error=>error===failure);
  assert.equal(rounds,1);
 });
 
 test('a model that ignores the recovery limit cannot execute a fourth failed tool round', async t => {
  const store=new SQLiteStore();t.after(()=>store.close());let rounds=0,calls=0;
- const app=new Application(store,{async *stream(){rounds++;yield {kind:'text',payload:{text:'{"tool_calls":[{"name":"read","arguments":{}}]}'}};}},{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:{catalog:()=>'',execute:async()=>{calls++;return {text:'Unavailable',status:'failed'};}}});
+ const app=new Application(store,{async *stream(){rounds++;yield { kind: 'tool_call', payload: [{"name":"read","arguments":{}}] };}},{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:{catalog:()=>'',execute:async()=>{calls++;return {text:'Unavailable',status:'failed'};}}});
  assert.match((await app.handle(request))!.text,/Stopped after three consecutive failed tool rounds/);
  assert.equal(calls,3);assert.equal(rounds,4);
 });
