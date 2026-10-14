@@ -746,6 +746,9 @@ export class PostgresStore {
     async endOperation(id: string, result: string, failed = false): Promise<void> {
         (await this.db.prepare("UPDATE tool_operations SET status=?,result=? WHERE id=?").run(failed ? "failed" : "done", result, id));
     }
+    async pruneOperations(name: string, startedBefore: number): Promise<number> {
+        return (await this.db.prepare("DELETE FROM tool_operations WHERE name=? AND created_at<? AND status<>'started'").run(name, startedBefore)).changes;
+    }
     async delivery(id: string): Promise<{
         message: Message;
         content: string;
