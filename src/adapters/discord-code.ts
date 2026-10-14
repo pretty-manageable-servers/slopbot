@@ -5,7 +5,7 @@ import type { RecordStore } from "../records.js";
 import type { ConfirmationRequired, ToolArgs, ToolJournal, ToolRegistry } from "../tools.js";
 import { displayToolResult } from "../tools.js";
 import type { ToolActivity } from "../tool-activity.js";
-import { codeBlock, codeFitsInline, PROGRAM_CODE_KEEP_MS, SHOW_CODE_MESSAGE_CHARS } from "../code-display.js";
+import { codeBlock, codeFitsInline, codeParts, PROGRAM_CODE_KEEP_MS } from "../code-display.js";
 
 const PROGRAM_TOOL = "run_tools_code";
 const CODE_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
@@ -52,11 +52,10 @@ export async function handleShowCode(interaction: ButtonInteraction, store: Code
     await interaction.reply({ content: "This code is no longer kept.", flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
     return;
   }
-  if (code.length > SHOW_CODE_MESSAGE_CHARS) {
-    await interaction.reply({ content: "The code is too long for a message. It is attached.", files: [{ attachment: Buffer.from(code, "utf8"), name: "program.js" }], flags: MessageFlags.Ephemeral });
-    return;
-  }
-  await interaction.reply({ content: codeBlock(code), flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+  // Long code goes in several messages. A file attachment fails: discord.js rejects the FormData of this undici build.
+  const [first, ...rest] = codeParts(code);
+  await interaction.reply({ content: codeBlock(first!), flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+  for (const part of rest) await interaction.followUp({ content: codeBlock(part), flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
 }
 
 interface PendingConfirmation { name: string; arguments: ToolArgs; channel: string; author: string }

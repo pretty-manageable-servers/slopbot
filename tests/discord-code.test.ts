@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ButtonInteraction } from 'discord.js';
 import { handleConfirm, handleShowCode, postConfirmation, saveConfirmation, showCodeRows, type CodeStore } from '../src/adapters/discord-code.js';
-import { codeBlock, codeFitsInline, PROGRAM_CODE_KEEP_MS, SHOW_CODE_INLINE_LINES, SHOW_CODE_MESSAGE_CHARS } from '../src/code-display.js';
+import { codeBlock, codeFitsInline, codeParts, PROGRAM_CODE_KEEP_MS, SHOW_CODE_INLINE_LINES, SHOW_CODE_MESSAGE_CHARS } from '../src/code-display.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import type { ToolContext, ConfirmationRequired } from '../src/tools.js';
 import type { Json } from '../src/domain.js';
@@ -57,14 +57,21 @@ test('show code replies ephemerally with the program code in a js block', async 
   assert.equal(reply.flags, 64);
 });
 
-test('long program code is attached as program.js', async () => {
-  const code = 'x'.repeat(SHOW_CODE_MESSAGE_CHARS + 1);
+test('long program code is sent in several code blocks', async () => {
+  const code = Array.from({ length: 300 }, (_, i) => `const value${i} = ${i};`).join('\n');
   const store = fakeStore({ parent: { name: 'run_tools_code', args: { code } } });
   const { interaction, log } = fakeInteraction('slopcode:parent');
   await handleShowCode(interaction, store as unknown as CodeStore);
-  const reply = log[0]!.payload as { files: { name: string; attachment: Buffer }[] };
-  assert.equal(reply.files[0]!.name, 'program.js');
-  assert.equal(reply.files[0]!.attachment.toString('utf8'), code);
+  assert.equal(log[0]!.method, 'reply');
+  assert.ok(log.length > 1 && log.slice(1).every(item => item.method === 'followUp'));
+  const parts = log.map(item => (item.payload as { content: string; flags: number }));
+  assert.ok(parts.every(part => part.content.length <= 2000 && part.flags === 64 && !('files' in part)));
+  assert.equal(parts.map(part => part.content.replace(/^```js\n|\n```$/g, '')).join('\n'), code);
+});
+
+test('one long line is cut into parts', () => {
+  const parts = codeParts('x'.repeat(SHOW_CODE_MESSAGE_CHARS * 2 + 5));
+  assert.equal(parts.length, 3); assert.equal(parts.join(''), 'x'.repeat(SHOW_CODE_MESSAGE_CHARS * 2 + 5));
 });
 
 test('show code says the code is gone when the operation is missing or not a code run', async () => {
