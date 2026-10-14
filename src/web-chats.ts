@@ -11,11 +11,11 @@ import type { UserLimiter } from "./user-limiter.js";
 import { ToolError, stableOperationId } from "./tools.js";
 import { requestTimings } from "./request-timing.js";
 import { PRIVATE_CHANNEL_PREFIX, PRIVATE_CHAT_MAX_CHARS, PRIVATE_CHAT_TITLE_CHARS, isPrivateChannel, newPrivateChatId, privateChannel, privateChatTitle } from "./private-chat.js";
-import { publishMessage, runEvents, slopbotId, type ConversationEventStore, type RunEvents } from "./run-events.js";
+import { fileLabel, publishMessage, runEvents, slopbotId, withoutFileLabelText, type ConversationEventStore, type RunEvents } from "./run-events.js";
 import { messageViews, openStream, type TranscriptStore } from "./web-transcripts.js";
 import type { WebChatRow } from "./web-chat-store.js";
 import { CHAT_IMAGE_ID, CHAT_IMAGE_MAX_BYTES, CHAT_IMAGE_MAX_COUNT, CHAT_IMAGE_SCHEME, LocalDiskStorage, chatImageContentType, chatImageKey, imageAttachments, imageName, newChatImageId, sniffImage } from "./web-chat-images.js";
-import { CHAT_FILE_ID, CHAT_FILE_MAX_BYTES, CHAT_ATTACHMENT_MAX_COUNT, chatFileKey, fileAttachments, fileContentType, fileName, fileUrl, newChatFileId, parseFileUrl, type ChatFileView } from "./web-chat-files.js";
+import { CHAT_FILE_ID, CHAT_FILE_MAX_BYTES, CHAT_ATTACHMENT_MAX_COUNT, chatFileKey, fileAttachments, fileContentType, fileName, fileUrl, newChatFileId, type ChatFileView } from "./web-chat-files.js";
 import type { ObjectStorageProvider } from "./object-storage.js";
 import { ChatShareService, ShareError, type ShareService, type ShareStore } from "./shares.js";
 
@@ -66,21 +66,6 @@ const MODEL_LINK_SECONDS = 900;
 const PENDING_IMAGE_MS = 60 * 60 * 1000;
 const PENDING_FILE_MS = 60 * 60 * 1000;
 const MESSAGE_ID = /^[\w:.-]{1,64}$/;
-
-/** The label line that send() adds for each file. The model reads it from the saved text. The web view removes it. */
-function fileLabel(name: string, contentType: string, url: string): string {
-  return `[Attachment ${name}, type ${contentType}: ${url}; content not inspected; read with file_read, or if file_read cannot read this type, use sandbox import_attachment]`;
-}
-
-/** The saved text without the file label lines that send() added. authoredSourceText misses a message with images and files, so the file labels are matched here. */
-function withoutFileLabels(message: Message): Message {
-  const files = (message.attachments ?? []).filter(item => parseFileUrl(item.url));
-  if (!files.length) return message;
-  const labels = files.map(item => fileLabel(item.name, item.contentType ?? "application/octet-stream", item.url)).join("\n");
-  if (message.text === labels) return { ...message, text: "" };
-  if (message.text.endsWith("\n" + labels)) return { ...message, text: message.text.slice(0, -labels.length - 1) };
-  return message;
-}
 
 /** Replies that Slopbot posts in a private chat. They are saved and published, never sent to Discord. */
 export class WebChatGateway implements ChatGateway {
@@ -205,8 +190,8 @@ export class WebChatService {
     await this.requireMember(user, row.server);
     const handle = await this.handle(row.server);
     const id = newPrivateChatId(), channel = privateChannel(id), at = this.now();
-    // A message with no text (only images) is not copied. Images are never copied.
-    const messages = copy.messages.filter(item => item.text.trim());
+    // A message with no text (only images) is not copied. Images are never copied. File labels are not copied (an old snapshot can still have them).
+    const messages = copy.messages.map(item => ({ ...item, text: withoutFileLabelText(item.text) })).filter(item => item.text.trim());
     const title = privateChatTitle(messages[0]?.text ?? "");
     await this.store.insertWebChat({ id, server: row.server, owner: user, title, created: at, updated: at, deleted: false });
     const slopbot = slopbotId(this.store, row.server) ?? "slopbot";
@@ -259,7 +244,7 @@ export class WebChatService {
     }
     const rows = await this.store.conversationMessages(chat.server, channel, cursor, limit + 1);
     return {
-      messages: await messageViews(this.store, this.host.members, chat.server, rows.slice(0, limit).reverse().map(withoutFileLabels)),
+      messages: await messageViews(this.store, this.host.members, chat.server, rows.slice(0, limit).reverse()),
       hasMore: rows.length > limit,
       streamId,
     };

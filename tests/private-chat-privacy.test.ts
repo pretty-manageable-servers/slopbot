@@ -14,7 +14,7 @@ import { privateChannel } from "../src/private-chat.js";
 import type { ParticipationGate } from "../src/participation.js";
 import { registerReportTools } from "../src/search/reports.js";
 import { ShareError, ShareService, buildMessages, renderSharePage } from "../src/shares.js";
-import { transcriptMessage } from "../src/run-events.js";
+import { fileLabel, transcriptMessage } from "../src/run-events.js";
 import { fileUrl } from "../src/web-chat-files.js";
 import { ChatError, WebChatService, type ChatHost } from "../src/web-chats.js";
 import { ToolRegistry } from "../src/tools.js";
@@ -255,6 +255,46 @@ test("share shows file names without file ids", () => {
   const [item] = buildMessages([message], [], { show_thinking: false });
   assert.deepEqual(item?.files, [{ name: "report.pdf", size: 2048 }], "the share keeps the name and size");
   assert.ok(!JSON.stringify(item).includes(fileId), "the share never holds the file ID");
+});
+
+test("live message hides file labels", () => {
+  const chat = "0123456789abcdef0123456789abcdef", fileId = "fedcba9876543210fedcba9876543210.csv";
+  const url = fileUrl(server, chat, fileId);
+  const label = fileLabel("data.csv", "text/csv", url);
+  const message = { ...webMessage("web-file-live", `look\n${label}`), attachments: [{ name: "data.csv", url, contentType: "text/csv", size: 4 }] } as Message;
+  const view = transcriptMessage(message, undefined);
+  assert.equal(view.text, "look", "the live view has no label");
+  assert.deepEqual(view.files, [{ fileId, name: "data.csv", contentType: "text/csv", size: 4 }], "the file still shows");
+  assert.equal(message.text, `look\n${label}`, "the stored text keeps the label for the model");
+});
+
+test("share snapshot hides file labels", () => {
+  const url = fileUrl(server, "0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210.csv");
+  const label = fileLabel("data.csv", "text/csv", url);
+  const message = { ...webMessage("web-file-share", `look\n${label}`), attachments: [{ name: "data.csv", url, contentType: "text/csv", size: 4 }] } as Message;
+  const [item] = buildMessages([message], [], { show_thinking: false });
+  assert.equal(item?.text, "look", "the share text has no label");
+  assert.ok(!JSON.stringify(item).includes("content not inspected"), "no label wording in the share");
+});
+
+test("continued share has no file labels", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const guild = "1528063444874432734";
+  const url = fileUrl(guild, "0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210.csv");
+  const label = fileLabel("data.csv", "text/csv", url);
+  // A share made before the fix keeps the label in its frozen text. Continuing it must not copy the label.
+  const snapshot = { id: "share-old", created_at: 1, options: { show_avatars: false, show_thinking: false }, messages: [{ author: "Alice", bot: false, text: `look\n${label}`, attachments: 1, tools: [] }] };
+  await store.insertShare({ id: "share-old", server: guild, channel: ownerChat, created_by: "alice", created_at: 1, revoked_at: null, body: JSON.stringify(snapshot) });
+  const host = {
+    member: async () => true,
+    handle: async () => ({ openChat() { /* none */ }, closeChat() { /* none */ }, async receiveChat() { /* none */ } }),
+    limiter: { check: async () => ({ allowed: true }) },
+    access: new ChannelAccess({ async facts() { return undefined; } }),
+  } as unknown as ChatHost;
+  const chats = new WebChatService(store, host, { changed() { /* no live streams here */ } } as never, () => 2_000);
+  const { id } = await chats.continueShare("alice", "share-old", { snapshot: async () => snapshot } as never);
+  const saved = await store.conversationMessages(guild, privateChannel(id), undefined, 10);
+  assert.deepEqual(saved.map(message => message.text), ["look"], "the copied text has no label");
 });
 
 test("share page data has files", () => {

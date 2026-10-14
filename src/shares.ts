@@ -4,6 +4,7 @@ import { webTranscriptsEnabled } from "./server-tools.js";
 import { PRIVATE_CHANNEL_PREFIX, isPrivateChannel, privateChannel } from "./private-chat.js";
 import { CHAT_IMAGE_ID, CHAT_IMAGE_MAX_BYTES, chatImageContentType, chatImageKey, imageAttachments } from "./web-chat-images.js";
 import { fileAttachments } from "./web-chat-files.js";
+import { withoutFileLabels } from "./run-events.js";
 import type { ObjectStorageProvider } from "./object-storage.js";
 
 /** One share link. The body is a frozen snapshot, stored as JSON text. */
@@ -137,7 +138,7 @@ export function buildMessages(messages: readonly Message[], events: readonly { r
       author: scrubText(message.authorName ?? (message.isBot ? "Slopbot" : "Member")),
       bot: message.isBot === true,
       ...(message.timestamp !== undefined ? { at: message.timestamp } : {}),
-      text: scrubText(message.text),
+      text: scrubText(withoutFileLabels(message).text),
       attachments: message.attachments?.length ?? 0,
       ...(imageAttachments(message.attachments).length ? { images: imageAttachments(message.attachments).map(({ imageId, name }) => ({ imageId, name: scrubText(name) })) } : {}),
       ...(fileAttachments(message.attachments).length ? { files: fileAttachments(message.attachments).map(({ name, size }) => ({ name: scrubText(name), size })) } : {}),
