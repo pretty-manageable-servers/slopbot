@@ -32,15 +32,18 @@ function wav24(amplitude: number, samples = SAMPLES): Buffer {
   return wav;
 }
 
-/** A speech response with two SSE deltas of `value` samples, then [DONE]. If `hang`, the stream stays open until the request aborts. */
-function sseResponse(value: number, signal?: AbortSignal, hang = false): Response {
+/** A speech response with two SSE deltas of `value` samples, then [DONE]. If `hang`, the stream stays open until the request aborts. `pauseMs` waits before the second delta. */
+function sseResponse(value: number, signal?: AbortSignal, hang = false, pauseMs = 0): Response {
   const encoder = new TextEncoder();
   // The gateway sends 24 kHz mono samples. Discord's conversion happens in speakStream.
   const pcm = wav24(value).subarray(44);
   const half = pcm.length / 2;
   const deltas = [pcm.subarray(0, half), pcm.subarray(half)];
-  const body = new ReadableStream<Uint8Array>({ start(controller) {
-    for (const delta of deltas) controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'speech.audio.delta', audio: delta.toString('base64') })}\n\n`));
+  const body = new ReadableStream<Uint8Array>({ async start(controller) {
+    for (const [index, delta] of deltas.entries()) {
+      if (index === 1 && pauseMs > 0) await new Promise(resolve => setTimeout(resolve, pauseMs));
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'speech.audio.delta', audio: delta.toString('base64') })}\n\n`));
+    }
     if (hang) { signal?.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')), { once: true }); return; }
     controller.enqueue(encoder.encode('data: [DONE]\n\n'));
     controller.close();
@@ -56,13 +59,21 @@ class FakePlayer extends EventEmitter {
   readonly resources: Buffer[][] = [];
   readonly ended: boolean[] = [];
   stopped = false;
+  /** realtime reads one packet every 20 ms, as the Discord player does. Otherwise it reads as fast as it can. */
+  constructor(private readonly realtime = false) { super(); }
   play(resource: { playStream: Readable }): void {
     const packets: Buffer[] = [];
     const index = this.resources.push(packets) - 1;
     this.ended[index] = false;
     const stream = resource.playStream;
-    stream.on('readable', () => { let packet: Buffer | null; while ((packet = stream.read()) !== null) packets.push(packet); });
-    stream.on('end', () => { this.ended[index] = true; });
+    if (this.realtime) {
+      const timer = setInterval(() => { const packet = stream.read(); if (packet !== null) packets.push(packet); }, 20);
+      timer.unref();
+      stream.on('end', () => { clearInterval(timer); this.ended[index] = true; });
+    } else {
+      stream.on('readable', () => { let packet: Buffer | null; while ((packet = stream.read()) !== null) packets.push(packet); });
+      stream.on('end', () => { this.ended[index] = true; });
+    }
   }
   stop(): void { this.stopped = true; }
   packets(): number { return this.resources.reduce((sum, packets) => sum + packets.length, 0); }
@@ -115,15 +126,16 @@ interface SpeechCall { input: string; stream: boolean; at: number; signal: Abort
  * Replaces the AI provider. Transcripts return `transcript`. Speech with stream:true is SSE; other speech is WAV.
  * Each speech request gets its own marker value (1, 2, 3 ...), so the played order can be checked.
  */
-function stubProvider(t: TestContext, transcript: string, hang = false) {
+function stubProvider(t: TestContext, transcript: string, hang = false, pause?: { call: number; ms: number }) {
   const calls = { transcriptions: 0, speeches: [] as SpeechCall[] };
   const previous = globalThis.fetch;
   globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     if (String(url).endsWith('transcriptions')) { calls.transcriptions++; return Response.json({ text: transcript }); }
     const body = JSON.parse(String(init?.body)) as { input: string; stream?: boolean };
-    const value = (calls.speeches.length % 3 + 1) * LEVEL;
+    const index = calls.speeches.length;
+    const value = (index % 3 + 1) * LEVEL;
     calls.speeches.push({ input: body.input, stream: body.stream === true, at: Date.now(), signal: init!.signal! });
-    if (body.stream) return sseResponse(value, init?.signal ?? undefined, hang);
+    if (body.stream) return sseResponse(value, init?.signal ?? undefined, hang, pause?.call === index ? pause.ms : 0);
     return new Response(new Uint8Array(wav24(value)));
   }) as typeof fetch;
   t.after(() => { globalThis.fetch = previous; });
@@ -140,8 +152,8 @@ function reply(runId: string, deltas: string[], status: 'done' | 'failed' = 'don
 }
 
 /** A joined voice session with fake Discord objects. One speaker, `user`, is in the channel. */
-async function rig(t: TestContext, options: { transcript?: string; reply?: 'voice' | 'text'; hang?: boolean } = {}) {
-  const provider = stubProvider(t, options.transcript ?? 'Hello', options.hang);
+async function rig(t: TestContext, options: { transcript?: string; reply?: 'voice' | 'text'; hang?: boolean; pause?: { call: number; ms: number }; realtime?: boolean } = {}) {
+  const provider = stubProvider(t, options.transcript ?? 'Hello', options.hang, options.pause);
   const { usage, spent } = meter();
   const posts: PostInput[] = [];
   const poster: VoicePoster = { reply: async input => { posts.push(input); return { id: `web-${posts.length}`, messageId: `message-${posts.length}`, status: 'posted', via: 'bot' }; } };
@@ -162,7 +174,7 @@ async function rig(t: TestContext, options: { transcript?: string; reply?: 'voic
   const connection = Object.assign(new EventEmitter(), { state: { status: VoiceConnectionStatus.Ready }, receiver, subscribe: () => {}, destroy: () => {} });
   const connect = (() => connection) as unknown as typeof joinVoiceChannel;
   const config = loadConfig({ DISCORD_BOT_TOKEN: 'test', LLM_API_KEY: 'test' });
-  const player = new FakePlayer();
+  const player = new FakePlayer(options.realtime);
   const voice = new DiscordVoice(client, 'guild', config, poster, usage, () => false, () => DEFAULT_VOICE_INSTRUCTIONS, async () => {}, connect, () => player as unknown as AudioPlayer);
   t.after(() => voice.stop());
   let tool!: ToolDefinition;
@@ -444,4 +456,53 @@ test('voice mode filler plays before sentences in the same stream', async t => {
   await r.voice.speak('channel', 'First sentence is here. Second sentence is here too.');
   assert.deepEqual(r.provider.speeches.map(call => call.input), [VOICE_FILLER_TEXTS[0], 'First sentence is here.', 'Second sentence is here too.']);
   assert.deepEqual(r.player.levels(), [1, 2, 3]);
+});
+
+/** The voice_playback lines captured from console.log, parsed. */
+function playbackLogs(logs: string[]): Record<string, number | string>[] {
+  return logs.filter(line => line.includes('"voice_playback"')).map(line => JSON.parse(line) as Record<string, number | string>);
+}
+
+test('playback log reports an underrun when TTS pauses', async t => {
+  const logs: string[] = [];
+  t.mock.method(console, 'log', (line: string) => { logs.push(line); });
+  // The second sentence's TTS waits 400 ms before its second chunk. Playback runs dry while it waits.
+  const r = await rig(t, { realtime: true, pause: { call: 1, ms: 400 } });
+  r.talk();
+  await until(() => r.posts.length === 1);
+  const text = 'First sentence is here. Second sentence is here too.';
+  reply('run-1', [text]);
+  await r.voice.speak('channel', text);
+  await until(() => playbackLogs(logs).length === 1);
+  const [log] = playbackLogs(logs);
+  assert.equal(log!.type, 'voice_playback');
+  assert.equal(log!.server, 'guild');
+  assert.equal(log!.channel, 'channel');
+  assert.equal(log!.sentences, 2);
+  assert.ok(Number(log!.underruns) >= 1, `underruns ${log!.underruns}`);
+  assert.ok(Number(log!.underrun_ms_max) >= 200, `underrun_ms_max ${log!.underrun_ms_max}`);
+  assert.ok(Number(log!.underrun_ms_total) >= Number(log!.underrun_ms_max));
+});
+
+test('playback log reports zero underruns for a smooth stream', async t => {
+  const logs: string[] = [];
+  t.mock.method(console, 'log', (line: string) => { logs.push(line); });
+  // Three sentences come with no pause, so each one is ready before the last one has played.
+  const r = await rig(t, { realtime: true });
+  r.talk();
+  await until(() => r.posts.length === 1);
+  const text = 'First sentence is here. Second sentence is here too. Third one ends it.';
+  reply('run-1', [text]);
+  await r.voice.speak('channel', text);
+  await until(() => playbackLogs(logs).length === 1);
+  const [log] = playbackLogs(logs);
+  assert.equal(log!.sentences, 3);
+  assert.equal(log!.underruns, 0, `underruns ${log!.underruns}, max ${log!.underrun_ms_max} ms`);
+  assert.equal(log!.underrun_ms_total, 0);
+  assert.equal(log!.underrun_ms_max, 0);
+  assert.equal(log!.spoken_chars, r.provider.speeches.reduce((sum, call) => sum + Array.from(call.input).length, 0));
+  assert.equal(typeof log!.tts_first_chunk_ms_max, 'number');
+  assert.equal(typeof log!.tts_chunk_gap_ms_max, 'number');
+  assert.equal(typeof log!.event_loop_delay_ms_max, 'number');
+  assert.equal(typeof log!.event_loop_delay_ms_p99, 'number');
 });

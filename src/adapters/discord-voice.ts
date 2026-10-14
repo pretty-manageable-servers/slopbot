@@ -1,4 +1,5 @@
 import { Readable } from 'node:stream';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import OpusScript from 'opusscript';
 import { randomUUID } from 'node:crypto';
 import { ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, ChannelType, Events, MessageFlags, PermissionFlagsBits, type ButtonInteraction, type Client } from 'discord.js';
@@ -143,6 +144,14 @@ export class LiveAudio extends Readable {
   private buffering = true;
   private target = START_BUFFER_BYTES;
   private pending = false;
+  /** Underruns: times playback ran dry and then played again. The gap is in ms. */
+  underruns = 0;
+  underrunMsTotal = 0;
+  underrunMsMax = 0;
+  /** Time (ms since epoch) when playback ran dry. Undefined while audio plays. */
+  private dryAt: number | undefined;
+  /** True once audio was given to the player. Waiting for the first audio is not an underrun. */
+  private played = false;
   get writableEnded(): boolean { return this.ended; }
   write(pcm: Buffer): void {
     if (this.ended || this.destroyed) return;
@@ -157,7 +166,7 @@ export class LiveAudio extends Readable {
     if (this.buffering && this.bytes >= this.target) this.buffering = false;
     if (!this.buffering) {
       const chunk = this.chunks.shift();
-      if (chunk) { this.bytes -= chunk.length; this.pending = false; this.push(chunk); return; }
+      if (chunk) { this.bytes -= chunk.length; this.pending = false; this.played = true; this.push(chunk); return; }
       if (this.ended) { this.pending = false; this.push(null); return; }
       // Ran dry: build a smaller buffer again before audio continues.
       this.buffering = true; this.target = REBUFFER_BYTES;
@@ -166,6 +175,32 @@ export class LiveAudio extends Readable {
     this.pending = true;
   }
   private wake(): void { if (this.pending) this._read(); }
+  /** The audio written so far ran out at `at` (ms since epoch), and the turn still has sentences to come. Starts an underrun. Ignored before the first audio plays. */
+  startDry(at: number): void {
+    if (this.played && this.dryAt === undefined) this.dryAt = at;
+  }
+  /** New audio was written at `at`. An open underrun ends here, and its gap is counted. */
+  endDry(at: number): void {
+    if (this.dryAt === undefined) return;
+    const gap = Math.max(0, at - this.dryAt);
+    this.dryAt = undefined;
+    this.underruns++; this.underrunMsTotal += gap; this.underrunMsMax = Math.max(this.underrunMsMax, gap);
+  }
+  /** The speech ended with no sentence to come. An open underrun is dropped, not counted. */
+  dropDry(): void { this.dryAt = undefined; }
+}
+
+/** The playback log of one turn. It is printed once, when the speech ends, if a sentence was spoken. */
+interface PlaybackReport {
+  underruns: number;
+  underrun_ms_total: number;
+  underrun_ms_max: number;
+  sentences: number;
+  tts_first_chunk_ms_max: number;
+  tts_chunk_gap_ms_max: number;
+  spoken_chars: number;
+  event_loop_delay_ms_max: number;
+  event_loop_delay_ms_p99: number;
 }
 
 /**
@@ -190,8 +225,19 @@ class TurnSpeech {
   capped = false;
   /** True once a sentence was queued for TTS. */
   streamed = false;
+  /** Sentences that reached TTS. */
+  sentences = 0;
+  /** The slowest time from a job's start to its first chunk, in ms. */
+  private firstChunkMs = 0;
+  /** The largest gap between two chunks of one job, in ms. */
+  private chunkGapMs = 0;
+  /** Event loop delay while the turn's speech runs. It is enabled by the first job. Each turn has its own, so it starts at zero. */
+  private readonly loop = monitorEventLoopDelay({ resolution: 10 });
+  private reported = false;
+  /** Fires when the audio written so far has played. Set again on each write. */
+  private dryTimer: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(private readonly player: AudioPlayer, session: AbortSignal, private readonly onError: (error: unknown) => void) {
+  constructor(private readonly player: AudioPlayer, session: AbortSignal, private readonly onError: (error: unknown) => void, private readonly onReport: (report: PlaybackReport) => void) {
     this.signal = AbortSignal.any([session, this.controller.signal]);
   }
 
@@ -199,10 +245,11 @@ class TurnSpeech {
   queue(job: (write: (pcm: Buffer) => void) => Promise<void>): void {
     const index = this.count++;
     this.pending++;
+    this.loop.enable();
     this.chain = this.chain.then(async () => {
       try {
         if (index >= 2) await sleepUntil(this.ends[index - 2]!, this.signal);
-        if (!this.signal.aborted) await job(pcm => this.write(pcm));
+        if (!this.signal.aborted) await this.timed(job);
         // The sentence is complete: play its tail now. The next sentence builds its own buffer when the stream runs dry.
         this.out.release();
       } catch (error) {
@@ -218,11 +265,59 @@ class TurnSpeech {
   /** Resolves when every queued job has run. The chain never rejects. */
   settled(): Promise<void> { return this.chain; }
 
-  /** Ends the stream. Audio already written still plays. */
-  end(): void { if (!this.out.writableEnded) this.out.end(); }
+  /** Runs one job and records its chunk timing: the time to the first chunk, and the largest gap between two chunks. */
+  private async timed(job: (write: (pcm: Buffer) => void) => Promise<void>): Promise<void> {
+    const start = Date.now();
+    let last = 0;
+    await job(pcm => {
+      if (pcm.length > 0) {
+        const now = Date.now();
+        if (last === 0) this.firstChunkMs = Math.max(this.firstChunkMs, now - start);
+        else this.chunkGapMs = Math.max(this.chunkGapMs, now - last);
+        last = now;
+      }
+      this.write(pcm);
+    });
+  }
+
+  /** Ends the stream. Audio already written still plays. The playback log is printed when the speech ends. */
+  end(): void {
+    clearTimeout(this.dryTimer);
+    this.out.dropDry();
+    if (!this.out.writableEnded) this.out.end();
+    this.report();
+  }
+
+  /** Starts a timer for when the audio written so far has played. If jobs are still pending then, playback has run dry. */
+  private armDry(): void {
+    clearTimeout(this.dryTimer);
+    this.dryTimer = setTimeout(() => { if (this.pending > 0) this.out.startDry(this.playEndsAt); }, Math.max(0, this.playEndsAt - Date.now()));
+    this.dryTimer.unref();
+  }
 
   /** Stops the turn: abort jobs in flight, drop queued jobs, end the stream. */
   close(): void { this.controller.abort(); this.end(); }
+
+  /** Prints the playback log once, after every job has settled. Nothing is printed when no sentence was spoken. */
+  private report(): void {
+    if (this.reported) return;
+    this.reported = true;
+    void this.settled().then(() => {
+      this.loop.disable();
+      if (this.sentences === 0) return;
+      this.onReport({
+        underruns: this.out.underruns,
+        underrun_ms_total: this.out.underrunMsTotal,
+        underrun_ms_max: this.out.underrunMsMax,
+        sentences: this.sentences,
+        tts_first_chunk_ms_max: this.firstChunkMs,
+        tts_chunk_gap_ms_max: this.chunkGapMs,
+        spoken_chars: this.spokenChars,
+        event_loop_delay_ms_max: Math.round(this.loop.max / 1e6),
+        event_loop_delay_ms_p99: Math.round(this.loop.percentile(99) / 1e6),
+      });
+    });
+  }
 
   private write(pcm: Buffer): void {
     if (this.signal.aborted || this.out.writableEnded || pcm.length === 0) return;
@@ -230,7 +325,10 @@ class TurnSpeech {
       this.started = true;
       this.player.play(createAudioResource(this.out, { inputType: StreamType.Raw }));
     }
+    // New audio ends any open underrun. Then the play-end time moves and the dry timer is set again.
+    this.out.endDry(Date.now());
     this.playEndsAt = Math.max(this.playEndsAt, Date.now()) + pcm.length / PCM_BYTES_PER_MS;
+    this.armDry();
     this.out.write(pcm);
   }
 }
@@ -738,6 +836,7 @@ export class DiscordVoice {
     if (turn.skipped) return;
     speech.queue(async write => {
       if (await this.usage.overGrace({ server: this.server, user: turn.user })) { speech.capped = true; return; }
+      speech.sentences++;
       for await (const pcm of session.audio.speakStream(text, speech.signal, this.instructions())) write(pcm);
       // Thunder is billed at $10/1M characters.
       await this.usage.limiter.record(turn.user, Array.from(text).length * 10);
@@ -750,7 +849,7 @@ export class DiscordVoice {
   }
 
   private startTurn(session: Session, user: string): Turn {
-    const turn: Turn = { user, channel: session.channel, fillers: 0, quietFrom: Date.now(), leaveAfter: false, toolAfterSay: false, skipped: false, speakStreamed: false, said: false, speech: new TurnSpeech(session.player, session.abort.signal, error => session.fail(error)), timer: setTimeout(() => this.endTurn(session, turn, true), VOICE_TURN_TIMEOUT_MS) };
+    const turn: Turn = { user, channel: session.channel, fillers: 0, quietFrom: Date.now(), leaveAfter: false, toolAfterSay: false, skipped: false, speakStreamed: false, said: false, speech: new TurnSpeech(session.player, session.abort.signal, error => session.fail(error), report => console.log(JSON.stringify({ type: 'voice_playback', server: this.server, channel: session.channel, ...report }))), timer: setTimeout(() => this.endTurn(session, turn, true), VOICE_TURN_TIMEOUT_MS) };
     turn.timer.unref();
     session.busy = true; session.turn = turn;
     return turn;
