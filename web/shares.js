@@ -240,7 +240,7 @@
   // Markdown from web/markdown.js. It escapes all text before it adds tags, the same as in the chat.
   function setMarkdown(node, text) {
     const api = window.SlopbotMarkdown;
-    if (api && typeof api.renderMarkdown === 'function') node.innerHTML = api.renderMarkdown(text);
+    if (api && typeof api.renderMarkdown === 'function') { node.innerHTML = api.renderMarkdown(text); api.typeset?.(node); }
     else node.textContent = text;
   }
 

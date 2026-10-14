@@ -1196,7 +1196,7 @@ function renderText(node, text) {
   if (api && typeof api.renderMarkdown === 'function') {
     try {
       const out = api.renderMarkdown(value);
-      if (typeof out === 'string') { node.innerHTML = out; return; }
+      if (typeof out === 'string') { node.innerHTML = out; api.typeset?.(node); return; }
       if (out instanceof Node) { node.replaceChildren(out); return; }
     } catch { }
   }
