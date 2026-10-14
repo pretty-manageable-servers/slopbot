@@ -8,7 +8,7 @@ import { sandboxTool, readSandboxFile } from "../sandbox.js";
 import { objectStorageTool, UserFileStorage, MAX_STORED_FILE_BYTES, fileStorageScope } from '../object-storage.js';
 import { sendStoredFile } from './discord-storage.js';
 import { S3StorageProvider } from './s3-storage.js';
-import { programTool } from '../program-tools.js';
+import { programTool } from '../run-tools-code.js';
 import { McpManager, McpSecrets } from '../mcp.js';
 import { remoteMcpConnector } from './mcp-client.js';
 import { E2BSandboxProvider } from "./e2b-sandbox.js";

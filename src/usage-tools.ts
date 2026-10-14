@@ -12,6 +12,7 @@ export function registerUsageTool(registry: ToolRegistry, limiter: UserLimiter):
     },
     access: "member", effect: "read", retrySafe: false,
     writes: args => args.action === "reset",
+    confirm: args => args.action === "reset",
     async execute(context, args) {
       const { author } = context.message;
       if (args.action === "reset") {

@@ -341,7 +341,6 @@ export class AgentRunner {
       if (machine.state.kind === "ToolResultsHeld") break;
     }
     const maxRounds = this.policy.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
-    let protocolRepairs = 0;
     for (let round = 0; round <= maxRounds; round++) {
       if (signal.aborted) throw new HarnessInterrupted("Request interrupted");
       if (machine.state.kind === "ToolResultsHeld") directAnswer = "Slopbot could not complete these tool calls:\n" + toolFailureSummary(activity) + "\nNo further tool calls were run.";
@@ -365,14 +364,7 @@ export class AgentRunner {
       } else { const generated = await this.generate(message, prompt, runId, [...sources]); text = generated.text; generatedCalls = generated.calls; fromModel = true; }
       try {
         if (sourceVersion !== await this.store.contextVersion(message.server, message.channel) || !this.accepts(message)) throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel), { expectedVersion: sourceVersion, actualVersion: await this.store.contextVersion(message.server, message.channel) });
-        let calls;
-        try { calls = fixedAnswer === undefined ? generatedCalls ?? (fixedText !== undefined ? parseToolCalls(text) : undefined) : undefined; }
-        catch (error) {
-          if (!(error instanceof ToolError) || !this.services.tools || protocolRepairs++ >= 2 || round === maxRounds) throw error;
-          await this.store.fail(runId, "InvalidToolProtocol");
-          trace.push({ role: "assistant", content: text }, { role: "user", contextOnly: true, content: "Your tool response was invalid and no action was executed. Reissue only a valid tool_calls JSON object with no surrounding prose, or answer normally without tool syntax. Do not claim an action succeeded." });
-          continue;
-        }
+        let calls = fixedAnswer === undefined ? generatedCalls ?? (fixedText !== undefined ? parseToolCalls(text) : undefined) : undefined;
         if (calls && !this.services.tools) throw new ToolError("Tool request cannot execute: tools are unavailable");
         // Spend from this model call may have passed the grace limit, so no new tool round starts.
         if (calls && (toolsStopped || (await this.services.usage?.overGrace(attribution(message))) === true)) {

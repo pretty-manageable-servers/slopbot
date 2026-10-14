@@ -47,6 +47,9 @@ const setup = slice(() => vm.evalCode(`(() => {
   for (const name of ${JSON.stringify(names)}) tools[name] = args => call(name, stringify(args));
   Object.defineProperty(globalThis, 'tools', { value: Object.freeze(tools) });
   Object.defineProperty(globalThis, 'text', { value: value => emit(stringify(value)) });
+  Object.defineProperty(globalThis, 'list_tools', { value: () => call('builtin:list_tools', '{}') });
+  Object.defineProperty(globalThis, 'describe_tool', { value: name => call('builtin:describe_tool', stringify({ name })) });
+  Object.defineProperty(globalThis, 'save_to_sandbox', { value: (path, data) => call('builtin:save_to_sandbox', stringify({ path, data })) });
 })()`));
 if (setup.error) { fail('Could not initialize the isolated runtime.'); setup.dispose(); }
 else setup.dispose();

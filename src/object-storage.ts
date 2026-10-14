@@ -147,7 +147,7 @@ export function objectStorageTool(services: StorageServices): ToolDefinition {
     // Every action that is not a read changes stored files or a sandbox, so a PTC call to it needs Confirm.
     confirm: args => !readActions.includes(String(args.action)),
     fields: {
-      action: { type: 'string', required: true, choices: ['save_attachment', 'write', 'save_sandbox', 'load_sandbox', 'to_sandbox', 'list', 'info', 'read', 'link', 'send', 'copy', 'publish', 'unpublish', 'delete'], description: 'File storage action. send DMs the file only to the requester.' },
+      action: { type: 'string', required: true, choices: ['save_attachment', 'write', 'save_sandbox', 'to_sandbox', 'list', 'info', 'read', 'link', 'send', 'copy', 'publish', 'unpublish', 'delete'], description: 'File storage action. send DMs the file only to the requester.' },
       storage_scope: { type: 'string', choices: storageScopes, description: 'user: personal across servers; server: shared current-server directory; user_server: personal within current server, the default' },
       destination_scope: { type: 'string', choices: storageScopes, description: 'copy destination scope; defaults to source storage_scope. New personal copies are private; server copies are shared.' },
       path: { type: 'string', max: 300, description: 'Relative path in the selected directory, e.g. reports/result.csv' },
@@ -160,7 +160,7 @@ export function objectStorageTool(services: StorageServices): ToolDefinition {
       attachment: { type: 'integer', min: 0, max: 19, description: 'Attachment index, default 0' },
       text: { type: 'string', max: 64000, description: 'UTF-8 content for write' },
       content_type: { type: 'string', max: 100, description: 'MIME type for writes/sandbox saves, default text/plain or application/octet-stream' },
-      sandbox_path: { type: 'string', max: 1024, description: 'Absolute sandbox path for save_sandbox, load_sandbox or to_sandbox' },
+      sandbox_path: { type: 'string', max: 1024, description: 'Absolute sandbox path for save_sandbox or to_sandbox' },
       destination: { type: 'string', max: 300, description: 'New path in destination_scope for copy' },
       overwrite: { type: 'boolean', description: 'Explicitly replace your existing path; personal replacement becomes private; server replacement is shared' },
       question: { type: 'string', max: 2000, description: 'Question for inspecting a stored file; images and documents are supported' },
@@ -179,7 +179,7 @@ export function objectStorageTool(services: StorageServices): ToolDefinition {
       if (args.destination_scope !== undefined && args.action !== 'copy') throw new ToolError('destination_scope is only valid for copy.');
       if (args.action === 'copy') storagePath(args.destination);
       if (args.action === 'write' && typeof args.text !== 'string') throw new ToolError('write requires text.');
-      if (['save_sandbox', 'load_sandbox', 'to_sandbox'].includes(String(args.action)) &&(typeof args.sandbox_path !== 'string' || !args.sandbox_path.startsWith('/') || args.sandbox_path.includes('\0'))) throw new ToolError('Provide an absolute sandbox_path.');
+      if (['save_sandbox', 'to_sandbox'].includes(String(args.action)) &&(typeof args.sandbox_path !== 'string' || !args.sandbox_path.startsWith('/') || args.sandbox_path.includes('\0'))) throw new ToolError('Provide an absolute sandbox_path.');
       if (args.content_type !== undefined && (typeof args.content_type !== 'string' || !/^[\w.+-]+\/[\w.+-]+(?:;[\x20-\x7e]+)?$/.test(args.content_type))) throw new ToolError('Provide a valid MIME content_type.');
       return args;
     },
@@ -187,7 +187,7 @@ export function objectStorageTool(services: StorageServices): ToolDefinition {
       await services.authorize(context.message);
       // Send posts a Discord DM, so a private chat cannot use it. The other actions stay available.
       if (args.action === 'send' && isPrivateChannel(context.message.channel)) throw new ToolError(discordOnlyMessage);
-      if (['info', 'read', 'link', 'send', 'copy', 'load_sandbox', 'to_sandbox'].includes(String(args.action))) await services.storage.entry(context.message.server, context.message.author, String(args.owner ?? context.message.author), String(args.path), false, (args.storage_scope ?? 'user_server') as StorageScope, context.isAdmin);
+      if (['info', 'read', 'link', 'send', 'copy', 'to_sandbox'].includes(String(args.action))) await services.storage.entry(context.message.server, context.message.author, String(args.owner ?? context.message.author), String(args.path), false, (args.storage_scope ?? 'user_server') as StorageScope, context.isAdmin);
     },
     async execute(context, args) {
       const { server, author } = context.message, owner = String(args.owner ?? author), path = String(args.path), scope = (args.storage_scope ?? 'user_server') as StorageScope;
@@ -211,7 +211,7 @@ export function objectStorageTool(services: StorageServices): ToolDefinition {
         return `${path} is private again. Existing download links can still work until they expire.`;
       }
       if (args.action === 'delete') { await services.storage.remove(server, author, path, scope, context.isAdmin); return `Deleted ${path}.`; }
-      if (['read', 'send', 'copy', 'load_sandbox', 'to_sandbox'].includes(String(args.action))) {
+      if (['read', 'send', 'copy', 'to_sandbox'].includes(String(args.action))) {
         const { file, bytes } = await services.storage.read(server, author, owner, path, scope, context.isAdmin);
         await context.assertActive();
         if (args.action === 'read') return { text: await services.inspect(context, file, bytes, String(args.question ?? context.message.text)) };
@@ -222,11 +222,6 @@ export function objectStorageTool(services: StorageServices): ToolDefinition {
           const { session } = await sandboxSession(store, provider, context.message, context.operationId);
           await session.write(String(args.sandbox_path), bytes);
           return `Copied ${path} to sandbox ${args.sandbox_path}.`;
-        }
-        if (args.action === 'load_sandbox') {
-          if (!services.sandbox) throw new ToolError('Sandbox is not configured.');
-          await services.sandbox.write(context, String(args.sandbox_path), bytes);
-          return `Loaded ${path} into sandbox ${args.sandbox_path}.`;
         }
         const saved = await services.storage.save(context, String(args.destination), bytes, file.contentType, args.overwrite === true, (args.destination_scope ?? scope) as StorageScope);
         return { text: `Copied ${scope}:${owner}/${path} to ${fileStorageScope(saved)}:${saved.path} (${saved.public ? 'shared' : 'private'}).`, data: metadata(saved) };

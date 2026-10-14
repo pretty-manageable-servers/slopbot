@@ -275,3 +275,9 @@ test('watch lookup failures notify once, recovery notifies, and revoked permissi
   f.client.issue = original; await worker.tick(); assert.equal(notices.length, 2);
   allowed = false; f.client.issueState = 'closed'; await worker.tick(); assert.equal(notices.length, 2);
 });
+
+test('issue_report always needs Confirm; reads do not', async t => {
+  const f = await fixture(t);
+  assert.equal(f.registry.definitions().find(d => d.name === 'issue_report')?.confirm?.({}), true);
+  assert.equal(f.registry.definitions().find(d => d.name === 'interaction_inspect')?.confirm, undefined);
+});
