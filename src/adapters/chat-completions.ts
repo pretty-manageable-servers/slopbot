@@ -66,7 +66,7 @@ export async function inlineImages(messages: WireMessage[], fetcher: typeof fetc
 export function wireMessages(prompt: Prompt): WireMessage[] {
   const items = promptItems(prompt), messages: WireMessage[] = [];
   const ordinary = (item: typeof items[number]): WireMessage => {
-    const text = item.author || item.sourceIds ? JSON.stringify({ ...(item.author ? { author_id: item.author } : {}), ...(item.sourceIds ? { source_ids: item.sourceIds } : {}), text: item.content }) : item.content;
+    const text = item.content;
     return { role: item.role, content: item.images?.length ? [{ type: 'text', text }, ...item.images.map(image => ({ type: 'image_url' as const, image_url: { url: image.url } }))] : text };
   };
   for (let index = 0; index < items.length; index++) {
