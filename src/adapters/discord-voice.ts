@@ -215,6 +215,7 @@ export class DiscordVoice {
       if (connection.state.status !== VoiceConnectionStatus.Destroyed) connection.destroy();
     } };
     this.session = session;
+    this.onSession?.(channel, undefined);
     refresh();
     connection.subscribe(player);
     connection.on('error', error => { fail(error); if (this.session === session) this.leave(); });
@@ -335,6 +336,8 @@ export class DiscordVoice {
     });
   }
 
-  leave(): void { const session = this.session; this.session = undefined; session?.stop(); }
+  /** Called with the channel when a session starts, and with undefined when it ends. */
+  onSession: ((channel: string | undefined, previous: string | undefined) => void) | undefined;
+  leave(): void { const session = this.session; this.session = undefined; session?.stop(); if (session) this.onSession?.(undefined, session.channel); }
   stop(): void { this.leave(); this.client.off(Events.VoiceStateUpdate, this.onVoiceState); }
 }

@@ -283,6 +283,7 @@ export class DiscordServer implements ChatGateway {
     if (config.voice) {
       this.voice = new DiscordVoice(client, guildId, config, this.webReplies, usage, user => Boolean(mutedUsers(store.setting(guildId, MUTED_USERS_KEY))[user]), () => voiceInstructions(store.setting(guildId, VOICE_INSTRUCTIONS_KEY) as string | undefined, config.voice?.instructions), value => store.setSetting(guildId, VOICE_INSTRUCTIONS_KEY, value));
       this.voice.register(this.tools);
+      this.voice.onSession = (channel, previous) => { if (previous) this.bot.closeVoiceChannel(previous); if (channel) this.bot.openVoiceChannel(guildId, channel); };
     }
     registerUsageTool(this.tools, this.limiter);
     this.tools.register(programTool(this.tools));
@@ -509,7 +510,7 @@ export class DiscordServer implements ChatGateway {
         const open = await this.inbox.list(this.guildId, user, false);
         const ids: string[] | "all" = tokens.some(token => token.toLowerCase() === "all") ? "all" : [...new Set(open.filter(item => tokens.some(token => item.id.startsWith(token))).map(item => item.id))];
         const count = ids === "all" || ids.length ? await this.inbox.done(this.guildId, user, ids) : 0;
-        content = `Marked ${count} items done.`;
+        content = `Marked ${count} ${count === 1 ? "item" : "items"} done.`;
       } else {
         const items = (await this.inbox.list(this.guildId, user, interaction.options.getBoolean("all") === true)).slice(0, INBOX_LIST_SHOWN);
         content = inboxReply(items, this.guildId);

@@ -753,6 +753,18 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   async replyRunIds(server: string, messageId: string): Promise<string[]> {
     return this.db.prepare("SELECT r.run_id FROM reply_runs r LEFT JOIN runs u ON u.id=r.run_id WHERE r.server=? AND r.message_id=? ORDER BY u.rowid").all(server, messageId).map(row => String(row.run_id));
   }
+  async modelReplies(server: string, messageIds: readonly string[]): Promise<Map<string, { runId: string; text: string }>> {
+    const found = new Map<string, { runId: string; text: string }>();
+    if (!messageIds.length) return found;
+    // Rows come in run order, so a later run replaces an earlier one for the same message.
+    for (let start = 0; start < messageIds.length; start += 500) {
+      const part = messageIds.slice(start, start + 500);
+      const marks = part.map(() => "?").join(",");
+      for (const row of this.db.prepare(`SELECT rr.message_id, r.id, r.result FROM reply_runs rr JOIN runs r ON r.id = rr.run_id WHERE rr.server = ? AND rr.message_id IN (${marks}) AND r.status = 'completed' AND r.result IS NOT NULL ORDER BY r.rowid`).all(server, ...part))
+        found.set(String(row.message_id), { runId: String(row.id), text: String(row.result) });
+    }
+    return found;
+  }
   async requestRunIds(server: string, requestId: string): Promise<string[]> {
     return this.db.prepare("SELECT id FROM runs WHERE json_extract(message,'$.server')=? AND json_extract(message,'$.id')=? AND COALESCE(json_extract(prompt,'$.purpose'),'reply')='reply' ORDER BY rowid")
       .all(server, requestId).map(row => String(row.id));

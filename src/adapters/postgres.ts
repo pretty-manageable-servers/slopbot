@@ -593,6 +593,20 @@ export class PostgresStore {
         return (await this.db.prepare("SELECT r.run_id FROM reply_runs r LEFT JOIN runs u ON u.id=r.run_id WHERE r.server=? AND r.message_id=? ORDER BY u.rowid")
             .all(server, messageId)).map(row => String(row.run_id));
     }
+    async modelReplies(server: string, messageIds: readonly string[]): Promise<Map<string, { runId: string; text: string }>> {
+        const found = new Map<string, { runId: string; text: string }>();
+        if (!messageIds.length)
+            return found;
+        // Rows come in run order, so a later run replaces an earlier one for the same message.
+        for (let start = 0; start < messageIds.length; start += 500) {
+            const part = messageIds.slice(start, start + 500);
+            const marks = part.map(() => "?").join(",");
+            const rows = await this.db.prepare(`SELECT rr.message_id, r.id, r.result FROM reply_runs rr JOIN runs r ON r.id = rr.run_id WHERE rr.server = ? AND rr.message_id IN (${marks}) AND r.status = 'completed' AND r.result IS NOT NULL ORDER BY r.rowid`).all(server, ...part);
+            for (const row of rows)
+                found.set(String(row.message_id), { runId: String(row.id), text: String(row.result) });
+        }
+        return found;
+    }
     // The messages of one channel that a reply run used. Participation runs are not reply runs, so they do not count.
     async usedSourceIds(server: string, channel: string, messageIds: readonly string[]): Promise<string[]> {
         if (!messageIds.length) return [];

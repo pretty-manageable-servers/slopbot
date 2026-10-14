@@ -53,6 +53,8 @@ export interface Store extends ProviderKeyStore {
   userTokenTotalsByServer(user: string): Promise<(UserTokenTotalRow & { server: string })[]>;
   // Replies sent since a time (ms), across all servers. Each triggering message counts once.
   countRepliesSince(since: number): Promise<number>;
+  // The completed reply run of each message, by message ID. A message with several runs gets the latest. Optional so test fakes do not need it.
+  modelReplies?(server: string, messageIds: readonly string[]): Promise<Map<string, { runId: string; text: string }>>;
 }
 
 /** Spend in micro-dollars for one window kind, starting at windowStart. */
