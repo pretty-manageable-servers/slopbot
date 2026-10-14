@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ButtonInteraction } from 'discord.js';
-import { codeBlock, codeFitsInline, handleConfirm, handleShowCode, postConfirmation, SHOW_CODE_INLINE_LINES, SHOW_CODE_MESSAGE_CHARS, PROGRAM_CODE_KEEP_MS, showCodeRows, type CodeStore } from '../src/adapters/discord-code.js';
+import { handleConfirm, handleShowCode, postConfirmation, showCodeRows, type CodeStore } from '../src/adapters/discord-code.js';
+import { codeBlock, codeFitsInline, PROGRAM_CODE_KEEP_MS, SHOW_CODE_INLINE_LINES, SHOW_CODE_MESSAGE_CHARS } from '../src/code-display.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import type { ToolContext, ConfirmationRequired } from '../src/tools.js';
 import type { Json } from '../src/domain.js';

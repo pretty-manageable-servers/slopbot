@@ -5,13 +5,7 @@ import type { RecordStore } from "../records.js";
 import type { ConfirmationRequired, ToolArgs, ToolJournal, ToolRegistry } from "../tools.js";
 import { displayToolResult } from "../tools.js";
 import type { ToolActivity } from "../tool-activity.js";
-
-/** Lines of program code that a full footer shows inline. */
-export const SHOW_CODE_INLINE_LINES = 15;
-/** Characters of program code that fit in one Discord message. Longer code is sent as program.js. */
-export const SHOW_CODE_MESSAGE_CHARS = 1900;
-/** Program code is kept this long, then deleted. */
-export const PROGRAM_CODE_KEEP_MS = 14 * 24 * 60 * 60 * 1000;
+import { codeBlock, codeFitsInline, PROGRAM_CODE_KEEP_MS, SHOW_CODE_MESSAGE_CHARS } from "../code-display.js";
 
 const PROGRAM_TOOL = "run_tools_code";
 const CODE_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
@@ -23,18 +17,6 @@ const CONFIRM_ID = /^slopconfirm:(.+):(yes|no)$/;
 export type CodeStore = RecordStore & Pick<ToolJournal, "operation" | "pruneOperations">;
 /** The tool runner that a confirmed call goes through. */
 export type CodeRunner = Pick<ToolRegistry, "invokeResult">;
-
-/** True when the code fits inline in a full footer. */
-export function codeFitsInline(code: string): boolean {
-  return code.split("\n").length <= SHOW_CODE_INLINE_LINES && code.length <= SHOW_CODE_MESSAGE_CHARS;
-}
-
-/** A Markdown block. The fence is longer than any backtick run in the text. */
-export function codeBlock(text: string, language = "js"): string {
-  const longest = [...text.matchAll(/`+/g)].reduce((most, match) => Math.max(most, match[0].length), 2);
-  const fence = "`".repeat(longest + 1);
-  return `${fence}${language}\n${text}\n${fence}`;
-}
 
 /** The Show code button for each run that needs one: every run in summary mode, and full runs whose code is too long for the footer. */
 export function showCodeRows(activity: readonly ToolActivity[], mode: "none" | "summary" | "full"): ActionRowBuilder<ButtonBuilder>[] {

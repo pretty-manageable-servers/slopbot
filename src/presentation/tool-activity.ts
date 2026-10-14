@@ -1,6 +1,6 @@
 import type { ToolActivity } from "../tool-activity.js";
 import { currentStep, slopbotEmoji, toolEmoji, toolGroup } from "./tool-labels.js";
-import { codeBlock, codeFitsInline } from "../adapters/discord-code.js";
+import { codeBlock, codeFitsInline } from "../code-display.js";
 
 const PROGRAM_TOOL = "run_tools_code";
 // Child calls of a code run are shown under the run, not in the summary counts.
