@@ -1,8 +1,8 @@
-import { PassThrough, Readable } from 'node:stream';
+import { Readable } from 'node:stream';
 import OpusScript from 'opusscript';
 import { randomUUID } from 'node:crypto';
 import { ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, ChannelType, Events, MessageFlags, PermissionFlagsBits, type ButtonInteraction, type Client } from 'discord.js';
-import { EndBehaviorType, NoSubscriberBehavior, StreamType, VoiceConnectionStatus, createAudioPlayer, createAudioResource, entersState, joinVoiceChannel, type AudioPlayer, type AudioReceiveStream, type VoiceConnection } from '@discordjs/voice';
+import { AudioPlayerStatus, EndBehaviorType, NoSubscriberBehavior, StreamType, VoiceConnectionStatus, createAudioPlayer, createAudioResource, entersState, joinVoiceChannel, type AudioPlayer, type AudioReceiveStream, type VoiceConnection } from '@discordjs/voice';
 import type { Config } from '../config.js';
 import { ToolError, type ToolRegistry } from '../tools.js';
 import type { Message } from '../domain.js';
@@ -71,13 +71,49 @@ function sleepUntil(time: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+/** 20 ms of silence in Discord raw format: 48 kHz, stereo, 16-bit. */
+const SILENCE_FRAME = Buffer.alloc(3840);
+
+/**
+ * Live PCM for one turn. The Discord player stops a resource as soon as its stream has no data,
+ * so this stream sends 20 ms of silence while it waits for the next audio. It ends only after end() and the queue is empty.
+ */
+export class LiveAudio extends Readable {
+  private readonly chunks: Buffer[] = [];
+  private ended = false;
+  private waiting: ReturnType<typeof setTimeout> | undefined;
+  get writableEnded(): boolean { return this.ended; }
+  write(pcm: Buffer): void {
+    if (this.ended || this.destroyed) return;
+    this.chunks.push(pcm);
+    this.wake();
+  }
+  end(): void { this.ended = true; this.wake(); }
+  override _read(): void {
+    const chunk = this.chunks.shift();
+    if (chunk) { this.push(chunk); return; }
+    if (this.ended) { this.push(null); return; }
+    // Nothing yet: send one silence frame after 20 ms, unless audio arrives first.
+    this.waiting ??= setTimeout(() => { this.waiting = undefined; if (!this.destroyed && !this.ended && !this.chunks.length) this.push(SILENCE_FRAME); else this._read(); }, 20);
+  }
+  private wake(): void {
+    if (!this.waiting) return;
+    clearTimeout(this.waiting); this.waiting = undefined;
+    this._read();
+  }
+  override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
+    if (this.waiting) clearTimeout(this.waiting);
+    callback(error);
+  }
+}
+
 /**
  * One reply's speech. One stream plays the cue and every sentence in order, so there is no gap between them.
  * Jobs run one at a time. Job N waits until job N-2 has finished playing, so at most one request is ahead of the one playing.
  */
 class TurnSpeech {
   /** The one audio resource of the turn. It is played when the first audio is written. */
-  private readonly out = new PassThrough();
+  private readonly out = new LiveAudio();
   private readonly controller = new AbortController();
   readonly signal: AbortSignal;
   private chain: Promise<void> = Promise.resolve();
@@ -354,6 +390,8 @@ export class DiscordVoice {
       await speech.settled();
       speech.end();
       await sleepUntil(speech.playEndsAt, session.abort.signal);
+      // Silence padding is not in the estimate. Wait until the player has really finished.
+      if (session.player.state && session.player.state.status !== AudioPlayerStatus.Idle) await entersState(session.player, AudioPlayerStatus.Idle, AbortSignal.any([session.abort.signal, AbortSignal.timeout(60_000)])).catch(() => undefined);
       if (session.turn !== turn) return;
       this.endTurn(session, turn);
       session.refresh();

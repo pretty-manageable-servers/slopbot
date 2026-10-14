@@ -70,6 +70,7 @@ class FakePlayer extends EventEmitter {
   levels(): number[] {
     const codec = new OpusScript(48000, 2, OpusScript.Application.VOIP);
     const out: number[] = [];
+    let last = -1, run = 0;
     try {
       for (const packet of this.resources.flat()) {
         const pcm = Buffer.from(codec.decode(packet));
@@ -77,7 +78,9 @@ class FakePlayer extends EventEmitter {
         for (let offset = 0; offset + 2 <= pcm.length; offset += 4) squares += pcm.readInt16LE(offset) ** 2;
         const rms = Math.sqrt(squares / (pcm.length / 4));
         const level = Math.round(rms / (LEVEL / Math.SQRT2));
-        if (level !== 0 && out.at(-1) !== level) out.push(level);
+        // A frame that is part sentence and part silence reads as a lower level. Count a level only after 2 frames in a row.
+        run = level === last ? run + 1 : 1; last = level;
+        if (level !== 0 && run === 2 && out.at(-1) !== level) out.push(level);
       }
     } finally { codec.delete(); }
     return out;
