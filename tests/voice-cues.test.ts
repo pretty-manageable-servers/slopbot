@@ -477,7 +477,7 @@ test('voice_say stops at the spoken limit', async t => {
   const r = await rig(t);
   r.talk();
   await until(() => r.posts.length === 1);
-  const long = Array.from({ length: 30 }, (_, index) => `This is sentence number ${index + 1} of many.`).join(' ');
+  const long = Array.from({ length: 100 }, (_, index) => `This is sentence number ${index + 1} of many.`).join(' ');
   await r.say(long);
   assert.equal(await r.say('One more line.'), 'Spoken limit reached. Nothing more is spoken in this turn.');
   await until(() => r.speeches.length > 0);

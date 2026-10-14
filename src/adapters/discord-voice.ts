@@ -268,9 +268,9 @@ export class DiscordVoice {
       },
     });
 
-    registry.register({ name: 'voice_say', description: 'Say these words aloud in the voice channel. Plain words only (no markdown, code, emoji or URLs; say numbers as words). For every voice request, call it with the spoken answer: one to three short sentences, at most 60 words. Before a slow tool (search, fetch, code), you may first call it with one short line that tells what you will do. Then write the full answer for the chat with code, links and details as needed; the chat answer is not read aloud.', scope: 'discord',
+    registry.register({ name: 'voice_say', description: 'Say these words aloud in the voice channel. Plain words only (no markdown, code, emoji or URLs; say numbers as words). For every voice request, call it with the spoken answer: short sentences, up to about 150 words (about one minute); shorter when a short answer is enough. Before a slow tool (search, fetch, code), you may first call it with one short line that tells what you will do. Then write the full answer for the chat with code, links and details as needed; the chat answer is not read aloud.', scope: 'discord',
       fields: {
-        text: { type: 'string', description: 'The words to say aloud. One to three short spoken sentences, plain words.', required: true, max: VOICE_SPOKEN_MAX },
+        text: { type: 'string', description: 'The words to say aloud. Short spoken sentences in plain words, up to about 150 words.', required: true, max: VOICE_SPOKEN_MAX },
       },
       access: 'member', effect: 'read', execution: 'inline', retrySafe: true,
       execute: async ({ message }, args) => {

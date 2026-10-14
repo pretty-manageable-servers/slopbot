@@ -291,7 +291,7 @@ test('error reply falls back to error sentence', async t => {
   assert.equal(spokenText(error), VOICE_ERROR_TEXT);
 });
 
-test('spoken total capped at 600', async t => {
+test('spoken total capped at VOICE_SPOKEN_MAX', async t => {
   const r = await rig(t);
   r.talk();
   await until(() => r.posts.length === 1);
