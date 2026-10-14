@@ -15,6 +15,7 @@ import { publishMessage, runEvents, slopbotId, type ConversationEventStore, type
 import { messageViews, openStream, type TranscriptStore } from "./web-transcripts.js";
 import type { WebChatRow } from "./web-chat-store.js";
 import { CHAT_IMAGE_ID, CHAT_IMAGE_MAX_BYTES, CHAT_IMAGE_MAX_COUNT, CHAT_IMAGE_SCHEME, LocalDiskStorage, chatImageContentType, chatImageKey, imageAttachments, imageName, newChatImageId, sniffImage } from "./web-chat-images.js";
+import { CHAT_FILE_ID, CHAT_FILE_MAX_BYTES, CHAT_ATTACHMENT_MAX_COUNT, chatFileKey, fileAttachments, fileContentType, fileName, fileUrl, newChatFileId, parseFileUrl, type ChatFileView } from "./web-chat-files.js";
 import type { ObjectStorageProvider } from "./object-storage.js";
 import { ChatShareService, ShareError, type ShareService, type ShareStore } from "./shares.js";
 
@@ -63,7 +64,23 @@ const SNOWFLAKE = /^\d{17,20}$/;
 /** The model reads an image soon after the send. */
 const MODEL_LINK_SECONDS = 900;
 const PENDING_IMAGE_MS = 60 * 60 * 1000;
+const PENDING_FILE_MS = 60 * 60 * 1000;
 const MESSAGE_ID = /^[\w:.-]{1,64}$/;
+
+/** The label line that send() adds for each file. The model reads it from the saved text. The web view removes it. */
+function fileLabel(name: string, contentType: string, url: string): string {
+  return `[Attachment ${name}, type ${contentType}: ${url}; content not inspected; read with file_read, or if file_read cannot read this type, use sandbox import_attachment]`;
+}
+
+/** The saved text without the file label lines that send() added. authoredSourceText misses a message with images and files, so the file labels are matched here. */
+function withoutFileLabels(message: Message): Message {
+  const files = (message.attachments ?? []).filter(item => parseFileUrl(item.url));
+  if (!files.length) return message;
+  const labels = files.map(item => fileLabel(item.name, item.contentType ?? "application/octet-stream", item.url)).join("\n");
+  if (message.text === labels) return { ...message, text: "" };
+  if (message.text.endsWith("\n" + labels)) return { ...message, text: message.text.slice(0, -labels.length - 1) };
+  return message;
+}
 
 /** Replies that Slopbot posts in a private chat. They are saved and published, never sent to Discord. */
 export class WebChatGateway implements ChatGateway {
@@ -96,6 +113,8 @@ export class WebChatService {
   private readonly storage: ObjectStorageProvider;
   /** Images that are uploaded but not sent yet. A restart forgets them; their objects stay until the chat is deleted. */
   private readonly pending = new Map<string, { chat: string; user: string; name: string; contentType: string; size: number; at: number }>();
+  /** Files that are uploaded but not sent yet. Same rules as pending. */
+  private readonly pendingFiles = new Map<string, { chat: string; user: string; name: string; contentType: string; size: number; at: number }>();
   constructor(private readonly store: ChatStore, private readonly host: ChatHost, private readonly bus: RunEvents = runEvents, private readonly now: () => number = Date.now) {
     this.shares = new ChatShareService(store, now);
     this.storage = host.images ?? new LocalDiskStorage();
@@ -240,39 +259,51 @@ export class WebChatService {
     }
     const rows = await this.store.conversationMessages(chat.server, channel, cursor, limit + 1);
     return {
-      messages: await messageViews(this.store, this.host.members, chat.server, rows.slice(0, limit).reverse()),
+      messages: await messageViews(this.store, this.host.members, chat.server, rows.slice(0, limit).reverse().map(withoutFileLabels)),
       hasMore: rows.length > limit,
       streamId,
     };
   }
 
   /** Saves the user message, publishes it, then lets the bot answer. The usage limit is checked before anything is saved. */
-  async send(user: string, id: string, raw: unknown, rawImages: unknown = undefined): Promise<{ id: string }> {
+  async send(user: string, id: string, raw: unknown, rawImages: unknown = undefined, rawFiles: unknown = undefined): Promise<{ id: string }> {
     const chat = await this.owned(user, id);
     const ids = rawImages === undefined ? [] : rawImages;
-    if (!Array.isArray(ids) || ids.length > CHAT_IMAGE_MAX_COUNT || new Set(ids).size !== ids.length) throw new ChatError(400, `Send ${CHAT_IMAGE_MAX_COUNT} images or fewer.`);
+    const fileIds = rawFiles === undefined ? [] : rawFiles;
+    if (!Array.isArray(ids) || !Array.isArray(fileIds) || ids.length + fileIds.length > CHAT_ATTACHMENT_MAX_COUNT || new Set(ids).size !== ids.length || new Set(fileIds).size !== fileIds.length) throw new ChatError(400, `Attach ${CHAT_ATTACHMENT_MAX_COUNT} files or images or fewer.`);
     const images = ids.map(imageId => {
       const found = typeof imageId === "string" ? this.pending.get(imageId) : undefined;
       if (!found || found.chat !== chat.id || found.user !== user) throw new ChatError(400, "An image was not found. Attach it again.");
       return { imageId: imageId as string, ...found };
     });
+    const files = fileIds.map(fileId => {
+      const found = typeof fileId === "string" ? this.pendingFiles.get(fileId) : undefined;
+      if (!found || found.chat !== chat.id || found.user !== user) throw new ChatError(400, "A file was not found. Attach it again.");
+      return { fileId: fileId as string, url: fileUrl(chat.server, chat.id, fileId as string), ...found };
+    });
     const text = typeof raw === "string" ? raw.trim() : "";
-    if (!text && !images.length) throw new ChatError(400, "Write a message.");
-    const body = text || "Please look at the attached image" + (images.length > 1 ? "s." : ".");
+    if (!text && !images.length && !files.length) throw new ChatError(400, "Write a message.");
+    const body = text || (files.length ? "Please look at the attached file(s)." : "Please look at the attached image" + (images.length > 1 ? "s." : "."));
     if ([...body].length > PRIVATE_CHAT_MAX_CHARS) throw new ChatError(400, `Write ${PRIVATE_CHAT_MAX_CHARS} characters or fewer.`);
     const limit = await this.host.limiter.check(user);
     if (!limit.allowed) throw new ChatError(429, "Usage limit reached.", limit.resetAt);
     const handle = await this.handle(chat.server);
     const channel = privateChannel(chat.id), at = this.now();
     const name = (await this.host.members?.profiles(chat.server, [user]))?.get(user)?.displayName ?? user;
-    // The saved row keeps a placeholder per image (name, type, size, ID), never image bytes.
-    const attachments = images.map(item => ({ name: item.name, url: CHAT_IMAGE_SCHEME + item.imageId, contentType: item.contentType, size: item.size }));
-    const message: Message = { id: `chat-${randomUUID()}`, server: chat.server, channel, author: user, authorName: name, text: body, timestamp: at, addressed: true, source: "web", effort: this.effortOf(chat), ...(attachments.length ? { attachments } : {}) };
+    // The saved row keeps a placeholder per image or file (name, type, size, ID), never bytes.
+    const attachments = [
+      ...images.map(item => ({ name: item.name, url: CHAT_IMAGE_SCHEME + item.imageId, contentType: item.contentType, size: item.size })),
+      ...files.map(item => ({ name: item.name, url: item.url, contentType: item.contentType, size: item.size })),
+    ];
+    // Each file gets one label line in the saved text, so the model knows the file exists. Images go by modelImages instead.
+    const labels = files.map(item => fileLabel(item.name, item.contentType, item.url));
+    const message: Message = { id: `chat-${randomUUID()}`, server: chat.server, channel, author: user, authorName: name, text: [body, ...labels].join("\n"), timestamp: at, addressed: true, source: "web", effort: this.effortOf(chat), ...(attachments.length ? { attachments } : {}) };
     // The model gets short-lived signed links, only in memory.
     const modelImages = await Promise.all(images.map(async item => ({ url: await this.storage.link(chatImageKey(chat.server, chat.id, item.imageId), item.name, MODEL_LINK_SECONDS), label: item.name })));
     await this.store.ingest(message);
     for (const item of images) this.pending.delete(item.imageId);
-    if (chat.title) await this.store.touchWebChat(chat.id, at); else await this.store.renameWebChat(chat.id, privateChatTitle(text || images[0]!.name), at);
+    for (const item of files) this.pendingFiles.delete(item.fileId);
+    if (chat.title) await this.store.touchWebChat(chat.id, at); else await this.store.renameWebChat(chat.id, privateChatTitle(text || (images[0] ?? files[0])!.name), at);
     await publishMessage(this.store, message, undefined, this.host.members);
     void handle.receiveChat(modelImages.length ? { ...message, modelImages } : message).catch(error => logError("web_chat_receive_failed", error, { server: chat.server, channel, messageId: message.id }));
     return { id: message.id };
@@ -314,19 +345,75 @@ export class WebChatService {
     return { bytes, contentType: chatImageContentType(imageId) };
   }
 
-  /** Deletes every stored image of a chat: the sent ones (from the message rows) and the pending ones. */
-  private async removeImages(chat: WebChatRow): Promise<void> {
-    const channel = privateChannel(chat.id), ids = new Set<string>();
-    for (const [imageId, item] of this.pending) if (item.chat === chat.id) ids.add(imageId);
+  /** Stores one uploaded file of any type and returns its view. The usage limit is checked first. The type is the browser's, when it is plain. */
+  async uploadFile(user: string, id: string, bytes: Uint8Array, rawName: string | null, rawType: string | null): Promise<ChatFileView> {
+    const chat = await this.owned(user, id);
+    if (!bytes.length) throw new ChatError(400, "The file is empty.");
+    if (bytes.length > CHAT_FILE_MAX_BYTES) throw new ChatError(413, "Files can be 10 MB or smaller.");
+    const at = this.now();
+    for (const [key, item] of this.pendingFiles) if (at - item.at > PENDING_FILE_MS) { this.pendingFiles.delete(key); void this.storage.delete(chatFileKey(chat.server, item.chat, key)).catch(error => logError("web_chat_file_sweep_failed", error, { server: chat.server }, true)); }
+    if ([...this.pending.values(), ...this.pendingFiles.values()].filter(item => item.chat === chat.id && item.user === user).length >= CHAT_ATTACHMENT_MAX_COUNT) throw new ChatError(400, `Attach ${CHAT_ATTACHMENT_MAX_COUNT} files or images or fewer.`);
+    const limit = await this.host.limiter.check(user);
+    if (!limit.allowed) throw new ChatError(429, "Usage limit reached.", limit.resetAt);
+    const name = fileName(rawName), contentType = fileContentType(rawType);
+    const fileId = newChatFileId(name);
+    await this.storage.put(chatFileKey(chat.server, chat.id, fileId), bytes, contentType);
+    this.pendingFiles.set(fileId, { chat: chat.id, user, name, contentType, size: bytes.length, at });
+    return { fileId, name, contentType, size: bytes.length };
+  }
+
+  /** Removes a file that is uploaded but not sent. A sent file goes only with its chat. */
+  async discardFile(user: string, id: string, fileId: string): Promise<void> {
+    const chat = await this.owned(user, id);
+    const found = this.pendingFiles.get(fileId);
+    if (!found || found.chat !== chat.id || found.user !== user) throw new ChatError(404, "Not found.");
+    this.pendingFiles.delete(fileId);
+    await this.storage.delete(chatFileKey(chat.server, chat.id, fileId));
+  }
+
+  /** The bytes and name of one file of an owned chat. The key has the chat in it, so another chat's file is never reached. */
+  async readFile(user: string, id: string, fileId: string): Promise<{ bytes: Uint8Array; name: string }> {
+    const chat = await this.owned(user, id);
+    if (!CHAT_FILE_ID.test(fileId)) throw new ChatError(404, "Not found.");
+    const bytes = await this.storage.get(chatFileKey(chat.server, chat.id, fileId), CHAT_FILE_MAX_BYTES).catch(() => undefined);
+    if (!bytes) throw new ChatError(404, "Not found.");
+    return { bytes, name: await this.chatFileName(chat, fileId) };
+  }
+
+  /** The name of a file: the pending upload, else the message that sent it, else the file ID. */
+  private async chatFileName(chat: WebChatRow, fileId: string): Promise<string> {
+    const pending = this.pendingFiles.get(fileId);
+    if (pending?.chat === chat.id) return pending.name;
+    const channel = privateChannel(chat.id);
     let cursor: { time: number; id: string } | undefined;
     for (;;) {
       const rows = await this.store.conversationMessages(chat.server, channel, cursor, 100);
-      for (const row of rows) for (const item of imageAttachments(row.attachments)) ids.add(item.imageId);
+      for (const row of rows) { const found = fileAttachments(row.attachments).find(item => item.fileId === fileId); if (found) return found.name; }
+      const last = rows.at(-1);
+      if (rows.length < 100 || !last) break;
+      cursor = { time: last.timestamp ?? 0, id: last.id };
+    }
+    return fileId;
+  }
+
+  /** Deletes every stored image and file of a chat: the sent ones (from the message rows) and the pending ones. */
+  private async removeImages(chat: WebChatRow): Promise<void> {
+    const channel = privateChannel(chat.id), ids = new Set<string>(), fileIds = new Set<string>();
+    for (const [imageId, item] of this.pending) if (item.chat === chat.id) ids.add(imageId);
+    for (const [fileId, item] of this.pendingFiles) if (item.chat === chat.id) fileIds.add(fileId);
+    let cursor: { time: number; id: string } | undefined;
+    for (;;) {
+      const rows = await this.store.conversationMessages(chat.server, channel, cursor, 100);
+      for (const row of rows) {
+        for (const item of imageAttachments(row.attachments)) ids.add(item.imageId);
+        for (const item of fileAttachments(row.attachments)) fileIds.add(item.fileId);
+      }
       const last = rows.at(-1);
       if (rows.length < 100 || !last) break;
       cursor = { time: last.timestamp ?? 0, id: last.id };
     }
     for (const imageId of ids) { await this.storage.delete(chatImageKey(chat.server, chat.id, imageId)); this.pending.delete(imageId); }
+    for (const fileId of fileIds) { await this.storage.delete(chatFileKey(chat.server, chat.id, fileId)); this.pendingFiles.delete(fileId); }
   }
 
   /** Opens the live stream of one chat. Throws ChatError before the stream starts, so the route can still send an error. */
@@ -411,6 +498,17 @@ export function createChatRoutes(service: WebChatService): ChatRoutes {
             return void res.end(image.bytes);
           }
         }
+        if (parts[2] === "files") {
+          // The file type is the request Content-Type, read by the service with fileContentType.
+          if (parts.length === 3 && req.method === "POST" && Buffer.isBuffer(body)) return json(res, 201, await service.uploadFile(user, id, body, url.searchParams.get("name"), req.headers["content-type"] ?? null));
+          if (parts.length === 4 && req.method === "DELETE") { await service.discardFile(user, id, parts[3] ?? ""); return json(res, 200, { ok: true }); }
+          if (parts.length === 4 && req.method === "GET") {
+            const file = await service.readFile(user, id, parts[3] ?? "");
+            // Never inline: the browser saves the file, and the type is not sniffed.
+            res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": file.bytes.length, "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`, "Cache-Control": "private, max-age=600", "X-Content-Type-Options": "nosniff" });
+            return void res.end(file.bytes);
+          }
+        }
         if (parts.length === 2) {
           if (req.method === "PATCH") {
             if ("effort" in input) await service.setEffort(user, id, input.effort);
@@ -426,7 +524,7 @@ export function createChatRoutes(service: WebChatService): ChatRoutes {
             if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new ChatError(400, "Invalid limit.");
             return json(res, 200, await service.messages(user, id, limit, url.searchParams.get("before") || null));
           }
-          if (req.method === "POST") return json(res, 201, await service.send(user, id, input.text, input.images));
+          if (req.method === "POST") return json(res, 201, await service.send(user, id, input.text, input.images, input.files));
         }
         if (parts.length === 3 && parts[2] === "stop" && req.method === "POST") return json(res, 200, await service.stop(user, id));
         if (parts.length === 3 && parts[2] === "stream" && req.method === "GET") return await service.openStream(req, res, user, id);

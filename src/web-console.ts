@@ -13,6 +13,7 @@ import { ShareError, isShareWrite, type ShareService } from './shares.js';
 import type { WebSessionStore } from './web-session-store.js';
 import type { ChatRoutes } from './web-chats.js';
 import { ChatError } from './web-chats.js';
+import { CHAT_FILE_MAX_BYTES } from './web-chat-files.js';
 import { runtimeVersion } from './operations-config.js';
 import type { InboxItem } from './inbox.js';
 
@@ -264,6 +265,15 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
             // Past the limit nothing is kept. The rest of the body is read and dropped, so the 413 reaches the client.
             for await (const chunk of req) { size += chunk.length; if (size <= limit) chunks.push(chunk); }
             if (size > limit) return send(res, 413, { error: 'Images can be 25 MB or smaller.' });
+            return void await backend.chats.handle(req, res, url, session.user, Buffer.concat(chunks));
+          }
+          if (req.method === 'POST' && /^\/api\/chats\/[^/]+\/files$/.test(routePath)) {
+            // One raw file of any type per request. The size is checked on the header and again while reading.
+            const limit = CHAT_FILE_MAX_BYTES;
+            if (Number(req.headers['content-length']) > limit) { req.resume(); return send(res, 413, { error: 'Files can be 10 MB or smaller.' }); }
+            const chunks: Buffer[] = []; let size = 0;
+            for await (const chunk of req) { size += chunk.length; if (size <= limit) chunks.push(chunk); }
+            if (size > limit) return send(res, 413, { error: 'Files can be 10 MB or smaller.' });
             return void await backend.chats.handle(req, res, url, session.user, Buffer.concat(chunks));
           }
           if (req.method !== 'DELETE') {
