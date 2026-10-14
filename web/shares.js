@@ -323,7 +323,7 @@
     });
     document.getElementById('share-log').replaceChildren(...data.messages.map(shareMessage));
     const status = document.getElementById('share-status');
-    if (data.messages.some(message => message.images.length)) { status.textContent = 'Images are not copied when you continue.'; status.hidden = false; }
+    if (data.messages.some(message => message.images.length || message.files.length)) { status.textContent = 'Images and files are not copied when you continue.'; status.hidden = false; }
     const button = document.getElementById('share-continue');
     button.addEventListener('click', () => continueShare(data.id, button));
   }
