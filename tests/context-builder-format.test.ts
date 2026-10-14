@@ -113,3 +113,17 @@ test("error notice stays user side", async () => {
   assert.ok(!result.inputs.some(item => item.role === "assistant"));
   assert.ok(result.inputs.some(item => item.role === "user" && item.content.includes("Slopbot notice: Usage limit reached.")));
 });
+
+test("slopbot not in people", async () => {
+  const profiles = {
+    profile: async (_server: string, user: string) => ({ name: user === "alice" ? "Alice" : "Bob", identity: {}, fields: [] }),
+  } as unknown as ProfileStore;
+  const context = [msg("1001", "alice", "Can you fix the bike?", at(14, 2)), msg("1002", BOT, "Usage limit reached.", at(14, 3)), msg("1003", "bob", "thanks", at(14, 5))];
+  const request = msg("1004", "alice", "what about the chain", at(14, 6));
+  const result = await builder(context, new Map(), 100_000, profiles).build(request, undefined, 12, noHistory);
+  const content = result.inputs.find(item => item.contextOnly && item.content.includes("People:"))!.content;
+  assert.ok(!content.includes(`(user_id ${BOT})`));
+  assert.ok(content.includes("- Alice (user_id alice) [requester]"));
+  assert.ok(content.includes("- Bob (user_id bob)"));
+  assert.ok(result.inputs.some(item => item.role === "user" && item.content.includes("Slopbot notice: Usage limit reached.")));
+});
