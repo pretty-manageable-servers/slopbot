@@ -401,7 +401,9 @@ export class DiscordServer implements ChatGateway {
       return;
     }
     const channel = await this.client.channels.fetch(channelId);
-    if (!channel || !(channel.type === ChannelType.GuildText || (!parentOnly && channel.isThread())) || channel.guildId !== message.server || message.server !== this.guildId) throw new ToolError("Choose a text channel in this server.");
+    // A voice channel's own text chat counts while a voice session is live there, for requests made in it.
+    const liveVoiceChat = channel?.type === ChannelType.GuildVoice && channelId === message.channel && this.bot.accepts(message.server, channelId);
+    if (!channel || !(channel.type === ChannelType.GuildText || liveVoiceChat || (!parentOnly && channel.isThread())) || channel.guildId !== message.server || message.server !== this.guildId) throw new ToolError("Choose a text channel in this server.");
     const guild = await this.client.guilds.fetch(message.server);
     const member = await guild.members.fetch({ user: message.author, force: true });
     const bot = await guild.members.fetchMe();
