@@ -4,10 +4,11 @@ import { SQLiteStore } from '../src/adapters/sqlite.js';
 import type { SandboxProvider, SandboxSession } from '../src/sandbox.js';
 import { sandboxFileTools } from '../src/sandbox-tools.js';
 import { ToolError, ToolRegistry, UncertainActionError } from '../src/tools.js';
+import type { SandboxProfile } from '../src/sandbox-profile.js';
 
 const message = { id: 'm', server: 's', channel: 'task', author: 'a', text: 'edit files' };
 
-function setup(options: { failRun?: boolean } = {}) {
+function setup(options: { failRun?: boolean; home?: string; homeFails?: boolean; profile?: SandboxProfile } = {}) {
   const store = new SQLiteStore();
   const sessions = new Map<string, SandboxSession>();
   const files = new Map<string, string>();
@@ -23,6 +24,10 @@ function setup(options: { failRun?: boolean } = {}) {
         id,
         async run(command, timeout) {
           commands.push(command); timeouts.push(timeout);
+          if (command.startsWith('printf')) {
+            if (options.homeFails) throw new UncertainActionError('home lost');
+            return { stdout: options.home ?? '/home/user', stderr: '', exitCode: 0 };
+          }
           if (options.failRun && !command.startsWith('mkdir')) throw new UncertainActionError('Sandbox command timed out or its result was lost.');
           if (command.startsWith('mkdir')) return { stdout: '', stderr: '', exitCode: 0 };
           return { stdout: `ran ${command}`, stderr: '', exitCode: command === 'false' ? 1 : 0 };
@@ -48,7 +53,7 @@ function setup(options: { failRun?: boolean } = {}) {
     },
   };
   const registry = new ToolRegistry(store, async () => false);
-  for (const tool of sandboxFileTools(store, provider)) registry.register(tool);
+  for (const tool of sandboxFileTools(store, provider, options.profile)) registry.register(tool);
   const invoke = (name: string, args: object, operationId: string) => registry.invoke(message, name, args, operationId, 'agent');
   return { store, registry, provider, sessions, files, commands, timeouts, connectCalls, invoke, created: () => created };
 }
@@ -198,4 +203,33 @@ test('the file tools are top-level, member-only and inline', async t => {
   }
   assert.equal(tools.find(tool => tool.name === 'read')?.effect, 'read');
   assert.ok(tools.filter(tool => tool.name !== 'read').every(tool => tool.effect === 'write'));
+});
+
+test('relative_path_uses_profile_home: the profile home wins over the home of the sandbox', async t => {
+  const f = setup({ home: '/home/user', profile: { template: 'base', user: 'ubuntu', home: '/home/ubuntu', os: 'Ubuntu 24.04.1 LTS', installed: [] } }); t.after(() => f.store.close());
+  await f.invoke('write', { path: 'foo.py', content: 'print(1)' }, 'w1');
+  assert.equal(f.files.get('workspace-1:/home/ubuntu/foo.py'), 'print(1)');
+  assert.equal(await f.invoke('read', { path: 'foo.py' }, 'r1'), '1\tprint(1)');
+});
+
+test('tilde_path: ~, ~/name and absolute paths resolve without an error', async t => {
+  const f = setup({ profile: { template: 'base', user: 'ubuntu', home: '/home/ubuntu', os: 'Ubuntu 24.04.1 LTS', installed: [] } }); t.after(() => f.store.close());
+  await f.invoke('write', { path: '~/foo.py', content: 'a' }, 'w1');
+  await f.invoke('write', { path: '~/dir/../bar.txt', content: 'b' }, 'w2');
+  await f.invoke('write', { path: '/srv/data.txt', content: 'c' }, 'w3');
+  assert.equal(f.files.get('workspace-1:/home/ubuntu/foo.py'), 'a');
+  assert.equal(f.files.get('workspace-1:/home/ubuntu/bar.txt'), 'b');
+  assert.equal(f.files.get('workspace-1:/srv/data.txt'), 'c');
+  assert.equal(await f.invoke('read', { path: '~/bar.txt' }, 'r1'), '1\tb');
+  assert.equal(await f.invoke('read', { path: '~' }, 'r2').catch(() => 'error'), 'error');
+});
+
+test('fallback_session_home: without a profile the home of the sandbox is used, then /home/user', async t => {
+  const reported = setup({ home: '/home/ubuntu' }); t.after(() => reported.store.close());
+  await reported.invoke('write', { path: 'a.txt', content: 'x' }, 'w1');
+  assert.equal(reported.files.get('workspace-1:/home/ubuntu/a.txt'), 'x');
+
+  const failed = setup({ homeFails: true }); t.after(() => failed.store.close());
+  await failed.invoke('write', { path: 'a.txt', content: 'y' }, 'w1');
+  assert.equal(failed.files.get('workspace-1:/home/user/a.txt'), 'y');
 });

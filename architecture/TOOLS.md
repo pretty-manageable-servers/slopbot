@@ -33,7 +33,7 @@ Keep service clients outside the core. Native tools register at startup. Runtime
 
 Tools may supply `matchRead(message)` for a narrow, unambiguous read intent. The registry validates it and the same permission-checked executor runs it. For example, an indexing-status request selects `index` directly and returns its actual result. Matches never authorize writes. Legacy text-protocol failures have at most two repair attempts; native calls retain provider IDs and validate their arguments before execution. Each failed run retains its original events.
 
-Request uploads. When the bot answers a request (mention, reply, private chat, task thread or name request), each non-image attachment is copied to `/home/user/uploads/<name>` in the task sandbox before the model run. Images stay inline for vision. The limit is 10 MiB per file, using the Discord fetch rules. Two files with one name get `-1`, `-2` before the extension. A failed upload is logged and reported in the request context as `upload_failed`; the run continues. The request context lists the copied paths as `uploaded_files`. Messages that are not requests do not upload. Source: `src/sandbox-uploads.ts`.
+Request uploads. When the bot answers a request (mention, reply, private chat, task thread or name request), each non-image attachment is copied to `<home>/uploads/<name>` in the task sandbox, where `<home>` is the sandbox home from the startup profile before the model run. Images stay inline for vision. The limit is 10 MiB per file, using the Discord fetch rules. Two files with one name get `-1`, `-2` before the extension. A failed upload is logged and reported in the request context as `upload_failed`; the run continues. The request context lists the copied paths as `uploaded_files`. Messages that are not requests do not upload. Source: `src/sandbox-uploads.ts`.
 
 ## Self-improvement tools
 
@@ -77,7 +77,7 @@ Runtime MCP configuration uses the existing model protocol. Slopbot's own progra
 
 `run_tools_code` runs JavaScript that the model writes. The model passes one argument, `code`. Inside the code, `tools.NAME(arguments)` calls any tool of the core catalog or any tool that `list_tools()` returns. The core catalog is every registered tool with `surface: "catalog"`, sorted by name, in the tool description. It is the same for every user and channel. Access is checked on each call, not when the catalog is built. MCP tools have `surface: "discovery"`: they are reached only through `list_tools()` and `describe_tool(name)`. The native top-level tools (`read`, `write`, `edit`, `shell`, `web_search`, `web_fetch`, `task_start`, `ui_publish`, `voice_say`, `voice_skip`) are not in the catalog. `run_tools_code` is registered last, so its catalog lists every tool registered before it.
 
-Built-ins: `list_tools()` returns the tools this requester can use. `describe_tool(name)` returns the fields of one tool. `save_to_sandbox(path, data)` writes a string, or JSON for other data, to a file under `/home/user` in the task sandbox.
+Built-ins: `list_tools()` returns the tools this requester can use. `describe_tool(name)` returns the fields of one tool. `save_to_sandbox(path, data)` writes a string, or JSON for other data, to a file under the sandbox home directory. Relative paths and `~` start there.
 
 Writes are allowed. Each child call goes through `ToolRegistry` with the requester's permission check and a stable operation ID made from the parent ID, the call index, the tool name and the arguments. A call whose tool has `confirm(args)` true stops the program. The pending call is saved in a `tool-confirm` record, and the bot posts Confirm and Cancel buttons. Only the requester can click. Confirm runs that one call once. Cancel ends the record. Calls that need Confirm: `channels` remove, `usage` reset, `issue_report`, and `file_store` writes.
 
@@ -104,7 +104,7 @@ The task sandbox uses the `SandboxProvider` interface, implemented by the E2B SD
 
 The first call of `read`, `write`, `edit` or `shell` in a channel or thread starts its sandbox. `sandboxSession` in `src/sandbox-session.ts` reuses the recorded sandbox and renews its lease. An expired or unreachable sandbox is replaced. The result then starts with "New sandbox started; earlier files are gone." `status` and `close` never start a sandbox.
 
-`read` returns numbered lines, with `offset` and `limit` (at most 2,000 lines) and at most 16,000 characters. Relative paths start in `/home/user`. `write` creates parent directories and takes at most 64,000 characters. `edit` needs `old_string` to occur once unless `replace_all` is true; the error gives the count found. `shell` takes `timeout_seconds` (1 to 120, default 30) and returns the exit code, stdout and stderr, each cut at 16,000 characters. A timeout returns exit code 124, and the command may still run.
+`read` returns numbered lines, with `offset` and `limit` (at most 2,000 lines) and at most 16,000 characters. Relative paths and `~` start in the sandbox home directory; absolute paths are used as they are. `write` creates parent directories and takes at most 64,000 characters. `edit` needs `old_string` to occur once unless `replace_all` is true; the error gives the count found. `shell` takes `timeout_seconds` (1 to 120, default 30) and returns the exit code, stdout and stderr, each cut at 16,000 characters. A timeout returns exit code 124, and the command may still run.
 
 Mutations share a per-channel resource lock. A lost command result stays uncertain: the sandbox lease expires on its own. Files are gone when the sandbox expires or is closed.
 
@@ -164,7 +164,7 @@ To build an environment with preinstalled software, call `sandbox_manage` in a t
 
 Builds use the official SDK with the configured PMServers project token and Ubuntu 24.04, then supported apt, run, environment and pip build steps. Python packages install in `/opt/slopbot-python`, a virtual environment on PATH for later commands. Package lists allow names and exact pins, at most 40 per manager; credentials, custom registry URLs, arbitrary host files and build shell snippets are not accepted. Builds are journaled mutations. Known build failures are reported as failures; a lost response stays uncertain and is not blindly rebuilt. A build does not replace an active task sandbox. `action: templates` lists the templates of this PMServers project, and falls back to this server's recorded builds when the project list cannot be read.
 
-Template sandboxes use `/home/user` and user `user`; sudo is unavailable. The `slopbot` template installs poppler-utils (`pdftotext`) and pandoc. Its build is run by `scripts/sandbox-template.mjs`.
+Template sandboxes run as the template user in its home directory (`/home/user` in the slopbot template); sudo is unavailable. The `slopbot` template installs poppler-utils (`pdftotext`) and pandoc. Its build is run by `scripts/sandbox-template.mjs`.
 
 Sources reviewed 2026-10-12: https://docs.pmservers.org/sandboxes/templates/ and https://docs.pmservers.org/sandboxes/overview/ . Named tags and image builds are supported; snapshot, fork, private registry and tag-route features remain unsupported.
 

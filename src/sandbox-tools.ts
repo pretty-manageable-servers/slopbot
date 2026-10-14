@@ -2,7 +2,8 @@ import type { Message } from './domain.js';
 import type { RecordStore } from './records.js';
 import { requestTimings } from './request-timing.js';
 import type { SandboxProvider, SandboxSession } from './sandbox.js';
-import { SANDBOX_HOME, SANDBOX_LIFETIME_MS, sandboxSession } from './sandbox-session.js';
+import type { SandboxProfile } from './sandbox-profile.js';
+import { resolveSandboxPath, SANDBOX_LIFETIME_MS, sandboxSession } from './sandbox-session.js';
 import { ToolError, UncertainActionError, type ToolArgs, type ToolContext, type ToolDefinition } from './tools.js';
 
 const readCharacters = 16000;
@@ -19,11 +20,6 @@ export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-/** Relative paths resolve under the sandbox home. */
-export function sandboxPath(path: string): string {
-  return path.startsWith('/') ? path : `${SANDBOX_HOME}/${path}`;
-}
-
 function cut(text: string): string {
   return text.length > outputCharacters ? `${text.slice(0, outputCharacters)}\n[Output truncated.]` : text;
 }
@@ -36,25 +32,25 @@ function checkPath(args: ToolArgs): void {
   if (typeof args.path !== 'string' || !args.path.trim() || args.path.length > pathCharacters || args.path.includes('\0')) throw new ToolError(`path must be a file path of 1-${pathCharacters} characters.`);
 }
 
-/** Gets the task sandbox. Starts one when none is active. A replaced sandbox (expired or not connectable) adds a notice to the result. */
-async function workspace(store: RecordStore, provider: SandboxProvider | undefined, context: ToolContext): Promise<{ session: SandboxSession; notice: string }> {
+/** Gets the task sandbox. Starts one when none is active. A replaced sandbox (expired or not connectable) adds a notice to the result. home is the profile home when known, else the home of this sandbox. */
+async function workspace(store: RecordStore, provider: SandboxProvider | undefined, context: ToolContext, profile?: SandboxProfile): Promise<{ session: SandboxSession; notice: string; home: string }> {
   if (!provider) throw new ToolError('Sandbox is not configured. Set E2B_API_KEY to a PMServers project token.');
   await context.assertActive();
   const { message } = context;
   const before = await store.record(message.server, 'sandbox', message.channel);
   const hadSession = Boolean((before?.value as { id?: string } | undefined)?.id);
-  const { session, created } = await sandboxSession(store, provider, message, context.operationId);
+  const { session, created, home } = await sandboxSession(store, provider, message, context.operationId);
   await context.assertActive();
-  return { session, notice: created && hadSession ? `${replacedNotice}\n` : '' };
+  return { session, home: profile?.home ?? home, notice: created && hadSession ? `${replacedNotice}\n` : '' };
 }
 
-function readTool(store: RecordStore, provider?: SandboxProvider): ToolDefinition {
+function readTool(store: RecordStore, provider?: SandboxProvider, profile?: SandboxProfile): ToolDefinition {
   return {
     name: 'read',
     surface: 'top',
-    description: 'Read a text file in the sandbox. Returns numbered lines, at most 16000 characters. Relative paths start in /home/user. Use offset and limit to read long files in parts.',
+    description: 'Read a text file in the sandbox. Returns numbered lines, at most 16000 characters. Relative paths start in your home directory. Use offset and limit to read long files in parts.',
     fields: {
-      path: { type: 'string', required: true, max: pathCharacters, description: 'File path. Absolute, or relative to /home/user.' },
+      path: { type: 'string', required: true, max: pathCharacters, description: 'File path. Absolute, or relative to your home directory.' },
       offset: { type: 'integer', min: 1, description: 'First line to return, counted from 1. Default 1.' },
       limit: { type: 'integer', min: 1, max: readLineLimit, description: `Number of lines to return, at most ${readLineLimit}. Default ${readLineLimit}.` },
     },
@@ -62,8 +58,8 @@ function readTool(store: RecordStore, provider?: SandboxProvider): ToolDefinitio
     resource: sandboxResource,
     validate(args) { checkPath(args); return args; },
     async execute(context, args) {
-      const { session, notice } = await workspace(store, provider, context);
-      const path = sandboxPath(String(args.path));
+      const { session, notice, home } = await workspace(store, provider, context, profile);
+      const path = resolveSandboxPath(String(args.path), home);
       const text = await requestTimings.wait('sandbox read', () => session.read(path));
       if (text === '') return `${notice}The file is empty.`;
       const lines = text.endsWith('\n') ? text.slice(0, -1).split('\n') : text.split('\n');
@@ -85,13 +81,13 @@ function readTool(store: RecordStore, provider?: SandboxProvider): ToolDefinitio
   };
 }
 
-function writeTool(store: RecordStore, provider?: SandboxProvider): ToolDefinition {
+function writeTool(store: RecordStore, provider?: SandboxProvider, profile?: SandboxProfile): ToolDefinition {
   return {
     name: 'write',
     surface: 'top',
-    description: 'Create or replace a text file in the sandbox. Creates parent directories. Relative paths start in /home/user. Content is at most 64000 characters.',
+    description: 'Create or replace a text file in the sandbox. Creates parent directories. Relative paths start in your home directory. Content is at most 64000 characters.',
     fields: {
-      path: { type: 'string', required: true, max: pathCharacters, description: 'File path. Absolute, or relative to /home/user.' },
+      path: { type: 'string', required: true, max: pathCharacters, description: 'File path. Absolute, or relative to your home directory.' },
       content: { type: 'string', required: true, max: writeCharacters, description: 'Full UTF-8 text of the file.' },
     },
     access: 'member', effect: 'write', execution: 'inline', retrySafe: true,
@@ -102,8 +98,8 @@ function writeTool(store: RecordStore, provider?: SandboxProvider): ToolDefiniti
       return args;
     },
     async execute(context, args) {
-      const { session, notice } = await workspace(store, provider, context);
-      const path = sandboxPath(String(args.path));
+      const { session, notice, home } = await workspace(store, provider, context, profile);
+      const path = resolveSandboxPath(String(args.path), home);
       const dir = path.slice(0, path.lastIndexOf('/')) || '/';
       const made = await requestTimings.wait('sandbox mkdir', () => session.run(`mkdir -p ${shellQuote(dir)}`, mkdirSeconds * 1000));
       if (made.exitCode !== 0) throw new ToolError(`Could not create ${dir}: ${made.stderr.trim() || 'mkdir failed'}`);
@@ -113,13 +109,13 @@ function writeTool(store: RecordStore, provider?: SandboxProvider): ToolDefiniti
   };
 }
 
-function editTool(store: RecordStore, provider?: SandboxProvider): ToolDefinition {
+function editTool(store: RecordStore, provider?: SandboxProvider, profile?: SandboxProfile): ToolDefinition {
   return {
     name: 'edit',
     surface: 'top',
-    description: 'Replace text in a sandbox file. old_string must match the file exactly and occur once, unless replace_all is true. Relative paths start in /home/user.',
+    description: 'Replace text in a sandbox file. old_string must match the file exactly and occur once, unless replace_all is true. Relative paths start in your home directory.',
     fields: {
-      path: { type: 'string', required: true, max: pathCharacters, description: 'File path. Absolute, or relative to /home/user.' },
+      path: { type: 'string', required: true, max: pathCharacters, description: 'File path. Absolute, or relative to your home directory.' },
       old_string: { type: 'string', required: true, description: 'Exact text to replace. Include enough context to make it unique.' },
       new_string: { type: 'string', required: true, description: 'Text that replaces old_string. May be empty.' },
       replace_all: { type: 'boolean', description: 'Replace every occurrence of old_string. Default false.' },
@@ -133,8 +129,8 @@ function editTool(store: RecordStore, provider?: SandboxProvider): ToolDefinitio
       return args;
     },
     async execute(context, args) {
-      const { session, notice } = await workspace(store, provider, context);
-      const path = sandboxPath(String(args.path));
+      const { session, notice, home } = await workspace(store, provider, context, profile);
+      const path = resolveSandboxPath(String(args.path), home);
       const oldText = String(args.old_string), newText = String(args.new_string);
       const text = await requestTimings.wait('sandbox read', () => session.read(path));
       const found = text.split(oldText).length - 1;
@@ -148,11 +144,11 @@ function editTool(store: RecordStore, provider?: SandboxProvider): ToolDefinitio
   };
 }
 
-function shellTool(store: RecordStore, provider?: SandboxProvider): ToolDefinition {
+function shellTool(store: RecordStore, provider?: SandboxProvider, profile?: SandboxProfile): ToolDefinition {
   return {
     name: 'shell',
     surface: 'top',
-    description: 'Run a shell command in the sandbox. Returns the exit code, stdout and stderr, each at most 16000 characters. Runs as user in /home/user. Files from earlier calls stay in the sandbox.',
+    description: 'Run a shell command in the sandbox. Returns the exit code, stdout and stderr, each at most 16000 characters. Runs as the sandbox user in its home directory. Files from earlier calls stay in the sandbox.',
     fields: {
       command: { type: 'string', required: true, max: commandCharacters, description: 'Shell command to run in the sandbox.' },
       timeout_seconds: { type: 'integer', min: 1, max: 120, description: 'Time limit in seconds. Default 30.' },
@@ -166,7 +162,7 @@ function shellTool(store: RecordStore, provider?: SandboxProvider): ToolDefiniti
       return args;
     },
     async execute(context, args) {
-      const { session, notice } = await workspace(store, provider, context);
+      const { session, notice } = await workspace(store, provider, context, profile);
       const seconds = Number(args.timeout_seconds ?? 30);
       let output;
       try { output = await requestTimings.wait('sandbox command', () => session.run(String(args.command), seconds * 1000)); }
@@ -181,6 +177,6 @@ function shellTool(store: RecordStore, provider?: SandboxProvider): ToolDefiniti
 }
 
 /** The four file and command tools of the sandbox. They are top-level tools. Registration is done elsewhere. */
-export function sandboxFileTools(store: RecordStore, provider?: SandboxProvider): ToolDefinition[] {
-  return [readTool(store, provider), writeTool(store, provider), editTool(store, provider), shellTool(store, provider)];
+export function sandboxFileTools(store: RecordStore, provider?: SandboxProvider, profile?: SandboxProfile): ToolDefinition[] {
+  return [readTool(store, provider, profile), writeTool(store, provider, profile), editTool(store, provider, profile), shellTool(store, provider, profile)];
 }

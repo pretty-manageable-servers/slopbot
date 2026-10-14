@@ -81,7 +81,7 @@ export class AgentRunner {
   private readonly renderer: ReplyRenderer;
 
   constructor(private readonly store: Store, private readonly llm: LLM, private readonly policy: Policy,
-    recall?: Recall, private readonly services: { profiles?: ProfileStore; tools?: ToolExecutor; counter?: TokenCounter; harness?: HarnessJournal; presentation?: PresentationPolicy; onToolActivity?: ToolActivityObserver; usage?: UsageMeter } = {}) {
+    recall?: Recall, private readonly services: { profiles?: ProfileStore; tools?: ToolExecutor; counter?: TokenCounter; harness?: HarnessJournal; presentation?: PresentationPolicy; sandboxPrompt?: string; onToolActivity?: ToolActivityObserver; usage?: UsageMeter } = {}) {
     if (policy.maxToolRounds !== undefined && (!Number.isSafeInteger(policy.maxToolRounds) || policy.maxToolRounds < 1 || policy.maxToolRounds > 1000)) throw new Error("maxToolRounds must be an integer from 1 to 1000");
     this.recentMessages = policy.recentMessages ?? 12;
     this.allowedChannels = new Set(policy.allowedChannels.map(scope => JSON.stringify([scope.server, scope.channel])));
@@ -243,7 +243,8 @@ export class AgentRunner {
     const modelTools = tools?.schemas?.(message);
     const native = modelTools !== undefined;
     const base = this.systemPrefix();
-    const prefix = tools ? base.map(item => ({ ...item, content: item.content + "\n" + nativeToolInstructions })) : base;
+    // The sandbox line comes from the profile probed at startup. It is the same text for every run until restart.
+    const prefix = tools ? base.map(item => ({ ...item, content: item.content + "\n" + nativeToolInstructions + (this.services.sandboxPrompt ? "\n" + this.services.sandboxPrompt : "") })) : base;
     const schemaBudget = modelTools ? this.counter.count([{ role: "system", content: JSON.stringify(modelTools) }]) : 0;
     const inputLimit = this.inputLimit - schemaBudget;
     let rebuilds = 0;

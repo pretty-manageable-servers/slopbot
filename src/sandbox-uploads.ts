@@ -3,7 +3,8 @@ import type { Attachment, Message } from './domain.js';
 import type { FileFetcher } from './files.js';
 import type { RecordStore } from './records.js';
 import { requestTimings } from './request-timing.js';
-import { SANDBOX_UPLOAD_DIR, sandboxSession } from './sandbox-session.js';
+import type { SandboxProfile } from './sandbox-profile.js';
+import { sandboxSession } from './sandbox-session.js';
 import type { SandboxProvider } from './sandbox.js';
 
 export interface UploadDeps {
@@ -11,6 +12,8 @@ export interface UploadDeps {
   provider: SandboxProvider;
   /** Downloads the bytes. Enforces the 10 MiB limit. */
   fetcher: FileFetcher;
+  /** The probed profile. Its home wins over the home of the sandbox. */
+  profile?: SandboxProfile;
 }
 
 const IMAGE = /^image\//i;
@@ -47,7 +50,7 @@ function reason(error: unknown): string {
 }
 
 /**
- * Writes the non-image files of a request to SANDBOX_UPLOAD_DIR before the model run.
+ * Writes the non-image files of a request to <home>/uploads before the model run, where home is the sandbox user's home directory.
  * Returns undefined when the message has no such files. A failure is logged and reported as a failed name; it never throws.
  */
 export async function uploadRequestFiles(deps: UploadDeps, message: Message): Promise<{ files: string[]; failed: string[] } | undefined> {
@@ -55,17 +58,19 @@ export async function uploadRequestFiles(deps: UploadDeps, message: Message): Pr
   if (!attachments.length) return undefined;
   const names = uniqueNames(attachments.map(item => uploadName(item.name)));
   const files: string[] = [], failed: string[] = [];
-  let session: Awaited<ReturnType<typeof sandboxSession>>['session'];
+  let session: Awaited<ReturnType<typeof sandboxSession>>['session'], uploadDir: string;
   try {
-    session = (await sandboxSession(deps.store, deps.provider, message, `upload:${message.id}`)).session;
-    const made = await requestTimings.wait('sandbox upload directory', () => session.run(`mkdir -p ${SANDBOX_UPLOAD_DIR}`, UPLOAD_MKDIR_SECONDS * 1000));
+    const opened = await sandboxSession(deps.store, deps.provider, message, `upload:${message.id}`);
+    session = opened.session;
+    uploadDir = `${deps.profile?.home ?? opened.home}/uploads`;
+    const made = await requestTimings.wait('sandbox upload directory', () => session.run(`mkdir -p ${uploadDir}`, UPLOAD_MKDIR_SECONDS * 1000));
     if (made.exitCode !== 0) throw new Error(`mkdir failed: ${made.stderr.trim() || made.exitCode}`);
   } catch (error) {
     logError('sandbox_upload_failed', error, { stage: 'sandbox upload', server: message.server, channel: message.channel, messageId: message.id }, true);
     return { files: [], failed: names.map(name => `${name}: ${reason(error)}`) };
   }
   for (let index = 0; index < attachments.length; index++) {
-    const path = `${SANDBOX_UPLOAD_DIR}/${names[index]!}`;
+    const path = `${uploadDir}/${names[index]!}`;
     try {
       const bytes = await requestTimings.wait('file upload download', () => deps.fetcher.fetch(attachments[index]!));
       await requestTimings.wait('sandbox upload write', () => session.write(path, bytes));

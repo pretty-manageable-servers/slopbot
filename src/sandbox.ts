@@ -1,5 +1,6 @@
 import type { RecordStore } from './records.js';
 import { ToolError, type ToolDefinition, type ToolContext } from './tools.js';
+import { resolveSandboxPath, SANDBOX_HOME } from './sandbox-session.js';
 import { requestTimings } from './request-timing.js';
 
 export interface SandboxSession {
@@ -87,7 +88,7 @@ export function sandboxManageTool(store: RecordStore, provider?: SandboxProvider
   const catalog = listTemplates ? new TemplateCatalog(() => listTemplates()) : undefined;
   return {
     name: 'sandbox_manage',
-    description: 'Manage the sandbox of this task: templates lists the templates this PMServers project can start; build_template builds a template from apt and pip packages for later sandboxes; status shows the task sandbox; close deletes its files and processes. The read, write, edit and shell tools start the sandbox. Template sandboxes run as user in /home/user; sudo is unavailable, so install packages at build time.',
+    description: 'Manage the sandbox of this task: templates lists the templates this PMServers project can start; build_template builds a template from apt and pip packages for later sandboxes; status shows the task sandbox; close deletes its files and processes. The read, write, edit and shell tools start the sandbox. Template sandboxes run as a non-root user in its home directory; sudo is unavailable, so install packages at build time.',
     fields: {
       action: { type: 'string', required: true, choices: ['templates', 'build_template', 'status', 'close'], description: 'templates lists templates; build_template builds one; status shows the task sandbox; close deletes it and its files' },
       template: { type: 'string', max: 129, description: 'build_template only: name or name:tag of the new template. Required for build_template.' },
@@ -156,13 +157,14 @@ export function sandboxManageTool(store: RecordStore, provider?: SandboxProvider
   };
 }
 
-export async function readSandboxFile(store: RecordStore, provider: SandboxProvider, context: ToolContext, path: string, maxBytes: number): Promise<Uint8Array> {
+/** Reads a sandbox file. Relative paths and ~ start in the profile home when given, else in the home recorded for this task's sandbox. */
+export async function readSandboxFile(store: RecordStore, provider: SandboxProvider, context: ToolContext, path: string, maxBytes: number, profileHome?: string): Promise<Uint8Array> {
   await context.assertActive();
   const record = await store.record(context.message.server, 'sandbox', context.message.channel);
-  const value = record?.value as { id?: string; expiresAt?: number } | undefined;
+  const value = record?.value as { id?: string; expiresAt?: number; home?: string } | undefined;
   if (!value?.id || (value.expiresAt ?? 0) <= Date.now()) throw new ToolError('No active sandbox in this task. Run a command or import a file first.');
   const session = await provider.connect(value.id);
-  const bytes = await session.readBytes(path, maxBytes);
+  const bytes = await session.readBytes(resolveSandboxPath(path, profileHome ?? value.home ?? SANDBOX_HOME), maxBytes);
   const fresh = await store.record(context.message.server, 'sandbox', context.message.channel);
   if (fresh?.revision !== record?.revision) throw new ToolError('Sandbox changed while reading the file. Check its status and retry.');
   await context.assertActive();
