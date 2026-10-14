@@ -269,7 +269,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
     } });
   const inbox = services.inbox;
   if (inbox) {
-    add({ name: "inbox_add", description: "Put a summary in another member's inbox, when a member asks to put something in someone's inbox. Write a plain summary of at most 1000 characters: who said what and what the target must act on. Use the source message IDs from context.", fields: { target: { type: "string", description: "Discord user ID of the member whose inbox gets the item", required: true }, summary: { type: "string", description: "Plain summary, at most 1000 characters", required: true }, source_ids: { type: "string", description: "Comma-separated Discord message IDs that the summary covers", required: true } }, access: "member", effect: "write", retrySafe: false,
+    add({ name: "inbox_add", description: "Put a summary in another member's inbox, when a member asks to put something in someone's inbox. Write a plain summary of at most 1000 characters: who said what and what the target must act on. Use the source message IDs from context.", fields: { target: { type: "string", description: "Discord user ID of the member whose inbox gets the item", required: true }, summary: { type: "string", description: "Plain summary, at most 1000 characters", required: true }, source_ids: { type: "string", description: "Comma-separated Discord message IDs that the summary covers", required: true } }, access: "member", effect: "write", execution: "inline", retrySafe: false,
       async execute(context, args) {
         const target = userId(args.target);
         if (!target) throw new ToolError("Target must be a Discord user ID.");
@@ -286,7 +286,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
         const now = Date.now();
         return items.map(item => `${item.id} | from <@${item.sender}> | ${inboxAge(now - item.created_at)} | ${item.summary} | https://discord.com/channels/${context.message.server}/${item.channel}/${item.sourceIds[0]}${item.done_at === null ? "" : " | done"}`).join("\n");
       } });
-    add({ name: "inbox_done", description: "Mark your own inbox items done. Use the item IDs from inbox_list, comma-separated, or all.", fields: { ids: { type: "string", description: "Comma-separated item IDs, or all", required: true } }, access: "member", effect: "write", retrySafe: true,
+    add({ name: "inbox_done", description: "Mark your own inbox items done. Use the item IDs from inbox_list, comma-separated, or all.", fields: { ids: { type: "string", description: "Comma-separated item IDs, or all", required: true } }, access: "member", effect: "write", execution: "inline", retrySafe: true,
       async execute(context, args) {
         const raw = String(args.ids ?? "").trim();
         if (!raw) throw new ToolError("Give item IDs, or all.");

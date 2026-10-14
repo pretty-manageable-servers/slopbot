@@ -128,3 +128,13 @@ test("inbox_add tool stores item for target", async (t) => {
   assert.deepEqual(item!.sourceIds, [SOURCE]);
   assert.equal(item!.summary, "Send the invoice.");
 });
+
+test("inbox writes run inline without a task thread", async (t) => {
+  const journal = new SQLiteStore();
+  t.after(() => journal.close());
+  const { inbox } = setup();
+  const registry = new ToolRegistry(journal, async () => false);
+  registerServerTools(registry, { server: SERVER, inbox, originMessage: (message: Message) => message } as unknown as ServerToolServices);
+  assert.equal(registry.requiresThread("inbox_add", { target: TARGET, summary: "x", source_ids: SOURCE }), false);
+  assert.equal(registry.requiresThread("inbox_done", { ids: "all" }), false);
+});

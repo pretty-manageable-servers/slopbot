@@ -5,8 +5,15 @@ export const VOICE_CUE_TEXT = "One moment.";
 export const VOICE_TURN_TIMEOUT_MS = 120_000;
 
 /** Text for TTS: cut at the last . ! ? at or before max characters, else a hard cut. Trims. */
+/** Spoken when a reply is an error report. The details stay in the chat. */
+export const VOICE_ERROR_TEXT = "Sorry, that did not work. The details are in the chat.";
+
 export function spokenText(text: string, max = VOICE_SPOKEN_MAX): string {
-  const chars = Array.from(text.trim());
+  // An error reply starts with a code such as [ACTION_UNCERTAIN]. Do not read it aloud.
+  if (/^\s*\\?\[[A-Z][A-Z0-9\\_]*\]/.test(text)) return VOICE_ERROR_TEXT;
+  // Markdown marks, links and URLs are not spoken.
+  const plain = text.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, "").replace(/<[@#&!]*\d+>/g, "").replace(/[\\*_`~#>|]/g, "").replace(/\s+/g, " ");
+  const chars = Array.from(plain.trim());
   if (chars.length <= max) return chars.join("");
   const head = chars.slice(0, max);
   for (let i = head.length - 1; i >= 0; i--) {

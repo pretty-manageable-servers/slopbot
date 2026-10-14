@@ -34,6 +34,8 @@ export interface TaskRegistry {
 
 export class Bot {
   private readonly tasks = new Set<string>();
+  /** Voice channels with a live voice session. */
+  private readonly voiceChannels = new Set<string>();
   /** Times of recent replies to other bots, per channel. Stops bot-to-bot loops. */
   private readonly botReplies = new Map<string, number[]>();
   private readonly replies = new Map<string, Promise<void>>();
@@ -58,8 +60,12 @@ export class Bot {
   }
 
   accepts(server: string, channel: string): boolean {
-    return server === this.server && (this.channels.includes(channel) || this.tasks.has(channel) || this.privateChats.has(channel));
+    return server === this.server && (this.channels.includes(channel) || this.tasks.has(channel) || this.privateChats.has(channel) || this.voiceChannels.has(channel));
   }
+
+  /** Lets the bot answer in the text chat of a voice channel while a voice session is live there. */
+  openVoiceChannel(server: string, channel: string): void { if (server === this.server) this.voiceChannels.add(channel); }
+  closeVoiceChannel(channel: string): void { this.voiceChannels.delete(channel); }
 
   /** Lets the bot answer in a private chat. Its messages are always addressed to the bot. */
   openPrivateChat(server: string, channel: string): void {
