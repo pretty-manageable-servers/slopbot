@@ -146,7 +146,7 @@ const consoleFile = (path: string) => {
   // Chat and channel addresses: /chat, /chat/<id>, /team, /team/<id> and /team/<id>/run/<runId>. The page reads the path.
   if (/^\/(chat|team)(\/[^/]+)?\/?$/.test(path) || /^\/team\/[^/]+\/run\/[^/]+\/?$/.test(path)) return 'index.html';
   const name = path.startsWith('/console/') ? path.slice('/console/'.length) : '';
-  return /^(app\.js|palette\.js|conversations\.js|markdown\.js|highlight\.min\.js|style\.css|chat\.css|console\.css|shares\.js|shares\.css|assets\/(logo-(light|dark)\.svg|favicon\.svg|[a-z0-9-]+\.woff2))$/.test(name) ? name : undefined;
+  return /^(app\.js|palette\.js|conversations\.js|markdown\.js|highlight\.min\.js|style\.css|chat\.css|console\.css|shares\.js|shares\.css|assets\/(logo-(light|dark)\.svg|favicon\.svg|[a-z0-9-]+\.woff2)|katex\/katex\.min\.js|katex\/katex\.min\.css|katex\/fonts\/KaTeX_[A-Za-z0-9_-]+\.woff2)$/.test(name) ? name : undefined;
 };
 /** Landing file for a path: the home page, /_next/ files and top-level files such as /favicon.svg. */
 // A path with no extension is a page of the export, for example /terms gives terms.html.
