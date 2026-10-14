@@ -1,5 +1,6 @@
 import { RequestError } from "./errors.js";
-import type { Message, PromptItem } from "./domain.js";
+import type { Json, Message, PromptItem } from "./domain.js";
+import { contextBlock, evidenceLine, personLine, type ContextPerson } from "./context-block.js";
 import type { Store } from "./ports.js";
 import type { Recall } from "./memory.js";
 import type { TokenCounter } from "./context.js";
@@ -25,7 +26,9 @@ export class ContextBuilder {
     // A private chat has no task threads, so the thread rule in the tool instructions does not apply to it. Only this request says so.
     const privateChat = isPrivateChannel(message.channel) ? { private_web_chat: true, private_chat_rule: privateChatRule } : {};
     const voice = message.source === "voice" ? { voice_channel: true, voice_rule: VOICE_RULE } : {};
-    const metadata: PromptItem[] = this.options.tools ? [{ role: "user", contextOnly: true, content: JSON.stringify({ request_context: { server_id: message.server, channel_id: message.channel, requester_id: message.author, task_id: message.taskId ?? null, is_task: Boolean(message.taskId), ...privateChat, ...voice } }) }] : [];
+    const requestContext: Record<string, Json> = this.options.tools ? { server_id: message.server, channel_id: message.channel, requester_id: message.author, task_id: message.taskId ?? null, is_task: Boolean(message.taskId), ...privateChat, ...voice } : {};
+    // Request fields only, to reserve their budget. The full context block is built after the rows are chosen.
+    const metadata: PromptItem[] = this.options.tools ? [contextBlock({ request: requestContext, people: [], evidence: [] })] : [];
     let budget = this.options.inputLimit - schemaBudget - this.options.counter.count([...prefix, ...metadata, request]);
     if (budget < 0) throw new RequestError("CONTEXT_BUDGET", `Request exceeds context budget: request and schemas are ${-budget} estimated input units over the limit.`, "Reduce the request or increase CONTEXT_TOKENS while leaving room for OUTPUT_TOKENS.", { inputLimit: this.options.inputLimit, schemaBudget });
     const referencedContext = message.replyTo ? await this.options.store.context(message, recentMessages) : undefined;
@@ -66,11 +69,14 @@ export class ContextBuilder {
     const personScope = recalled.find(item => item.kind === "retrieval");
     if (personScope && !taskKey) { budget += this.options.counter.count(inputs); inputs.splice(0); } // Person evidence must not borrow other speakers' background text.
     const { quotes, quoteAnswer, clarificationAnswer } = personResponses(message, recalled, personScope);
+    // Evidence stays in inputs for the author and mention scans below; its rows move into the context block at the end.
+    const evidenceRows = new Map<PromptItem, Json>();
     for (const evidence of recalled) {
       const entry: PromptItem = { role: "user", content: JSON.stringify({ evidence }), contextOnly: true };
-      const size = this.options.counter.count([entry]);
-      if (size <= budget) { inputs.push(entry); budget -= size; for (const id of evidence.sourceIds) sources.add(id); }
+      const size = this.options.counter.count([{ role: "user", content: evidenceLine(evidence as unknown as Json), contextOnly: true }]);
+      if (size <= budget) { inputs.push(entry); evidenceRows.set(entry, evidence as unknown as Json); budget -= size; for (const id of evidence.sourceIds) sources.add(id); }
     }
+    const people: ContextPerson[] = [];
     if (this.options.profiles) {
       const authors = new Set([message.author, ...recalled.map(item => item.author)]);
       for (const item of inputs) {
@@ -79,13 +85,15 @@ export class ContextBuilder {
       for (const item of [request, ...inputs]) for (const match of item.content.matchAll(/<@!?(\d{17,20})>/g)) authors.add(match[1]!);
       for (const author of [...authors].slice(0, 12)) {
         const profile = await this.options.profiles.profile(message.server, author);
-        const entry: PromptItem = { role: "user", contextOnly: true, content: JSON.stringify({ public_profile: { user_id: author, display_name: profile.name, discord: profile.identity, fields: profile.fields.map(field => ({ field: field.field, value: field.value, editor: field.editor, self_reported: field.editor === author, source_ids: field.sourceIds })) } }) };
-        const size = this.options.counter.count([entry]);
-        if (size <= budget) { inputs.push(entry); budget -= size; for (const field of profile.fields) for (const id of field.sourceIds) sources.add(id); }
+        const person: ContextPerson = { user_id: author, display_name: profile.name, discord: profile.identity, fields: profile.fields.map(field => ({ field: field.field, value: field.value, self_reported: field.editor === author, source_ids: field.sourceIds })) };
+        const size = this.options.counter.count([{ role: "user", content: personLine(person), contextOnly: true }]);
+        if (size <= budget) { people.push(person); budget -= size; for (const field of profile.fields) for (const id of field.sourceIds) sources.add(id); }
       }
     }
-    inputs.push(...metadata, request);
+    const evidenceItems = [...evidenceRows.values()];
+    const block = this.options.tools || people.length || evidenceItems.length ? [contextBlock({ request: requestContext, people, evidence: evidenceItems })] : [];
+    inputs.splice(0, inputs.length, ...inputs.filter(item => !evidenceRows.has(item)), ...block, request);
     const suggested = suggestRequestTool(tools, message, target);
-    return { sourceVersion, history, inputs, sources, quoteAnswer, clarificationAnswer, suggested, metadata, quotes };
+    return { sourceVersion, history, inputs, sources, quoteAnswer, clarificationAnswer, suggested, metadata: block, quotes };
   }
 }

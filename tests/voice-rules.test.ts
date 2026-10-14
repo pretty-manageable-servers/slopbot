@@ -36,19 +36,19 @@ function message(source?: "web" | "voice"): Message {
 
 async function requestContext(source?: "web" | "voice") {
   const built = await builder().build(message(source), undefined, 0, async () => []);
-  return JSON.parse(built.metadata[0]!.content).request_context;
+  return built.metadata[0]!.content;
 }
 
 test("voice request has voice_rule", async () => {
   const context = await requestContext("voice");
-  assert.equal(context.voice_channel, true);
-  assert.equal(context.voice_rule, VOICE_RULE);
+  assert.ok(context.split("\n").includes("voice_channel: true"));
+  assert.ok(context.split("\n").includes(`voice_rule: ${VOICE_RULE}`));
 });
 
 test("web request has no voice_rule", async () => {
   const context = await requestContext("web");
-  assert.equal("voice_rule" in context, false);
-  assert.equal("voice_channel" in context, false);
+  assert.equal(context.includes("voice_rule"), false);
+  assert.equal(context.includes("voice_channel"), false);
 });
 
 test("spokenText speaks a short sentence for an error reply", async () => {
