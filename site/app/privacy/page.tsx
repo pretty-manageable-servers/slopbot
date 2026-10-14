@@ -88,7 +88,7 @@ export default function Privacy() {
       <ul>
         <li>Forget your own memories with <code>memory_forget</code>.</li>
         <li>Delete your private chats and revoke your shared links in the web console.</li>
-        <li>Stop a voice session with <code>/slopbot voice action:leave</code> while you are in that channel. Server admins can also stop it.</li>
+        <li>Stop a voice session with <code>/voice action:leave</code> while you are in that channel. Server admins can also stop it.</li>
         <li>Ask us for a copy of your data, or to delete it, in the PMServers Discord server.</li>
         <li>Depending on where you live, you can have more rights by law.</li>
       </ul>

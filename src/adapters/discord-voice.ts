@@ -290,12 +290,12 @@ export class DiscordVoice {
         }
         const replies = args.reply === 'text' ? 'text' : 'voice';
         await channel.send({ content: replies === 'text'
-          ? "Slopbot is joining to listen. Human speech is sent to PMServers for transcription. Each transcript is posted in this channel's chat. Replies are text only: Slopbot does not speak in this session. I handle one speaker at a time. Use /slopbot voice action:leave to stop."
-          : "Slopbot is joining to listen and reply aloud. Human speech is sent to PMServers for transcription. Each transcript is posted in this channel's chat, and replies use Slopbot's normal model and tools. I handle one speaker at a time. Use /slopbot voice action:leave to stop.", allowedMentions: { parse: [] } });
+          ? "Slopbot is joining to listen. Human speech is sent to PMServers for transcription. Each transcript is posted in this channel's chat. Replies are text only: Slopbot does not speak in this session. I handle one speaker at a time. Use /voice action:leave to stop."
+          : "Slopbot is joining to listen and reply aloud. Human speech is sent to PMServers for transcription. Each transcript is posted in this channel's chat, and replies use Slopbot's normal model and tools. I handle one speaker at a time. Use /voice action:leave to stop.", allowedMentions: { parse: [] } });
         await this.join(channel.id, replies);
         return replies === 'text'
-          ? `Joined <#${channel.id}>. I listen to human speakers and post each transcript in this channel's chat. Replies are text only in this session: I do not speak. I handle one speaker at a time. Use /slopbot voice action:leave to stop. I leave after five minutes of inactivity.`
-          : `Joined <#${channel.id}>. I listen to human speakers, post each transcript in this channel's chat, and reply aloud with Slopbot's normal model and tools, one speaker at a time. Speech is sent to PMServers for processing. Use /slopbot voice action:leave to stop. I leave after five minutes of inactivity.`;
+          ? `Joined <#${channel.id}>. I listen to human speakers and post each transcript in this channel's chat. Replies are text only in this session: I do not speak. I handle one speaker at a time. Use /voice action:leave to stop. I leave after five minutes of inactivity.`
+          : `Joined <#${channel.id}>. I listen to human speakers, post each transcript in this channel's chat, and reply aloud with Slopbot's normal model and tools, one speaker at a time. Speech is sent to PMServers for processing. Use /voice action:leave to stop. I leave after five minutes of inactivity.`;
       },
     });
   }
