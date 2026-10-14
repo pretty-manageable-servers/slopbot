@@ -215,10 +215,10 @@ test('buildMessages gives tool lines and thinking only to the first answer of a 
   const first = parseMessage({ id: answer, server, channel, author: bot, authorName: 'Slopbot', isBot: true, replyTo: human, text: 'a', timestamp: 2 });
   const second = parseMessage({ id: later, server, channel, author: bot, authorName: 'Slopbot', isBot: true, replyTo: human, text: 'b', timestamp: 3 });
   const rows = buildMessages([question, first, second], [
-    { request: human, kind: 'tool_call', payload: [{ id: 'c', name: 'file_read', arguments: { path: 'x' } }] },
+    { request: human, kind: 'tool_call', payload: [{ id: 'c', name: 'read', arguments: { path: 'x' } }] },
     { request: human, kind: 'reasoning', payload: { reasoning: 'why' } },
   ], { show_thinking: true });
-  assert.deepEqual(rows[1]!.tools, [{ name: 'file_read', status: 'Read a file' }]);
+  assert.deepEqual(rows[1]!.tools, [{ name: 'read', status: 'Read a file' }]);
   assert.equal(rows[1]!.thinking, 'why');
   assert.deepEqual(rows[2]!.tools, []);
   assert.equal(rows[2]!.thinking, undefined);

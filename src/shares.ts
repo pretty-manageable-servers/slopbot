@@ -76,8 +76,8 @@ export function isShareWrite(path: string): boolean {
 
 // Short labels for known tools. Arguments and results never go in a snapshot.
 const toolStatus = new Map<string, string>([
-  ["web_search", "Searched the web"], ["file_read", "Read a file"], ["file_store", "Used file storage"],
-  ["sandbox", "Ran code in a sandbox"], ["history_search", "Searched channel history"], ["history_read", "Read channel history"],
+  ["web_search", "Searched the web"], ["read", "Read a file"], ["write", "Wrote a file"], ["edit", "Edited a file"], ["file_store", "Used file storage"],
+  ["shell", "Ran a command"], ["sandbox_manage", "Managed the sandbox"], ["history_search", "Searched channel history"], ["history_read", "Read channel history"],
   ["memory", "Checked saved memories"], ["memory_remember", "Saved a memory"], ["memory_forget", "Forgot a memory"],
   ["reminder", "Used a reminder"], ["poll_create", "Created a poll"], ["ui_publish", "Published a view"],
   ["task_start", "Started a task"], ["task_status", "Checked task status"], ["task_retry", "Retried a task"], ["task_manage", "Managed a task"],

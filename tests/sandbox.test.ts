@@ -1,93 +1,80 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
-import { sandboxTool, type SandboxProvider, type SandboxSession, type SandboxAttachments } from '../src/sandbox.js';
+import { sandboxManageTool, type SandboxProvider, type SandboxSession, type SandboxTemplateSpec } from '../src/sandbox.js';
+import { sandboxFileTools } from '../src/sandbox-tools.js';
 import { ToolRegistry, ToolError, UncertainActionError } from '../src/tools.js';
-import { describeError } from '../src/errors.js';
-import { privateChannel } from '../src/private-chat.js';
-import type { ObjectStorageProvider } from '../src/object-storage.js';
-import { ChatFileFetcher, fileUrl } from '../src/web-chat-files.js';
 
-function setup(attachments?: SandboxAttachments) {
+function setup() {
   const store = new SQLiteStore();
   const sessions = new Map<string, SandboxSession>();
-  let created = 0, runs = 0, closed = 0;
-  const selected: (string | undefined)[] = [];
-  const builds: import('../src/sandbox.js').SandboxTemplateSpec[] = [];
+  let created = 0, closed = 0;
+  const builds: SandboxTemplateSpec[] = [];
   const provider: SandboxProvider = {
     defaultTemplate: 'base',
     async buildTemplate(spec) { builds.push(spec); },
-    async create(_metadata, lifetime, template) {
-      selected.push(template);
+    async listTemplates() { return ['base', 'analysis:v2']; },
+    async create(_metadata, lifetime) {
       assert.equal(lifetime, 600000);
-      const files = new Map<string, string | Uint8Array>();
       const session: SandboxSession = {
         id: `workspace-${++created}`,
-        async run(command, timeout) { runs++; assert.ok(timeout <= 60000); return { stdout: command, stderr: '', exitCode: command === 'false' ? 1 : 0 }; },
-        async write(path, text) { files.set(path, text); },
-        async read(path) { const data = files.get(path); return typeof data === 'string' ? data : Buffer.from(data ?? []).toString('utf8'); },
-        async readBytes(path) { const data = files.get(path); return typeof data === 'string' ? Buffer.from(data) : data ?? new Uint8Array(); },
+        async run(command) { return { stdout: command, stderr: '', exitCode: 0 }; },
+        async write() {}, async read() { return ''; }, async readBytes() { return new Uint8Array(); },
         async renew() {}, async close() { closed++; sessions.delete(session.id); },
       };
-      sessions.set(session.id, session); return session;
+      sessions.set(session.id, session);
+      return session;
     },
     async connect(id) { const session = sessions.get(id); if (!session) throw new ToolError('expired'); return session; },
   };
   const registry = new ToolRegistry(store, async () => false);
-  registry.register(sandboxTool(store, provider, attachments));
+  registry.register(sandboxManageTool(store, provider));
+  for (const tool of sandboxFileTools(store, provider)) registry.register(tool);
   const message = { id: 'm', server: 's', channel: 'task', author: 'a', text: 'run code' };
-  return { store, registry, provider, sessions, message, selected, builds, counts: () => ({ created, runs, closed }) };
+  return { store, registry, provider, builds, message, counts: () => ({ created, closed }) };
 }
 
-test('sandbox keeps task files, isolates other tasks, journals runs and closes', async t => {
+test('sandbox_manage builds and lists templates without replacing the task sandbox', async t => {
   const f = setup(); t.after(() => f.store.close());
-  const invoke = (args: object, id: string) => f.registry.invoke(f.message, 'sandbox', args, id, 'agent');
-  await invoke({ action: 'write', path: '/tmp/a.txt', text: 'hello' }, 'write');
-  assert.equal(await invoke({ action: 'read', path: '/tmp/a.txt' }, 'read'), 'hello');
-  const run = { action: 'run', command: 'false', seconds: 10 };
-  assert.match(await invoke(run, 'run'), /Exit code: 1/);
-  await invoke(run, 'run');
-  assert.deepEqual(f.counts(), { created: 1, runs: 1, closed: 0 });
-  await f.registry.invoke({ ...f.message, channel: 'other-task' }, 'sandbox', { action: 'run', command: 'ok' }, 'other', 'agent');
-  assert.equal(f.counts().created, 2);
-  await invoke({ action: 'close' }, 'close');
-  assert.equal(f.counts().closed, 1);
-  assert.match(await invoke({ action: 'status' }, 'status'), /No active/);
+  await f.registry.invoke(f.message, 'shell', { command: 'echo keep' }, 'start', 'agent');
+  const build = { action: 'build_template', template: 'analysis:v2', apt_packages: ['ffmpeg', 'ffmpeg'], pip_packages: ['numpy==2.0.0'] };
+  await f.registry.invoke(f.message, 'sandbox_manage', build, 'build', 'agent');
+  assert.deepEqual(f.builds, [{ name: 'analysis:v2', aptPackages: ['ffmpeg'], pipPackages: ['numpy==2.0.0'] }]);
+  assert.equal(f.counts().created, 1);
+  assert.match(await f.registry.invoke(f.message, 'sandbox_manage', { action: 'templates' }, 'list', 'command'), /analysis:v2/);
 });
 
-test('sandbox rejects malformed arguments and unconfigured providers without executing', async t => {
+test('sandbox_manage rejects invalid arguments before the provider is called', async t => {
   const f = setup(); t.after(() => f.store.close());
-  for (const args of [{ action: 'run' }, { action: 'run', command: 'hi', seconds: 61 }, { action: 'write', path: '../../env', text: 'x' }, { action: 'write', path: '/tmp/x' }]) {
-    await assert.rejects(f.registry.invoke(f.message, 'sandbox', args, `invalid:${JSON.stringify(args)}`, 'command'), ToolError);
-  }
-  const registry = new ToolRegistry(f.store, async () => false); registry.register(sandboxTool(f.store));
-  await assert.rejects(registry.invoke(f.message, 'sandbox', { action: 'run', command: 'hi' }, 'disabled', 'command'), /not configured/);
+  const invalid = [
+    { action: 'build_template' }, { action: 'build_template', template: 'bad name' },
+    { action: 'build_template', template: 'ok', apt_packages: ['curl; whoami'] },
+    { action: 'build_template', template: 'ok', pip_packages: ['--index-url'] },
+    { action: 'build_template', template: 'ok', pip_packages: ['numpy>=2'] },
+    { action: 'status', template: 'ok' }, { action: 'close', pip_packages: ['numpy'] },
+  ];
+  for (const [index, args] of invalid.entries()) await assert.rejects(f.registry.invoke(f.message, 'sandbox_manage', args, `bad-${index}`, 'agent'), ToolError);
+  assert.equal(f.builds.length, 0);
   assert.equal(f.counts().created, 0);
 });
 
-test('sandbox reuses recorded workspaces after reconstructing tools and recreates expired leases', async t => {
+test('status and close never start a sandbox', async t => {
   const f = setup(); t.after(() => f.store.close());
-  await f.registry.invoke(f.message, 'sandbox', { action: 'write', path: '/tmp/x', text: 'retained' }, 'first', 'command');
-  const fresh = new ToolRegistry(f.store, async () => false); fresh.register(sandboxTool(f.store, f.provider));
-  assert.equal(await fresh.invoke(f.message, 'sandbox', { action: 'read', path: '/tmp/x' }, 'second', 'command'), 'retained');
-  const record = (await f.store.record('s', 'sandbox', 'task'))!;
-  await f.store.putRecord('s', 'sandbox', 'task', { id: 'workspace-1', expiresAt: 0 }, record.revision);
-  await fresh.invoke(f.message, 'sandbox', { action: 'run', command: 'new' }, 'third', 'command');
-  assert.equal(f.counts().created, 2);
+  assert.match(await f.registry.invoke(f.message, 'sandbox_manage', { action: 'status' }, 'status-empty', 'command'), /No active sandbox/);
+  assert.match(await f.registry.invoke(f.message, 'sandbox_manage', { action: 'close' }, 'close-empty', 'command'), /No active sandbox/);
+  assert.equal(f.counts().created, 0);
+  await f.registry.invoke(f.message, 'shell', { command: 'ok' }, 'start', 'agent');
+  assert.match(await f.registry.invoke(f.message, 'sandbox_manage', { action: 'status' }, 'status', 'command'), /is connected/);
+  assert.equal(await f.registry.invoke(f.message, 'sandbox_manage', { action: 'close' }, 'close', 'agent'), 'Sandbox closed. Its files and processes are gone.');
+  assert.equal(f.counts().closed, 1);
+  assert.match(await f.registry.invoke(f.message, 'sandbox_manage', { action: 'status' }, 'status-after', 'command'), /No active sandbox/);
 });
 
-test('lost command results remain uncertain and are not automatically replayed', async t => {
-  const f = setup(); t.after(() => f.store.close());
-  const provider: SandboxProvider = { ...f.provider, async create(meta, lease) {
-    const session = await f.provider.create(meta, lease);
-    session.run = async () => { throw new Error('connection lost'); };
-    return session;
-  } };
-  const registry = new ToolRegistry(f.store, async () => false); registry.register(sandboxTool(f.store, provider));
-  const args = { action: 'run', command: 'side effect' };
-  await assert.rejects(registry.invoke(f.message, 'sandbox', args, 'lost', 'agent'), UncertainActionError);
-  await assert.rejects(registry.invoke(f.message, 'sandbox', args, 'lost', 'agent'), UncertainActionError);
-  assert.equal((await f.store.operation('lost'))?.status, 'started');
+test('only build_template needs a task thread', () => {
+  const f = setup();
+  assert.equal(f.registry.requiresThread('sandbox_manage', { action: 'build_template', template: 'x' }), true);
+  for (const args of [{ action: 'status' }, { action: 'templates' }, { action: 'close' }]) assert.equal(f.registry.requiresThread('sandbox_manage', args), false, JSON.stringify(args));
+  assert.equal(f.registry.requiresThread('shell', { command: 'ok' }), false);
 });
 
 test('sandbox SDK busy responses are known failures; unknown create errors remain uncertain', async t => {
@@ -98,58 +85,6 @@ test('sandbox SDK busy responses are known failures; unknown create errors remai
   await assert.rejects(provider.create({}, 600000), error => error instanceof ToolError && /capacity/.test(error.message));
   mock.mock.mockImplementation(async () => { throw new Error('private provider response'); });
   await assert.rejects(provider.create({}, 600000), error => error instanceof UncertainActionError && !error.message.includes('private'));
-});
-
-
-test('attachment import preserves binary bytes, reuses the workspace and journals source metadata', async t => {
-  const bytes = new Uint8Array([0, 255, 128, 13, 10]);
-  const source = { id: 'file-message', server: 's', channel: 'task', author: 'a', text: 'file', attachments: [{ name: 'data.bin', url: 'https://cdn.discordapp.com/file' }] };
-  let downloads = 0;
-  const f = setup({ resolve: async (_message, id) => { assert.equal(id, 'file-message'); return source; }, fetcher: { fetch: async attachment => { assert.equal(attachment.name, 'data.bin'); downloads++; return bytes; } } });
-  t.after(() => f.store.close());
-  let uploaded: string | Uint8Array | undefined;
-  await f.registry.invoke(f.message, 'sandbox', { action: 'write', path: '/tmp/existing', text: 'retained' }, 'create', 'agent');
-  const session = f.sessions.get('workspace-1')!;
-  session.write = async (path, data) => { assert.equal(path, '/tmp/data.bin'); uploaded = data; };
-  const args = { action: 'import_attachment', message_id: source.id, path: '/tmp/data.bin' };
-  const result = await f.registry.invokeResult(f.message, 'sandbox', args, 'import', 'agent');
-  assert.deepEqual(uploaded, bytes);
-  assert.match(result.text, /5 bytes.*\/tmp\/data.bin/);
-  assert.deepEqual(result.sources, [{ kind: 'message', server: 's', channel: 'task', id: source.id }]);
-  await f.registry.invokeResult(f.message, 'sandbox', args, 'import', 'agent');
-  assert.equal(downloads, 1);
-  assert.equal(f.counts().created, 1);
-  assert.equal(await session.read('/tmp/existing'), 'retained');
-});
-
-test('attachment import creates a workspace and defaults to the current or reply attachment', async t => {
-  const source = { id: 'reply', server: 's', channel: 'task', author: 'a', text: 'file', attachments: [{ name: 'first', url: 'https://cdn.discordapp.com/first' }, { name: 'second', url: 'https://cdn.discordapp.com/second' }] };
-  const f = setup({ resolve: async (_message, id) => { assert.ok(id === undefined || id === source.id); return source; }, fetcher: { fetch: async attachment => { assert.equal(attachment.name, 'second'); return Buffer.from('hello'); } } });
-  t.after(() => f.store.close());
-  await f.registry.invoke(f.message, 'sandbox', { action: 'import_attachment', attachment: 1, path: '/tmp/file' }, 'import', 'agent');
-  assert.equal(await f.sessions.get('workspace-1')!.read('/tmp/file'), 'hello');
-  assert.equal(f.counts().created, 1);
-});
-
-for (const failure of ['missing', 'download', 'changed', 'unauthorized']) test(`attachment import rejects ${failure} sources before creating a sandbox`, async t => {
-  let resolves = 0;
-  const source = { id: 'file', server: 's', channel: 'task', author: 'a', text: 'file', attachments: [{ name: 'file', url: 'https://cdn.discordapp.com/file' }] };
-  const f = setup({ resolve: async () => {
-    resolves++;
-    if (failure === 'unauthorized') throw new ToolError('File source must be in this permitted channel.');
-    return failure === 'missing' ? { ...source, attachments: [] } : failure === 'changed' && resolves > 1 ? { ...source, text: 'edited' } : source;
-  }, fetcher: { fetch: async () => { if (failure === 'download') throw new ToolError('File exceeds 10 MiB'); return new Uint8Array([1]); } } });
-  t.after(() => f.store.close());
-  await assert.rejects(f.registry.invoke(f.message, 'sandbox', { action: 'import_attachment', path: '/tmp/file' }, 'import', 'agent'));
-  assert.equal(f.counts().created, 0);
-});
-
-test('attachment import validates its path and index before downloading', async t => {
-  const f = setup({ resolve: async () => { throw Error('must not resolve'); } });
-  t.after(() => f.store.close());
-  for (const args of [{ action: 'import_attachment' }, { action: 'import_attachment', path: '../file' }, { action: 'import_attachment', path: '/tmp/file', attachment: 20 }]) {
-    await assert.rejects(f.registry.invoke(f.message, 'sandbox', args, JSON.stringify(args), 'agent'), ToolError);
-  }
 });
 
 test('the SDK adapter uploads binary data as an ArrayBuffer with exact bytes', async t => {
@@ -163,70 +98,6 @@ test('the SDK adapter uploads binary data as an ArrayBuffer with exact bytes', a
   const session = await new E2BSandboxProvider({ apiKey: 'test', apiUrl: 'https://example.com', sandboxUrl: 'https://example.com' }).create({}, 600000);
   await session.write('/tmp/file', new Uint8Array([99, ...expected, 99]).subarray(1, 4));
   assert.equal(writes, 1);
-});
-
-
-test('selects tagged templates at creation, retains selection on renewal, and protects task files', async t => {
-  const f = setup(); t.after(() => f.store.close());
-  const invoke = (args: object, id: string) => f.registry.invoke(f.message, 'sandbox', args, id, 'agent');
-  await invoke({action:'write',template:'science:v2',path:'/tmp/input',text:'keep me'}, 'templated-write');
-  assert.deepEqual(f.selected, ['science:v2']);
-  await invoke({action:'run',command:'python --version'}, 'reuse');
-  assert.equal(f.counts().created, 1);
-  assert.equal(((await f.store.record('s','sandbox','task'))!.value as {template:string}).template, 'science:v2');
-  assert.match(await invoke({action:'status'}, 'template-status'), /Template: science:v2/);
-  await assert.rejects(invoke({action:'run',template:'other',command:'echo wrong'}, 'mismatch'), /already has a sandbox/);
-  assert.equal(await invoke({action:'read',path:'/tmp/input'}, 'still-there'), 'keep me');
-  await invoke({action:'close'}, 'close-template');
-  await invoke({action:'run',template:'other',command:'echo new'}, 'switch');
-  assert.deepEqual(f.selected, ['science:v2', 'other']);
-});
-
-test('default template, expired workspaces, and legacy records remain compatible', async t => {
-  const f = setup(); t.after(() => f.store.close());
-  const provider = {...f.provider, defaultTemplate:'operator:v1'};
-  const registry = new ToolRegistry(f.store, async () => false); registry.register(sandboxTool(f.store, provider));
-  await registry.invoke(f.message, 'sandbox', {action:'run',command:'first'}, 'default', 'agent');
-  assert.deepEqual(f.selected, ['operator:v1']);
-  let record = (await f.store.record('s','sandbox','task'))!;
-  await f.store.putRecord('s','sandbox','task',{id:'workspace-1',expiresAt:Date.now()+600000},record.revision);
-  await registry.invoke(f.message, 'sandbox', {action:'run',command:'legacy'}, 'legacy', 'agent');
-  assert.equal(f.counts().created, 1);
-  record = (await f.store.record('s','sandbox','task'))!;
-  await f.store.putRecord('s','sandbox','task',{id:'workspace-1',expiresAt:0},record.revision);
-  await registry.invoke(f.message, 'sandbox', {action:'run',command:'next',template:'fresh:v2'}, 'expired', 'agent');
-  assert.deepEqual(f.selected, ['operator:v1', 'fresh:v2']);
-});
-
-test('builds are journaled, discoverable, and do not replace active task workspaces', async t => {
-  const f = setup(); t.after(() => f.store.close());
-  await f.registry.invoke(f.message,'sandbox',{action:'write',path:'/tmp/keep',text:'retained'},'before-build','agent');
-  const args = {action:'build_template',template:'analysis:v2',apt_packages:['ffmpeg','ffmpeg'],pip_packages:['numpy==2.0.0','pandas']};
-  await f.registry.invoke(f.message,'sandbox',args,'build','agent');
-  await f.registry.invoke(f.message,'sandbox',args,'build','agent');
-  assert.deepEqual(f.builds, [{name:'analysis:v2',aptPackages:['ffmpeg'],pipPackages:['numpy==2.0.0','pandas']}]);
-  assert.equal(f.counts().created, 1);
-  assert.equal(await f.registry.invoke(f.message,'sandbox',{action:'read',path:'/tmp/keep'},'after-build','agent'), 'retained');
-  const restored = new ToolRegistry(f.store, async () => false); restored.register(sandboxTool(f.store, f.provider));
-  assert.match(await restored.invoke(f.message,'sandbox',{action:'templates'},'list-templates','command'), /analysis:v2/);
-  assert.equal(restored.effect('sandbox',{action:'templates'}),'read');
-  const other = await restored.invoke({...f.message,server:'other'},'sandbox',{action:'templates'},'other-list','command');
-  assert.match(other, /none recorded/);
-});
-
-test('template arguments reject invalid names and package injection before contacting the provider', async t => {
-  const f = setup(); t.after(() => f.store.close());
-  const invalid = [
-    {action:'build_template'}, {action:'build_template',template:'bad name'},
-    {action:'build_template',template:'ok',apt_packages:['curl; whoami']},
-    {action:'build_template',template:'ok',pip_packages:['--index-url']},
-    {action:'build_template',template:'ok',pip_packages:['https://example.com/pkg.whl']},
-    {action:'build_template',template:'ok',pip_packages:['numpy>=2']},
-    {action:'run',command:'echo hi',pip_packages:['numpy']},
-    {action:'status',template:'ok'},
-  ];
-  for (const [i,args] of invalid.entries()) await assert.rejects(f.registry.invoke(f.message,'sandbox',args,`bad-template-${i}`,'agent'),ToolError);
-  assert.equal(f.builds.length, 0); assert.equal(f.counts().created, 0);
 });
 
 test('SDK creation passes template as the documented positional argument and keeps credentials in options', async t => {
@@ -303,54 +174,3 @@ async function rejection(promise: Promise<unknown>): Promise<Error> {
   throw new Error('expected a rejection');
 }
 
-test('an uncertain sandbox action stops blocking after its orphan lifetime; private chats get a plain message', async t => {
-  const f = setup(); t.after(() => f.store.close());
-  let failNext = true;
-  const provider: SandboxProvider = { ...f.provider, async create(meta, lease, template) {
-    const session = await f.provider.create(meta, lease, template);
-    session.run = async () => {
-      if (failNext) { failNext = false; throw new Error('connection lost'); }
-      return { stdout: 'ok', stderr: '', exitCode: 0 };
-    };
-    return session;
-  } };
-  const registry = new ToolRegistry(f.store, async () => false); registry.register(sandboxTool(f.store, provider));
-  const chat = { ...f.message, channel: privateChannel('chat-1') };
-  const start = Date.UTC(2026, 9, 13, 10, 0, 0);
-  let now = start;
-  t.mock.method(Date, 'now', () => now);
-  const run = (id: string) => registry.invoke(chat, 'sandbox', { action: 'run', command: 'ok' }, id, 'agent');
-
-  await assert.rejects(run('first'), UncertainActionError);
-  now = start + 60000;
-  const blocked = await rejection(run('second'));
-  assert.ok(blocked instanceof ToolError);
-  assert.equal(blocked.message, 'An earlier sandbox action in this chat did not finish (started 2026-10-13 10:00 UTC). It clears automatically at 2026-10-13 10:10 UTC.');
-  assert.ok(!/task|operation first|reconcile/i.test(blocked.message));
-  assert.equal(describeError(blocked).context.operationId, 'first');
-  assert.equal((await f.store.operation('first'))?.status, 'started');
-
-  now = start + 600001;
-  assert.equal(await run('third'), 'Exit code: 0\nstdout:\nok\nstderr:\n');
-  const abandoned = await f.store.operation('first');
-  assert.equal(abandoned?.status, 'failed');
-  assert.match(abandoned?.result ?? '', /"reason":"abandoned"/);
-});
-
-test('sandbox import_attachment imports web-file', async t => {
-  const bytes = new Uint8Array([7, 8, 9]);
-  const fileId = `${'1'.repeat(32)}.bin`;
-  const source = { id: 'file-message', server: 's', channel: 'task', author: 'a', text: 'file', attachments: [{ name: 'data.bin', url: fileUrl('s', 'task', fileId), contentType: 'application/octet-stream', size: 3 }] };
-  const keys: string[] = [];
-  const storage: ObjectStorageProvider = { put: async () => {}, get: async key => { keys.push(key); return bytes; }, delete: async () => {}, link: async () => '' };
-  const f = setup({ resolve: async () => source, fetcher: new ChatFileFetcher(storage, { fetch: async () => { throw new Error('inner fetcher must not run for web-file'); } }) });
-  t.after(() => f.store.close());
-  let uploaded: string | Uint8Array | undefined;
-  await f.registry.invoke(f.message, 'sandbox', { action: 'write', path: '/tmp/existing', text: 'retained' }, 'create', 'agent');
-  const session = f.sessions.get('workspace-1')!;
-  session.write = async (path, data) => { assert.equal(path, '/tmp/data.bin'); uploaded = data; };
-  const result = await f.registry.invokeResult(f.message, 'sandbox', { action: 'import_attachment', message_id: source.id, path: '/tmp/data.bin' }, 'import', 'agent');
-  assert.deepEqual(uploaded, bytes);
-  assert.match(result.text, /3 bytes.*\/tmp\/data.bin/);
-  assert.deepEqual(keys, [`web-chat-files/s/task/${fileId}`]);
-});

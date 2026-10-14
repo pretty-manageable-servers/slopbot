@@ -14,7 +14,7 @@ test('programs await parallel reads, derive arguments, and return only reduced o
   `, ['read'], async (_name, args) => {
     active++; peak = Math.max(peak, active);
     await new Promise(resolve => setImmediate(resolve)); active--;
-    return { value: Number(args.n) * 2, intermediate: 'not emitted' };
+    return { value: Number((args as { n: number }).n) * 2, intermediate: 'not emitted' };
   });
   assert.deepEqual(result.outputs, [{ sum: 20, doubled: 40 }]);
   assert.equal(result.calls, 5); assert.equal(peak, 2);

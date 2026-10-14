@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { objectStorageTool, UserFileStorage, type ObjectStorageProvider, type StorageScope } from '../src/object-storage.js';
 import { ToolRegistry, ToolError, type ToolArgs } from '../src/tools.js';
-import { sandboxTool, type SandboxProvider } from '../src/sandbox.js';
+import type { SandboxProvider } from '../src/sandbox.js';
 const alice = '111111111111111111', bob = '222222222222222222', admin = '333333333333333333';
 const message = { server: 'guild-a', channel: 'task', taskId: 'task', id: 'request', author: alice, text: 'store file' };
 function setup() {
@@ -16,7 +16,7 @@ function setup() {
   };
   const storage = new UserFileStorage(store, provider), registry = new ToolRegistry(store, async request => request.author === admin);
   const inspected: string[] = [], sent: string[] = [], loaded: StorageScope[] = [];
-  registry.register(objectStorageTool({ storage, authorize: async () => {}, resolveAttachment: async () => ({ ...message, attachments: [{ name: 'file', url: 'https://cdn.discordapp.com/file' }] }), fetcher: { fetch: async () => Buffer.from('attachment') }, inspect: async (_context, file, bytes) => { inspected.push(file.storageScope!); return Buffer.from(bytes).toString(); }, send: async (context, file) => { sent.push(`${context.message.author}:${file.storageScope}`); }, sandbox: { read: async () => Buffer.from('sandbox'), write: async context => { loaded.push(context.arguments.storage_scope as StorageScope); } } }));
+  registry.register(objectStorageTool({ storage, authorize: async () => {}, resolveAttachment: async () => ({ ...message, attachments: [{ name: 'file', url: 'https://cdn.discordapp.com/file' }] }), fetcher: { fetch: async () => Buffer.from('attachment') }, inspect: async (_context, file, bytes) => { inspected.push(file.storageScope!); return Buffer.from(bytes).toString(); }, send: async (context, file) => { sent.push(`${context.message.author}:${file.storageScope}`); }, sandbox: { read: async () => Buffer.from('sandbox') } }));
   let operation = 0;
   const call = (args: ToolArgs, author = alice, server = 'guild-a', id = `op-${++operation}`) => registry.invokeResult({ ...message, author, server }, 'file_store', args, id, 'agent');
   return { store, storage, registry, blobs, call, inspected, sent, loaded };
@@ -82,11 +82,10 @@ test('all three scopes support attachment saves, inspection, links, DM and sandb
     assert.equal((await f.call({ ...base, action: 'read' })).text, 'attachment');
     assert.equal((await f.call({ ...base, action: 'link' })).artifacts?.length, 1);
     await f.call({ ...base, action: 'send' });
-    await f.call({ ...base, action: 'load_sandbox', sandbox_path: '/tmp/input' });
     await f.call({ storage_scope, action: 'save_sandbox', path: 'output.bin', sandbox_path: '/tmp/output' });
     assert.equal((await f.call({ storage_scope, action: 'read', path: 'output.bin' })).text, 'sandbox');
   }
-  assert.deepEqual(f.loaded, ['user', 'server', 'user_server']); assert.equal(f.sent.length, 3);
+  assert.equal(f.sent.length, 3);
 });
 
 test('copy explicitly transfers between every scope and enforces destination permissions', async t => {
@@ -131,17 +130,19 @@ test('old personal-within-server files keep their paths, ownership and visibilit
   assert.equal((await f.call({ action: 'read', path: 'legacy', owner: alice }, bob)).text, 'old');
 });
 
-test('sandbox import_storage uses the selected scope and requester admin status', async t => {
+test('file_store to_sandbox uses the selected scope and requester admin status', async t => {
   const f = setup(); t.after(() => f.store.close()); let uploaded = '';
   const session = { id: 'sandbox', run: async () => ({ stdout: '', stderr: '', exitCode: 0 }), read: async () => '', readBytes: async () => Buffer.from(''), write: async (_path: string, data: string | Uint8Array) => { uploaded = typeof data === 'string' ? data : Buffer.from(data).toString(); }, renew: async () => {}, close: async () => {} };
-  const provider: SandboxProvider = { create: async () => session, connect: async () => session };
-  f.registry.register(sandboxTool(f.store, provider, undefined, f.storage));
+  const provider = { create: async () => session, connect: async () => session } as unknown as SandboxProvider;
+  const registry = new ToolRegistry(f.store, async request => request.author === admin);
+  registry.register(objectStorageTool({ storage: f.storage, authorize: async () => {}, resolveAttachment: async () => message, fetcher: { fetch: async () => Buffer.from('') }, inspect: async () => '', send: async () => {}, store: f.store, provider }));
+  const copy = (args: ToolArgs, author: string, id: string, server = 'guild-b') => registry.invokeResult({ ...message, server, author }, 'file_store', { action: 'to_sandbox', sandbox_path: '/tmp/file', ...args }, id, 'agent');
   await f.call({ action: 'write', storage_scope: 'user', path: 'global', text: 'portable' });
-  await f.registry.invokeResult({ ...message, server: 'guild-b' }, 'sandbox', { action: 'import_storage', storage_scope: 'user', storage_path: 'global', path: '/tmp/file' }, 'import-global', 'agent');
+  await copy({ storage_scope: 'user', path: 'global' }, alice, 'copy-global');
   assert.equal(uploaded, 'portable');
   await f.call({ action: 'write', storage_scope: 'server', path: 'private', text: 'admin access' });
   await f.call({ action: 'unpublish', storage_scope: 'server', path: 'private' });
-  const args = { action: 'import_storage', storage_scope: 'server', storage_path: 'private', path: '/tmp/file' };
-  await assert.rejects(f.registry.invokeResult({ ...message, author: bob }, 'sandbox', args, 'import-denied', 'agent'), /not shared/);
-  await f.registry.invokeResult({ ...message, author: admin }, 'sandbox', args, 'import-admin', 'agent'); assert.equal(uploaded, 'admin access');
+  const args = { storage_scope: 'server', path: 'private' };
+  await assert.rejects(copy(args, bob, 'copy-denied', 'guild-a'), /not shared/);
+  await copy(args, admin, 'copy-admin', 'guild-a'); assert.equal(uploaded, 'admin access');
 });

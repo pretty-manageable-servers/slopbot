@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { objectStorageTool, UserFileStorage, MAX_STORED_FILE_BYTES, type ObjectStorageProvider } from '../src/object-storage.js';
 import { ToolRegistry, ToolError, UncertainActionError, type ToolArgs, type ToolContext } from '../src/tools.js';
-import { sandboxTool, type SandboxProvider } from '../src/sandbox.js';
+import type { SandboxProvider } from '../src/sandbox.js';
 const alice = '111111111111111111', bob = '222222222222222222';
 const message = { server: 's', channel: 'task', taskId: 'task', id: 'request', author: alice, text: 'store a file' };
 function setup() {
@@ -38,7 +38,7 @@ test('files persist in isolated user directories and writes cannot impersonate o
   assert.equal(Buffer.from(a.bytes).toString(), 'Alice private'); assert.equal(Buffer.from(b.bytes).toString(), 'Bob private');
   assert.ok(a.file.key.startsWith(`servers/s/users/${alice}/`));
   assert.notEqual(a.file.key, b.file.key);
-  for (const action of ['info', 'read', 'link', 'send', 'copy', 'load_sandbox']) {
+  for (const action of ['info', 'read', 'link', 'send', 'copy', 'to_sandbox']) {
     await assert.rejects(f.call({ action, path: 'notes/file.txt', owner: alice, destination: 'copy', sandbox_path: '/tmp/file' }, bob), /not found or not shared/);
   }
   for (const action of ['write', 'save_attachment', 'save_sandbox', 'publish', 'unpublish', 'delete']) {
@@ -138,19 +138,20 @@ test('changed attachment sources abort before uploading, and failed metadata com
   assert.equal(f.objects.size, 0);
 });
 
-test('stored public binary files import into a task sandbox with permission checks on replay', async t => {
+test('stored public binary files copy into a task sandbox with permission checks on replay', async t => {
   const f = setup(); t.after(() => f.store.close());
   await f.call({ action: 'save_attachment', path: 'input.bin' });
   await f.call({ action: 'publish', path: 'input.bin' });
   let bytes: string | Uint8Array | undefined, created = 0;
   const session = { id: 'sandbox', run: async () => ({ stdout: '', stderr: '', exitCode: 0 }), read: async () => '', readBytes: async () => f.binary, write: async (_path: string, data: string | Uint8Array) => { bytes = data; }, renew: async () => {}, close: async () => {} };
   const provider: SandboxProvider = { create: async () => { created++; return session; }, connect: async () => session };
-  f.registry.register(sandboxTool(f.store, provider, undefined, f.storage));
-  const args = { action: 'import_storage', path: '/tmp/input.bin', storage_path: 'input.bin', owner: alice };
-  await f.registry.invokeResult({ ...message, author: bob }, 'sandbox', args, 'sandbox-import', 'agent');
+  const registry = new ToolRegistry(f.store, async () => true);
+  registry.register(objectStorageTool({ ...f.services, store: f.store, provider }));
+  const args = { action: 'to_sandbox', path: 'input.bin', owner: alice, sandbox_path: '/tmp/input.bin' };
+  await registry.invokeResult({ ...message, author: bob }, 'file_store', args, 'sandbox-copy', 'agent');
   assert.deepEqual(bytes, f.binary); assert.equal(created, 1);
   await f.call({ action: 'unpublish', path: 'input.bin' });
-  await assert.rejects(f.registry.invokeResult({ ...message, author: bob }, 'sandbox', args, 'sandbox-import', 'agent'), /not shared/);
+  await assert.rejects(registry.invokeResult({ ...message, author: bob }, 'file_store', args, 'sandbox-copy-denied', 'agent'), /not shared/);
 });
 
 test('unconfigured storage explains setup instead of pretending to save files', async t => {
@@ -158,14 +159,17 @@ test('unconfigured storage explains setup instead of pretending to save files', 
   await assert.rejects(new UserFileStorage(store).list('s', alice, 'mine', ''), /OBJECT_STORAGE_BUCKET/);
 });
 
-test('sandbox outputs can be saved persistently and loaded with their original binary content', async t => {
-  const f = setup(); t.after(() => f.store.close()); let loads = 0;
+test('sandbox outputs can be saved persistently and copied back into a sandbox with their binary content', async t => {
+  const f = setup(); t.after(() => f.store.close());
+  const written: { path: string; bytes: unknown }[] = [];
+  const session = { id: 'sandbox-1', run: async () => ({ stdout: '', stderr: '', exitCode: 0 }), read: async () => '', readBytes: async () => new Uint8Array(), write: async (path: string, bytes: unknown) => { written.push({ path, bytes }); }, renew: async () => {}, close: async () => {} };
+  const provider = { defaultTemplate: 'base', create: async () => session, connect: async () => session } as unknown as SandboxProvider;
   const registry = new ToolRegistry(f.store, async () => true);
-  registry.register(objectStorageTool({ ...f.services, sandbox: {
+  registry.register(objectStorageTool({ ...f.services, store: f.store, provider, sandbox: {
     read: async (_context, path) => { assert.equal(path, '/tmp/generated.bin'); return f.binary; },
-    write: async (_context, path, bytes) => { assert.equal(path, '/tmp/loaded.bin'); assert.deepEqual(bytes, f.binary); loads++; },
   } }));
   await registry.invokeResult(message, 'file_store', { action: 'save_sandbox', path: 'outputs/generated.bin', sandbox_path: '/tmp/generated.bin' }, 'save-sandbox', 'agent');
-  await registry.invokeResult(message, 'file_store', { action: 'load_sandbox', path: 'outputs/generated.bin', sandbox_path: '/tmp/loaded.bin' }, 'load-sandbox', 'agent');
-  assert.equal(loads, 1); assert.deepEqual((await f.storage.read('s', alice, alice, 'outputs/generated.bin')).bytes, f.binary);
+  await registry.invokeResult(message, 'file_store', { action: 'to_sandbox', path: 'outputs/generated.bin', sandbox_path: '/tmp/loaded.bin' }, 'to-sandbox', 'agent');
+  assert.equal(written.length, 1); assert.equal(written[0]!.path, '/tmp/loaded.bin'); assert.deepEqual(written[0]!.bytes, f.binary);
+  assert.deepEqual((await f.storage.read('s', alice, alice, 'outputs/generated.bin')).bytes, f.binary);
 });

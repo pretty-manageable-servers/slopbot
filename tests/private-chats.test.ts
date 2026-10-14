@@ -12,10 +12,10 @@ const discordMessage: Message = { id: "m2", server: "s", channel: "1000000000000
 
 function registry(store: SQLiteStore) {
   const tools = new ToolRegistry(store, async () => false);
-  const reader: ToolDefinition = { name: "reader", description: "reads", fields: {}, access: "member", effect: "read", retrySafe: true, async execute() { return "read ok"; } };
-  // Like the sandbox tool: a write that does not act on Discord.
-  const writer: ToolDefinition = { name: "writer", description: "writes", fields: {}, access: "member", effect: "write", retrySafe: false, async execute() { return "wrote"; } };
-  const poster: ToolDefinition = { name: "poster", description: "posts to Discord", fields: {}, access: "member", effect: "write", retrySafe: false, scope: "discord", async execute() { return "posted"; } };
+  const reader: ToolDefinition = { name: "reader", surface: "top", description: "reads", fields: {}, access: "member", effect: "read", retrySafe: true, async execute() { return "read ok"; } };
+  // Like the shell tool: a write that does not act on Discord.
+  const writer: ToolDefinition = { name: "writer", surface: "top", description: "writes", fields: {}, access: "member", effect: "write", retrySafe: false, async execute() { return "wrote"; } };
+  const poster: ToolDefinition = { name: "poster", surface: "top", description: "posts to Discord", fields: {}, access: "member", effect: "write", retrySafe: false, scope: "discord", async execute() { return "posted"; } };
   tools.register(reader);
   tools.register(writer);
   tools.register(poster);

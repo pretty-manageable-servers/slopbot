@@ -19,7 +19,7 @@ export interface ProfileStore {
 export function registerProfileTools(registry: ToolRegistry, store: ProfileStore): void {
   registry.register({
     name: "profile", description: "Find or inspect server-public profiles; explicitly add attributed facts, aliases or links. Never infer personal facts from jokes or guesses.",
-    access: "member", effect: "write", retrySafe: true,
+    access: "member", effect: "write", retrySafe: true, execution: "inline",
     fields: {
       action: { type: "string", description: "Default: get. History and undo are owner-only.", choices: ["get", "find", "set", "remove", "lock", "history", "undo"] },
       user: { type: "string", description: "Discord mention, ID or exact name; defaults to requester" },

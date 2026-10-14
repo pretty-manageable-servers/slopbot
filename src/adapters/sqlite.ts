@@ -459,7 +459,6 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     try {
       this.db.prepare("INSERT INTO profile_events(id,server,user_id,field,value,editor,sources) VALUES(?,?,?,?,?,?,?)").run(operation,message.server,user,field,JSON.stringify(value),message.author,JSON.stringify(sources));
       this.db.prepare("INSERT INTO profile_current VALUES(?,?,?,?) ON CONFLICT(server,user_id,field) DO UPDATE SET event_id=excluded.event_id").run(message.server,user,field,operation);
-      this.db.prepare("UPDATE context_versions SET version=version+1 WHERE server=?").run(message.server);
       this.db.exec("COMMIT");
     } catch(error) { this.db.exec("ROLLBACK"); throw error; }
     return `Profile ${field} ${value === null ? "removed" : "updated"}; revision ${operation}.`;
@@ -560,7 +559,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   }
 
   agentTurns(message: Message): AgentTurn[] {
-    if (this.db.prepare("SELECT 1 FROM agent_turns WHERE server=? AND message_id=? AND valid=0").get(message.server, message.id)) throw contextChangedError(message, this.lastContextChange(message.server, message.channel));
+    // Invalid turns are kept as history. Only valid turns are returned, so a changed chat does not stop the run.
     return this.db.prepare("SELECT * FROM agent_turns WHERE server=? AND message_id=? AND valid=1 ORDER BY sequence")
       .all(message.server, message.id).map(row => ({ id: String(row.id), text: String(row.text), calls: JSON.parse(String(row.calls)), results: JSON.parse(String(row.results)), version: Number(row.version) }));
   }
@@ -890,6 +889,9 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   endOperation(id: string, result: string, failed = false): void {
     this.db.prepare("UPDATE tool_operations SET status=?,result=? WHERE id=?").run(failed ? "failed" : "done", result, id);
   }
+  pruneOperations(name: string, startedBefore: number): number {
+    return Number(this.db.prepare("DELETE FROM tool_operations WHERE name=? AND created_at<? AND status<>'started'").run(name, startedBefore).changes);
+  }
   delivery(id: string): { message: Message; content: string; createdAt: number; result: Message | null } | undefined {
     const row = this.db.prepare("SELECT * FROM deliveries WHERE id=?").get(id);
     return row ? { message: parseMessage(JSON.parse(String(row.message))), content: String(row.content), createdAt: Number(row.created_at), result: row.result ? parseMessage(JSON.parse(String(row.result))) : null } : undefined;
@@ -1152,7 +1154,6 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       this.db.prepare("INSERT INTO memories VALUES(?,?,?,?,?,?,?)")
         .run(memory.id, memory.server, memory.channel, memory.author, memory.content, memory.status, Date.now());
       this.db.prepare("INSERT INTO memory_sources VALUES(?,?,?)").run(memory.id, memory.server, message.id);
-      this.bumpVersion(message.server, message.channel);
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
     this.queueIndex({ ...message, id: memory.id, text: memory.content });

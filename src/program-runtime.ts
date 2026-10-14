@@ -1,6 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import type { Json } from './domain.js';
-import { ToolError, type ToolArgs } from './tools.js';
+import { ConfirmationRequired, ToolError } from './tools.js';
 
 export interface ProgramLimits {
   timeoutMs: number;
@@ -12,11 +12,14 @@ export interface ProgramLimits {
   maxInputBytes: number;
 }
 export const programLimits: Readonly<ProgramLimits> = Object.freeze({
-  timeoutMs: 30000, cpuMs: 2000, memoryBytes: 32 * 1024 * 1024,
-  maxCalls: 32, concurrency: 4, maxOutputBytes: 16000, maxInputBytes: 1_000_000,
+  timeoutMs: 60000, cpuMs: 2000, memoryBytes: 32 * 1024 * 1024,
+  maxCalls: 64, concurrency: 4, maxOutputBytes: 16000, maxInputBytes: 1_000_000,
 });
+/** Host-handled globals: list_tools(), describe_tool(name), save_to_sandbox(path, data). The worker sends them with these names. */
+export const programBuiltins = ['builtin:list_tools', 'builtin:describe_tool', 'builtin:save_to_sandbox'] as const;
 export interface ProgramResult { outputs: Json[]; calls: number; failures: { name: string; error: string }[] }
-export type ProgramDispatch = (name: string, args: ToolArgs, index: number, signal: AbortSignal) => Promise<Json>;
+/** args is whatever the guest sent, parsed from JSON. The dispatcher decides what is a valid argument value. */
+export type ProgramDispatch = (name: string, args: unknown, index: number, signal: AbortSignal) => Promise<Json>;
 
 // Guest code executes only in QuickJS's WASM heap. The Node worker loads our
 // bridge, never evaluates guest code with Node eval, Function, or node:vm.
@@ -32,8 +35,8 @@ export class ProgramRuntime {
     let worker: Worker | undefined;
     try {
       return await new Promise<ProgramResult>((resolve, reject) => {
-        const allowed = new Set(names), outputs: Json[] = [], failures: ProgramResult['failures'] = [];
-        const queue: { id: number; name: string; args: ToolArgs }[] = [];
+        const allowed = new Set<string>([...names, ...programBuiltins]), outputs: Json[] = [], failures: ProgramResult['failures'] = [];
+        const queue: { id: number; name: string; args: unknown }[] = [];
         let finished = false, calls = 0, running = 0, inputBytes = 0, outputBytes = 0, completed = false, transientFailure = false;
         const timer = setTimeout(() => finish(new ToolError('Program exceeded its wall-clock deadline.', 'failed')), this.limits.timeoutMs);
         const abort = () => finish(new ToolError('Program interrupted.'));
@@ -65,6 +68,8 @@ export class ProgramRuntime {
                 worker!.postMessage({ kind: 'result', id: call.id, json });
               } catch (error) {
                 if (finished) return;
+                // A confirmation stops the whole program, even when the guest code catches the error.
+                if (error instanceof ConfirmationRequired) { finish(error); return; }
                 const reason = error instanceof ToolError ? error.message.slice(0, 500) : 'Tool failed. Inspect its recorded result before retrying.';
                 if (!(error instanceof ToolError)) transientFailure = true;
                 failures.push({ name: call.name, error: reason });
@@ -87,9 +92,7 @@ export class ProgramRuntime {
             if (item.kind === 'call') {
               if (completed || item.id !== calls || typeof item.name !== 'string' || !allowed.has(item.name) || typeof item.json !== 'string' || Buffer.byteLength(item.json) > 64000) throw new ToolError('Invalid or disallowed program tool call.');
               if (++calls > this.limits.maxCalls) throw new ToolError('Program exceeded its tool-call limit.');
-              const args: unknown = JSON.parse(item.json);
-              if (!args || typeof args !== 'object' || Array.isArray(args)) throw new ToolError('Tool arguments must be a JSON object.');
-              queue.push({ id: item.id as number, name: item.name, args: args as ToolArgs }); pump();
+              queue.push({ id: item.id as number, name: item.name, args: JSON.parse(item.json) as unknown }); pump();
             } else if (item.kind === 'text') {
               if (typeof item.json !== 'string') throw new ToolError('Program output must be JSON serializable.');
               outputBytes += Buffer.byteLength(item.json);

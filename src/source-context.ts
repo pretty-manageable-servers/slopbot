@@ -21,13 +21,16 @@ export function stableAttachmentUrl(value: string): string {
 
 // Normalization appends media descriptions; they are not authored instructions.
 export function authoredSourceText(message: Message): string {
-  for (const stable of [false, true]) {
-    const labels = (message.attachments ?? []).map(item => `[Attachment ${item.name}, type ${item.contentType ?? 'unknown'}: ${stable ? stableAttachmentUrl(item.url) : item.url}; content not inspected${item.url.startsWith(CHAT_FILE_SCHEME) ? '; read with file_read, or if file_read cannot read this type, use sandbox import_attachment' : ''}]`).join('\n');
+  // Saved messages from before the file_read removal keep the old label ending, so both endings are matched.
+  for (const stable of [false, true]) for (const legacy of [false, true]) {
+    const labels = (message.attachments ?? []).map(item => `[Attachment ${item.name}, type ${item.contentType ?? 'unknown'}: ${stable ? stableAttachmentUrl(item.url) : item.url}; content not inspected${legacy && item.url.startsWith(CHAT_FILE_SCHEME) ? LEGACY_FILE_NOTE : ''}]`).join('\n');
     if (labels && message.text === labels) return '';
     if (labels && message.text.endsWith('\n' + labels)) return message.text.slice(0, -labels.length - 1);
   }
   return message.text;
 }
+/** The ending of a file label before the file_read removal. Only matched, never written. */
+export const LEGACY_FILE_NOTE = '; read with file_read, or if file_read cannot read this type, use sandbox import_attachment';
 export function sourceFingerprint(message: Message, includePreviews = false): string {
   const parts: unknown[] = [authoredSourceText(message), message.author, message.timestamp];
   if (message.isBot === true) parts.push({ isBot: true });

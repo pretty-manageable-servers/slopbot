@@ -33,11 +33,11 @@ Keep service clients outside the core. Native tools register at startup. Runtime
 
 Tools may supply `matchRead(message)` for a narrow, unambiguous read intent. The registry validates it and the same permission-checked executor runs it. For example, an indexing-status request selects `index` directly and returns its actual result. Matches never authorize writes. Legacy text-protocol failures have at most two repair attempts; native calls retain provider IDs and validate their arguments before execution. Each failed run retains its original events.
 
-`file_read` is a member read tool shared by model calls and slash commands. Sources resolve through current Discord permissions; downloads accept only approved media hosts. Add decoders through `FileReader` registration, independent of fetching and vision. Every inspection is a separate durable run with a stable prefix and preserved reasoning events. Completed inspection sources are inherited by subsequent reply runs for the same request.
+Request uploads. When the bot answers a request (mention, reply, private chat, task thread or name request), each non-image attachment is copied to `<home>/uploads/<name>` in the task sandbox, where `<home>` is the sandbox home from the startup profile before the model run. Images stay inline for vision. The limit is 10 MiB per file, using the Discord fetch rules. Two files with one name get `-1`, `-2` before the extension. A failed upload is logged and reported in the request context as `upload_failed`; the run continues. The request context lists the copied paths as `uploaded_files`. Messages that are not requests do not upload. Source: `src/sandbox-uploads.ts`.
 
 ## Self-improvement tools
 
-`registerOperationsTools` registers member reporting capabilities in dynamically discovered servers when GitHub credentials are configured. Admin diagnostics and fix watches additionally require `SLOPBOT_OPERATIONS_GUILD_IDS`. `interaction_inspect` is a member read with current source-channel checks; github_issue_read and issue_report also allow members; repository/infrastructure diagnostics and fix watches require Manage Server. Members can publish only interaction evidence from channels they can currently access. `pipeline_read`, `deployment_inspect`, `ci_inspect`, `service_inspect` and `github_issue_read` read a fixed repository or allowlisted PMServers containers. Read tools expose structured data for `program_exec`. There is no generic HTTP, host shell, code-write, merge, restart or deployment action. Existing runtime MCP grants remain the extension mechanism for future capabilities.
+`registerOperationsTools` registers member reporting capabilities in dynamically discovered servers when GitHub credentials are configured. Admin diagnostics and fix watches additionally require `SLOPBOT_OPERATIONS_GUILD_IDS`. `interaction_inspect` is a member read with current source-channel checks; github_issue_read and issue_report also allow members; repository/infrastructure diagnostics and fix watches require Manage Server. Members can publish only interaction evidence from channels they can currently access. `pipeline_read`, `deployment_inspect`, `ci_inspect`, `service_inspect` and `github_issue_read` read a fixed repository or allowlisted PMServers containers. Read tools expose structured data for `run_tools_code`. There is no generic HTTP, host shell, code-write, merge, restart or deployment action. Existing runtime MCP grants remain the extension mechanism for future capabilities.
 
 Each diagnostic capture is an immutable `diagnostic_evidence` app record, keyed by the operation and task channel. It retains capture time, safe structured data, source fingerprints and permission-dependent log channels. Replay and publication recheck channel visibility and source changes. Captures are bounded to 48 KB, with explicit truncation; source text is opt-in. Run start saves `run_runtime` build SHA/time and execution time for both database adapters. The production image embeds build metadata. Historical runs with no metadata explicitly report an unknown version. Prompt inventories retain roles/counts, never prompt text or provider reasoning.
 
@@ -73,30 +73,19 @@ The network adapter validates the address used by each socket to block private/r
 
 Runtime MCP configuration uses the existing model protocol. Slopbot's own programmatic runtime composes eligible reads as described below. OpenAI-hosted Responses API programmatic calling is a separate adapter/continuation change. OAuth onboarding and host process/stdio servers are not implemented; use anonymous or bearer-authenticated HTTP/SSE endpoints.
 
-## Bot-owned programmatic calling
+## run_tools_code
 
-`program_exec` lets the current model generate an async JavaScript function body through the existing JSON tool protocol. It does not require OpenAI's Responses API or an OpenAI model. For example, its arguments can contain:
+`run_tools_code` runs JavaScript that the model writes. The model passes one argument, `code`. Inside the code, `tools.NAME(arguments)` calls any tool of the core catalog or any tool that `list_tools()` returns. The core catalog is every registered tool with `surface: "catalog"`, sorted by name, in the tool description. It is the same for every user and channel. Access is checked on each call, not when the catalog is built. MCP tools have `surface: "discovery"`: they are reached only through `list_tools()` and `describe_tool(name)`. The native top-level tools (`read`, `write`, `edit`, `shell`, `web_search`, `web_fetch`, `task_start`, `ui_publish`, `voice_say`, `voice_skip`) are not in the catalog. `run_tools_code` is registered last, so its catalog lists every tool registered before it.
 
-```json
-{
-  "tools": ["web_search"],
-  "code": "const results = await Promise.all([tools.web_search({query:'topic one'}), tools.web_search({query:'topic two'})]); text(results.flatMap(result => result.results).map(hit => ({title:hit.title,url:hit.url})));"
-}
-```
+Built-ins: `list_tools()` returns the tools this requester can use. `describe_tool(name)` returns the fields of one tool. `save_to_sandbox(path, data)` writes a string, or JSON for other data, to a file under the sandbox home directory. Relative paths and `~` start there.
 
-The model chooses a bounded orchestration stage, lists its tools, writes loops/conditions or parallel calls, and emits a compact result with `text(value)`. Each `tools.NAME(arguments)` promise resolves to the tool's `data` JSON. Only program outputs and compact call metadata enter the next model turn; intermediate payloads remain in the child operation journals. Failed calls reject their promises and remain reported even when the program catches the error. Programs must preserve URLs/message IDs needed for final evidence; Slopbot also retains source and artifact metadata from successful child reads. Use direct calls for semantic judgment, mutations, native UI, and final artifact validation.
+Writes are allowed. Each child call goes through `ToolRegistry` with the requester's permission check and a stable operation ID made from the parent ID, the call index, the tool name and the arguments. A call whose tool has `confirm(args)` true stops the program. The pending call is saved in a `tool-confirm` record, and the bot posts Confirm and Cancel buttons. Only the requester can click. Confirm runs that one call once. Cancel ends the record. Calls that need Confirm: `channels` remove, `usage` reset, `issue_report`, and `file_store` writes.
 
-`ProgramRuntime` starts a worker running QuickJS compiled to WebAssembly. The worker receives code, an explicit tool-name allowlist, and limits. It creates a fresh guest runtime with only a JSON tool bridge and `text(...)`. Generated code never runs through Node eval, Function, or node:vm. The guest has no host environment, filesystem, network, modules, subprocesses, timers, or persistent state. Main-process callbacks resolve guest promises with bounded JSON. QuickJS interrupt/memory limits bound guest execution; the parent enforces the wall-clock deadline and always terminates the worker.
+Limits: 60 seconds wall time, two seconds guest CPU, 32 MiB guest memory, 64 calls, four concurrent calls, 1 MB of incoming tool data, 16 KB of emitted output, and 16,000 characters of code. If a tool changes during a run, the current definition is used. A call fails only when its access is now denied. Failed calls stay visible even when the code catches them. Child calls carry `parentId` and appear in the progress line and the final activity list.
 
-Defaults are 30 seconds wall time, two seconds cumulative guest CPU, 32 MiB guest memory, 32 calls, four concurrent calls, one MB total incoming structured tool data, and 16 KB total emitted output. Code is limited to 16,000 characters; the allowlist contains at most 16 distinct tool names and can be empty for pure computation. At most four programs run concurrently. No timers or sleeps are available in guest code. Unresolved promises with no tool capable of resolving them fail promptly. Fire-and-forget tool requests already dispatched are drained before a successful result is returned. On timeout or interruption, no new reads are issued; already-dispatched reads may still finish and retain their journal results.
+Code display: Discord shows a live line with the call counts. `tool_display: full` shows code inline when it has at most 15 lines. Otherwise a Show code button sends the code as an ephemeral message, or as `program.js` when it is longer than 1,900 characters. Web chat shows the code in a closed Code block, with the child calls below it. Code is kept for 14 days and then deleted by an hourly job.
 
-Native tools opt in with `programmatic: true`, an `outputSchema`, and a structured `data` result. Native web search supplies `{results:[{title,url,snippet}]}`. MCP tools qualify when explicitly granted as reads and when they have an output schema. Other tools remain direct-only. Actual validated arguments determine whether a mixed-action tool is a read; writes and recursive programs are denied regardless of the outer program's read classification. UI/handoff results require direct calls.
-
-Every nested call uses the shared registry with the original requester, source, context version, signal, and captured catalog checks. Each child has a stable operation ID derived from parent ID, call index, tool name, and canonical arguments. Interrupted-process recovery and transient read failures reuse completed child operations while rechecking permissions. Cached parent results also recheck each recorded child's resource authorization before returning data. Child calls appear in the normal Discord progress display and final activity list. No credentials or Node references cross into the guest.
-
-Verification covers parallel/dependent calls, native plus multiple MCP providers, structured reduction, source preservation and invalidation, direct-only/write/recursive denial, permission changes, catalog snapshots, replay recovery, interruption, isolation, quotas, CPU/memory/output/input limits, caught failures, and unresolved promises. OpenAI-hosted program items, deferred discovery, and programmatic writes are separate work.
-
-Use `invokeResult()` when metadata is needed. `invoke()` formats text and artifact links for existing command handlers. The action journal stores the complete result with a version marker; older plain-text operation records and agent turns remain readable. Agent turns persist structured results as JSON. The runner adds canonical message sources to its manifest, preserves web citations and artifacts in the model trace, and follows explicit handoffs without parsing display text.
+The program runs in a worker running QuickJS compiled to WebAssembly. Generated code never runs through Node eval, Function, or node:vm. The guest has no host environment, filesystem, network, modules, subprocesses, timers, or persistent state. Its only host access is the JSON tool bridge and `text(...)`. Main-process callbacks resolve guest promises with bounded JSON. The parent enforces the wall-clock deadline and always terminates the worker.
 
 `web_search` uses the WebSearch interface. The SearXNG adapter has a 15-second timeout, a 1 MiB response limit, up to 10 results and 30 requests per minute. It does not fetch result pages. Model output must treat snippets as evidence and cite their URLs.
 # Bot self-knowledge
@@ -111,28 +100,17 @@ Documentation is versioned with the running build, not proof of live service hea
 
 ## Remote sandbox
 
-`sandbox` uses the `SandboxProvider` interface, implemented by the E2B SDK adapter.
-It supports `run`, `read`, `write`, `import_attachment`, `import_storage`, `status`, `close`, `templates`, and `build_template`. Commands, imports and writes
-belong in a task thread, and each thread owns one recorded workspace. There are
-no model-supplied provider URLs, credentials, or sandbox IDs. Reads/status are
-read operations; mutations share a resource lock and are not automatically
-retried after uncertain network results. TTL bounds orphan lifetimes. Workspace
-IDs and leases live in the existing RecordStore; no database migration is needed.
+The task sandbox uses the `SandboxProvider` interface, implemented by the E2B SDK adapter. Four top-level tools use it: `read`, `write`, `edit` and `shell`. The catalog tool `sandbox_manage` has the actions `templates`, `build_template` (a task thread action), `status` and `close`. The descriptions are fixed. The `templates` action returns the template list.
 
-Set `E2B_API_KEY` to a PMServers project token, `E2B_API_URL` to
-`https://api.pmservers.org/sandboxes`, and `E2B_SANDBOX_URL` to
-`https://sandbox.pmservers.org`. A sandbox never receives these control-plane
-credentials or the bot's environment. An optional `E2B_TEMPLATE` chooses the
-default provider template. Per-call `template` overrides it when creating a workspace. TTL is ten minutes, command timeout at most sixty seconds.
-The SDK's external declarations require `skipLibCheck` with our exact optional
-property checks; application code retains strict type checking.
+The first call of `read`, `write`, `edit` or `shell` in a channel or thread starts its sandbox. `sandboxSession` in `src/sandbox-session.ts` reuses the recorded sandbox and renews its lease. An expired or unreachable sandbox is replaced. The result then starts with "New sandbox started; earlier files are gone." `status` and `close` never start a sandbox.
 
-`import_attachment` takes an absolute sandbox `path`, optional `message_id`, and a zero-based `attachment` index. It defaults to the current/reply attachment, resolves a fresh Discord URL, and downloads up to 10 MiB through the existing restricted media fetcher. Sources must belong to the task thread or its permitted parent channel and pass requester access checks. Source changes abort the import before upload. Original binary bytes go through the SDK file API without being passed through the model or a shell. Imports create/reuse the thread workspace, renew its lease and retain a message source link.
+`read` returns numbered lines, with `offset` and `limit` (at most 2,000 lines) and at most 16,000 characters. Relative paths and `~` start in the sandbox home directory; absolute paths are used as they are. `write` creates parent directories and takes at most 64,000 characters. `edit` needs `old_string` to occur once unless `replace_all` is true; the error gives the count found. `shell` takes `timeout_seconds` (1 to 120, default 30) and returns the exit code, stdout and stderr, each cut at 16,000 characters. A timeout returns exit code 124, and the command may still run.
 
-Live smoke test: `npm run sandbox:smoke` uses `.env.development`, creates a
-temporary sandbox, verifies remote shell/file operations and reconnect, then
-destroys it. In Discord, ask Slopbot to run a calculation in a sandbox; it
-moves the work into a task thread and selects the shared sandbox tool.
+Mutations share a per-channel resource lock. A lost command result stays uncertain: the sandbox lease expires on its own. Files are gone when the sandbox expires or is closed.
+
+Set `E2B_API_KEY` to a PMServers project token, `E2B_API_URL` to `https://api.pmservers.org/sandboxes`, and `E2B_SANDBOX_URL` to `https://sandbox.pmservers.org`. A sandbox never receives these control-plane credentials or the bot's environment. `E2B_TEMPLATE` chooses the template for new sandboxes. TTL is ten minutes. The SDK's external declarations require `skipLibCheck` with our exact optional property checks; application code keeps strict type checking.
+
+Live smoke test: `npm run sandbox:smoke` uses `.env.development`, creates a temporary sandbox, verifies remote shell and file operations and reconnect, then destroys it. In Discord, ask Slopbot to run a calculation; it runs the work with `shell` in the task sandbox.
 
 ## Native function calling and errors
 
@@ -145,7 +123,7 @@ Tool execution errors are saved as failed results and returned to the model with
 
 ## Persistent files and ownership scopes
 
-`file_store` uses one operator-configured S3 bucket and the existing app-record store. `storage_scope` chooses the directory independently of `scope:mine/public`, which filters listings. All scopes support `save_attachment`, `write`, `save_sandbox`, `load_sandbox`, `list`, `info`, `read`, `link`, `send`, `copy`, `publish`, `unpublish`, and `delete`. `copy` accepts `destination_scope`, defaulting to the source scope.
+`file_store` uses one operator-configured S3 bucket and the existing app-record store. `storage_scope` chooses the directory independently of `scope:mine/public`, which filters listings. All scopes support `save_attachment`, `write`, `save_sandbox`, `to_sandbox`, `list`, `info`, `read`, `link`, `send`, `copy`, `publish`, `unpublish`, and `delete`. `copy` accepts `destination_scope`, defaulting to the source scope.
 
 | storage_scope | Directory | Read access | Mutation control |
 | --- | --- | --- | --- |
@@ -161,7 +139,7 @@ Relative paths may have subdirectories but cannot contain traversal, absolute pa
 
 PMServers has no anonymous public bucket access or ACLs. `publish` sets visibility and issues a presigned download link; `link` signs a file without changing visibility. Global user publication allows bot discovery across permitted servers. Server/user_server publication stays within the current server. Signed links use public HTTPS even when S3 operations use the private container endpoint. Their default lifetime is 3600 seconds and maximum 604800 seconds. Anyone holding one can download until expiry. `unpublish` prevents new bot access and discovery but does not revoke previously issued links. Delete the object to remove its bytes. Immutable replacement keys prevent an old link from exposing replacement content. Source: https://docs.pmservers.org/storage/share/ and https://docs.pmservers.org/storage/limitations/ .
 
-`send` DMs original bytes only to the requester with a stable nonce. Closed DMs are known failures suggesting a link. Unknown deliveries/uploads/deletions remain journaled as uncertain and are not blindly repeated. Global personal writes share a per-user resource across servers; user_server writes share a per-server/user resource; server writes share a server-wide resource across creators. Copy locks its destination scope. Revision checks protect concurrent updates across registry instances. `load_sandbox` forwards storage_scope to a nested `sandbox.import_storage`, preserving the workspace lock and journal. `save_sandbox` reads bounded bytes from the current live task workspace. Server-private sandbox imports recheck current admin status. Storage credentials never enter the sandbox. Loading a private stored file into a task shares those bytes with task participants.
+`send` DMs original bytes only to the requester with a stable nonce. Closed DMs are known failures suggesting a link. Unknown deliveries/uploads/deletions remain journaled as uncertain and are not blindly repeated. Global personal writes share a per-user resource across servers; user_server writes share a per-server/user resource; server writes share a server-wide resource across creators. Copy locks its destination scope. Revision checks protect concurrent updates across registry instances. `to_sandbox` copies a stored file into the task sandbox at `sandbox_path`. It uses the same storage scope and share checks as `read`, and the write takes the sandbox lock. `save_sandbox` reads bounded bytes from the current live task workspace. Server-private sandbox imports recheck current admin status. Storage credentials never enter the sandbox. Loading a private stored file into a task shares those bytes with task participants.
 
 Setup requires an approved PMServers account, a dedicated bucket and bucket-scoped read/write S3 key. Use the console or current `pms storage` CLI; project/AI tokens cannot provision storage. Set `OBJECT_STORAGE_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION=pms`, and `AWS_ENDPOINT_URL=https://s3.pmservers.org`. Containers may use `http://garage.pms-storage.svc:3900`. `OBJECT_STORAGE_PUBLIC_ENDPOINT` defaults to public S3 HTTPS. Clients force path style and use checksums only when required. Credentials are operator configuration and never returned by tools.
 
@@ -176,20 +154,17 @@ Completed replies default to a summary line such as `🔎 3 web searches`. Serve
 
 ## Sandbox templates
 
-PMServers supports prebuilt images selected with a name or `name:tag`. Slopbot passes this name as the first argument to the official SDK's `Sandbox.create`. The task record preserves the selected template across lease renewals and reconnects. A different template is rejected while a workspace is active; close it explicitly before switching. Expired workspaces can select a new template. Existing records without a template remain reusable.
+PMServers supports prebuilt images selected with a name or `name:tag`. Slopbot passes the operator's `E2B_TEMPLATE` to the official SDK's `Sandbox.create` for new sandboxes. A model cannot yet choose a template for a task sandbox. The task record keeps the template across lease renewals and reconnects.
 
-To build an environment with preinstalled software, call `sandbox` with:
+To build an environment with preinstalled software, call `sandbox_manage` in a task thread with:
 
 ```json
 {"action":"build_template","template":"analysis:v1","apt_packages":["ffmpeg"],"pip_packages":["numpy","pandas"]}
 ```
 
-Builds use the official SDK with the configured PMServers project token and Ubuntu 24.04, then supported apt/run/environment/pip build steps. Python packages install in `/opt/slopbot-python`, a virtual environment on PATH for later commands. Package lists allow names and exact pins, at most 40 per manager; credentials, custom registry URLs, arbitrary host files and build shell snippets are not accepted. Builds are journaled mutations in a task thread. Known build failures are reported as failures; a lost response stays uncertain and is not blindly rebuilt. A successful build records its package list; `action:templates` lists this server's recorded builds, not the provider's whole project inventory.
+Builds use the official SDK with the configured PMServers project token and Ubuntu 24.04, then supported apt, run, environment and pip build steps. Python packages install in `/opt/slopbot-python`, a virtual environment on PATH for later commands. Package lists allow names and exact pins, at most 40 per manager; credentials, custom registry URLs, arbitrary host files and build shell snippets are not accepted. Builds are journaled mutations. Known build failures are reported as failures; a lost response stays uncertain and is not blindly rebuilt. A build does not replace an active task sandbox. `action: templates` lists the templates of this PMServers project, and falls back to this server's recorded builds when the project list cannot be read.
 
-Create a task workspace with `{"action":"run","template":"analysis:v1","command":"python -c 'import pandas; print(pandas.__version__)'"}`. Builds leave an existing task workspace intact. Template sandboxes use `/home/user` and user `user`; sudo is unavailable. The operator's `E2B_TEMPLATE` remains the default when a call omits `template`.
+Template sandboxes run as the template user in its home directory (`/home/user` in the slopbot template); sudo is unavailable. The `slopbot` template installs poppler-utils (`pdftotext`) and pandoc. Its build is run by `scripts/sandbox-template.mjs`.
 
-Sources reviewed 2026-10-12: https://docs.pmservers.org/sandboxes/templates/ and https://docs.pmservers.org/sandboxes/overview/ . Named tags and image builds are supported; snapshot, fork, private registry and tag-route features remain unsupported. Live provider builds are separate from the mocked SDK tests.
+Sources reviewed 2026-10-12: https://docs.pmservers.org/sandboxes/templates/ and https://docs.pmservers.org/sandboxes/overview/ . Named tags and image builds are supported; snapshot, fork, private registry and tag-route features remain unsupported.
 
-### Participation diagnostics
-
-`calibration action:get|set` inspects or updates addressed/respond/unsolicited/funny cutoffs, expressed as integer percentages. Changes require Manage Server and apply immediately. `why` is a read available to members in permitted configured channels. It returns the last 10 decisions by default, up to 100, and supports channel, message_id, author ID or mention, literal query, inclusive after, exclusive before and since_minutes. The agent can combine filters and use before for older results. Scores and thresholds are historical snapshots; allowed participation does not confirm reply delivery. Older classifier records lack final gate outcomes. Excerpts use current canonical sources, and deleted sources are excluded.

@@ -177,8 +177,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
     message_id: { type: 'string', description: 'Exact Discord message ID to inspect' },
     author: { type: 'string', description: 'Exact author Discord ID or mention' },
     query: { type: 'string', description: 'Case-insensitive literal text to find in message excerpts', max: 200 },
-  }, access: "member", effect: "read", retrySafe: true, programmatic: true,
-    outputSchema: { type: 'object', properties: { channel: { type: 'string' }, records: { type: 'array', items: { type: 'object' } } }, required: ['channel', 'records'], additionalProperties: false },
+  }, access: "member", effect: "read", retrySafe: true,
     async execute(context, args) {
       const id = await scoped(context.message, args.channel);
       const timestamp = (value: Json | undefined): number | undefined => {
@@ -207,7 +206,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
     } });
   add({ name: "channel_find", description: "Find visible server text channels by name before changing channel settings", fields: { query: { type: "string", description: "Channel name to search", required: true } }, access: "admin", effect: "read", retrySafe: true,
     async execute(context, args) { return services.findChannels(context.message, String(args.query)); } });
-  add({ name: "channels", scope: "discord", description: "List, add or remove monitored channels; removal purges searchable content", fields: { action: choice("Default: list", ["list", "add", "remove"]), channel }, access: "admin", effect: "write", retrySafe: true, writes: args => (args.action ?? "list") !== "list",
+  add({ name: "channels", scope: "discord", description: "List, add or remove monitored channels; removal purges searchable content", fields: { action: choice("Default: list", ["list", "add", "remove"]), channel }, access: "admin", effect: "write", retrySafe: true, confirm: args => args.action === "remove", writes: args => (args.action ?? "list") !== "list",
     async execute(context, args) {
       const action = args.action ?? "list", channels = [...services.channels()];
       if (action === "list") return channels.map(id => `<#${id}>`).join("\n") || "No channels configured.";
@@ -248,14 +247,14 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
       if ((args.action === "window" || args.action === "more") && history.state(id).job) return "The previously requested import is still pending; it was not started twice.";
       return undefined;
     } });
-  add({ name: "memory_remember", description: "Save an attributed statement with its source message", fields: { text: { type: "string", description: "Statement to save", max: 2000, required: true } }, access: "member", effect: "write", retrySafe: false,
+  add({ name: "memory_remember", description: "Save an attributed statement with its source message", fields: { text: { type: "string", description: "Statement to save", max: 2000, required: true } }, access: "member", effect: "write", retrySafe: false, execution: "inline",
     async execute(context, args) { const note = await store.remember((await services.originMessage(context.message)), String(args.text)); return `Saved as your statement, not a group agreement. Memory ID: ${note.id}`; },
     async reconcile(context, args) { const origin = await services.originMessage(context.message); const found = (await store.memories(context.message.server, origin.channel)).find(note => note.author === context.message.author && note.content === args.text && note.sourceIds.includes(origin.id)); return found ? `Saved memory ID: ${found.id}` : undefined; } });
   add({ name: "memory", description: "List active source-linked memories in this channel", fields: {}, access: "member", effect: "read", retrySafe: true,
     async execute(context) { const notes = await store.memories(context.message.server, (await services.originMessage(context.message)).channel); return notes.length ? notes.slice(0, 20).map(note => `${note.id} | author ${note.author} | ${note.content}`).join("\n") : "No active saved memories in this channel."; } });
-  add({ name: "memory_forget", description: "Forget one of your saved statements", fields: { id: { type: "string", description: "Memory ID", required: true } }, access: "member", effect: "write", retrySafe: true,
+  add({ name: "memory_forget", description: "Forget one of your saved statements", fields: { id: { type: "string", description: "Memory ID", required: true } }, access: "member", effect: "write", retrySafe: true, execution: "inline",
     async execute(context, args) { return await store.forget(context.message.server, (await services.originMessage(context.message)).channel, String(args.id), context.message.author) ? "Memory forgotten." : "No active memory with that ID owned by you in this channel."; } });
-  add({ name: "task_start", scope: "discord", description: "Move sustained work or an action request into a dedicated task thread", fields: { goal: { type: "string", description: "Task goal", required: true } }, access: "member", effect: "write", retrySafe: false, resource: message => `task-thread:${message.server}:${message.id}`,
+  add({ name: "task_start", surface: "top", scope: "discord", description: "Move sustained work or an action request into a dedicated task thread", fields: { goal: { type: "string", description: "Task goal", required: true } }, access: "member", effect: "write", retrySafe: false, resource: message => `task-thread:${message.server}:${message.id}`,
     async execute(context, args) { await context.assertActive(); const threadId = await services.startTask(context.message, String(args.goal)); return { text: `Task thread: <#${threadId}>`, handoff: { threadId } }; },
     async reconcile(context) { const thread = await services.reconcileTask(context.message); return thread ? { text: `Task thread: <#${thread}>`, handoff: { threadId: thread } } : undefined; } });
   add({ name: "task_status", description: "Inspect queued, failed and blocked requests in this task", fields: {}, access: "member", effect: "read", retrySafe: true,
