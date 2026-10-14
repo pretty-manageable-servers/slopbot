@@ -83,10 +83,16 @@ test("run result keeps model text", async t => {
     async createTaskThread() { return "thread"; },
     typing() { return () => undefined; },
   };
+  const sent: string[] = [];
+  gateway.reply = async (message, text) => { sent.push(text); return [{ id: "out-1", server: "s", channel: message.channel, author: "bot", text }]; };
   const bot = new Bot(app, store, store, gateway, "s", ["c"]);
   await store.ingest({ id: "a1", server: "s", channel: "c", author: "alice", text: "hello", botAuthor: false, mentionsBot: false, repliesToBot: false } as Incoming);
   await bot.receive({ id: "q1", server: "s", channel: "c", author: "alice", text: "question", botAuthor: false, mentionsBot: true, repliesToBot: false } as Incoming);
+  // The stored run result is the model text. The text sent to Discord has the made-up link removed.
   assert.equal((await store.modelReplies("s", ["out-1"])).get("out-1")?.text, modelText);
+  assert.equal(sent.length, 1);
+  assert.ok(!sent[0]!.includes("discord.com/channels/s/c/999"), sent[0]);
+  assert.ok(sent[0]!.startsWith("Answer from [↗]("), sent[0]);
 });
 
 // Budget tests use the context builder with a fake store, like the context builder format tests.

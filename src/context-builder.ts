@@ -135,6 +135,7 @@ export class ContextBuilder {
     const block = this.options.tools || people.length || evidenceItems.length ? [contextBlock({ request: requestContext, people, evidence: evidenceItems })] : [];
     inputs.splice(0, inputs.length, ...inputs.filter(item => !evidenceRows.has(item)), ...block, request);
     const suggested = suggestRequestTool(tools, message, target);
-    return { sourceVersion, history, inputs, sources, quoteAnswer, clarificationAnswer, suggested, metadata: block, quotes, refs };
+    const knownUsers = new Set(people.map(person => person.user_id));
+    return { sourceVersion, history, inputs, sources, quoteAnswer, clarificationAnswer, suggested, metadata: block, quotes, refs, knownUsers };
   }
 }

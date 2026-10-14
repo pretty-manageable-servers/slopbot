@@ -12,7 +12,8 @@ import { ContextBuilder } from "./context-builder.js";
 import { ReplyRenderer } from "./reply-renderer.js";
 import { randomUUID } from "node:crypto";
 import { parseEffort, type Effort, type Json, type Message, type Prompt, type PromptItem, type Reply } from "./domain.js";
-import { loadTaskRefs, refListParts, resolveRefs, type SettingsPort } from "./transcript.js";
+import { loadTaskSeed, refListParts, resolveRefs, type SettingsPort } from "./transcript.js";
+import { linkRefs } from "./reply-refs.js";
 import type { AgentTurn, LLM, Store } from "./ports.js";
 import type { Recall } from "./memory.js";
 import { attribution, streamMetered, type UsageMeter } from "./usage-meter.js";
@@ -237,7 +238,10 @@ export class AgentRunner {
     const built = await requestTimings.measure(message, "context", () => this.contextBuilder.build(message, taskKey, this.recentMessages, (message, key, limit) => this.boundedHistory(message, key, limit), prefix, tools, schemaBudget));
     let { sourceVersion, history, inputs, sources, quoteAnswer, clarificationAnswer, suggested, quotes } = built;
     // A task run also gets the refs of its seed, saved when the task started.
-    const refs: ReadonlyMap<string, string> = new Map([...await loadTaskRefs(this.store as SettingsPort, message.server, message.taskId), ...((built as { refs?: Map<string, string> }).refs ?? [])]);
+    const seed = await loadTaskSeed(this.store as SettingsPort, message.server, message.taskId);
+    const refs: ReadonlyMap<string, string> = new Map([...seed.refs, ...((built as { refs?: Map<string, string> }).refs ?? [])]);
+    // Reply refs link to this channel, and "s" refs of a task link to the task source channel.
+    const knownUsers: ReadonlySet<string> = built.knownUsers;
     let directAnswer: string | undefined;
     let ui: import('./ui/schema.js').UiDocument | undefined;
     const activity: ToolActivity[] = [];
@@ -384,7 +388,11 @@ export class AgentRunner {
         if (signal.aborted) throw new HarnessInterrupted("Request interrupted before completion");
         if (machine.state.kind === "Streaming") await step({ type: "StreamCompleted" });
         await this.store.complete(runId, taskKey, [...inputs, ...trace], text);
-        return { runId, text: await this.renderer.render(message.server, text, quoteAnswer !== undefined), contextVersion: sourceVersion, toolActivity: activity, ...(ui ? {ui} : {}) };
+        // The stored run result keeps the model text. Only the reply shown to users gets the links.
+        const rendered = await this.renderer.render(message.server, text, quoteAnswer !== undefined);
+        const sourcePlace = { server: message.server, channel: seed.channel ?? message.channel };
+        const shown = linkRefs(rendered, refs, { server: message.server, channel: message.channel }, knownUsers, sourcePlace);
+        return { runId, text: shown, contextVersion: sourceVersion, toolActivity: activity, ...(ui ? {ui} : {}) };
       } catch (error) { await this.store.fail(runId, errorSummary(error)).catch(secondary => logError("run_failure_record_failed", secondary, { runId })); throw errorContext(error, { stage: "agent round", runId, round }); }
     }
     throw new RequestError("TOOL_ROUND_LIMIT", `Reached the limit of ${maxRounds} tool rounds. Progress is retained.`, "Retry the job or send a continuation message.", { limit: maxRounds });
