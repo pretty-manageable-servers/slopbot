@@ -11,14 +11,27 @@ import { createTranscripts } from "../src/web-transcripts.js";
 import { ShareService } from "../src/shares.js";
 import type { UserLimit } from "../src/user-limiter.js";
 import type { Message } from "../src/domain.js";
+import type { ObjectStorageProvider } from "../src/object-storage.js";
+import { chatFileKey } from "../src/web-chat-files.js";
 
 const SERVER = "1528063444874432734";
 const ALICE = "1514413259522838529", BOB = "1514413259522838530", CAROL = "1514413259522838531";
 const ORIGIN = "http://localhost:3000";
 const MISSING = "0".repeat(32);
+const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("rest of png")]);
+
+/** Chat storage in memory, so the tests never write to disk. */
+class MemoryStorage implements ObjectStorageProvider {
+  objects = new Map<string, Uint8Array>();
+  async put(key: string, bytes: Uint8Array) { this.objects.set(key, bytes); }
+  async get(key: string) { const found = this.objects.get(key); if (!found) throw Object.assign(new Error("missing"), { code: "ENOENT" }); return found; }
+  async delete(key: string) { this.objects.delete(key); }
+  async link(key: string, _name: string, seconds: number) { return `https://storage.example/${key}?expires=${seconds}`; }
+}
 
 interface Fixture {
   store: SQLiteStore;
+  storage: MemoryStorage;
   members: Set<string>;
   limit: { current: UserLimit };
   /** Set to true to make the Discord membership check fail, as a Discord outage would. */
@@ -42,6 +55,7 @@ async function setup(t: TestContext): Promise<Fixture> {
   const shareNow = { now: Date.now() };
   const limit: { current: UserLimit } = { current: { allowed: true } };
   const received: Message[] = [];
+  const storage = new MemoryStorage();
   const handle: PrivateChatHandle = { openChat() { /* no bot in these tests */ }, closeChat() { /* none */ }, async receiveChat(message) { received.push(message); }, async stopResponses() { return []; } };
   let clock = 1_000;
   const host: ChatHost = {
@@ -49,6 +63,7 @@ async function setup(t: TestContext): Promise<Fixture> {
     async handle(server) { return server === SERVER ? handle : undefined; },
     limiter: { async check() { return limit.current; } },
     access: new ChannelAccess({ async facts() { return undefined; } }),
+    images: storage,
   };
   const service = new WebChatService(store, host, undefined, () => ++clock);
   const logins: Record<string, { cookie: string; csrf: string }> = {};
@@ -85,19 +100,34 @@ const shareService = new ShareService({
     const head: Record<string, string> = {};
     if (user) head.Cookie = logins[user]!.cookie;
     if (method !== "GET") { head.Origin = ORIGIN; if (user) head["X-CSRF-Token"] = logins[user]!.csrf; }
-    if (body !== undefined) head["Content-Type"] = "application/json";
-    const payload = body === undefined ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) };
+    // A Buffer is a raw body, sent as octet-stream unless the headers give another type.
+    if (body !== undefined) head["Content-Type"] = Buffer.isBuffer(body) ? "application/octet-stream" : "application/json";
+    const payload = body === undefined ? {} : { body: Buffer.isBuffer(body) ? new Uint8Array(body) : typeof body === "string" ? body : JSON.stringify(body) };
     const response = await fetch(base + path, { method, headers: { ...head, ...headers }, ...payload });
     const text = await response.text();
     return { status: response.status, json: text ? JSON.parse(text) : undefined };
   }
-  return { store, members, limit, membership, shareNow, received, base, cookie: user => logins[user]!.cookie, call };
+  return { store, storage, members, limit, membership, shareNow, received, base, cookie: user => logins[user]!.cookie, call };
 }
 
 async function newChat(f: Fixture, user = ALICE): Promise<string> {
   const created = await f.call(user, "POST", "/api/chats", { server: SERVER });
   assert.equal(created.status, 201);
   return created.json.id as string;
+}
+
+/** Uploads one file as raw bytes. The name goes in the query and the type in the Content-Type header. */
+const uploadFile = (f: Fixture, user: string, id: string, bytes: Buffer, name = "notes.txt", type = "text/plain") =>
+  f.call(user, "POST", `/api/chats/${id}/files?name=${encodeURIComponent(name)}`, bytes, { "Content-Type": type });
+
+/** Uploads one image as raw bytes. */
+const uploadImage = (f: Fixture, user: string, id: string) =>
+  f.call(user, "POST", `/api/chats/${id}/images?name=shot.png`, PNG, { "Content-Type": "image/png" });
+
+/** A GET with the session cookie, read as bytes, for the file download. */
+async function download(f: Fixture, user: string | null, path: string) {
+  const response = await fetch(f.base + path, { headers: user ? { Cookie: f.cookie(user) } : {} });
+  return { status: response.status, headers: response.headers, bytes: Buffer.from(await response.arrayBuffer()) };
 }
 
 test("the list, create, rename and delete routes keep the shapes the UI reads", async t => {
@@ -498,4 +528,144 @@ test("continuing needs a sign-in, the same origin and the CSRF token", async t =
   assert.equal((await f.call(BOB, "POST", `/api/shares/${shareId}/continue`, {}, { Origin: "https://evil.example" })).status, 403, "wrong origin");
   assert.equal((await f.call(BOB, "GET", `/api/chats`)).json.length, 0, "no chat is made by a refused request");
   assert.equal((await fetch(`${f.base}/api/shares/${shareId}/continue`, { method: "POST", headers: { Cookie: f.cookie(BOB), Origin: ORIGIN, "X-CSRF-Token": "csrf-" + BOB } })).status, 201, "the same request with the token works");
+});
+
+test("upload file any type", async t => {
+  const f = await setup(t);
+  const id = await newChat(f);
+  const pdf = await uploadFile(f, ALICE, id, Buffer.from("%PDF-1.4 test"), "report.pdf", "application/pdf");
+  assert.equal(pdf.status, 201);
+  assert.deepEqual(Object.keys(pdf.json).sort(), ["contentType", "fileId", "name", "size"]);
+  assert.match(pdf.json.fileId, /^[0-9a-f]{32}\.pdf$/);
+  assert.deepEqual({ name: pdf.json.name, contentType: pdf.json.contentType, size: pdf.json.size }, { name: "report.pdf", contentType: "application/pdf", size: 13 });
+  // Any binary type is accepted. A Content-Type that is not a plain type is stored as octet-stream.
+  const binary = await uploadFile(f, ALICE, id, Buffer.from([0, 1, 2, 255]), "tool.exe", "text/plain; charset=utf-8");
+  assert.equal(binary.status, 201);
+  assert.equal(binary.json.contentType, "application/octet-stream");
+  assert.match(binary.json.fileId, /^[0-9a-f]{32}\.exe$/);
+  assert.equal(f.storage.objects.size, 2, "both files are stored");
+  assert.ok(f.storage.objects.has(chatFileKey(SERVER, id, pdf.json.fileId)));
+  assert.equal((await uploadFile(f, ALICE, id, Buffer.alloc(0))).status, 400, "an empty file is refused");
+  assert.equal((await uploadFile(f, BOB, id, Buffer.from("x"))).status, 404, "another user cannot upload here");
+});
+
+test("upload file 413", async t => {
+  const f = await setup(t);
+  const id = await newChat(f);
+  const big = await uploadFile(f, ALICE, id, Buffer.alloc(10 * 1024 * 1024 + 1), "big.bin", "application/octet-stream");
+  assert.equal(big.status, 413);
+  assert.equal(big.json.error, "Files can be 10 MB or smaller.");
+  assert.equal(f.storage.objects.size, 0, "nothing is stored");
+  const exact = await uploadFile(f, ALICE, id, Buffer.alloc(10 * 1024 * 1024, 1), "exact.bin", "application/octet-stream");
+  assert.equal(exact.status, 201, "10 MB is allowed");
+});
+
+test("send with files and images over 10 is 400", async t => {
+  const f = await setup(t);
+  const id = await newChat(f);
+  const images: string[] = [], files: string[] = [];
+  for (let i = 0; i < 5; i++) images.push((await uploadImage(f, ALICE, id)).json.imageId as string);
+  for (let i = 0; i < 5; i++) files.push((await uploadFile(f, ALICE, id, Buffer.from(`file ${i}`), `f${i}.txt`)).json.fileId as string);
+  const messages = `/api/chats/${id}/messages`;
+  const over = await f.call(ALICE, "POST", messages, { text: "eleven", images, files: [...files, MISSING + ".txt"] });
+  assert.equal(over.status, 400);
+  assert.equal(over.json.error, "Attach 10 files or images or fewer.");
+  assert.equal((await f.call(ALICE, "GET", messages)).json.messages.length, 0, "nothing is saved");
+  const sent = await f.call(ALICE, "POST", messages, { text: "ten", images, files });
+  assert.equal(sent.status, 201);
+  assert.equal(f.received.at(-1)!.attachments?.length, 10);
+});
+
+test("send files only uses default text", async t => {
+  const f = await setup(t);
+  const id = await newChat(f);
+  const up = await uploadFile(f, ALICE, id, Buffer.from("a,b\n1,2\n"), "data.csv", "text/csv");
+  const fileId = up.json.fileId as string;
+  const sent = await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { files: [fileId] });
+  assert.equal(sent.status, 201);
+  const saved = await f.store.canonicalMessage(SERVER, sent.json.id);
+  assert.ok(saved);
+  assert.equal(saved.text.split("\n")[0], "Please look at the attached file(s).", "the default text comes first");
+  assert.deepEqual(saved.attachments, [{ name: "data.csv", url: `web-file:${SERVER}/${id}/${fileId}`, contentType: "text/csv", size: 8 }]);
+  assert.equal(f.received.at(-1)!.modelImages, undefined, "a file is not sent to the model as an image");
+  const viewed = await f.call(ALICE, "GET", `/api/chats/${id}/messages`);
+  assert.equal(viewed.json.messages[0].text, "Please look at the attached file(s).", "the web view hides the label");
+  assert.equal((await f.call(ALICE, "GET", "/api/chats")).json[0].title, "data.csv", "the first file name is the title");
+  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { files: [fileId] })).status, 400, "a sent file is not pending any more");
+});
+
+test("send with file adds attachment label for the model", async t => {
+  const f = await setup(t);
+  const id = await newChat(f);
+  const fileId = (await uploadFile(f, ALICE, id, Buffer.from("a,b\n"), "data.csv", "text/csv")).json.fileId as string;
+  const sent = await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "look", files: [fileId] });
+  assert.equal(sent.status, 201);
+  const label = `[Attachment data.csv, type text/csv: web-file:${SERVER}/${id}/${fileId}; content not inspected; read with file_read, or if file_read cannot read this type, use sandbox import_attachment]`;
+  const saved = await f.store.canonicalMessage(SERVER, sent.json.id);
+  assert.equal(saved!.text, `look\n${label}`, "the saved text has the label after the body");
+  assert.equal(f.received.at(-1)!.text, `look\n${label}`, "the model gets the label");
+  const viewed = await f.call(ALICE, "GET", `/api/chats/${id}/messages`);
+  assert.equal(viewed.json.messages[0].text, "look", "the web view does not show the label");
+});
+
+test("read file sets attachment disposition", async t => {
+  const f = await setup(t);
+  const id = await newChat(f);
+  const name = "my report (final) é.csv";
+  const up = await uploadFile(f, ALICE, id, Buffer.from("a,b\n1,2\n"), name, "text/csv");
+  assert.equal(up.status, 201);
+  const fileId = up.json.fileId as string;
+  const path = `/api/chats/${id}/files/${fileId}`;
+  const disposition = `attachment; filename*=UTF-8''${encodeURIComponent(name)}`;
+  const check = (got: Awaited<ReturnType<typeof download>>) => {
+    assert.equal(got.status, 200);
+    assert.equal(got.headers.get("content-type"), "application/octet-stream");
+    assert.equal(got.headers.get("content-disposition"), disposition);
+    assert.equal(got.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(got.headers.get("cache-control"), "private, max-age=600");
+    assert.deepEqual(got.bytes, Buffer.from("a,b\n1,2\n"));
+  };
+  // Before the send, the name comes from the pending upload.
+  check(await download(f, ALICE, path));
+  // After the send, the name comes from the message row.
+  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "look", files: [fileId] })).status, 201);
+  check(await download(f, ALICE, path));
+  // With no pending entry and no message row, the file ID is the name.
+  const orphan = "f".repeat(32) + ".txt";
+  f.storage.objects.set(chatFileKey(SERVER, id, orphan), Buffer.from("orphan"));
+  const named = await download(f, ALICE, `/api/chats/${id}/files/${orphan}`);
+  assert.equal(named.status, 200);
+  assert.equal(named.headers.get("content-disposition"), `attachment; filename*=UTF-8''${orphan}`);
+});
+
+test("other user cannot read file", async t => {
+  const f = await setup(t);
+  const id = await newChat(f), bobChat = await newChat(f, BOB);
+  const fileId = (await uploadFile(f, ALICE, id, Buffer.from("secret"), "secret.txt")).json.fileId as string;
+  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "secret", files: [fileId] })).status, 201);
+  const path = `/api/chats/${id}/files/${fileId}`;
+  assert.equal((await download(f, ALICE, path)).status, 200, "the owner reads it");
+  assert.equal((await download(f, BOB, path)).status, 404, "another member cannot read it");
+  assert.equal((await download(f, CAROL, path)).status, 404, "a non-member cannot read it");
+  assert.equal((await download(f, null, path)).status, 401, "no session");
+  assert.equal((await download(f, BOB, `/api/chats/${bobChat}/files/${fileId}`)).status, 404, "another chat cannot reach the file");
+  assert.equal((await download(f, ALICE, `/api/chats/${id}/files/${MISSING}.txt`)).status, 404, "unknown file");
+  assert.equal((await download(f, ALICE, `/api/chats/${id}/files/..%2Fescape.txt`)).status, 404, "a bad file ID");
+  assert.equal((await f.call(BOB, "DELETE", `/api/chats/${id}/files/${fileId}`)).status, 404, "another user cannot delete it");
+  assert.equal((await f.call(BOB, "POST", `/api/chats/${bobChat}/messages`, { text: "steal", files: [fileId] })).status, 400, "another user cannot send it");
+  assert.equal(f.storage.objects.size, 1, "the file is kept");
+});
+
+test("delete chat removes files", async t => {
+  const f = await setup(t);
+  const id = await newChat(f);
+  const pending = await uploadFile(f, ALICE, id, Buffer.from("pending"), "p.txt");
+  const sent = await uploadFile(f, ALICE, id, Buffer.from("sent"), "s.txt");
+  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "look", files: [sent.json.fileId] })).status, 201);
+  assert.equal((await uploadImage(f, ALICE, id)).status, 201);
+  assert.equal(f.storage.objects.size, 3);
+  assert.equal((await f.call(ALICE, "DELETE", `/api/chats/${id}/files/${pending.json.fileId}`)).status, 200, "a pending file can be discarded");
+  assert.equal(f.storage.objects.size, 2);
+  assert.equal((await f.call(ALICE, "DELETE", `/api/chats/${id}`)).status, 200);
+  assert.equal(f.storage.objects.size, 0, "the chat's files and images go with it");
 });
