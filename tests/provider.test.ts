@@ -45,7 +45,7 @@ test("provider requests use configured endpoint/model and preserve prefix", asyn
   assert.ok(events.some(event => event.kind === "reasoning"));
   assert.ok(events.some(event => event.kind === "usage"));
   assert.deepEqual(events.find(event => event.kind === "text"), { kind: "text", payload: { text: "Hi" } });
-  assert.equal(wireMessages(prompt)[1]?.content, '{"author_id":"alice","text":"hello"}');
+  assert.equal(wireMessages(prompt)[1]?.content, "hello");
 });
 
 test("SSE handles split Unicode, CRLF, comments and multiple data lines", async () => {

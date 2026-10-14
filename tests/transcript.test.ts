@@ -122,6 +122,18 @@ test("resolveRefs maps refs", () => {
   });
 });
 
+test("comma ref list resolves", () => {
+  const refs = new Map([["m3", "id-333"], ["m5", "id-555"]]);
+  assert.deepEqual(resolveRefs({ source_ids: "m3, #m5" }, refs), { source_ids: "id-333,id-555" });
+  assert.equal(resolveRefs("m3,#m5", refs), "id-333,id-555");
+});
+
+test("mixed text with comma is unchanged", () => {
+  const refs = new Map([["m3", "id-333"]]);
+  assert.equal(resolveRefs("hello, m3", refs), "hello, m3");
+  assert.deepEqual(resolveRefs({ text: "m3, see this" }, refs), { text: "m3, see this" });
+});
+
 test("no JSON braces in output", () => {
   const messages = [
     msg("q", { authorIdentity: { discord_handle: "alice", server_name: "Secret Server" }, attachments: [{ name: "notes.txt", url: "https://example.test/n" }] }),

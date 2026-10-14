@@ -52,6 +52,20 @@ export function toLine(message: Message, ref: string, refs: ReadonlyMap<string, 
   return lineOf(message, ref, refs, false);
 }
 
+/**
+ * The current request as the model reads it: same time, name, handle, edited and file fields as a transcript line, no ref.
+ * `text` replaces message.text when a reply subject was added. Example: "[14:05] Alice (@alice) [current request]: text"
+ */
+export function requestLine(message: Message, text: string = message.text): string {
+  const line = lineOf(message, "", new Map(), false);
+  let head = `[${line.time}] ${line.name}`;
+  if (line.handle) head += ` (@${line.handle})`;
+  if (line.bot) head += " [bot]";
+  if (line.edited) head += " [edited]";
+  if (line.attachments?.length) head += ` [files: ${line.attachments.join(", ")}]`;
+  return `${head} [current request]: ${text}`;
+}
+
 /** The text of one line for the prompt. Example: "[14:02] #m3 Alice (@alice) ↩#m1 [edited] [files: a.png]: text" */
 export function formatLine(line: TranscriptLine): string {
   let head = `[${line.time}] #${line.ref} ${line.notice ? "Slopbot notice" : line.name}`;
@@ -120,13 +134,26 @@ export function renderTranscript(messages: readonly Message[], selfId: string | 
 }
 
 /**
+ * The parts of a comma-separated ref list such as "m3, #m5", trimmed.
+ * Returns undefined unless the string has a comma and every part is a ref.
+ */
+export function refListParts(value: string): string[] | undefined {
+  if (!value.includes(",")) return undefined;
+  const parts = value.split(",").map(part => part.trim());
+  return parts.every(part => REF_VALUE.test(part)) ? parts : undefined;
+}
+
+/**
  * Replaces refs such as "m3" or "#m3" in tool arguments with the real message ID.
+ * A comma-separated list of refs ("m3, #m5") maps each part and joins them with ",".
  * Unknown refs stay as they are.
  */
 export function resolveRefs(args: Json, refs: ReadonlyMap<string, string>): Json {
   if (typeof args === "string") {
-    if (!REF_VALUE.test(args)) return args;
-    return refs.get(args.replace(/^#/, "")) ?? args;
+    if (REF_VALUE.test(args)) return refs.get(args.replace(/^#/, "")) ?? args;
+    const parts = refListParts(args);
+    if (parts) return parts.map(part => refs.get(part.replace(/^#/, "")) ?? part).join(",");
+    return args;
   }
   if (Array.isArray(args)) return args.map(item => resolveRefs(item, refs));
   if (args !== null && typeof args === "object") {
