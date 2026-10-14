@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Message } from './domain.js';
 import { RequestError } from './errors.js';
+import { CHAT_FILE_SCHEME } from './web-chat-files.js';
 
 export const toolProgressFooter = 'Live tool status';
 export function legacyToolProgress(message: Pick<Message, 'text' | 'isBot'>): boolean {
@@ -21,7 +22,7 @@ export function stableAttachmentUrl(value: string): string {
 // Normalization appends media descriptions; they are not authored instructions.
 export function authoredSourceText(message: Message): string {
   for (const stable of [false, true]) {
-    const labels = (message.attachments ?? []).map(item => `[Attachment ${item.name}, type ${item.contentType ?? 'unknown'}: ${stable ? stableAttachmentUrl(item.url) : item.url}; content not inspected]`).join('\n');
+    const labels = (message.attachments ?? []).map(item => `[Attachment ${item.name}, type ${item.contentType ?? 'unknown'}: ${stable ? stableAttachmentUrl(item.url) : item.url}; content not inspected${item.url.startsWith(CHAT_FILE_SCHEME) ? '; read with file_read, or if file_read cannot read this type, use sandbox import_attachment' : ''}]`).join('\n');
     if (labels && message.text === labels) return '';
     if (labels && message.text.endsWith('\n' + labels)) return message.text.slice(0, -labels.length - 1);
   }

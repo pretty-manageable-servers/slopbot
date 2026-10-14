@@ -7,9 +7,13 @@ const recall = key => { try { return localStorage.getItem(key); } catch { return
 const remember = (key, value) => { try { localStorage.setItem(key, value); } catch { } };
 function theme(light) { document.documentElement.classList.toggle('light', light); document.querySelectorAll('img[src*="logo-"]').forEach(img => img.src = `/console/assets/logo-${light ? 'dark' : 'light'}.svg`); const next = light ? 'Switch to dark theme' : 'Switch to light theme'; $('theme').setAttribute('aria-label', next); $('theme').title = next; $('theme-sun').hidden = light; $('theme-moon').hidden = !light; remember('slopbot-theme', light ? 'light' : 'dark'); }
 theme(recall('slopbot-theme') === 'light');
-// Follow the visible viewport when a mobile keyboard opens.
+// Follows the mobile keyboard but not pinch zoom. Pinch zoom shrinks visualViewport.height, so above scale 1.01 it uses innerHeight.
 function sizeConsoleViewport() {
-  document.documentElement.style.setProperty('--viewport-height', `${window.visualViewport?.height || window.innerHeight}px`);
+  const viewport = window.visualViewport;
+  const height = viewport && viewport.scale > 1.01 ? window.innerHeight : viewport?.height || window.innerHeight;
+  const value = `${height}px`;
+  if (document.documentElement.style.getPropertyValue('--viewport-height') === value) return;
+  document.documentElement.style.setProperty('--viewport-height', value);
 }
 sizeConsoleViewport();
 window.visualViewport?.addEventListener('resize', sizeConsoleViewport);

@@ -5,9 +5,11 @@ import { zipSync, strToU8 } from 'fflate';
 import { defaultFileReaders } from '../src/adapters/file-readers.js';
 import { DiscordFileFetcher, WorkerFileDecoder, registerFileTool } from '../src/files.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
-import { ToolRegistry } from '../src/tools.js';
+import { ToolError, ToolRegistry } from '../src/tools.js';
 import { wireMessages } from '../src/adapters/chat-completions.js';
 import type { LLM } from '../src/ports.js';
+import type { ObjectStorageProvider } from '../src/object-storage.js';
+import { ChatFileFetcher, fileUrl } from '../src/web-chat-files.js';
 
 test('GIF reader samples ordered frames and worker decodes text', async () => {
   const gif = await sharp(Buffer.from([255,0,0,0,0,255]), { raw: { width: 1, height: 2, channels: 3, pageHeight: 1 } }).gif({ delay: [100,200] }).toBuffer();
@@ -110,4 +112,36 @@ test('stored-file inspection works without a Discord attachment source and check
   } };
   const result = await inspectFile({ store, llm, decoder: { read: async () => ({ text: 'saved image', images: [{ url: 'data:image/png;base64,AA==', label: 'image' }] }) }, assertCurrent: async () => { currentChecks++; } }, { message, operationId: 'stored-inspection', isAdmin: false, source: 'agent', toolName: 'file_store', arguments: {}, resource: null, assertActive: async () => {} }, 'saved.png', 'image/png', new Uint8Array(), 'Describe it');
   assert.equal(result, 'A red image.'); assert.equal(currentChecks, 1);
+});
+
+function chatStorage(bytes: Uint8Array, keys: string[]): ObjectStorageProvider {
+  return { put: async () => {}, get: async key => { keys.push(key); return bytes; }, delete: async () => {}, link: async () => '' };
+}
+
+test('file_read reads web-file text', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const fileId = `${'0'.repeat(32)}.txt`;
+  const source = { id: 'file', server: 's', channel: 'c', author: 'a', text: 'file', attachments: [{ name: 'notes.txt', url: fileUrl('s', 'c', fileId), contentType: 'text/plain', size: 5 }] };
+  const request = { id: 'request', server: 's', channel: 'c', author: 'a', text: 'what does it say', replyTo: 'file' };
+  await store.ingest(source); await store.ingest(request);
+  const keys: string[] = [], decoded: string[] = [];
+  const llm: LLM = { outputTokenLimit: 32000, contextTokenLimit: 64000, async *stream() { yield { kind: 'text', payload: { text: 'It says hello.' } }; } };
+  const registry = new ToolRegistry(store, async () => false);
+  registerFileTool(registry, { store, llm, resolve: async () => source, fetcher: new ChatFileFetcher(chatStorage(new TextEncoder().encode('hello'), keys), { fetch: async () => { throw new Error('inner fetcher must not run for web-file'); } }), decoder: { read: async (_name, _mime, data) => { decoded.push(new TextDecoder().decode(data)); return { text: 'hello', images: [] }; } } });
+  const result = await registry.invokeResult(request, 'file_read', {}, 'inspection', 'agent');
+  assert.match(result.text, /It says hello\./);
+  assert.deepEqual(keys, [`web-chat-files/s/c/${fileId}`]);
+  assert.deepEqual(decoded, ['hello']);
+});
+
+test('file_read unknown type says use sandbox', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const fileId = `${'2'.repeat(32)}.zip`;
+  const source = { id: 'file', server: 's', channel: 'c', author: 'a', text: 'file', attachments: [{ name: 'bundle.zip', url: fileUrl('s', 'c', fileId), contentType: 'application/zip', size: 5 }] };
+  const request = { id: 'request', server: 's', channel: 'c', author: 'a', text: 'what is inside', replyTo: 'file' };
+  await store.ingest(source); await store.ingest(request);
+  const llm: LLM = { outputTokenLimit: 32000, contextTokenLimit: 64000, async *stream() { yield { kind: 'text', payload: { text: 'unused' } }; } };
+  const registry = new ToolRegistry(store, async () => false);
+  registerFileTool(registry, { store, llm, resolve: async () => source, fetcher: new ChatFileFetcher(chatStorage(new Uint8Array([80, 75]), []), { fetch: async () => new Uint8Array() }), decoder: { read: async () => { throw new Error('Unsupported file format. Use text, PDF, DOCX, XLSX, PNG, JPEG, WebP or GIF.'); } } });
+  await assert.rejects(registry.invokeResult(request, 'file_read', {}, 'inspection', 'agent'), (error: unknown) => error instanceof ToolError && error.message === 'file_read cannot read this type. Use sandbox import_attachment.');
 });
