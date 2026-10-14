@@ -17,7 +17,7 @@ test("saved memories retain author and source IDs and enter a fresh prompt", asy
   const llm = new FakeLLM();
   const app = new Application(store, llm, { allowedChannels: [{ server: "s", channel: "c" }], recentMessages: 0 }, store);
   await app.handle(msg("2", "What is the dinner budget?"));
-  const evidence = llm.prompts[0]!.inputs.find(item => item.content.includes('"evidence"'));
+  const evidence = llm.prompts[0]!.inputs.find(item => item.content.includes("Evidence:\n"));
   assert.ok(evidence?.content.includes('"author":"alice"'));
   assert.ok(evidence?.content.includes('"sourceIds":["1"]'));
 });

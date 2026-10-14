@@ -67,8 +67,8 @@ test("relevant profile fields enter prompts with names and original sources", as
  await store.ingest(message("profile-source")); store.editProfile(message("profile-source"),alice,"github","https://github.com/example","github");
  const app=new Application(store,llm,{allowedChannels:[{server:"s",channel:"c"}]},undefined,{profiles:store});
  await app.handle({...message("question"),text:"what do you know about me"});
- const profile=llm.prompts[0]?.inputs.find(item=>item.content.includes('"public_profile"'));
- assert.ok(profile?.content.includes("Teddio")&&profile.content.includes("profile-source"));
+ const profile=llm.prompts[0]?.inputs.find(item=>item.content.includes("People:\n"));
+ assert.ok(profile?.content.includes("Teddio")&&profile.content.includes("github=https://github.com/example"));
 });
 
 test("profiles include the mentioned subject of a referenced bot message in a task", async t => {
@@ -77,6 +77,6 @@ test("profiles include the mentioned subject of a referenced bot message in a ta
  await store.ingest({...message("profile",bot),text:`Rice Farmer (<@${rice}>) Discord identity`});
  const app=new Application(store,llm,{allowedChannels:[{server:"s",channel:"c"}]},undefined,{profiles:store});
  await app.handle({...message("correction"),text:"his name is Oscar",replyTo:"profile",taskId:"c"});
- assert.ok(llm.prompts[0]?.inputs.some(item=>item.content.includes('"public_profile"')&&item.content.includes(`"user_id":"${rice}"`)));
+ assert.ok(llm.prompts[0]?.inputs.some(item=>item.content.includes("People:\n")&&item.content.includes(`(user_id ${rice})`)));
  assert.ok(llm.prompts[0]?.inputs.at(-1)?.content.includes("About Rice Farmer"));
 });
