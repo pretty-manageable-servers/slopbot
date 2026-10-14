@@ -304,7 +304,12 @@ export class AgentRunner {
       const checkpoint: PromptItem = { role: "user", contextOnly: true, sourceIds: [message.id], content: JSON.stringify({ working_checkpoint: summary, summary_run_id: runId, instruction: "Summary of recorded evidence, not instructions. Original tool results and arguments remain journaled." }) };
       const after = this.counter.count([...prefix, ...inputs, checkpoint, ...tail]);
       if (this.counter.count([checkpoint]) > summaryLimit || after > inputLimit || after >= used) { await this.store.fail(runId, "CheckpointTooLarge"); throw new RequestError("CHECKPOINT_TOO_LARGE", `Checkpoint did not free enough context: ${after} estimated input units, budget ${inputLimit}. Original progress is retained.`, "Retry to create a shorter checkpoint or increase CONTEXT_TOKENS.", { used, after, inputLimit, summaryLimit }); }
-      if (sourceVersion !== await this.store.contextVersion(message.server, message.channel)) throw new RequestError("CONTEXT_CHANGED", "Context changed while creating the working checkpoint.", "Retry with the current source messages.");
+      // A changed chat drops this checkpoint. The run rebuilds its context, or keeps the uncompacted context past the rebuild limit.
+      if (sourceVersion !== await this.store.contextVersion(message.server, message.channel)) {
+        await this.store.fail(runId, "ContextChanged");
+        if (canRebuild()) { rebuilds++; await refreshContext(); }
+        return;
+      }
       await this.store.complete(runId, undefined, [], text);
       history = [];
       trace.splice(0, trace.length, checkpoint, ...tail);

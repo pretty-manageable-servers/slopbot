@@ -168,3 +168,23 @@ test('an older source snapshot cannot roll back newer canonical content', async 
   assert.equal((await store.canonicalMessage('s', request.id))?.text, latest.text);
   assert.equal(store.agentTurns(latest)[0]?.id, turn.id);
 });
+
+test('a chat change during a working checkpoint drops the checkpoint and the run still finishes', async t => {
+  const { store } = setup(t);
+  const lookup: import('../src/domain.js').ModelTool = { type: 'function', function: { name: 'lookup', description: 'Read state', parameters: { type: 'object', properties: { step: { type: 'integer' } }, required: ['step'] } } };
+  const checkpoint = '{"goal":"finish the task","constraints":[],"decisions":[],"disagreements":[],"progress":["Earlier reads completed."],"artifacts":[],"pending_actions":[]}';
+  let reads = 0, checkpoints = 0;
+  const llm: import('../src/ports.js').LLM = { async *stream(prompt) {
+    if (prompt.purpose === 'checkpoint') {
+      // The chat changes while the checkpoint is being made. Only the first checkpoint sees this change.
+      if (++checkpoints === 1) await store.revise({ ...request, text: 'Edited while checkpointing.' });
+      yield { kind: 'text', payload: { text: checkpoint } }; return;
+    }
+    if (reads < 8) yield { kind: 'tool_call', payload: [{ id: `call_${reads + 1}`, name: 'lookup', arguments: { step: reads + 1 } }] };
+    else yield { kind: 'text', payload: { text: 'Finished all eight reads.' } };
+  } };
+  const policy = { allowedChannels: [{ server: 's', channel: 'c' }], maxInputChars: 8000, maxOutputTokens: 1024, checkpointTokens: 1024 };
+  const services = { harness: store, tools: { catalog: () => '', schemas: () => [lookup], execute: async () => { reads++; return { text: `Read ${reads} completed. ` + 'x'.repeat(4000) }; } } };
+  const reply = await new Application(store, llm, policy, undefined, services).handle(request);
+  assert.equal(reply?.text, 'Finished all eight reads.'); assert.equal(reads, 8); assert.ok(checkpoints >= 1);
+});
