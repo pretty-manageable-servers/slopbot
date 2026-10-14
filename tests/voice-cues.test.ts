@@ -530,6 +530,25 @@ test('a reply that starts with a speak block is spoken once', async t => {
   assert.deepEqual(r.speeches, ['It is sunny.']);
 });
 
+test('speak block is not spoken again after voice_say with no tool', async t => {
+  const r = await rig(t);
+  r.talk();
+  await until(() => r.posts.length === 1);
+  assert.equal(await r.say('Hello everyone.'), 'Speaking.');
+  await r.voice.speak('channel', 'Hi all!\n<speak>Hello everyone.</speak>');
+  assert.deepEqual(r.speeches, ['Hello everyone.']);
+});
+
+test('speak block is spoken after a tool when voice_say came before it', async t => {
+  const r = await rig(t);
+  r.talk();
+  await until(() => r.posts.length === 1);
+  assert.equal(await r.say('Let me check.'), 'Speaking.');
+  r.voice.toolStarted('channel', 'web_fetch');
+  await r.voice.speak('channel', 'Sunny today.\n<speak>It is sunny.</speak>');
+  assert.deepEqual(r.speeches, ['Let me check.', 'It is sunny.']);
+});
+
 test('final answer spoken after a tool when voice_say came before it', async t => {
   const r = await rig(t);
   r.talk();

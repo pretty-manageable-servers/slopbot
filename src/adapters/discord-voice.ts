@@ -510,8 +510,9 @@ export class DiscordVoice {
     try {
       const speech = turn.speech;
       const { spoken, chat } = splitSpeak(text);
-      // A <speak> block is the spoken answer. After a tool that came after voice_say, the chat answer is spoken too.
-      if (!skipped && spoken !== undefined) this.queueFinal(session, turn, plainSpoken(spoken));
+      // A <speak> block is the spoken answer. It is not read again when voice_say already spoke and no tool ran after it.
+      // After a tool that came after voice_say, the chat answer is spoken too.
+      if (!skipped && spoken !== undefined && (!turn.said || turn.toolAfterSay)) this.queueFinal(session, turn, plainSpoken(spoken));
       else if (!skipped && turn.toolAfterSay) this.queueFinal(session, turn, spokenText(chat));
       // Nothing was streamed (an error reply, or no sentence): speak the whole reply once.
       else if (!speech.streamed && !skipped && !turn.said) {

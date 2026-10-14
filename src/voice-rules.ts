@@ -43,7 +43,8 @@ export function isErrorReply(text: string): boolean {
 
 /** Text without markdown marks, links, URLs, mentions or extra spaces. Trimmed. */
 export function plainSpoken(text: string): string {
-  return text.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, "").replace(/<[@#&!]*\d+>/g, "").replace(/[\\*_`~#>|]/g, "").replace(/\s+/g, " ").trim();
+  // Channel links become words: "in <#id>" is the task thread, any other is the channel. This runs before mentions are dropped.
+  return text.replace(/\bin <#\d+>/g, "in the thread").replace(/<#\d+>/g, "the channel").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, "").replace(/<[@#&!]*\d+>/g, "").replace(/[\\*_`~#>|]/g, "").replace(/\s+/g, " ").trim();
 }
 
 /** Plain text for TTS: cut at the last . ! ? at or before max characters, else a hard cut. Trims. */
