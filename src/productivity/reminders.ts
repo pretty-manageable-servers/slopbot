@@ -50,6 +50,9 @@ export function registerReminderTools(
     resource: (message) => `reminders:${message.server}:${message.author}`,
     async execute(context, args) {
       await services.authorize(context.message, context.message.channel);
+      // A voice request uses the join channel, the same as create. Other requests use their own channel.
+      const channel = services.reminderChannel?.(context.message) ?? context.message.channel;
+      if (channel !== context.message.channel) await services.authorize(context.message, channel);
       if (args.action === "list") {
         const records = (
           await services.store.records(context.message.server, "reminder")
@@ -57,7 +60,7 @@ export function registerReminderTools(
           const reminder = record.value as unknown as Reminder;
           return (
             reminder.owner === context.message.author &&
-            reminder.channel === context.message.channel
+            reminder.channel === channel
           );
         });
         return (
@@ -79,7 +82,7 @@ export function registerReminderTools(
         const reminder = record.value as unknown as Reminder;
         if (reminder.owner !== context.message.author)
           throw new ToolError("Only the reminder owner can cancel it.");
-        if (reminder.channel !== context.message.channel)
+        if (reminder.channel !== channel)
           throw new ToolError("Use the reminder’s original channel.");
         if (reminder.status === "sending" || reminder.status === "sent")
           throw new ToolError("Reminder delivery has already started.");
@@ -108,9 +111,6 @@ export function registerReminderTools(
         );
       if (!String(args.text ?? "").trim())
         throw new ToolError("Reminder text is required.");
-      // A voice request posts in the text channel where the join was asked. Check that channel too.
-      const channel = services.reminderChannel?.(context.message) ?? context.message.channel;
-      if (channel !== context.message.channel) await services.authorize(context.message, channel);
       const id = uiKey(context.operationId);
       const reminder: Reminder = {
         channel,
