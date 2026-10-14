@@ -75,5 +75,11 @@ test("block skips empty request fields and omits empty sections", () => {
   const block = contextBlock({ request: { server_id: "s", is_task: false, task_id: null, requester_id: "alice" }, people: [], evidence: [] });
   assert.equal(block.role, "user");
   assert.equal(block.contextOnly, true);
-  assert.equal(block.content, "Request context:\nserver_id: s\nrequester_id: alice");
+  assert.equal(block.content, "Request context:\nserver_id: s\nis_task: false\nrequester_id: alice");
+});
+
+test("is_task false is shown", () => {
+  const block = contextBlock({ request: { server_id: "s", is_task: false, private_web_chat: false }, people: [], evidence: [] });
+  assert.ok(block.content.split("\n").includes("is_task: false"));
+  assert.equal(block.content.includes("private_web_chat"), false);
 });

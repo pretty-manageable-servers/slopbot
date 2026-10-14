@@ -32,7 +32,8 @@ export function evidenceLine(evidence: Json): string {
 /** The single context item that replaces the separate request, people and evidence turns. */
 export function contextBlock(input: ContextInput): PromptItem {
   const sections: string[] = [];
-  const request = Object.entries(input.request).filter(([, value]) => !isEmpty(value)).map(([key, value]) => `${oneLine(key)}: ${scalar(value)}`);
+  // is_task is always shown, so the tool rules can point at it even when it is false.
+  const request = Object.entries(input.request).filter(([key, value]) => key === "is_task" || !isEmpty(value)).map(([key, value]) => `${oneLine(key)}: ${scalar(value)}`);
   if (request.length) sections.push(["Request context:", ...request].join("\n"));
   if (input.people.length) sections.push(["People:", ...input.people.map(personLine)].join("\n"));
   if (input.evidence.length) sections.push(["Evidence:", ...input.evidence.map(evidenceLine)].join("\n"));
