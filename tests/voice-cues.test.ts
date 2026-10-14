@@ -15,7 +15,7 @@ import { UsageMeter } from '../src/usage-meter.js';
 import { UserLimiter } from '../src/user-limiter.js';
 import type { ToolContext, ToolDefinition, ToolRegistry } from '../src/tools.js';
 import { loadConfig } from '../src/config.js';
-import { DEFAULT_VOICE_INSTRUCTIONS, VOICE_FILLER_GAP_MS, VOICE_FILLER_TEXTS, VOICE_SKIP, VOICE_SPOKEN_MAX, containsSkipMarker, heldSkipLength, isErrorReply, spokenText } from '../src/voice-rules.js';
+import { DEFAULT_VOICE_INSTRUCTIONS, VOICE_FILLER_GAP_MS, VOICE_FILLER_TEXTS, VOICE_LIMIT_TEXT, VOICE_SKIP, VOICE_SPOKEN_MAX, containsSkipMarker, heldSkipLength, isErrorReply, spokenText } from '../src/voice-rules.js';
 
 /** Speech in these tests is loud (RMS about 8500). Cues are about 4100 RMS. Silence is 0. */
 const SPEECH_LEVEL = 12000;
@@ -75,6 +75,20 @@ function meter(limit = 1_000_000) {
   let spent = 0;
   const limiter = { check: async () => spent < limit ? { allowed: true as const } : { allowed: false as const, resetAt: 1 }, record: async (_user: string, cost: number) => { spent += cost; }, overGrace: async () => spent >= limit } as unknown as UserLimiter;
   return new UsageMeter(limiter, () => ({}), { input: 0, output: 0, cached_input: 0 });
+}
+
+/**
+ * A meter the test can put over the limit. `over` makes check() refuse and overGrace() true.
+ * `grace` makes only overGrace() true, so a turn is dropped after its transcript. `recorded` holds every cost billed.
+ */
+function limitedMeter() {
+  const state = { over: false, grace: false, recorded: [] as number[] };
+  const limiter = {
+    check: async () => state.over ? { allowed: false as const, resetAt: 1 } : { allowed: true as const },
+    record: async (_user: string, cost: number) => { state.recorded.push(cost); },
+    overGrace: async () => state.over || state.grace,
+  } as unknown as UserLimiter;
+  return { usage: new UsageMeter(limiter, () => ({}), { input: 0, output: 0, cached_input: 0 }), state };
 }
 
 /** One speech response: 200 ms of a loud 440 Hz tone, as SSE. */
@@ -178,9 +192,9 @@ function reply(runId: string, deltas: string[]): void {
 }
 
 /** A joined voice session with fake Discord objects. One speaker, "user", is in the channel. */
-async function rig(t: TestContext, options: { reply?: 'voice' | 'text' } = {}) {
+async function rig(t: TestContext, options: { reply?: 'voice' | 'text'; usage?: UsageMeter } = {}) {
   const speeches = stubProvider(t);
-  const usage = meter();
+  const usage = options.usage ?? meter();
   const chat = new Map<string, FakeMessage>();
   let made = 0;
   const posts: PostInput[] = [];
@@ -197,7 +211,9 @@ async function rig(t: TestContext, options: { reply?: 'voice' | 'text' } = {}) {
     messages: { fetch: async (id: string) => { const message = chat.get(id); if (!message) throw new Error(`Unknown message ${id}`); return message; } },
   };
   const member = { user: { bot: false }, displayName: 'Human', voice: { channelId: 'channel', channel: textChannel } };
-  const guild = { id: 'guild', members: { fetch: async () => member, fetchMe: async () => ({}), cache: new Map([['user', member]]) }, channels: { cache: new Map([['channel', textChannel]]) } };
+  // A second speaker, "other", is in the channel too. Used by the per-user limit test.
+  const other = { user: { bot: false }, displayName: 'Other', voice: { channelId: 'channel', channel: textChannel } };
+  const guild = { id: 'guild', members: { fetch: async () => member, fetchMe: async () => ({}), cache: new Map([['user', member], ['other', other]]) }, channels: { cache: new Map([['channel', textChannel]]) } };
   const client = Object.assign(new EventEmitter(), {
     user: { id: 'bot' },
     guilds: { fetch: async () => guild, cache: new Map([['guild', guild]]) },
@@ -223,7 +239,7 @@ async function rig(t: TestContext, options: { reply?: 'voice' | 'text' } = {}) {
   const context = { message: { author: 'user' }, isAdmin: false } as unknown as ToolContext;
   await tools.get('voice')!.execute(context, options.reply ? { action: 'join', reply: options.reply } : { action: 'join' });
   // The speaker starts talking. The real speaking event passes the user ID.
-  const talk = () => connection.receiver.speaking.emit('start', 'user');
+  const talk = (user = 'user') => connection.receiver.speaking.emit('start', user);
   /** Runs the voice_skip tool as the model would, in the given message's context. */
   const skip = (message: Partial<Message>) => tools.get('voice_skip')!.execute({ message } as unknown as ToolContext, {});
   /** Runs the voice_say tool with `text`, in a voice message's context. */
@@ -606,4 +622,81 @@ test('leave from text leaves at once', async t => {
   const leave = { message: { author: 'user', channel: 'channel' }, isAdmin: false } as unknown as ToolContext;
   assert.equal(await r.tools.get('voice')!.execute(leave, { action: 'leave' }), 'Left the voice channel.');
   assert.match(String(await r.tools.get('voice')!.execute(r.context, { action: 'status' })), /No active voice session/);
+});
+
+test('over the limit speaks the limit sentence once', async t => {
+  const { usage, state } = limitedMeter();
+  const r = await rig(t, { usage });
+  // Over the limit: the turn is dropped before the transcript is made.
+  state.over = true;
+  r.talk();
+  await until(() => r.player.ended[0] === true);
+  await settle();
+  assert.deepEqual(r.speeches, [VOICE_LIMIT_TEXT]);
+  assert.deepEqual(r.player.events, ['play 0', 'end 0']);
+  // No transcript is posted, and the turn ends so the next one can start.
+  assert.deepEqual(r.posts, []);
+  assert.match(String(await r.tools.get('voice')!.execute(r.context, { action: 'status' })), /State: Listening/);
+});
+
+test('limit sentence is rate limited per user', async t => {
+  const clock = fakeClock(t);
+  const { usage, state } = limitedMeter();
+  const r = await rig(t, { usage });
+  state.over = true;
+  r.talk();
+  await until(() => r.player.ended[0] === true);
+  await settle();
+  // The same user one minute later: nothing is spoken.
+  clock.advance(60_000);
+  r.talk();
+  await settle();
+  assert.equal(r.player.resources.length, 1);
+  // Another user, in the same session: their own sentence is spoken.
+  r.talk('other');
+  await until(() => r.player.ended[1] === true);
+  await settle();
+  // The first user, five minutes after their sentence: spoken again. The clip is kept, so TTS ran once.
+  clock.advance(4 * 60_000);
+  r.talk();
+  await until(() => r.player.ended[2] === true);
+  assert.equal(r.player.resources.length, 3);
+  assert.deepEqual(r.speeches, [VOICE_LIMIT_TEXT]);
+});
+
+test('limit sentence is not billed', async t => {
+  const clock = fakeClock(t);
+  const { usage, state } = limitedMeter();
+  const r = await rig(t, { usage });
+  // Over the limit before the transcript: nothing is billed for the sentence.
+  state.over = true;
+  r.talk();
+  await until(() => r.player.ended[0] === true);
+  await settle();
+  assert.deepEqual(state.recorded, []);
+  // Over the limit only after the transcript: the transcript is billed, the sentence is not.
+  clock.advance(5 * 60_000);
+  state.over = false;
+  state.grace = true;
+  r.talk();
+  await until(() => r.player.ended[1] === true);
+  await settle();
+  assert.equal(state.recorded.length, 1);
+  assert.notEqual(state.recorded[0], Array.from(VOICE_LIMIT_TEXT).length * 10);
+  assert.deepEqual(r.speeches, [VOICE_LIMIT_TEXT]);
+});
+
+test('text mode posts the limit sentence in chat, rate limited', async t => {
+  const clock = fakeClock(t);
+  const { usage, state } = limitedMeter();
+  const r = await rig(t, { reply: 'text', usage });
+  state.over = true;
+  const notices = () => [...r.chat.values()].filter(message => message.content === VOICE_LIMIT_TEXT).length;
+  r.talk();
+  await until(() => notices() === 1);
+  clock.advance(1000);
+  r.talk();
+  await settle();
+  assert.equal(notices(), 1);
+  assert.deepEqual(r.speeches, []);
 });

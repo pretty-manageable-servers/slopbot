@@ -10,6 +10,8 @@ export const VOICE_FILLER_MAX = 3;
 export const VOICE_TURN_TIMEOUT_MS = 120_000;
 /** Spoken when a reply is an error report. The details stay in the chat. */
 export const VOICE_ERROR_TEXT = "Sorry, that did not work. The details are in the chat.";
+/** Spoken, or posted in the voice chat, when a voice turn is dropped because the user is over the usage limit. */
+export const VOICE_LIMIT_TEXT = "You reached your Slopbot usage limit, so I can't answer right now.";
 
 /** Fallback skip: a voice reply with "[SKIP]" anywhere means the turn is skipped. Nothing is posted or spoken. */
 export const VOICE_SKIP = "[SKIP]";

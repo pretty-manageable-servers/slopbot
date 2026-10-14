@@ -9,13 +9,15 @@ import type { Message } from '../domain.js';
 import { errorReply, logError } from '../errors.js';
 import type { UsageMeter } from '../usage-meter.js';
 import type { WebReplies } from '../web-replies.js';
-import { containsSkipMarker, cutSpoken, heldSkipLength, isErrorReply, plainSpoken, SentenceSplitter, splitSpeak, spokenText, VOICE_FILLER_GAP_MS, VOICE_FILLER_MAX, VOICE_FILLER_TEXTS, VOICE_INSTRUCTIONS_MAX, VOICE_SPOKEN_MAX, VOICE_TURN_TIMEOUT_MS } from '../voice-rules.js';
+import { containsSkipMarker, cutSpoken, heldSkipLength, isErrorReply, plainSpoken, SentenceSplitter, splitSpeak, spokenText, VOICE_FILLER_GAP_MS, VOICE_FILLER_MAX, VOICE_FILLER_TEXTS, VOICE_INSTRUCTIONS_MAX, VOICE_LIMIT_TEXT, VOICE_SPOKEN_MAX, VOICE_TURN_TIMEOUT_MS } from '../voice-rules.js';
 import { liveText, type LiveTextEvent } from '../live-text.js';
 import { PmAudio, speechPcm } from './audio.js';
 
 const MAX_AUDIO_BYTES = 30 * 192000;
 const IDLE_MS = 5 * 60_000;
 const PROPOSAL_MS = 15 * 60_000;
+/** A user over the usage limit hears (or reads) VOICE_LIMIT_TEXT at most once in this window, per session. */
+const LIMIT_NOTICE_MS = 5 * 60_000;
 const PREVIEW_TEXT = 'Hi, this is my new voice.';
 /** Voice channels whose live turn is skipped. A channel ID is unique in Discord, so one set serves every server. */
 const skippedChannels = new Set<string>();
@@ -90,8 +92,10 @@ interface Session {
   listening: string | undefined;
   /** Time (ms since epoch) of the last "Listening" post. */
   listeningAt: number;
-  /** Filler clips by text, for one set of voice instructions. Made again when the instructions change. */
+  /** Speech clips by text (fillers and the limit sentence), for one set of voice instructions. Made again when the instructions change. */
   fillers: { instructions: string; clips: Map<string, Promise<Buffer>> } | undefined;
+  /** Time (ms since epoch) of the last limit notice, by user. Keeps each notice to one per LIMIT_NOTICE_MS. */
+  limitNotices: Map<string, number>;
   refresh(): void;
   fail(error: unknown): void;
   stop(): void;
@@ -452,7 +456,7 @@ export class DiscordVoice {
         void target.send({ content: `Voice conversation failed. ${errorReply(error)}`, allowedMentions: { parse: [] } }).catch(error => logError('discord_voice_notice_failed', error, { server: this.server, channel }));
       }
     };
-    const session: Session = { channel, connection, abort, player, audio, replies, busy: false, turn: undefined, fillers: undefined, origin, listening: undefined, listeningAt: Number.NEGATIVE_INFINITY, refresh, fail, stop: () => {
+    const session: Session = { channel, connection, abort, player, audio, replies, busy: false, turn: undefined, fillers: undefined, limitNotices: new Map(), origin, listening: undefined, listeningAt: Number.NEGATIVE_INFINITY, refresh, fail, stop: () => {
       // Leaving: no listening line for the turn that ends here. The line is removed.
       abort.abort(); clearTimeout(idle); if (session.turn) this.endTurn(session, session.turn); player.stop(true);
       void this.removeListening(session).catch(error => logError('discord_voice_listening_failed', error, { server: this.server, channel }));
@@ -481,11 +485,12 @@ export class DiscordVoice {
         refresh();
         const pcm = await this.capture(connection, user, captures, abort.signal);
         if (pcm.length < 19200 || member.voice.channelId !== channel || this.muted(user)) return;
-        if (!(await this.usage.limiter.check(user)).allowed) return;
+        if (!(await this.usage.limiter.check(user)).allowed) { await this.limitNotice(session, user); return; }
         const transcript = await audio.transcribe(pcm, abort.signal);
         // Squall is billed at $0.004/minute, independent of token prices.
         await this.usage.limiter.record(user, Math.ceil(pcm.length / 192000 / 60 * 4000));
-        if (!transcript || await this.usage.overGrace({ server: this.server, user })) return;
+        if (!transcript) return;
+        if (await this.usage.overGrace({ server: this.server, user })) { await this.limitNotice(session, user); return; }
         if (session.turn !== turn || abort.signal.aborted) return;
         const sent = await this.poster.reply({ user, server: this.server, channel, text: transcript.slice(0, 2000), kind: 'voice' });
         posted = true;
@@ -544,6 +549,19 @@ export class DiscordVoice {
     if (turn.fillers >= VOICE_FILLER_MAX) { clearInterval(turn.filler); return; }
     const text = VOICE_FILLER_TEXTS[turn.fillers % VOICE_FILLER_TEXTS.length]!;
     turn.fillers++;
+    const made = this.clipFor(session, text, turn.user);
+    // A failed filler is reported, and the reply still plays.
+    speech.queue(async write => {
+      const pcm = await made.catch(error => { session.fail(error); });
+      if (pcm && !turn.skipped) write(pcm);
+    });
+  }
+
+  /**
+   * The speech clip of `text` in this session's voice. It is made once and kept in session.fillers, until the
+   * voice instructions change. `bill` is the user to bill for it. Without it, the clip is not billed.
+   */
+  private clipFor(session: Session, text: string, bill?: string): Promise<Buffer> {
     const instructions = this.instructions();
     if (session.fillers?.instructions !== instructions) session.fillers = { instructions, clips: new Map() };
     const clips = session.fillers.clips;
@@ -551,18 +569,35 @@ export class DiscordVoice {
     if (!clip) {
       clip = session.audio.speak(text, session.abort.signal, instructions).then(async pcm => {
         // Thunder is billed at $10/1M characters.
-        await this.usage.limiter.record(turn.user, Array.from(text).length * 10);
+        if (bill) await this.usage.limiter.record(bill, Array.from(text).length * 10);
         return pcm;
       });
       clips.set(text, clip);
       clip.catch(() => { if (clips.get(text) === clip) clips.delete(text); });
     }
-    const made = clip;
-    // A failed filler is reported, and the reply still plays.
-    speech.queue(async write => {
-      const pcm = await made.catch(error => { session.fail(error); });
-      if (pcm && !turn.skipped) write(pcm);
-    });
+    return clip;
+  }
+
+  /**
+   * Tells a user that a voice turn was dropped because of the usage limit. A voice session speaks VOICE_LIMIT_TEXT
+   * once. A text session posts it in the voice channel chat. At most once per user per LIMIT_NOTICE_MS per session.
+   * Not billed. A failure is logged, and the turn still ends.
+   */
+  private async limitNotice(session: Session, user: string): Promise<void> {
+    if (session.abort.signal.aborted) return;
+    const now = Date.now();
+    const last = session.limitNotices.get(user);
+    if (last !== undefined && now - last < LIMIT_NOTICE_MS) return;
+    session.limitNotices.set(user, now);
+    try {
+      if (session.replies === 'text') {
+        const channel = await this.textChannel(session.channel);
+        await channel?.send({ content: VOICE_LIMIT_TEXT, allowedMentions: { parse: [] } });
+        return;
+      }
+      const pcm = await this.clipFor(session, VOICE_LIMIT_TEXT);
+      if (!session.abort.signal.aborted) this.playClip(session, pcm);
+    } catch (error) { logError('discord_voice_limit_failed', error, { server: this.server, channel: session.channel }); }
   }
 
   /** Live reply text. Sentences of a reply in a voice turn are queued for speech as the model streams them. */
