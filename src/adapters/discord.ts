@@ -22,6 +22,7 @@ import {UiRuntime,registerUiTool,registerPollTool} from '../ui/runtime.js';
 import type {UiDocument} from '../ui/schema.js';
 import {discordUi} from './discord-ui.js';
 import { DiscordToolProgress } from './discord-tool-progress.js';
+import { handleConfirm, handleShowCode } from './discord-code.js';
 import { toolFooter, toolDisplayMode } from '../presentation/tool-activity.js';
 import type { ToolActivity } from '../tool-activity.js';
 import { discordPresentation, suppressLinkPreviews } from '../presentation/discord.js';
@@ -373,6 +374,8 @@ export class DiscordServer implements ChatGateway {
     if (interaction.isChatInputCommand() && interaction.commandName === "usage") void this.usageCommand(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isButton() && interaction.customId.startsWith("slopstop:")) void this.continueButton(interaction).catch(error => logError("Continue button failed.", error));
     if (interaction.isButton() && interaction.customId.startsWith("slopvoice:")) void this.voice?.button(interaction).catch(error => logError("Voice button failed.", error));
+    if (interaction.isButton() && interaction.customId.startsWith("slopcode:")) void handleShowCode(interaction, this.store).catch(error => logError("Show code button failed.", error));
+    if (interaction.isButton() && interaction.customId.startsWith("slopconfirm:")) void handleConfirm(interaction, this.store, this.tools).catch(error => logError("Confirm button failed.", error));
     if (interaction.isChatInputCommand() && interaction.commandName === "stop") void this.stopCommand(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isChatInputCommand() && interaction.commandName === "inbox") void this.inboxCommand(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isMessageContextMenuCommand() && interaction.commandName === CONTINUE_IN_WEB) void this.continueInWeb(interaction).catch(error => logError("Command failed.", error));

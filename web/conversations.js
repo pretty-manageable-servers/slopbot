@@ -1325,10 +1325,30 @@ function storedRunRows(run) {
   for (const step of steps.filter((step, index) => step.type !== 'text' || index < lastTool)) {
     if (step.type === 'text') rows.push(textNode('div', step.text, 'chat-run-prose'));
     else if (step.type === 'thinking') rows.push(thinkRow(step.text));
-    else rows.push(toolRow(step.name, step.status, step.args, step.result, 'Result', false));
+    else rows.push(...toolStepRows(step));
   }
   if (run.error && run.error.trim()) rows.push(textNode('p', run.error, 'chat-run-error'));
   if (!rows.length) rows.push(textNode('p', 'No stored events for this run.', 'small chat-none'));
+  return rows;
+}
+
+// A run_tools_code step shows its code in a closed Code block. Its child calls follow, indented. Child calls come from step.children.
+function toolStepRows(step) {
+  const row = toolRow(step.name, step.status, step.args, step.result, 'Result', false);
+  const rows = [row];
+  if (step.name === 'run_tools_code' && typeof step.code === 'string' && step.code.trim()) {
+    const details = document.createElement('details');
+    details.className = 'chat-tool-code';
+    const body = textNode('div', '', 'chat-tool-code-body');
+    renderText(body, '````js\n' + step.code + '\n````');
+    details.append(textNode('summary', 'Code', 'chat-tool-code-label'), body);
+    row.append(details);
+  }
+  for (const child of Array.isArray(step.children) ? step.children : []) {
+    const childRow = toolRow(child.name, child.status, child.args, child.result, 'Result', false);
+    childRow.classList.add('chat-tool-child');
+    rows.push(childRow);
+  }
   return rows;
 }
 
@@ -1401,6 +1421,7 @@ const TOOL_KINDS = {
   reminder: { label: 'Managed reminders', one: 'managed reminders', many: times('managed reminders'), doing: 'Managing reminders…' },
   poll_create: { label: 'Created a poll', one: 'created a poll', many: n => `created ${n} polls`, doing: 'Creating a poll…' },
   ui_publish: { label: 'Published a view', one: 'published a view', many: n => `published ${n} views`, doing: 'Publishing a view…' },
+  run_tools_code: { label: 'Ran code', one: 'ran code', many: times('ran code'), doing: 'Running code…' },
 };
 
 // Garden words for the live status line, from the brand line "Where ideas bloom".

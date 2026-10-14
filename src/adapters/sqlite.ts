@@ -890,6 +890,9 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   endOperation(id: string, result: string, failed = false): void {
     this.db.prepare("UPDATE tool_operations SET status=?,result=? WHERE id=?").run(failed ? "failed" : "done", result, id);
   }
+  pruneOperations(name: string, startedBefore: number): number {
+    return Number(this.db.prepare("DELETE FROM tool_operations WHERE name=? AND created_at<? AND status<>'started'").run(name, startedBefore).changes);
+  }
   delivery(id: string): { message: Message; content: string; createdAt: number; result: Message | null } | undefined {
     const row = this.db.prepare("SELECT * FROM deliveries WHERE id=?").get(id);
     return row ? { message: parseMessage(JSON.parse(String(row.message))), content: String(row.content), createdAt: Number(row.created_at), result: row.result ? parseMessage(JSON.parse(String(row.result))) : null } : undefined;

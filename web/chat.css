@@ -131,6 +131,9 @@ html.light{--hl-keyword:#7d3f9b;--hl-string:#356d2d;--hl-number:#9c4f16;--hl-fun
 .chat .chat-tool-name{flex:none;color:var(--muted)}
 .chat .chat-tool-args{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
 .chat .chat-tool[data-open=true] .chat-chev{transform:rotate(90deg)}
+.chat .chat-tool-child{padding-left:28px}
+.chat .chat-tool-code{margin:0 12px 10px 34px;font-size:13px;color:var(--muted)}
+.chat .chat-tool-code summary{cursor:pointer;padding:4px 0}
 .chat .chat-tool-detail{margin:0;padding:10px 12px 12px 34px;max-height:260px;overflow:auto;font:12px/1.55 'JetBrains Mono',monospace;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
 
 

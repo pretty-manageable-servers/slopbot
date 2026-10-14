@@ -23,6 +23,7 @@ const special: Record<string, { emoji: string; group?: [string, string] }> = {
   task_retry: { emoji: "📋" },
   poll_create: { emoji: "📊" },
   sandbox: { emoji: "💻" },
+  run_tools_code: { emoji: "🧩", group: ["code run", "code runs"] },
 };
 export const toolEmoji = (name: string): string => special[name]?.emoji ?? "🛠️";
 // [singular, plural]; other tools use the name with spaces for both.
