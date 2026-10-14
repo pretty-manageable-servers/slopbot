@@ -44,7 +44,12 @@ const setup = slice(() => vm.evalCode(`(() => {
   const call = __call, emit = __text, stringify = JSON.stringify;
   delete globalThis.__call; delete globalThis.__text;
   const tools = Object.create(null);
-  for (const name of ${JSON.stringify(names)}) tools[name] = args => call(name, stringify(args));
+  // A missing argument is sent as null; the host reads null and undefined as no arguments.
+  const send = (name, args) => call(name, stringify(args) ?? 'null');
+  for (const name of ${JSON.stringify(names)}) tools[name] = args => send(name, args);
+  // Each tool is also a global NAME(args), unless the name is reserved or already a JavaScript global.
+  const reserved = ['tools', 'text', 'list_tools', 'describe_tool', 'save_to_sandbox'];
+  for (const name of ${JSON.stringify(names)}) if (!reserved.includes(name) && !(name in globalThis)) Object.defineProperty(globalThis, name, { value: args => send(name, args) });
   Object.defineProperty(globalThis, 'tools', { value: Object.freeze(tools) });
   Object.defineProperty(globalThis, 'text', { value: value => emit(stringify(value)) });
   Object.defineProperty(globalThis, 'list_tools', { value: () => call('builtin:list_tools', '{}') });

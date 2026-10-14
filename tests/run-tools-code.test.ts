@@ -229,3 +229,53 @@ test('interrupting an agent program terminates its worker and stops subsequent r
   await ready; assert.equal(await app.interrupt('s', request.id), true); await interrupted;
   complete(); await new Promise(resolve => setImmediate(resolve)); assert.equal(calls, 1);
 });
+
+test('bare_name_call', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const registry = new ToolRegistry(store, async () => true);
+  registry.register(readTool('echo_items', async (_context, args) => ({ text: 'echo', data: { n: args.n ?? null } }), { fields: { n: { type: 'integer', description: 'Count', required: true } } }));
+  // A tool named like a JavaScript global keeps the global; it is still callable as tools.NAME.
+  registry.register(readTool('escape', async () => ({ text: 'escaped', data: { ok: true } })));
+  registry.register(runToolsCodeTool(registry));
+  const result = await registry.invokeResult(request, 'run_tools_code', { code: 'text([await echo_items({n:12}), await tools.echo_items({n:3}), await tools.escape({}), typeof escape]);' }, 'bare', 'agent');
+  assert.deepEqual(outputs(result), [[{ n: 12 }, { n: 3 }, { ok: true }, 'function']]);
+});
+
+test('no_args_call', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const registry = new ToolRegistry(store, async () => true);
+  registry.register(readTool('ping', async () => ({ text: 'pong', data: { ok: true } })));
+  registry.register(runToolsCodeTool(registry));
+  const result = await registry.invokeResult(request, 'run_tools_code', { code: 'text([await ping(), await tools.ping(), await ping(undefined)]);' }, 'noargs', 'agent');
+  assert.deepEqual(outputs(result), [[{ ok: true }, { ok: true }, { ok: true }]]);
+});
+
+test('scalar_arg_wrapped', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const registry = new ToolRegistry(store, async () => true);
+  // One required argument: a bare string is wrapped as { id }.
+  registry.register(readTool('lookup', async (_context, args) => ({ text: 'ok', data: args }), { fields: { id: { type: 'string', description: 'Id', required: true } } }));
+  // One required json argument: a bare array is wrapped as { ids }.
+  registry.register(readTool('batch', async (_context, args) => ({ text: 'ok', data: args }), { fields: { ids: { type: 'json', description: 'Ids', required: true } } }));
+  // Only one argument, optional: a bare number is wrapped as { n }.
+  registry.register(readTool('limit_only', async (_context, args) => ({ text: 'ok', data: args }), { fields: { n: { type: 'integer', description: 'Count' } } }));
+  registry.register(runToolsCodeTool(registry));
+  const code = 'text([await lookup("abc"), await batch([1,2]), await limit_only(4)]);';
+  assert.deepEqual(outputs(await registry.invokeResult(request, 'run_tools_code', { code }, 'wrap', 'agent')), [[{ id: 'abc' }, { ids: [1, 2] }, { n: 4 }]]);
+});
+
+test('bad_arg_lists_fields', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const registry = new ToolRegistry(store, async () => true);
+  // Two required arguments: a bare value is not wrapped, so the error lists the names.
+  registry.register(readTool('pair', async () => ({ text: 'ok', data: {} }), { fields: { a: { type: 'integer', description: 'A', required: true }, b: { type: 'integer', description: 'B', required: true } } }));
+  registry.register(readTool('ping', async () => ({ text: 'pong', data: {} })));
+  registry.register(runToolsCodeTool(registry));
+  const code = `const messages = [];
+    try { await pair(5); } catch (error) { messages.push(error.message); }
+    try { await ping(5); } catch (error) { messages.push(error.message); }
+    text(messages);`;
+  const [messages] = outputs(await registry.invokeResult(request, 'run_tools_code', { code }, 'bad-args', 'agent')) as [string[]];
+  assert.match(messages![0]!, /pair takes: a \(required\), b \(required\)\./);
+  assert.match(messages![1]!, /ping takes: no arguments\./);
+});
