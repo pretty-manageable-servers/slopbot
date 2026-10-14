@@ -385,6 +385,56 @@ test('status shows reply mode', async t => {
   assert.equal(await text.tool.execute(text.context, { action: 'status' }), `Voice session in <#channel>.\nReplies: text\nState: Listening\nVoice style: ${DEFAULT_VOICE_INSTRUCTIONS}`);
 });
 
+test('speak block streams before the reply ends', async t => {
+  const r = await rig(t);
+  r.talk();
+  await until(() => r.posts.length === 1);
+  liveText.emit({ kind: 'start', message, runId: 'run-1' });
+  liveText.emit({ kind: 'text', message, runId: 'run-1', text: 'Details. <speak>First sentence here. ' });
+  // The first sentence of the block is requested while the reply is still open.
+  await until(() => r.provider.speeches.some(call => call.input === 'First sentence here.'));
+  liveText.emit({ kind: 'text', message, runId: 'run-1', text: 'Second one ends it.</speak> More chat text.' });
+  liveText.emit({ kind: 'end', message, runId: 'run-1', status: 'done' });
+  await r.voice.speak('channel', 'Details. Details more.\n<speak>First sentence here. Second one ends it.</speak> More chat text.');
+  assert.deepEqual(r.provider.speeches.map(call => call.input), ['First sentence here.', 'Second one ends it.']);
+});
+
+test('speak tag split across deltas', async t => {
+  const r = await rig(t);
+  r.talk();
+  await until(() => r.posts.length === 1);
+  liveText.emit({ kind: 'start', message, runId: 'run-1' });
+  liveText.emit({ kind: 'text', message, runId: 'run-1', text: 'Hi there. <spe' });
+  liveText.emit({ kind: 'text', message, runId: 'run-1', text: 'ak>Block sentence is here. </spe' });
+  liveText.emit({ kind: 'text', message, runId: 'run-1', text: 'ak> More chat text that is not read.' });
+  liveText.emit({ kind: 'end', message, runId: 'run-1', status: 'done' });
+  await r.voice.speak('channel', 'Hi there.\n<speak>Block sentence is here.</speak> More chat text that is not read.');
+  // The partial tags were not read aloud, and the block was read once.
+  assert.deepEqual(r.provider.speeches.map(call => call.input), ['Block sentence is here.']);
+});
+
+test('text outside speak block is not spoken once a block started', async t => {
+  const r = await rig(t);
+  r.talk();
+  await until(() => r.posts.length === 1);
+  liveText.emit({ kind: 'start', message, runId: 'run-1' });
+  liveText.emit({ kind: 'text', message, runId: 'run-1', text: '<speak>Block sentence is read here. </speak>Chat text after the block is here. ' });
+  liveText.emit({ kind: 'text', message, runId: 'run-1', text: '<speak>Second block is read too.</speak>' });
+  liveText.emit({ kind: 'text', message, runId: 'run-1', text: 'Trailing chat text is not read.' });
+  liveText.emit({ kind: 'end', message, runId: 'run-1', status: 'done' });
+  await r.voice.speak('channel', '<speak>Block sentence is read here.</speak>Chat text after the block is here. <speak>Second block is read too.</speak>Trailing chat text is not read.');
+  assert.deepEqual(r.provider.speeches.map(call => call.input), ['Block sentence is read here.', 'Second block is read too.']);
+});
+
+test('streamed block is not spoken again by speak()', async t => {
+  const r = await rig(t);
+  r.talk();
+  await until(() => r.posts.length === 1);
+  reply('run-1', ['Chat text. <speak>Spoken once in the block here.</speak>']);
+  await r.voice.speak('channel', 'Chat text.\n<speak>Spoken once in the block here.</speak>');
+  assert.deepEqual(r.provider.speeches.map(call => call.input), ['Spoken once in the block here.']);
+});
+
 test('voice mode filler plays before sentences in the same stream', async t => {
   const r = await rig(t);
   r.talk();

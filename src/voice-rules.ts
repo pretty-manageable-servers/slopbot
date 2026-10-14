@@ -38,6 +38,17 @@ export function heldSkipLength(text: string): number {
   return 0;
 }
 
+/**
+ * Length of the end of `text` that might be the start of `tag`, such as "<sp" for "<speak>". `tag` is lower case.
+ * Streamed text holds this part back until a later delta shows whether it is the tag.
+ */
+export function heldTagLength(text: string, tag: string): number {
+  for (let length = Math.min(text.length, tag.length - 1); length > 0; length--) {
+    if (text.slice(text.length - length).toLowerCase() === tag.slice(0, length)) return length;
+  }
+  return 0;
+}
+
 /** An error reply starts with a code such as [ACTION_UNCERTAIN]. Its text is not read aloud. A skip is not an error. */
 export function isErrorReply(text: string): boolean {
   if (containsSkipMarker(text)) return false;

@@ -575,6 +575,21 @@ test('final answer spoken after a tool when voice_say came before it', async t =
   assert.deepEqual(r.speeches, ['Let me check.', 'Sunny today. More details here.']);
 });
 
+test('streamed block skips the tool chat fallback', async t => {
+  const r = await rig(t);
+  r.talk();
+  await until(() => r.posts.length === 1);
+  liveText.emit({ kind: 'start', message: voiceMessage, runId: 'run-1' });
+  liveText.emit({ kind: 'text', message: voiceMessage, runId: 'run-1', text: 'Chat text. <speak>Spoken once in the block here.</speak>' });
+  await until(() => r.speeches.length === 1);
+  // voice_say and then a tool come after the block. The chat answer must not be spoken then.
+  assert.equal(await r.say('Let me check.'), 'Speaking.');
+  r.voice.toolStarted('channel', 'web_fetch');
+  liveText.emit({ kind: 'end', message: voiceMessage, runId: 'run-1', status: 'done' });
+  await r.voice.speak('channel', 'Chat text. Full answer here.\n<speak>Spoken once in the block here.</speak>');
+  assert.deepEqual(r.speeches, ['Spoken once in the block here.', 'Let me check.']);
+});
+
 test('no extra speech when voice_say came after the tool', async t => {
   const r = await rig(t);
   r.talk();

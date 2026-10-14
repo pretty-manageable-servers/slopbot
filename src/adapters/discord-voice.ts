@@ -9,7 +9,7 @@ import type { Message } from '../domain.js';
 import { errorReply, logError } from '../errors.js';
 import type { UsageMeter } from '../usage-meter.js';
 import type { WebReplies } from '../web-replies.js';
-import { containsSkipMarker, cutSpoken, heldSkipLength, isErrorReply, plainSpoken, SentenceSplitter, splitSpeak, spokenText, VOICE_FILLER_GAP_MS, VOICE_FILLER_MAX, VOICE_FILLER_TEXTS, VOICE_INSTRUCTIONS_MAX, VOICE_LIMIT_TEXT, VOICE_SPOKEN_MAX, VOICE_TURN_TIMEOUT_MS } from '../voice-rules.js';
+import { containsSkipMarker, cutSpoken, heldSkipLength, heldTagLength, isErrorReply, plainSpoken, SentenceSplitter, splitSpeak, spokenText, VOICE_FILLER_GAP_MS, VOICE_FILLER_MAX, VOICE_FILLER_TEXTS, VOICE_INSTRUCTIONS_MAX, VOICE_LIMIT_TEXT, VOICE_SPOKEN_MAX, VOICE_TURN_TIMEOUT_MS } from '../voice-rules.js';
 import { liveText, type LiveTextEvent } from '../live-text.js';
 import { PmAudio, speechPcm } from './audio.js';
 
@@ -68,13 +68,23 @@ interface Turn {
   toolAfterSay: boolean;
   /** True once the model skipped the turn (voice_skip, or a [SKIP] marker). Its speech stops and is not started again. */
   skipped: boolean;
+  /** True once a <speak> block was streamed as it arrived. speak() then does not speak the block again. */
+  speakStreamed: boolean;
   /** The chat message that holds the transcript, once it is posted. Its reactions show the turn state. */
   transcript?: { channel: string; messageId: string };
   speech: TurnSpeech;
 }
 
-/** One reply run's text, read as it streams. `mode` decides once whether the reply is read aloud. `raw` is all the text seen. */
-interface RunState { turn: Turn; splitter: SentenceSplitter; head: string; held: string; raw: string; mode: 'undecided' | 'stream' | 'skip' }
+/**
+ * One reply run's text, read as it streams. `mode` decides once whether the reply is read aloud. `raw` is all the text seen.
+ * `seen` is true once a <speak> tag came: then only block text is read. `inBlock` is true between a <speak> tag and </speak>.
+ * `held` is the end of the text that might still become a tag or a [SKIP] marker.
+ */
+interface RunState { turn: Turn; splitter: SentenceSplitter; head: string; held: string; raw: string; mode: 'undecided' | 'stream' | 'skip'; seen: boolean; inBlock: boolean }
+
+/** The tags of a spoken block. The regexes ignore case, as SPEAK_BLOCK does. */
+const OPEN_TAG = '<speak>', CLOSE_TAG = '</speak>';
+const SPEAK_OPEN = /<speak>/i, SPEAK_CLOSE = /<\/speak>/i;
 
 interface Session {
   channel: string;
@@ -515,10 +525,12 @@ export class DiscordVoice {
     try {
       const speech = turn.speech;
       const { spoken, chat } = splitSpeak(text);
+      // A <speak> block that was streamed is already spoken. Then neither the block nor the chat fallback is queued again.
       // A <speak> block is the spoken answer. It is not read again when voice_say already spoke and no tool ran after it.
       // After a tool that came after voice_say, the chat answer is spoken too.
-      if (!skipped && spoken !== undefined && (!turn.said || turn.toolAfterSay)) this.queueFinal(session, turn, plainSpoken(spoken));
-      else if (!skipped && turn.toolAfterSay) this.queueFinal(session, turn, spokenText(chat));
+      const streamed = turn.speakStreamed;
+      if (!skipped && !streamed && spoken !== undefined && (!turn.said || turn.toolAfterSay)) this.queueFinal(session, turn, plainSpoken(spoken));
+      else if (!skipped && !streamed && turn.toolAfterSay) this.queueFinal(session, turn, spokenText(chat));
       // Nothing was streamed (an error reply, or no sentence): speak the whole reply once.
       else if (!speech.streamed && !skipped && !turn.said) {
         const said = spokenText(chat);
@@ -614,7 +626,7 @@ export class DiscordVoice {
     const session = this.session, turn = session?.turn;
     if (!session || !turn || session.replies !== 'voice' || session.abort.signal.aborted) return undefined;
     if (event.message.source !== 'voice' || event.message.channel !== session.channel) return undefined;
-    const run: RunState = { turn, splitter: new SentenceSplitter(), head: '', held: '', raw: '', mode: 'undecided' };
+    const run: RunState = { turn, splitter: new SentenceSplitter(), head: '', held: '', raw: '', mode: 'undecided', seen: false, inBlock: false };
     this.runs.set(event.runId, run);
     return run;
   }
@@ -624,36 +636,75 @@ export class DiscordVoice {
     run.raw += text;
     // A [SKIP] marker anywhere in the reply skips the turn. Text sent before the marker arrived cannot be recalled.
     if (containsSkipMarker(run.raw)) { run.mode = 'skip'; this.skipTurn(run.turn); return; }
-    // A <speak> block is spoken by speak() from the final reply. This run stops streaming; the turn is not skipped.
-    if (/<speak/i.test(run.raw)) { run.mode = 'skip'; return; }
     if (run.mode === 'undecided') {
       run.head += text;
       if (!this.decide(run, false)) return;
       text = run.head; run.head = '';
     }
     if (run.mode !== 'stream') return;
-    // Hold back the end that might still become "[SKIP]", until a later delta shows it is not.
-    const all = run.held + text;
-    const hold = heldSkipLength(all);
-    run.held = all.slice(all.length - hold);
-    this.queueSentences(session, run.turn, run.splitter.push(all.slice(0, all.length - hold)));
+    this.streamText(session, run, text);
+  }
+
+  /**
+   * Streams reply text. Text before the first <speak> tag is read, as before. Text inside a block is read sentence
+   * by sentence. Text outside a block is not read once a block has started. Tags split across deltas are held back.
+   */
+  private streamText(session: Session, run: RunState, text: string): void {
+    let rest = run.held + text;
+    run.held = '';
+    for (;;) {
+      const found = (run.inBlock ? SPEAK_CLOSE : SPEAK_OPEN).exec(rest);
+      if (!found) break;
+      this.streamPart(session, run, rest.slice(0, found.index));
+      if (run.inBlock) this.closeBlock(session, run); else this.openBlock(run);
+      rest = rest.slice(found.index + found[0].length);
+    }
+    // No tag is left in the text. Hold back an end that might still become a tag or a [SKIP] marker.
+    const hold = Math.max(heldSkipLength(rest), heldTagLength(rest, run.inBlock ? CLOSE_TAG : OPEN_TAG));
+    run.held = rest.slice(rest.length - hold);
+    this.streamPart(session, run, rest.slice(0, rest.length - hold));
+  }
+
+  /** Queues text that is read: text before the first block, or text inside a block. Other text is not read. */
+  private streamPart(session: Session, run: RunState, text: string): void {
+    if (!text) return;
+    if (run.inBlock || !run.seen) this.queueSentences(session, run.turn, run.splitter.push(text));
+  }
+
+  /**
+   * A <speak> tag opened a block. Pending text before the tag is dropped, as it was before: it does not end a sentence.
+   * runText returns early after voice_say or a skip, so the block is read here, under the same rule as speak().
+   */
+  private openBlock(run: RunState): void {
+    run.seen = true; run.inBlock = true;
+    run.splitter = new SentenceSplitter();
+    run.turn.speakStreamed = true;
+  }
+
+  /** The end tag closed the block. Its last sentence is complete, so it is read now and not at the end of the reply. */
+  private closeBlock(session: Session, run: RunState): void {
+    run.inBlock = false;
+    this.queueSentences(session, run.turn, run.splitter.flush());
   }
 
   private endRun(session: Session, run: RunState): void {
     if (run.mode === 'undecided') this.decide(run, true);
-    if (run.mode === 'stream') this.queueSentences(session, run.turn, [...run.splitter.push(run.held + run.head), ...run.splitter.flush()]);
+    // A reply that gets voice_say speaks no more streamed text. Its pending text is not read.
+    if (run.mode === 'stream' && !run.turn.said) {
+      // The text still held back is final now. A partial tag at the very end is not text.
+      const rest = run.held + run.head;
+      this.streamPart(session, run, rest.slice(0, rest.length - heldTagLength(rest, run.inBlock ? CLOSE_TAG : OPEN_TAG)));
+      // Pending text is read to its end, also an open block. flush() does not join short pieces.
+      this.queueSentences(session, run.turn, run.splitter.flush());
+    }
     run.head = ''; run.held = '';
   }
 
   /** Decides from the start of a reply whether it is read aloud. An error code is not read; the fallback speaks the error text. */
   private decide(run: RunState, final: boolean): boolean {
     const head = run.head.trimStart();
-    const lower = head.toLowerCase();
-    // A <speak> block is not streamed. speak() reads it from the final reply.
-    if (lower.startsWith('<speak')) { run.mode = 'skip'; return true; }
     // A "[" might start an error code or a skip marker. Wait for the closing "]" or for enough text.
-    // A "<" might start a <speak> block. Wait until it is clear.
-    if (!final && (!head || '<speak'.startsWith(lower) || (/^\\?\[/.test(head) && !head.includes(']') && head.length < 40))) return false;
+    if (!final && (!head || (/^\\?\[/.test(head) && !head.includes(']') && head.length < 40))) return false;
     run.mode = isErrorReply(run.head) ? 'skip' : 'stream';
     return true;
   }
@@ -699,7 +750,7 @@ export class DiscordVoice {
   }
 
   private startTurn(session: Session, user: string): Turn {
-    const turn: Turn = { user, channel: session.channel, fillers: 0, quietFrom: Date.now(), leaveAfter: false, toolAfterSay: false, skipped: false, said: false, speech: new TurnSpeech(session.player, session.abort.signal, error => session.fail(error)), timer: setTimeout(() => this.endTurn(session, turn, true), VOICE_TURN_TIMEOUT_MS) };
+    const turn: Turn = { user, channel: session.channel, fillers: 0, quietFrom: Date.now(), leaveAfter: false, toolAfterSay: false, skipped: false, speakStreamed: false, said: false, speech: new TurnSpeech(session.player, session.abort.signal, error => session.fail(error)), timer: setTimeout(() => this.endTurn(session, turn, true), VOICE_TURN_TIMEOUT_MS) };
     turn.timer.unref();
     session.busy = true; session.turn = turn;
     return turn;
