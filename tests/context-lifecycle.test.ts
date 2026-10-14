@@ -55,7 +55,7 @@ for (const action of ['edit', 'delete', 'reimport'] as const) test(`legacy progr
 test('a multi-tool batch survives background progress import and edits', async t => {
   const { store } = setup(t); let rounds = 0, calls = 0;
   const app = new Application(store, { async *stream() {
-    yield { kind: 'text', payload: { text: ++rounds === 1 ? '{"tool_calls":[{"name":"read_one","arguments":{}},{"name":"read_two","arguments":{}}]}' : 'Both reads finished.' } };
+    yield ++rounds === 1 ? { kind: 'tool_call', payload: [{ name: 'read_one', arguments: {} }, { name: 'read_two', arguments: {} }] } : { kind: 'text', payload: { text: 'Both reads finished.' } };
   } }, { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, {
     tools: { catalog: () => '', execute: async () => { calls++; return 'Read finished.'; } },
     onToolActivity: async (_message, activity) => {
@@ -101,7 +101,7 @@ test('Discord attachment signature refresh preserves semantic context', async t 
 
 test('a source edit after an action preserves its actual result and prevents replay', async t => {
   const { store, filename } = setup(t); let writes = 0; const activity: string[] = [];
-  const app = new Application(store, { async *stream() { yield { kind: 'text', payload: { text: '{"tool_calls":[{"name":"write","arguments":{}},{"name":"write","arguments":{}}]}' } }; } },
+  const app = new Application(store, { async *stream() { yield { kind: 'tool_call', payload: [{"name":"write","arguments":{}},{"name":"write","arguments":{}}] }; } },
     { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, {
       tools: { catalog: () => '', execute: async () => { writes++; await store.revise({ ...request, text: 'Stop the remaining actions.' }); return { text: 'First action completed.', status: 'ok' }; } },
       onToolActivity: async (_message, event) => { activity.push(event.status); },

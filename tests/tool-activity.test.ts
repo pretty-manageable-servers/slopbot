@@ -52,7 +52,7 @@ test('tool errors retain distinct reasons and render them as bounded plain text'
 for (const returned of [false, true]) test(`runner explains execution failures from ${returned ? 'results' : 'exceptions'} and lets the model explain the failure`, async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   let rounds = 0;
-  const app = new Application(store, {async *stream(){rounds++;yield {kind:'text',payload:{text:rounds === 1 ? '{"tool_calls":[{"name":"remote_read","arguments":{}}]}' : 'The remote service is unavailable.'}};}},
+  const app = new Application(store, {async *stream(){rounds++;yield rounds === 1 ? {kind:'tool_call',payload:[{name:'remote_read',arguments:{}}]} : {kind:'text',payload:{text:'The remote service is unavailable.'}};}},
     {allowedChannels:[{server:'s',channel:'c'}]}, undefined,
     {harness:store,tools:{catalog:()=>'',execute:async()=>{
       if (returned) return {text:'Remote service unavailable',status:'failed',reason:'Remote service unavailable'};
@@ -87,7 +87,7 @@ for (const rejected of [false,true]) test(`execution reports ${rejected ? 'rejec
   const events: ToolActivity[] = [];
   let rounds = 0;
   try {
-    const app = new Application(store, {async *stream(){yield {kind:'text',payload:{text:++rounds === 1 ? '{"tool_calls":[{"name":"web_search","arguments":{"query":"weather"}}]}' : 'Answer'}};}},
+    const app = new Application(store, {async *stream(){yield ++rounds === 1 ? {kind:'tool_call',payload:[{name:'web_search',arguments:{query:'weather'}}]} : {kind:'text',payload:{text:'Answer'}};}},
       {allowedChannels:[{server:'s',channel:'c'}]}, undefined,
       {onToolActivity:async (_message,event)=>{events.push(event);},tools:{catalog:()=>'',execute:async()=>{if(rejected)throw new ToolError('Unavailable');return 'Search results';}}});
     const reply = await app.handle({server:'s',channel:'c',author:'person',id:'request',text:'Find information',addressed:true});

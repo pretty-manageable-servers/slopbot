@@ -199,7 +199,7 @@ test('the agent loop receives reduced output and child evidence, not intermediat
   registry.register(runToolsCodeTool(registry));
   let rounds = 0;
   const llm: LLM = { async *stream(prompt) {
-    if (++rounds === 1) yield { kind: 'text', payload: { text: JSON.stringify({ tool_calls: [{ name: 'run_tools_code', arguments: { code: 'const r=await tools.read({});text({sum:r.values.reduce((a,b)=>a+b,0)});' } }] }) } };
+    if (++rounds === 1) yield { kind: 'tool_call', payload: [{ name: 'run_tools_code', arguments: { code: 'const r=await tools.read({});text({sum:r.values.reduce((a,b)=>a+b,0)});' } }] };
     else {
       const trace = JSON.stringify(prompt.inputs);
       assert.ok(trace.includes('sum')); assert.ok(!trace.includes('RAWRAW'));
@@ -223,7 +223,7 @@ test('interrupting an agent program terminates its worker and stops subsequent r
   const ready = new Promise<void>(resolve => { started = resolve; }), finish = new Promise<void>(resolve => { complete = resolve; });
   registry.register(readTool('read', async () => { calls++; started(); await finish; return { text: 'read', data: {} }; }));
   registry.register(runToolsCodeTool(registry));
-  const llm: LLM = { async *stream() { yield { kind: 'text', payload: { text: JSON.stringify({ tool_calls: [{ name: 'run_tools_code', arguments: { code: 'await tools.read({});await tools.read({});text("done");' } }] }) } }; } };
+  const llm: LLM = { async *stream() { yield { kind: 'tool_call', payload: [{ name: 'run_tools_code', arguments: { code: 'await tools.read({});await tools.read({});text("done");' } }] }; } };
   const app = new Application(store, llm, { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, { tools: { catalog: () => registry.catalog(), execute: (message, call, id, version, invocation) => registry.invokeResult(message, call.name, call.arguments, id, 'agent', version, invocation) } });
   const handle = app.handle(request), interrupted = assert.rejects(handle, /interrupted/);
   await ready; assert.equal(await app.interrupt('s', request.id), true); await interrupted;

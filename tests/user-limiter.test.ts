@@ -257,7 +257,7 @@ test("TaskWorker.enqueue lets bot messages and task seeds through an over-limit 
 });
 
 // Runner tests: a fake model that reports usage, and a meter backed by the real limiter.
-const call = '{"tool_calls":[{"name":"read","arguments":{}}]}';
+const call = [{ name: "read", arguments: {} }];
 const request = { id: "request", server: "s", channel: "c", author: "alice", text: "Do the task", addressed: true };
 function meterFor(limits: UserLimiter): UsageMeter {
   return new UsageMeter(limits, () => ({}), ONE_MICRO_PER_TOKEN);
@@ -267,7 +267,7 @@ test("a run pays for each model call, and past grace it starts no new tool round
   const store = new SQLiteStore(), limits = limiter(store, 100, 0, 10);
   let toolRuns = 0;
   // Each model call costs 60 micro-dollars.
-  const llm = { async *stream() { yield { kind: "text" as const, payload: { text: call } }; yield { kind: "usage" as const, payload: { prompt_tokens: 60, completion_tokens: 0 } }; } };
+  const llm = { async *stream() { yield { kind: "tool_call" as const, payload: call }; yield { kind: "usage" as const, payload: { prompt_tokens: 60, completion_tokens: 0 } }; } };
   const app = new Application(store, llm, { allowedChannels: [{ server: "s", channel: "c" }] }, undefined,
     { tools: { catalog: () => "", execute: async () => { toolRuns++; return "Result"; } }, usage: meterFor(limits) });
   const reply = await app.handle(request);
@@ -284,7 +284,7 @@ test("when the user is already past grace, the model answers without tools", asy
   let toolRuns = 0;
   const llm = { async *stream(prompt: Prompt) {
     const stopped = JSON.stringify(prompt.inputs).includes("usage limit");
-    yield { kind: "text" as const, payload: { text: stopped ? "Final answer" : call } };
+    yield stopped ? { kind: "text" as const, payload: { text: "Final answer" } } : { kind: "tool_call" as const, payload: call };
     yield { kind: "usage" as const, payload: { prompt_tokens: 10, completion_tokens: 0 } };
   } };
   const app = new Application(store, llm, { allowedChannels: [{ server: "s", channel: "c" }] }, undefined,

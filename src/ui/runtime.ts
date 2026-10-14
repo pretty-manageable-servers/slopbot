@@ -184,6 +184,7 @@ export class UiRuntime {
 export function registerUiTool(registry: ToolRegistry): void {
   registry.register({
     name: "ui_publish",
+    surface: "top",
     description:
       "Present a version-1 Discord UI document: text/card (title,text,actions), select (text,options), or poll (question,answers,durationHours,multiple). Actions have label, registered action, arguments. Registered actions: history.next(cursor), task.complete(id), task.list(), reminder.cancel(id). No executable code. The transport renders this in the final response.",
     fields: {

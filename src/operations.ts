@@ -149,7 +149,7 @@ export function registerOperationsTools(registry: ToolRegistry, services: Operat
     } };
   const add = (definition: ToolDefinition) => {
     if (server && !services.config.servers.includes(server) && !memberReportingTools.has(definition.name)) return;
-    registry.register(definition.effect === 'read' ? { ...definition, programmatic: true, outputSchema: { type: 'object' } } : definition);
+    registry.register(definition);
   };
   add({ ...base, name: 'interaction_inspect', access: 'member', description: 'Collect durable evidence for a reported bot interaction. Reply to the affected message or supply its ID. Returns saved runs, tool statuses, failures, context inventory, timings and the version at execution. Text excerpts require include_text:true; use only relevant excerpts when filing an issue. Raw prompts and reasoning are excluded.',
     fields: { message_id: text('Affected request or response ID'), include_text: { type: 'boolean', description: 'Include selected message/response excerpts for the report, default false' } }, execute: (context, args) => ops.interaction(context, args) });
@@ -205,7 +205,7 @@ export function registerOperationsTools(registry: ToolRegistry, services: Operat
       const safe = safeDiagnosticData(json(data));
       return { text: diagnosticText(JSON.stringify(safe, null, 2)), data: safe };
     } });
-  add({ ...base, name: 'issue_report', access: 'member', effect: 'write', retrySafe: false, resource: () => `github-issues:${services.config.repository}`,
+  add({ ...base, name: 'issue_report', access: 'member', effect: 'write', retrySafe: false, confirm: () => true, resource: () => `github-issues:${services.config.repository}`,
     description: 'When the requester asks to file a bug, create an evidence-backed GitHub issue or append evidence to issue_number. Search existing issues first. Exact title matches are reused. Include expected/actual behavior, steps, acceptance check, facts, hypotheses and missing evidence. Only selected snapshots from this task are attached, with secrets redacted. Reconciliation prevents duplicate writes after a lost response. Does not change code.',
     fields: { title: text('Concrete bug title', 200, true), expected: text('Expected behavior', 2000, true), actual: text('Observed behavior', 2000, true), steps: text('Reproduction steps or explicitly unknown', 3000, true), acceptance: text('Concrete check a coding agent can use to verify the fix', 2000, true), hypotheses: text('Suspected causes, clearly unconfirmed', 2000), missing: text('Missing evidence or uncertainty', 2000), issue_number: integer('Existing issue to append evidence to'), evidence_ids: { type: 'json', description: '1–8 diagnostic evidence IDs collected in this task', required: true, schema: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 8 } } },
     authorize: async (context, args) => { await ops.authorize(context); await ops.selectedEvidence(context, args); },

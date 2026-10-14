@@ -69,7 +69,7 @@ test('interaction evidence resolves a reply and retains execution version withou
   assert.match(result.text, /DECODE_FAILED/); assert.match(result.text, new RegExp(sha));
   assert.match(result.text, /prefixVersion/); assert.ok(!result.text.includes('private conversation')); assert.ok(!result.text.includes('secret system prompt'));
   assert.ok(!result.text.includes('github_pat_')); assert.equal(result.sources?.length, 2);
-  assert.ok(f.registry.definitions().find(d => d.name === 'interaction_inspect')?.programmatic);
+  assert.equal(f.registry.definitions().find(d => d.name === 'interaction_inspect')?.programmatic, undefined);
   f.denied.add('source');
   await assert.rejects(f.invoke('interaction_inspect', {}, 'inspect', { ...report, replyTo: output.id }), /denied/);
 });
@@ -274,4 +274,10 @@ test('watch lookup failures notify once, recovery notifies, and revoked permissi
   await worker.tick(); await worker.tick(); assert.equal(notices.length, 1); assert.match(notices[0]!, /lookup failed/);
   f.client.issue = original; await worker.tick(); assert.equal(notices.length, 2);
   allowed = false; f.client.issueState = 'closed'; await worker.tick(); assert.equal(notices.length, 2);
+});
+
+test('issue_report always needs Confirm; reads do not', async t => {
+  const f = await fixture(t);
+  assert.equal(f.registry.definitions().find(d => d.name === 'issue_report')?.confirm?.({}), true);
+  assert.equal(f.registry.definitions().find(d => d.name === 'interaction_inspect')?.confirm, undefined);
 });

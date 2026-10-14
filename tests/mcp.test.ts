@@ -186,13 +186,14 @@ test('new requests see runtime tools while active requests retain their catalog 
   const llm: LLM = { async *stream(prompt) {
     if (++requests === 1) {
       firstVersion = prompt.prefixVersion;
-      assert.ok(!prompt.prefix[0]!.content.includes('get/issues'));
+      assert.ok(!JSON.stringify(prompt.tools ?? []).includes('get/issues'));
       await manager.configure('admin', { ...config, tools: [grant()] });
       // Updating the registry does not mutate the prompt already being streamed.
-      assert.ok(!prompt.prefix[0]!.content.includes('get/issues'));
+      assert.ok(!JSON.stringify(prompt.tools ?? []).includes('get/issues'));
     } else {
-      assert.ok(prompt.prefix[0]!.content.includes('get/issues'));
-      assert.notEqual(prompt.prefixVersion, firstVersion);
+      // MCP tools are discovery only, so the prompt does not change when they change.
+      assert.ok(!JSON.stringify(prompt.tools ?? []).includes('get/issues'));
+      assert.equal(prompt.prefixVersion, firstVersion);
     }
     yield { kind: 'text', payload: { text: 'Done' } };
   } };

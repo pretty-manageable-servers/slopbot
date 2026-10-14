@@ -61,7 +61,7 @@ test("resuming a failed agent run reuses completed tool results and retains the 
   const llm: LLM = { async *stream(prompt) {
     rounds++;
     yield { kind: "reasoning", payload: { delta: `round ${rounds}` } };
-    if (rounds === 1) yield { kind: "text", payload: { text: '{"tool_calls":[{"name":"limit","arguments":{"count":5}}]}' } };
+    if (rounds === 1) yield { kind: 'tool_call', payload: [{"name":"limit","arguments":{"count":5}}] };
     else if (rounds === 2) throw new Error("disconnected");
     else { assert.ok(prompt.inputs.some(item => item.content.includes("set to 5"))); yield { kind: "text", payload: { text: "Done." } }; }
   } };
@@ -72,7 +72,6 @@ test("resuming a failed agent run reuses completed tool results and retains the 
   assert.equal((await app.handle(message, true))?.text, "Done.");
   assert.equal(writes, 1);
   const history = await store.history(JSON.stringify(["s", "t", "t"]));
-  assert.ok(history.some(item => item.content.includes('"tool_calls"')));
   assert.ok(history.some(item => item.content.includes("set to 5")));
 });
 
@@ -106,21 +105,22 @@ test("source validity is checked again after asynchronous tool preparation", asy
   assert.equal(store.operation("first")?.status, "failed");
 });
 
-test("malformed tool output gets repaired without leaking JSON or executing twice", async t => {
+test("tool JSON in model text is shown as text and never executed", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   let rounds = 0, reads = 0;
   const registry = new ToolRegistry(store, async () => true);
   registry.register({ name: "index", description: "index status", fields: {}, access: "member", effect: "read", retrySafe: true, async execute() { reads++; return "700 messages indexed"; } });
+  const text = 'Let me check: {"tool_calls":[{"name":"index","arguments":{}}]}';
   const llm: LLM = { async *stream() {
     rounds++;
     yield { kind: "reasoning", payload: { delta: `round ${rounds}` } };
-    yield { kind: "text", payload: { text: rounds === 1 ? 'Let me check: {"tool_calls":[{"name":"index","arguments":{}}]}' : rounds === 2 ? '{"tool_calls":[{"name":"index","arguments":{}}]}' : "700 messages indexed." } };
+    yield { kind: "text", payload: { text } };
   } };
   const app = new Application(store, llm, { allowedChannels: [{ server: "s", channel: "t" }] }, undefined,
     { tools: { catalog: () => registry.catalog(), execute: (m,c,id) => registry.invoke(m,c.name,c.arguments,id,"agent") } });
-  assert.equal((await app.handle(message))?.text, "700 messages indexed.");
-  assert.equal(reads, 1);
-  assert.equal(rounds, 3);
+  assert.equal((await app.handle(message))?.text, text);
+  assert.equal(reads, 0);
+  assert.equal(rounds, 1);
 });
 
 test("known read intents return the tool result without model guessing", async t => {
