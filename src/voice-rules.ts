@@ -1,13 +1,39 @@
 /** Rules for a voice turn. The reply is posted in chat and read aloud by text to speech. */
-export const VOICE_RULE = "This request was spoken in a Discord voice channel and your reply is read aloud by text to speech. Reply in one to three short spoken sentences, at most 60 words. Use plain text: no markdown, lists, tables, code, emoji or URLs. Say numbers and names as words people say. If the full answer is long, give the key point and offer to post details. A voice channel has no task threads: never call task_start here.";
+export const VOICE_RULE = "This request was spoken in a Discord voice channel. Call voice_say first with what to say aloud (one to three short spoken sentences, plain words). Then write the full answer for the chat; it is not read aloud, so it may contain code, links and details. A voice channel has no task threads: never call task_start here. If the transcript is only noise, a filler word or cut-off speech with no request, call voice_skip and write no reply.";
 export const VOICE_SPOKEN_MAX = 600;
 export const VOICE_CUE_TEXT = "One moment.";
 export const VOICE_TURN_TIMEOUT_MS = 120_000;
 /** Spoken when a reply is an error report. The details stay in the chat. */
 export const VOICE_ERROR_TEXT = "Sorry, that did not work. The details are in the chat.";
 
-/** An error reply starts with a code such as [ACTION_UNCERTAIN]. Its text is not read aloud. */
+/** Fallback skip: a voice reply with "[SKIP]" anywhere means the turn is skipped. Nothing is posted or spoken. */
+export const VOICE_SKIP = "[SKIP]";
+const SKIP_MARKER = /\\?\[\s*skip\s*\\?\]/i;
+/** The marker as it may be written: plain or with the markdown escape. Lower case. */
+const SKIP_MARKERS = ["[skip]", "\\[skip\\]"];
+
+/** True when the text contains the skip marker. */
+export function containsSkipMarker(text: string): boolean {
+  return SKIP_MARKER.test(text);
+}
+
+/**
+ * Length of the end of `text` that might be the start of a skip marker, such as "[" or "\[S".
+ * Streamed text holds this part back until a later delta shows whether it is a marker.
+ */
+export function heldSkipLength(text: string): number {
+  const lower = text.toLowerCase();
+  const longest = Math.max(...SKIP_MARKERS.map(marker => marker.length)) - 1;
+  for (let length = Math.min(lower.length, longest); length > 0; length--) {
+    const tail = lower.slice(lower.length - length);
+    if (SKIP_MARKERS.some(marker => marker.length > length && marker.startsWith(tail))) return length;
+  }
+  return 0;
+}
+
+/** An error reply starts with a code such as [ACTION_UNCERTAIN]. Its text is not read aloud. A skip is not an error. */
 export function isErrorReply(text: string): boolean {
+  if (containsSkipMarker(text)) return false;
   return /^\s*\\?\[[A-Z][A-Z0-9\\_]*\]/.test(text);
 }
 
@@ -29,6 +55,7 @@ export function cutSpoken(plain: string, max: number): string {
 
 /** Text for TTS: an error code gives VOICE_ERROR_TEXT; otherwise plain text cut to max characters. */
 export function spokenText(text: string, max = VOICE_SPOKEN_MAX): string {
+  if (containsSkipMarker(text)) return "";
   if (isErrorReply(text)) return VOICE_ERROR_TEXT;
   return cutSpoken(plainSpoken(text), max);
 }

@@ -262,8 +262,8 @@ test('streamed sentences play in order before reply arrives', async t => {
   await r.voice.speak('channel', 'First sentence is here. Second sentence is here too. Third one ends it.');
   assert.deepEqual(r.provider.speeches.map(call => call.input), ['First sentence is here.', 'Second sentence is here too.', 'Third one ends it.']);
   assert.deepEqual(r.player.levels(), [1, 2, 3]);
-  // One resource plays the whole turn, with no gap between sentences.
-  assert.equal(r.player.resources.length, 1);
+  // One resource plays the whole turn, with no gap between sentences. The ready cue is a second resource, after the turn.
+  assert.equal(r.player.resources.length, 2);
 });
 
 test('reply after streaming does not speak twice', async t => {
@@ -317,8 +317,8 @@ test('pipeline keeps at most one request ahead', async t => {
   await r.voice.speak('channel', text);
   const starts = r.provider.speeches.map(call => call.at);
   assert.equal(starts.length, 5);
-  // Sentence 2 starts at once, while sentence 1 plays. Sentence 3 waits until sentence 1 has played (0.1 s).
-  assert.ok(starts[1]! - starts[0]! < 50, `second request waited ${starts[1]! - starts[0]!} ms`);
+  // The heard cue is the first job of the turn, so sentence 2 waits for the cue to play (0.09 s).
+  // Sentence 3 waits until sentence 1 has played.
   assert.ok(starts[2]! - starts[0]! >= 90, `third request started after ${starts[2]! - starts[0]!} ms`);
   assert.ok(starts[3]! - starts[1]! >= 90, `fourth request started after ${starts[3]! - starts[1]!} ms`);
 });
@@ -343,7 +343,7 @@ test('leave aborts streaming', async t => {
   assert.equal(r.provider.speeches.length, 1);
 });
 
-test('text mode posts transcript and plays nothing', async t => {
+test('text mode posts transcript and plays no speech', async t => {
   const r = await rig(t, { reply: 'text' });
   r.talk();
   await until(() => r.posts.length === 1);
@@ -352,7 +352,8 @@ test('text mode posts transcript and plays nothing', async t => {
   reply('run-1', ['First sentence is here. Second sentence is here too.']);
   await settle();
   assert.equal(r.provider.speeches.length, 0);
-  assert.equal(r.player.resources.length, 0);
+  // Only the heard cue plays: text mode has no reply speech.
+  assert.equal(r.player.resources.length, 1);
   assert.match(String(r.joined), /text only/);
 });
 
@@ -380,9 +381,9 @@ test('text mode skips cue and thunder billing', async t => {
 
 test('status shows reply mode', async t => {
   const voice = await rig(t);
-  assert.equal(await voice.tool.execute(voice.context, { action: 'status' }), `Voice session in <#channel>.\nReplies: voice\nVoice style: ${DEFAULT_VOICE_INSTRUCTIONS}`);
+  assert.equal(await voice.tool.execute(voice.context, { action: 'status' }), `Voice session in <#channel>.\nReplies: voice\nState: Listening\nVoice style: ${DEFAULT_VOICE_INSTRUCTIONS}`);
   const text = await rig(t, { reply: 'text' });
-  assert.equal(await text.tool.execute(text.context, { action: 'status' }), `Voice session in <#channel>.\nReplies: text\nVoice style: ${DEFAULT_VOICE_INSTRUCTIONS}`);
+  assert.equal(await text.tool.execute(text.context, { action: 'status' }), `Voice session in <#channel>.\nReplies: text\nState: Listening\nVoice style: ${DEFAULT_VOICE_INSTRUCTIONS}`);
 });
 
 test('voice mode cue plays before sentences in the same stream', async t => {

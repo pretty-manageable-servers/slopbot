@@ -1,6 +1,6 @@
 import { LocalDiskStorage } from "../web-chat-images.js";
-import { DiscordVoice } from './discord-voice.js';
-import { VOICE_INSTRUCTIONS_KEY, voiceInstructions } from "../voice-rules.js";
+import { DiscordVoice, voiceTurnSkipped } from './discord-voice.js';
+import { containsSkipMarker, VOICE_INSTRUCTIONS_KEY, VOICE_SKIP, voiceInstructions } from "../voice-rules.js";
 import { contextChangedError, legacyToolProgress, sourceFingerprint, stableAttachmentUrl, toolProgressFooter } from "../source-context.js";
 import { errorReply, logError } from "../errors.js";
 import { sandboxTool, readSandboxFile } from "../sandbox.js";
@@ -684,6 +684,13 @@ export class DiscordServer implements ChatGateway {
     const outputs: Message[] = [];
     try {
     if (!this.bot.accepts(message.server, message.channel)) throw new ToolError("Channel was disabled before sending");
+    // A skipped voice turn posts nothing: no send, no delivery record, no ingest. Only the progress status is cleared.
+    if (message.source === "voice" && (voiceTurnSkipped(message) || containsSkipMarker(text))) {
+      await requestTimings.wait("Discord status cleanup", () => this.toolProgress.finish(JSON.stringify([message.server,message.channel,message.id])));
+      delivered = true;
+      void this.voice?.speak(message.channel, VOICE_SKIP).catch(error => logError("discord_voice_speak_failed", error, { server: message.server, channel: message.channel }));
+      return outputs;
+    }
     const channel = await requestTimings.wait("Discord channel fetch", () => this.client.channels.fetch(message.channel));
     if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Channel cannot receive replies");
     let part = 0;
