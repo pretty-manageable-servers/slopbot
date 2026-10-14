@@ -1,6 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import type { Json } from './domain.js';
-import { ToolError, type ToolArgs } from './tools.js';
+import { ConfirmationRequired, ToolError, type ToolArgs } from './tools.js';
 
 export interface ProgramLimits {
   timeoutMs: number;
@@ -12,9 +12,11 @@ export interface ProgramLimits {
   maxInputBytes: number;
 }
 export const programLimits: Readonly<ProgramLimits> = Object.freeze({
-  timeoutMs: 30000, cpuMs: 2000, memoryBytes: 32 * 1024 * 1024,
-  maxCalls: 32, concurrency: 4, maxOutputBytes: 16000, maxInputBytes: 1_000_000,
+  timeoutMs: 60000, cpuMs: 2000, memoryBytes: 32 * 1024 * 1024,
+  maxCalls: 64, concurrency: 4, maxOutputBytes: 16000, maxInputBytes: 1_000_000,
 });
+/** Host-handled globals: list_tools(), describe_tool(name), save_to_sandbox(path, data). The worker sends them with these names. */
+export const programBuiltins = ['builtin:list_tools', 'builtin:describe_tool', 'builtin:save_to_sandbox'] as const;
 export interface ProgramResult { outputs: Json[]; calls: number; failures: { name: string; error: string }[] }
 export type ProgramDispatch = (name: string, args: ToolArgs, index: number, signal: AbortSignal) => Promise<Json>;
 
@@ -32,7 +34,7 @@ export class ProgramRuntime {
     let worker: Worker | undefined;
     try {
       return await new Promise<ProgramResult>((resolve, reject) => {
-        const allowed = new Set(names), outputs: Json[] = [], failures: ProgramResult['failures'] = [];
+        const allowed = new Set<string>([...names, ...programBuiltins]), outputs: Json[] = [], failures: ProgramResult['failures'] = [];
         const queue: { id: number; name: string; args: ToolArgs }[] = [];
         let finished = false, calls = 0, running = 0, inputBytes = 0, outputBytes = 0, completed = false, transientFailure = false;
         const timer = setTimeout(() => finish(new ToolError('Program exceeded its wall-clock deadline.', 'failed')), this.limits.timeoutMs);
@@ -65,6 +67,8 @@ export class ProgramRuntime {
                 worker!.postMessage({ kind: 'result', id: call.id, json });
               } catch (error) {
                 if (finished) return;
+                // A confirmation stops the whole program, even when the guest code catches the error.
+                if (error instanceof ConfirmationRequired) { finish(error); return; }
                 const reason = error instanceof ToolError ? error.message.slice(0, 500) : 'Tool failed. Inspect its recorded result before retrying.';
                 if (!(error instanceof ToolError)) transientFailure = true;
                 failures.push({ name: call.name, error: reason });
