@@ -10,7 +10,7 @@ import { UsageMeter } from '../src/usage-meter.js';
 import { UserLimiter } from '../src/user-limiter.js';
 import type { ToolDefinition, ToolRegistry, ToolContext } from '../src/tools.js';
 import { loadConfig } from '../src/config.js';
-import { VOICE_CUE_TEXT, VOICE_TURN_TIMEOUT_MS, spokenText } from '../src/voice-rules.js';
+import { DEFAULT_VOICE_INSTRUCTIONS, VOICE_CUE_TEXT, VOICE_TURN_TIMEOUT_MS, spokenText } from '../src/voice-rules.js';
 
 function thunderWav(): Buffer {
   const wav = pcmWav(Buffer.from([1, 0, 254, 255]));
@@ -126,7 +126,7 @@ async function rig(t: TestContext, transcript = 'Hello') {
   const connection = Object.assign(new EventEmitter(), { state: { status: VoiceConnectionStatus.Ready }, receiver, subscribe: () => {}, destroy: () => {} });
   const connect = (() => connection) as unknown as typeof joinVoiceChannel;
   const config = loadConfig({ DISCORD_BOT_TOKEN: 'test', LLM_API_KEY: 'test' });
-  const voice = new DiscordVoice(client, 'guild', config, poster, usage, () => false, connect);
+  const voice = new DiscordVoice(client, 'guild', config, poster, usage, () => false, () => DEFAULT_VOICE_INSTRUCTIONS, async () => {}, connect);
   t.after(() => voice.stop());
   let tool!: ToolDefinition;
   voice.register({ register: (definition: ToolDefinition) => { tool = definition; } } as unknown as ToolRegistry);
@@ -230,12 +230,12 @@ test('voice join requires the requester to be in a voice channel; stop removes i
   const client = Object.assign(new EventEmitter(), { guilds: { fetch: async () => ({ members: { fetch: async () => ({ voice: {} }) } }) } }) as unknown as Client;
   const config = loadConfig({ DISCORD_BOT_TOKEN: 'test', LLM_API_KEY: 'test' });
   const poster: VoicePoster = { reply: async () => { throw new Error('No post expected'); } };
-  const voice = new DiscordVoice(client, 'guild', config, poster, meter().usage, () => false);
+  const voice = new DiscordVoice(client, 'guild', config, poster, meter().usage, () => false, () => DEFAULT_VOICE_INSTRUCTIONS, async () => {});
   let tool!: ToolDefinition;
   voice.register({ register: (definition: ToolDefinition) => { tool = definition; } } as unknown as ToolRegistry);
   const context = { message: { author: 'user' }, isAdmin: false } as ToolContext;
   await assert.rejects(tool.execute(context, { action: 'join' }), /Join a server voice channel first/);
-  assert.equal(await tool.execute(context, { action: 'status' }), 'No active voice session.');
+  assert.equal(await tool.execute(context, { action: 'status' }), `No active voice session.\nVoice style: ${DEFAULT_VOICE_INSTRUCTIONS}`);
   voice.stop(); assert.equal(client.listenerCount('voiceStateUpdate'), 0);
 });
 
@@ -256,7 +256,7 @@ test('voice transport announces listening, joins undeafened, restricts leave, an
   }) as unknown as typeof joinVoiceChannel;
   const config = loadConfig({ DISCORD_BOT_TOKEN: 'test', LLM_API_KEY: 'test' });
   const poster: VoicePoster = { reply: async () => { throw new Error('No post expected'); } };
-  const voice = new DiscordVoice(client, 'guild', config, poster, meter().usage, () => false, connect);
+  const voice = new DiscordVoice(client, 'guild', config, poster, meter().usage, () => false, () => DEFAULT_VOICE_INSTRUCTIONS, async () => {}, connect);
   let tool!: ToolDefinition;
   voice.register({ register: (definition: ToolDefinition) => { tool = definition; } } as unknown as ToolRegistry);
   const context = { message: { author: 'user' }, isAdmin: false } as ToolContext;
@@ -268,6 +268,6 @@ test('voice transport announces listening, joins undeafened, restricts leave, an
     assert.equal(destroyed, false);
     channel.members.clear(); (client as EventEmitter).emit('voiceStateUpdate', {}, { guild, id: 'user' });
     assert.equal(destroyed, true);
-    assert.equal(await tool.execute(context, { action: 'status' }), 'No active voice session.');
+    assert.equal(await tool.execute(context, { action: 'status' }), `No active voice session.\nVoice style: ${DEFAULT_VOICE_INSTRUCTIONS}`);
   } finally { voice.stop(); }
 });

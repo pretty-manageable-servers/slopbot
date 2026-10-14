@@ -1,17 +1,34 @@
 import { Readable } from 'node:stream';
 import OpusScript from 'opusscript';
-import { ChannelType, Events, PermissionFlagsBits, type Client } from 'discord.js';
+import { randomUUID } from 'node:crypto';
+import { ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, ChannelType, Events, MessageFlags, PermissionFlagsBits, type ButtonInteraction, type Client } from 'discord.js';
 import { AudioPlayerStatus, EndBehaviorType, NoSubscriberBehavior, StreamType, VoiceConnectionStatus, createAudioPlayer, createAudioResource, entersState, joinVoiceChannel, type AudioPlayer, type AudioReceiveStream, type VoiceConnection } from '@discordjs/voice';
 import type { Config } from '../config.js';
 import { ToolError, type ToolRegistry } from '../tools.js';
+import type { Message } from '../domain.js';
 import { errorReply, logError } from '../errors.js';
 import type { UsageMeter } from '../usage-meter.js';
 import type { WebReplies } from '../web-replies.js';
-import { spokenText, VOICE_CUE_TEXT, VOICE_TURN_TIMEOUT_MS } from '../voice-rules.js';
-import { PmAudio } from './audio.js';
+import { spokenText, VOICE_CUE_TEXT, VOICE_INSTRUCTIONS_MAX, VOICE_TURN_TIMEOUT_MS } from '../voice-rules.js';
+import { PmAudio, speechPcm } from './audio.js';
 
 const MAX_AUDIO_BYTES = 30 * 192000;
 const IDLE_MS = 5 * 60_000;
+const PROPOSAL_MS = 15 * 60_000;
+const PREVIEW_TEXT = 'Hi, this is my new voice.';
+
+/** A voice description drafted by the model, waiting for a server admin to apply it. */
+interface Proposal { instructions: string; proposer: string; expiresAt: number }
+
+/** "default" or empty means no server setting. Throws when the text is too long. */
+function styleText(raw: string): string {
+  const text = raw.trim();
+  if (text.toLowerCase() === 'default') return '';
+  if (Array.from(text).length > VOICE_INSTRUCTIONS_MAX) throw new ToolError(`Voice instructions must be ${VOICE_INSTRUCTIONS_MAX} characters or fewer.`);
+  return text;
+}
+
+function previewFile(wav: Buffer): AttachmentBuilder { return new AttachmentBuilder(wav, { name: 'voice-preview.wav' }); }
 
 /** Posts a transcript into the voice channel's chat. The normal bot path then answers it. */
 export interface VoicePoster { reply: WebReplies["reply"] }
@@ -27,8 +44,8 @@ interface Session {
   audio: PmAudio;
   busy: boolean;
   turn: Turn | undefined;
-  /** The cue clip, made once per session. Plays do not bill. */
-  cue: Promise<Buffer> | undefined;
+  /** The cue clip for one set of voice instructions. Made again when the instructions change. Plays do not bill. */
+  cue: { instructions: string; clip: Promise<Buffer> } | undefined;
   refresh(): void;
   fail(error: unknown): void;
   stop(): void;
@@ -37,8 +54,10 @@ interface Session {
 export class DiscordVoice {
   private session: Session | undefined;
   private readonly onVoiceState: (old: import('discord.js').VoiceState, next: import('discord.js').VoiceState) => void;
+  private readonly proposals = new Map<string, Proposal>();
 
-  constructor(private readonly client: Client, private readonly server: string, private readonly config: Config, private readonly poster: VoicePoster, private readonly usage: UsageMeter, private readonly muted: (user: string) => boolean, private readonly connect: typeof joinVoiceChannel = joinVoiceChannel) {
+  /** `instructions` returns the voice description for this server. `saveInstructions` stores a new one; "" clears it. */
+  constructor(private readonly client: Client, private readonly server: string, private readonly config: Config, private readonly poster: VoicePoster, private readonly usage: UsageMeter, private readonly muted: (user: string) => boolean, private readonly instructions: () => string, private readonly saveInstructions: (value: string) => void | Promise<void>, private readonly connect: typeof joinVoiceChannel = joinVoiceChannel) {
     this.onVoiceState = (_old, next) => {
       if (next.guild.id !== server || !this.session) return;
       if (next.id === client.user?.id && next.channelId !== this.session.channel) { this.leave(); return; }
@@ -49,12 +68,17 @@ export class DiscordVoice {
   }
 
   register(registry: ToolRegistry): void {
-    registry.register({ name: 'voice', description: 'Join your voice channel to talk, leave it, or show voice status', scope: 'discord',
-      fields: { action: { type: 'string', description: 'Voice session action', choices: ['join', 'leave', 'status'], required: true } },
+    registry.register({ name: 'voice', description: "Join your voice channel to talk, leave it, or show voice status and the voice style. Use propose when a user asks to change how Slopbot's voice sounds: draft a concrete description (gender, age, pitch, pace, tone) and never name a real person; a server admin then applies it. style sets the voice directly and is for server admins only.", scope: 'discord',
+      fields: {
+        action: { type: 'string', description: 'Voice action. style sets the voice (server admins). propose posts a voice for an admin to apply.', choices: ['join', 'leave', 'status', 'style', 'propose'], required: true },
+        instructions: { type: 'string', description: `Voice description for style or propose, for example "A calm adult woman with a warm, medium pitch, a steady pace and a friendly tone." Up to ${VOICE_INSTRUCTIONS_MAX} characters. For style, "default" restores the default voice.`, max: VOICE_INSTRUCTIONS_MAX },
+      },
       access: 'member', effect: 'write', execution: 'inline', retrySafe: true,
       resource: () => `voice:${this.server}`, writes: args => args.action !== 'status',
       execute: async ({ message, isAdmin }, args) => {
-        if (args.action === 'status') return this.session ? `Voice session in <#${this.session.channel}>.` : 'No active voice session.';
+        if (args.action === 'status') return this.status();
+        if (args.action === 'style') return this.style(message, isAdmin, String(args.instructions ?? ''));
+        if (args.action === 'propose') return this.propose(message, String(args.instructions ?? ''));
         const guild = await this.client.guilds.fetch(this.server);
         const member = await guild.members.fetch({ user: message.author, force: true });
         if (args.action === 'leave') {
@@ -79,6 +103,93 @@ export class DiscordVoice {
         return `Joined <#${channel.id}>. I listen to human speakers, post each transcript in this channel's chat, and reply aloud with Slopbot's normal model and tools, one speaker at a time. Speech is sent to PMServers for processing. Use /slopbot voice action:leave to stop. I leave after five minutes of inactivity.`;
       },
     });
+  }
+
+  private status(): string {
+    const session = this.session ? `Voice session in <#${this.session.channel}>.` : 'No active voice session.';
+    return `${session}\nVoice style: ${this.instructions()}`;
+  }
+
+  /** The voice style set by an admin. "default" or empty clears it. Plays or posts a preview. */
+  private async style(message: Message, isAdmin: boolean, raw: string): Promise<string> {
+    if (!isAdmin) throw new ToolError('Only server admins can change the voice.');
+    await this.saveInstructions(styleText(raw));
+    const wav = await this.previewWav(message.author, this.instructions());
+    if (wav) await this.playOrPost(message.channel, wav, 'Voice preview.');
+    return 'Voice updated.';
+  }
+
+  /** The model drafts a voice style. An admin applies it with the Apply button. */
+  private async propose(message: Message, raw: string): Promise<string> {
+    const instructions = styleText(raw);
+    if (!instructions) throw new ToolError(`Describe the voice in 1 to ${VOICE_INSTRUCTIONS_MAX} characters.`);
+    if (this.muted(message.author)) throw new ToolError('You are muted in Slopbot.');
+    if (!(await this.usage.limiter.check(message.author)).allowed) throw new ToolError('Your Slopbot usage limit has been reached.');
+    const channel = await this.client.channels.fetch(message.channel).catch(() => undefined);
+    if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError('Slopbot cannot post in this channel.');
+    const wav = await this.previewWav(message.author, instructions);
+    const id = randomUUID();
+    for (const [key, proposal] of this.proposals) if (Date.now() > proposal.expiresAt) this.proposals.delete(key);
+    this.proposals.set(id, { instructions, proposer: message.author, expiresAt: Date.now() + PROPOSAL_MS });
+    const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId(`slopvoice:${id}:apply`).setLabel('Apply').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`slopvoice:${id}:cancel`).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
+    );
+    await channel.send({ content: `Proposed voice: ${instructions}`, ...(wav ? { files: [previewFile(wav)] } : {}), components: [buttons], allowedMentions: { parse: [] } });
+    return 'Proposed voice posted. A server admin can click Apply within 15 minutes.';
+  }
+
+  /** The Apply and Cancel buttons of a voice proposal. Only a server admin can apply one. */
+  async button(interaction: ButtonInteraction): Promise<void> {
+    if (interaction.guildId !== this.server) return;
+    const [, id = '', action] = interaction.customId.split(':');
+    const proposal = this.proposals.get(id);
+    if (!proposal) { await interaction.reply({ content: 'This voice proposal is no longer open.', flags: MessageFlags.Ephemeral }); return; }
+    if (Date.now() > proposal.expiresAt) { this.proposals.delete(id); await interaction.update({ content: 'Voice proposal expired.', components: [] }); return; }
+    const admin = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? false;
+    if (action === 'cancel') {
+      if (!admin && interaction.user.id !== proposal.proposer) { await interaction.reply({ content: 'Only server admins or the proposer can cancel this voice proposal.', flags: MessageFlags.Ephemeral }); return; }
+      this.proposals.delete(id);
+      await interaction.update({ content: 'Proposal cancelled.', components: [] });
+      return;
+    }
+    if (!admin) { await interaction.reply({ content: 'Only server admins can apply a voice.', flags: MessageFlags.Ephemeral }); return; }
+    this.proposals.delete(id);
+    try { await this.saveInstructions(proposal.instructions); }
+    catch (error) {
+      logError('discord_voice_apply_failed', error, { server: this.server });
+      await interaction.reply({ content: 'Could not save the voice. Propose it again.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    await interaction.update({ content: `Voice updated by <@${interaction.user.id}>.`, components: [], allowedMentions: { parse: [] } });
+  }
+
+  /** Thunder preview of a voice style, as WAV. Returns undefined when it fails; the failure is logged. */
+  private async previewWav(user: string, instructions: string): Promise<Buffer | undefined> {
+    try {
+      const wav = await this.audio().speakWav(PREVIEW_TEXT, new AbortController().signal, instructions);
+      // Thunder is billed at $10/1M characters.
+      await this.usage.limiter.record(user, Array.from(PREVIEW_TEXT).length * 10);
+      return wav;
+    } catch (error) { logError('discord_voice_preview_failed', error, { server: this.server }); return undefined; }
+  }
+
+  /** Plays the preview in a live voice session, else posts it as a WAV in the channel. Failures are logged. */
+  private async playOrPost(channel: string, wav: Buffer, content: string): Promise<void> {
+    const session = this.session;
+    try {
+      if (session) {
+        void this.play(session, speechPcm(wav)).catch(error => { if (!session.abort.signal.aborted) logError('discord_voice_preview_failed', error, { server: this.server, channel: session.channel }); });
+        return;
+      }
+      const target = await this.client.channels.fetch(channel);
+      if (!target?.isTextBased() || !target.isSendable()) throw new Error('Preview channel unavailable');
+      await target.send({ content, files: [previewFile(wav)], allowedMentions: { parse: [] } });
+    } catch (error) { logError('discord_voice_preview_failed', error, { server: this.server, channel }); }
+  }
+
+  private audio(): PmAudio {
+    return new PmAudio(this.config.baseUrl, this.config.apiKey, this.config.voice?.voice ?? 'alloy');
   }
 
   private async join(channel: string): Promise<void> {
@@ -145,7 +256,7 @@ export class DiscordVoice {
     try {
       const said = spokenText(text);
       if (!said || await this.usage.overGrace({ server: this.server, user: turn.user })) { this.endTurn(session, turn); return; }
-      const speech = await session.audio.speak(said, session.abort.signal);
+      const speech = await session.audio.speak(said, session.abort.signal, this.instructions());
       // Thunder is billed at $10/1M characters.
       await this.usage.limiter.record(turn.user, Array.from(said).length * 10);
       if (session.turn !== turn || session.abort.signal.aborted) return;
@@ -161,16 +272,19 @@ export class DiscordVoice {
     if (!session || session.channel !== channel || !turn || turn.cued) return;
     turn.cued = true;
     try {
-      if (!session.cue) {
-        const clip = session.audio.speak(VOICE_CUE_TEXT, session.abort.signal).then(async pcm => {
+      const instructions = this.instructions();
+      let cue = session.cue;
+      if (!cue || cue.instructions !== instructions) {
+        const clip = session.audio.speak(VOICE_CUE_TEXT, session.abort.signal, instructions).then(async pcm => {
           // Thunder is billed at $10/1M characters.
           await this.usage.limiter.record(turn.user, Array.from(VOICE_CUE_TEXT).length * 10);
           return pcm;
         });
-        session.cue = clip;
-        clip.catch(() => { if (session.cue === clip) session.cue = undefined; });
+        cue = { instructions, clip };
+        session.cue = cue;
+        clip.catch(() => { if (session.cue === cue) session.cue = undefined; });
       }
-      const pcm = await session.cue;
+      const pcm = await cue.clip;
       if (session.turn !== turn) return;
       await this.play(session, pcm);
     } catch (error) { session.fail(error); }
