@@ -354,6 +354,7 @@ export class AgentRunner {
       const prompt: Prompt = { cacheScope: taskKey??JSON.stringify([message.server,message.channel,message.id]), prefixVersion: (this.policy.prefixVersion ?? "v3") + ":" + stableOperationId(JSON.stringify({ prefix, tools: modelTools ?? [] })), prefix, history, inputs: [...inputs, ...trace, ...retryLimitInput], ...(modelTools ? { tools: toolsStopped ? [] : modelTools } : {}), maxOutputTokens: this.outputLimit, purpose: "reply", ...this.effortFor(message) };
       let text: string;
       let generatedCalls: ToolCall[] | undefined;
+      let fromModel = false;
       const fixedAnswer = quoteAnswer ?? clarificationAnswer ?? directAnswer;
       const fixedText = fixedAnswer ?? (suggested && !trace.length ? JSON.stringify({ tool_calls: [suggested] }) : undefined);
       if (fixedText !== undefined) {
@@ -361,7 +362,7 @@ export class AgentRunner {
         await this.store.recordSources(runId, message.server, [...new Set([...sources, ...quotes.flatMap(item => [...item.sourceIds])])]);
         await this.store.appendEvent(runId, 0, { kind: "text", payload: { text: fixedText } });
         text = fixedText;
-      } else { const generated = await this.generate(message, prompt, runId, [...sources]); text = generated.text; generatedCalls = generated.calls; }
+      } else { const generated = await this.generate(message, prompt, runId, [...sources]); text = generated.text; generatedCalls = generated.calls; fromModel = true; }
       try {
         if (sourceVersion !== await this.store.contextVersion(message.server, message.channel) || !this.accepts(message)) throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel), { expectedVersion: sourceVersion, actualVersion: await this.store.contextVersion(message.server, message.channel) });
         let calls;
@@ -391,7 +392,8 @@ export class AgentRunner {
         // The stored run result keeps the model text. Only the reply shown to users gets the links.
         const rendered = await this.renderer.render(message.server, text, quoteAnswer !== undefined);
         const sourcePlace = { server: message.server, channel: seed.channel ?? message.channel };
-        const shown = linkRefs(rendered, refs, { server: message.server, channel: message.channel }, knownUsers, sourcePlace);
+        // Only model text is linked. Code and tool text (quotes, source links, task notices) is shown as it is.
+        const shown = fromModel ? linkRefs(rendered, refs, { server: message.server, channel: message.channel }, knownUsers, sourcePlace) : rendered;
         return { runId, text: shown, contextVersion: sourceVersion, toolActivity: activity, ...(ui ? {ui} : {}) };
       } catch (error) { await this.store.fail(runId, errorSummary(error)).catch(secondary => logError("run_failure_record_failed", secondary, { runId })); throw errorContext(error, { stage: "agent round", runId, round }); }
     }
