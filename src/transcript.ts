@@ -171,14 +171,27 @@ export interface SettingsPort {
 
 const taskRefsKey = (thread: string): string => `task_refs:${thread}`;
 
+/** The source of a task thread: the channel the task came from, and the refs of its seed (ref -> real message ID). */
+export interface TaskSeed { channel?: string; refs: Map<string, string> }
+
+const taskSourceKey = (thread: string): string => `task_source:${thread}`;
+
 /**
- * Saves the refs of a task seed (ref -> real message ID) for the task thread.
+ * Saves the refs of a task seed (ref -> real message ID) for the task thread, and the source channel.
  * Refs from earlier seeds of the same thread are kept.
  */
-export async function saveTaskRefs(store: SettingsPort, server: string, thread: string, refs: ReadonlyMap<string, string>): Promise<void> {
+export async function saveTaskRefs(store: SettingsPort, server: string, thread: string, refs: ReadonlyMap<string, string>, channel?: string): Promise<void> {
   if (!store.setSetting) throw new Error("Store cannot save task refs");
   const merged = new Map([...await loadTaskRefs(store, server, thread), ...refs]);
   await store.setSetting(server, taskRefsKey(thread), Object.fromEntries(merged));
+  if (channel !== undefined) await store.setSetting(server, taskSourceKey(thread), channel);
+}
+
+/** The saved source of a task thread. A thread saved before sources were kept has no channel. */
+export async function loadTaskSeed(store: SettingsPort, server: string, thread: string | undefined): Promise<TaskSeed> {
+  const refs = await loadTaskRefs(store, server, thread);
+  const channel = thread && store.setting ? store.setting(server, taskSourceKey(thread)) : undefined;
+  return typeof channel === "string" ? { channel, refs } : { refs };
 }
 
 /** The saved refs of a task thread. Missing or malformed values give an empty map. */
