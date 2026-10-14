@@ -35,7 +35,9 @@ export class ContextBuilder {
     const privateChat = isPrivateChannel(message.channel) ? { private_web_chat: true, private_chat_rule: privateChatRule } : {};
     const voice = message.source === "voice" ? { voice_channel: true, voice_rule: VOICE_RULE } : {};
     const web = message.source === "web" ? { web_math_rule: webMathRule } : {};
-    const requestContext: Record<string, Json> = this.options.tools ? { channel_id: message.channel, task_id: message.taskId ?? null, is_task: Boolean(message.taskId), ...privateChat, ...voice, ...web } : {};
+    // Files that the worker copied to the sandbox before this run. The model reads them with read or shell.
+    const uploads = message.uploads ? { uploaded_files: [...message.uploads.files], upload_failed: [...message.uploads.failed] } : {};
+    const requestContext: Record<string, Json> = this.options.tools ? { channel_id: message.channel, task_id: message.taskId ?? null, is_task: Boolean(message.taskId), ...privateChat, ...voice, ...web, ...uploads } : {};
     // Request fields only, to reserve their budget. The full context block is built after the rows are chosen.
     const metadata: PromptItem[] = this.options.tools ? [contextBlock({ request: requestContext, people: [], evidence: [] })] : [];
     let budget = this.options.inputLimit - schemaBudget - this.options.counter.count([...prefix, ...metadata, request]);

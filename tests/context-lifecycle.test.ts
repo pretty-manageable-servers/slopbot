@@ -76,7 +76,7 @@ test('a genuine source correction hides the stale turns and records its source I
 test('attachment changes invalidate source context even when message text is unchanged', async t => {
   const { store } = setup(t);
   const source = { ...request, attachments: [{ name: 'evidence.png', url: 'https://cdn.discordapp.com/attachments/a/old.png', size: 10 }] };
-  await store.ingest(source); store.addAgentTurn(source, '', [{ name: 'file_read', arguments: {} }]);
+  await store.ingest(source); store.addAgentTurn(source, '', [{ name: 'read', arguments: {} }]);
   await store.revise({ ...source, attachments: [{ ...source.attachments[0]!, url: 'https://cdn.discordapp.com/attachments/a/new.png' }] });
   assert.deepEqual(store.agentTurns(source), []);
 });
@@ -92,7 +92,7 @@ test('deleting the requester invalidates its saved plan even after the canonical
 test('Discord attachment signature refresh preserves semantic context', async t => {
   const { store } = setup(t);
   const source = { ...request, attachments: [{ name: 'evidence.png', url: 'https://cdn.discordapp.com/attachments/a/file.png?ex=old&is=old&hm=old' }] };
-  await store.ingest(source); const turn = store.addAgentTurn(source, '', [{ name: 'file_read', arguments: {} }]);
+  await store.ingest(source); const turn = store.addAgentTurn(source, '', [{ name: 'read', arguments: {} }]);
   await store.revise({ ...source, attachments: [{ ...source.attachments[0]!, url: 'https://cdn.discordapp.com/attachments/a/file.png?ex=new&is=new&hm=new' }] });
   assert.equal(store.agentTurns(source)[0]?.id, turn.id);
 });

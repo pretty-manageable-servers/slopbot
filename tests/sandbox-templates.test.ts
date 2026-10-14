@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
-import { TemplateCatalog, sandboxTool, templateCacheMs, type SandboxProvider } from '../src/sandbox.js';
+import { TemplateCatalog, sandboxManageTool, templateCacheMs, type SandboxProvider } from '../src/sandbox.js';
 
 const fiveMinutes = 5 * 60 * 1000;
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -20,9 +20,8 @@ function provider(list: () => Promise<string[]>, defaultTemplate: string | undef
   };
 }
 
-function templateField(sandboxProvider?: SandboxProvider) {
-  const tool = sandboxTool(new SQLiteStore(), sandboxProvider);
-  return { tool, description: () => tool.fields.template!.description };
+function manageTool(sandboxProvider?: SandboxProvider) {
+  return sandboxManageTool(new SQLiteStore(), sandboxProvider);
 }
 
 test('template cache refreshes at most every five minutes', async () => {
@@ -91,55 +90,13 @@ test('a project with no template list yet rejects instead of guessing names', as
   assert.equal(catalog.current(), undefined);
 });
 
-test('template field description lists sorted names, the default and the slopbot note', async () => {
-  const { description } = templateField(provider(async () => ['slopbot', 'base', 'py-data']));
-  description();
-  await settle();
-  const text = description();
-  assert.match(text, /Omit it for the default: slopbot\./);
-  assert.match(text, /Templates in this project: base, py-data, slopbot\./);
-  assert.match(text, /slopbot: Python 3 with pip, venv and common data packages/);
-  assert.match(text, /Do not guess names/);
-});
-
-test('template field description is the same on every call while the list is unchanged', async () => {
-  const { description } = templateField(provider(async () => ['slopbot', 'base']));
-  description();
-  await settle();
-  const first = description();
-  const second = description();
-  assert.equal(first, second);
-});
-
-test('template field description leaves out the slopbot note when slopbot is not a template', async () => {
-  const { description } = templateField(provider(async () => ['base'], 'base'));
-  description();
-  await settle();
-  const text = description();
-  assert.match(text, /Omit it for the default: base\./);
-  assert.match(text, /Templates in this project: base\./);
-  assert.doesNotMatch(text, /slopbot/);
-});
-
-test('template field description says the list is unavailable when the API fails', async () => {
-  const { description } = templateField(provider(async () => { throw new Error('down'); }));
-  description();
-  await settle();
-  const text = description();
-  assert.match(text, /Omit it for the default: slopbot\. The template list is unavailable right now\./);
-  assert.match(text, /slopbot: Python 3/, 'the default is slopbot, so its note stays');
-});
-
-test('template field description reports an empty project without guessing', async () => {
-  const { description } = templateField(provider(async () => []));
-  description();
-  await settle();
-  assert.match(description(), /This project has no ready templates yet\./);
-});
-
-test('template field description is a fixed text for a provider without template listing', () => {
-  const { description } = templateField(undefined);
-  assert.match(description(), /Omit it for the default: base\. This sandbox provider does not list templates\./);
+test('sandbox_manage description and fields are fixed and never list templates', () => {
+  const withList = manageTool(provider(async () => ['slopbot', 'py-data']));
+  const withoutList = manageTool(undefined);
+  assert.equal(withList.description, withoutList.description);
+  assert.equal(JSON.stringify(withList.fields), JSON.stringify(withoutList.fields));
+  assert.ok(!withList.description.includes('py-data') && !withList.description.includes('slopbot'));
+  assert.ok(!JSON.stringify(withList.fields).includes('py-data'));
 });
 
 test('provider lists ready template names and aliases across pages', async () => {

@@ -13,6 +13,7 @@ const connection = { apiKey, apiUrl: process.env.E2B_API_URL ?? 'https://api.pms
 const aptPackages = [
   'ca-certificates', 'curl', 'wget', 'git', 'jq', 'ripgrep', 'fd-find', 'unzip', 'zip', 'tar', 'xz-utils',
   'build-essential', 'sqlite3', 'iproute2', 'less', 'file', 'tree', 'python3', 'python3-pip', 'python3-venv',
+  'poppler-utils', 'pandoc',
 ];
 const pipHeavy = ['numpy', 'pandas', 'matplotlib', 'openpyxl'];
 const pipLight = ['requests', 'httpx', 'pillow', 'beautifulsoup4', 'lxml', 'pyyaml', 'python-dateutil', 'tabulate'];

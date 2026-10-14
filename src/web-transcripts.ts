@@ -64,7 +64,9 @@ export interface TranscriptRoutes {
 export type RunStep =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string }
-  | { type: "tool"; name: string; status: string; args: string; result?: string };
+  | ToolStep;
+/** A tool call. A run_tools_code call has its program code and the calls it made (children, each with parentId). */
+export interface ToolStep { type: "tool"; name: string; status: string; args: string; result?: string; code?: string; parentId?: string; children?: ToolStep[] }
 
 /** enabled is false for a channel whose web transcripts are off. Only channels are listed that way, never threads. */
 export interface Conversation { id: string; name: string; kind: "channel" | "thread"; parent: string | null; newest: number | null; canSend: boolean; enabled: boolean }
@@ -130,12 +132,16 @@ export function runSteps(events: readonly ModelEvent[], turns: readonly ToolTurn
         }
       }
     }
-    const step: RunStep = { type: "tool", name: call.name, status: "pending", args: shortArgs(call.arguments) };
+    const step: ToolStep = { type: "tool", name: call.name, status: "pending", args: shortArgs(call.arguments) };
     if (output !== undefined) {
       const result = toolResult(output);
       step.status = result.status === "failed" || result.status === "rejected" ? result.status : result.handoff ? "delegated" : "completed";
       // Usage results can show spend, so only the status is kept for them.
       if (call.name !== "usage") step.result = result.text.slice(0, MAX_RESULT_CHARS);
+      if (call.name === "run_tools_code") {
+        if (typeof call.arguments.code === "string") step.code = call.arguments.code;
+        step.children = childSteps(result.data, call.id);
+      }
     }
     steps.push(step);
   };
@@ -151,6 +157,18 @@ export function runSteps(events: readonly ModelEvent[], turns: readonly ToolTurn
     for (const call of fallbackCalls) addTool(call);
   }
   return steps;
+}
+
+/** The calls a run_tools_code program made, from its saved result. Each child names its parent. */
+function childSteps(data: Json | undefined, parentId: string | undefined): ToolStep[] {
+  const calls = (data && typeof data === "object" && !Array.isArray(data) ? (data as { childCalls?: unknown }).childCalls : undefined);
+  if (!Array.isArray(calls)) return [];
+  return calls.flatMap(item => {
+    if (!item || typeof item !== "object") return [];
+    const child = item as { name?: unknown; status?: unknown };
+    if (typeof child.name !== "string") return [];
+    return [{ type: "tool" as const, name: child.name, status: typeof child.status === "string" ? child.status : "completed", args: "", ...(parentId ? { parentId } : {}) }];
+  });
 }
 
 function callsOf(payload: Json): ToolCall[] {

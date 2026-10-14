@@ -217,3 +217,27 @@ test("a request deleted during its run gets no answer", async t => {
   const outputs = await changedRun(t, store => store.remove("s", "c", "req"));
   assert.deepEqual(outputs, []);
 });
+
+test("request_uploads_files: a mention, a reply or a name request is marked for upload", async t => {
+  const f = setup(); t.after(() => f.store.close());
+  const queued: { id: string; uploadFiles?: true }[] = [];
+  const worker = { enqueue: async (message: { id: string; uploadFiles?: true }) => { queued.push(message); } } as unknown as import("../src/queue.js").TaskWorker;
+  const bot = new Bot(f.app, f.store, f.store, f.gateway, "s", ["c"], { worker });
+  const file = { name: "report.pdf", url: "https://cdn.discordapp.com/attachments/1/report.pdf", contentType: "application/pdf", size: 10 };
+  await bot.receive(incoming("mention", "@slop summarize", { mentionsBot: true, attachments: [file] }));
+  await bot.receive(incoming("reply", "what is in it", { repliesToBot: true, attachments: [file] }));
+  assert.deepEqual(queued.map(message => [message.id, message.uploadFiles]), [["mention", true], ["reply", true]]);
+});
+
+test("non_request_no_upload: an unsolicited reply to a file is not marked for upload", async t => {
+  const f = setup(); t.after(() => f.store.close());
+  const queued: { id: string; uploadFiles?: true }[] = [];
+  const worker = { enqueue: async (message: { id: string; uploadFiles?: true }) => { queued.push(message); } } as unknown as import("../src/queue.js").TaskWorker;
+  const { ParticipationGate } = await import("../src/participation.js");
+  const participation = new ParticipationGate({ classify: async () => ({ respond: true, addressed: false, reason: "unsolicited_allowed" }) }, { enabled: true, contextMessages: 10, cooldownMs: 0, maxUnsolicitedPerHour: 10 });
+  const bot = new Bot(f.app, f.store, f.store, f.gateway, "s", ["c"], { participation, worker });
+  const file = { name: "report.pdf", url: "https://cdn.discordapp.com/attachments/1/report.pdf", contentType: "application/pdf", size: 10 };
+  await bot.receive(incoming("unsolicited", "Interesting chart", { attachments: [file] }));
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]!.uploadFiles, undefined);
+});

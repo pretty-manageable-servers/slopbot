@@ -90,7 +90,7 @@ Try: “Slopbot, set cooldown to 120 seconds and 5 replies per hour.” An admin
 
 Admins can add remote MCP servers in the web console's **MCP connections** tab while Slopbot is running. Discover tools, select which to enable, and assign access and read/write policies without redeploying. Connections persist across restarts. For bearer-authenticated servers, configure `MCP_SECRET_KEY` once to encrypt saved tokens. See [runtime MCP setup and limits](architecture/TOOLS.md#runtime-mcp-connections).
 
-`program_exec` lets the current model compose eligible native and MCP reads in isolated JavaScript, run independent calls concurrently, and return a smaller result to the model. Each call retains permissions, source metadata, progress, and operation journaling. Writes remain direct. See [bot-owned programmatic calling](architecture/TOOLS.md#bot-owned-programmatic-calling).
+`run_tools_code` lets the current model compose bot tools in isolated JavaScript, run independent calls concurrently, and return a smaller result to the model. Each call keeps its permissions, progress and operation journaling. Calls that change data stop for a Confirm button when needed. See [bot-owned programmatic calling](architecture/TOOLS.md#run_tools_code).
 
 Slopbot can investigate its own reported problems and file evidence-backed GitHub issues. Issue reporting follows dynamically discovered Discord servers. `SLOPBOT_OPERATIONS_GUILD_IDS` optionally allowlists trusted servers for admin diagnostics and fix watches. Configure a [GitHub App](architecture/GITHUB_APP.md) with Contents, Actions and Pull requests read plus Issues write, or use a repository-scoped `SLOPBOT_GITHUB_TOKEN`. Optionally configure a dedicated `SLOPBOT_PMS_TOKEN` with `SLOPBOT_PMS_PROJECT_ID` for live infrastructure diagnostics. `SLOPBOT_PMS_CONTAINERS` allowlists Slopbot and its dependencies, with Slopbot first. Credentials are operator configuration and never enter tool arguments. See [self-improvement tools](architecture/TOOLS.md#self-improvement-tools).
 
@@ -129,7 +129,7 @@ Current custom fields are scoped to this server. There is no automatic sharing a
 
 ### Files
 
-Upload a file and ask `@slop summarize this file`, or reply to an attachment and ask about it. The model can call `file_read`; members can also use `/slopbot file_read message_id:<id> question:<question>`.
+Upload a file and ask `@slop summarize this file`, or reply to an attachment and ask about it. The file is copied to `/home/user/uploads/` in the task sandbox, and the model reads it with `read` or `shell`. Images are shown to the model directly.
 
 With object storage configured, ask `@slop save this attachment as receipts/october.pdf`, `list my saved files`, `summarize my stored receipts/october.pdf`, or `send my saved file back to me`. The `file_store` tool defaults to private personal files within the current server and can DM the original bytes back. You can also save generated sandbox files and load stored files into the task sandbox.
 

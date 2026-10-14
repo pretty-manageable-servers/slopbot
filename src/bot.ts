@@ -176,7 +176,8 @@ export class Bot {
       await this.startTask(message, goal);
       return;
     }
-    const request: Message = { ...message, text: text || "Hello", addressed: true, ...(task ? { taskId: message.channel } : {}) };
+    // A request the bot answers (mention, reply, private chat, task thread or a name request) uploads its non-image files first.
+    const request: Message = { ...message, text: text || "Hello", addressed: true, ...(task ? { taskId: message.channel } : {}), ...(addressed && !message.botAuthor ? { uploadFiles: true as const } : {}) };
     if (this.options.worker) {
       try { await this.options.worker.enqueue(request); }
       catch (error) {

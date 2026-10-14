@@ -70,6 +70,8 @@ export interface ToolDefinition {
   effect: "read" | "write";
   retrySafe: boolean;
   execution?: "inline" | "thread";
+  /** Overrides execution for some arguments: true starts a task thread, false runs inline. Used when only one action of a tool needs a thread. */
+  threadWhen?(args: ToolArgs): boolean;
   /** The tool acts on Discord itself (posts or edits Discord messages, threads, reactions, or changes Discord server or channel settings), so it is not offered in private web chats. */
   scope?: "discord";
   publicResult?(args: ToolArgs): boolean;
@@ -199,7 +201,9 @@ export class ToolRegistry {
   effect(name: string, args: ToolArgs): "read" | "write" { const tool = this.tools.get(name); return tool?.writes ? tool.writes(args) ? "write" : "read" : tool?.effect ?? "read"; }
   scopeOf(name: string): "discord" | undefined { return this.tools.get(name)?.scope; }
   requiresThread(name: string, args: ToolArgs): boolean {
-    return this.effect(name,args) === "write" && this.tools.get(name)?.execution !== "inline";
+    const tool = this.tools.get(name);
+    if (tool?.threadWhen) return this.effect(name, args) === "write" && tool.threadWhen(args);
+    return this.effect(name,args) === "write" && tool?.execution !== "inline";
   }
   validate(name: string, input: unknown): ToolArgs {
     const tool = this.tools.get(name);

@@ -13,7 +13,7 @@ const { Application } = await load('application');
 const { ChatCompletionsLLM } = await load('adapters/chat-completions');
 const { ToolRegistry } = await load('tools');
 const { registerReportTools } = await load('search/reports');
-const { registerFileTool } = await load('files');
+const { inspectFile } = await load('files');
 const request = { server: 's', channel: 'c', author: 'person', id: 'request', text: 'Complete the reads', addressed: true };
 const schema = { type: 'function', function: { name: 'read', description: 'Read source evidence', parameters: { type: 'object', properties: {} } } };
 const summary = JSON.stringify({ goal: 'Finish the reads', constraints: [], decisions: [], disagreements: [], progress: ['Earlier reads completed.'], artifacts: [], pending_actions: [] });
@@ -37,7 +37,8 @@ test('native streamed calls retain their provider call ID', async () => {
 test('the default round allowance completes ten consecutive tool reads', async t => {
   const store = new SQLiteStore(); t.after(() => store.close()); let reads = 0;
   const app = new Application(store, { async *stream() {
-    yield { kind: 'text', payload: { text: reads < 10 ? '{"tool_calls":[{"name":"read","arguments":{}}]}' : 'Ten reads finished.' } };
+    // Native tool calls only: the text protocol was removed.
+    yield reads < 10 ? { kind: 'tool_call', payload: [{ name: 'read', arguments: {} }] } : { kind: 'text', payload: { text: 'Ten reads finished.' } };
   } }, { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, { tools: { catalog: () => '', execute: async () => { reads++; return 'Read completed.'; } } });
   assert.equal((await app.handle(request))?.text, 'Ten reads finished.'); assert.equal(reads, 10);
 });
@@ -52,13 +53,13 @@ for (const name of ['decision_lookup', 'conversation_summary']) test(`${name} us
   await registry.invokeResult(request, name, { query: 'ship' }, name, 'agent');
 });
 
-test('file_read uses the configured internal generation allowance', async t => {
+test('file inspection uses the configured internal generation allowance', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const source = { ...request, id: 'source', attachments: [{ name: 'sample.txt', url: 'https://cdn.discordapp.com/sample.txt' }] };
-  await store.ingest(source); const registry = new ToolRegistry(store, async () => false);
-  registerFileTool(registry, { store, resolve: async () => source, fetcher: { fetch: async () => new Uint8Array() }, decoder: { read: async () => ({ text: 'Sample evidence.', images: [] }) },
-    llm: { outputTokenLimit: 50000, contextTokenLimit: 200000, async *stream(input) { assert.equal(input.maxOutputTokens, 50000); yield { kind: 'text', payload: { text: 'Inspected sample.' } }; } } });
-  await registry.invokeResult(request, 'file_read', {}, 'file', 'agent');
+  await store.ingest(source);
+  const llm = { outputTokenLimit: 50000, contextTokenLimit: 200000, async *stream(input) { assert.equal(input.maxOutputTokens, 50000); yield { kind: 'text', payload: { text: 'Inspected sample.' } }; } };
+  const context = { message: request, operationId: 'file', isAdmin: false, source: 'agent', toolName: 'file_store', arguments: {}, resource: null, assertActive: async () => {} };
+  await inspectFile({ store, llm, decoder: { read: async () => ({ text: 'Sample evidence.', images: [] }) } }, context, 'sample.txt', 'text/plain', new Uint8Array(), 'What is in it?');
 });
 
 test('long working context is checkpointed instead of aborting a tool loop', async t => {

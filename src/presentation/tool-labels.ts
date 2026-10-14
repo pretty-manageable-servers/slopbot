@@ -12,7 +12,10 @@ const special: Record<string, { emoji: string; group?: [string, string] }> = {
   web_search: { emoji: "🔎", group: ["web search", "web searches"] },
   history_search: { emoji: "📜", group: ["history search", "history searches"] },
   history_read: { emoji: "📖", group: ["message read", "message reads"] },
-  file_read: { emoji: "📎" },
+  read: { emoji: "📎" },
+  write: { emoji: "📝" },
+  edit: { emoji: "📝" },
+  shell: { emoji: "💻" },
   memory: { emoji: "🧠" },
   memory_remember: { emoji: "🧠" },
   memory_forget: { emoji: "🧠" },
@@ -22,7 +25,7 @@ const special: Record<string, { emoji: string; group?: [string, string] }> = {
   task_status: { emoji: "📋" },
   task_retry: { emoji: "📋" },
   poll_create: { emoji: "📊" },
-  sandbox: { emoji: "💻" },
+  sandbox_manage: { emoji: "💻" },
   run_tools_code: { emoji: "🧩", group: ["code run", "code runs"] },
 };
 export const toolEmoji = (name: string): string => special[name]?.emoji ?? "🛠️";

@@ -5,7 +5,6 @@ import { ChannelType, type Client, type Message as DiscordMessage } from 'discor
 import { DiscordServer } from '../src/adapters/discord.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { loadConfig } from '../src/config.js';
-import { describeError } from '../src/errors.js';
 import { toolProgressFooter } from '../src/source-context.js';
 
 const guild = '1528063444874432734', channel = '1528064977913647236', bot = '1514413259522838528';
@@ -21,20 +20,6 @@ function fixture(fresh: { content: string; url: string; size?: number; author?: 
   const adapter = new DiscordServer(config, store, { async *stream() { generations++; yield { kind: 'text', payload: { text: 'File report.' } }; } }, client as unknown as Client, guild, undefined);
   return { adapter, store, message, target, generations: () => generations };
 }
-
-for (const changed of ['caption', 'attachment']) test(`file source ${changed} change alone stops the stale inspection before generation`, async t => {
-  const oldFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response('safe evidence');
-  const f = fixture({ content: changed === 'caption' ? 'new caption' : 'original caption', url: 'https://cdn.discordapp.com/attachments/a/old.txt', size: changed === 'attachment' ? 24 : 13 });
-  t.after(() => { f.store.close(); globalThis.fetch = oldFetch; });
-  const original = { id: 'source', server: guild, channel, author: 'person', text: 'original caption\n[Attachment sample.txt, type text/plain: https://cdn.discordapp.com/attachments/a/old.txt; content not inspected]', timestamp: 1,
-    attachments: [{ name: 'sample.txt', url: 'https://cdn.discordapp.com/attachments/a/old.txt', size: 13, contentType: 'text/plain' }] };
-  await f.store.ingest(original);
-  const request = { ...original, id: 'request', text: 'Inspect the file', replyTo: 'source', attachments: [] };
-  await f.store.ingest(request);
-  await assert.rejects(f.adapter['tools'].invokeResult(request, 'file_read', {}, 'inspect', 'agent'), error => describeError(error).code === 'CONTEXT_CHANGED');
-  assert.equal(f.generations(), 0);
-});
 
 test('Discord normalization marks its own progress UI transient and keeps human text semantic', t => {
   const f = fixture({ content: '**Working**\n1. `history_read`: running', url: 'https://cdn.discordapp.com/a/file.txt', author: bot });
@@ -88,20 +73,4 @@ for (const id of ['task-seed:source', 'command:reminder:source', 'source']) test
   assert.match(payloads[0]!.content, /-# now: 🔎 "weather"$/);
   assert.ok(!payloads[0]!.content.includes('"query"'));
   assert.equal(Boolean(payloads[0]!.reply), id === 'source');
-});
-
-test('a read tool ignores a changed chat version when its source is unchanged', async t => {
-  const oldFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response('safe evidence');
-  const f = fixture({ content: 'original caption', url: 'https://cdn.discordapp.com/attachments/a/old.txt', size: 13 });
-  t.after(() => { f.store.close(); globalThis.fetch = oldFetch; });
-  const original = { id: 'source', server: guild, channel, author: 'person', text: 'original caption\n[Attachment sample.txt, type text/plain: https://cdn.discordapp.com/attachments/a/old.txt; content not inspected]', timestamp: 1,
-    attachments: [{ name: 'sample.txt', url: 'https://cdn.discordapp.com/attachments/a/old.txt', size: 13, contentType: 'text/plain' }] };
-  await f.store.ingest(original);
-  const request = { ...original, id: 'request', text: 'Inspect the file', replyTo: 'source', attachments: [] };
-  await f.store.ingest(request);
-  // The version does not match the store. Only source changes stop a read, so it must not fail as a context change.
-  // (The read itself can still fail for an unrelated reason, such as the baseline worker exec-argv error.)
-  const outcome = await f.adapter['tools'].invokeResult(request, 'file_read', {}, 'inspect', 'agent', -1).then(() => 'ran', error => describeError(error).code);
-  assert.notEqual(outcome, 'CONTEXT_CHANGED');
 });

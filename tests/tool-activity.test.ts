@@ -126,12 +126,12 @@ test('completed replies support hidden, grouped, and expanded tool activity', ()
   const calls: ToolActivity[] = [
     {id:'1',name:'web_search',status:'completed',durationMs:100,arguments:{query:'weather'}},
     {id:'2',name:'web_search',status:'completed',durationMs:200,arguments:{query:'traffic'}},
-    {id:'3',name:'sandbox',status:'failed',arguments:{command:'ls'},reason:'Unavailable'},
+    {id:'3',name:'shell',status:'failed',arguments:{command:'ls'},reason:'Unavailable'},
   ];
   assert.equal(toolFooter(calls, 'none'), '');
-  assert.equal(toolFooter(calls, 'summary'), '\n\n-# 🔎 2 web searches · 💻 1 sandbox');
+  assert.equal(toolFooter(calls, 'summary'), '\n\n-# 🔎 2 web searches · 💻 1 shell');
   const full = toolFooter(calls, 'full');
-  assert.equal(full, '\n\n-# 🔎 2 web searches · 💻 1 sandbox\n-# ❌ sandbox failed: Unavailable');
+  assert.equal(full, '\n\n-# 🔎 2 web searches · 💻 1 shell\n-# ❌ shell failed: Unavailable');
   assert.ok(!full.includes('weather') && !full.includes('```'));
   assert.equal(toolDisplayMode(undefined), 'summary');
   assert.equal(toolDisplayMode('invalid'), 'summary');
@@ -141,7 +141,7 @@ test('completed replies support hidden, grouped, and expanded tool activity', ()
 
 test('live progress is bounded, escapes the query and never shows JSON or secrets', () => {
   const calls: ToolActivity[] = Array.from({length:10}, (_, i) => ({
-    id:String(i),name:'read',status:'running',reason:'oops '.repeat(200),
+    id:String(i),name:'custom_tool',status:'running',reason:'oops '.repeat(200),
     arguments:{query:'``` <@123> '.repeat(200), api_key:'private-value', nested:{password:'private-value'}},
   }));
   const progress = toolProgress(calls, 'Blooming…');
@@ -160,7 +160,7 @@ test('the now line uses the tool emoji and a clipped, escaped query', () => {
 });
 
 test('20 calls of 5 tool types stay under the Discord limit', () => {
-  const names = ['web_search', 'history_search', 'history_read', 'file_read', 'index'];
+  const names = ['web_search', 'history_search', 'history_read', 'read', 'index'];
   const calls: ToolActivity[] = Array.from({length:20}, (_, i) => ({
     id:String(i),name:names[i % 5]!,status:i % 3 === 0 ? 'failed' : 'completed',reason:'x'.repeat(300),arguments:{query:'q'.repeat(200)},
   }));

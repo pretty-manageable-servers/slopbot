@@ -5,6 +5,7 @@ import { transcriptSwitchOn } from "./server-tools.js";
 import type { MemberDirectory, MemberProfile } from "./member-directory.js";
 import { imageAttachments } from "./web-chat-images.js";
 import { fileAttachments, parseFileUrl, type ChatFileView } from "./web-chat-files.js";
+import { LEGACY_FILE_NOTE } from "./source-context.js";
 
 /** Kinds of events a web transcript stream sends. */
 export type ConversationKind = "message" | "run.start" | "run.delta" | "run.tool" | "run.end";
@@ -95,22 +96,25 @@ export function showsProfile(message: Message, slopbot: string | undefined): boo
 }
 
 /** The label line that send() adds for each file. The model reads it from the saved text. The client view removes it. */
-export function fileLabel(name: string, contentType: string, url: string): string {
-  return `[Attachment ${name}, type ${contentType}: ${url}; content not inspected; read with file_read, or if file_read cannot read this type, use sandbox import_attachment]`;
+export function fileLabel(name: string, contentType: string, url: string, legacy = false): string {
+  return `[Attachment ${name}, type ${contentType}: ${url}; content not inspected${legacy ? LEGACY_FILE_NOTE : ''}]`;
 }
 
 /** The saved text without the file label lines that send() added. authoredSourceText misses a message with images and files, so the file labels are matched here. */
 export function withoutFileLabels(message: Message): Message {
   const files = (message.attachments ?? []).filter(item => parseFileUrl(item.url));
   if (!files.length) return message;
-  const labels = files.map(item => fileLabel(item.name, item.contentType ?? "application/octet-stream", item.url)).join("\n");
-  if (message.text === labels) return { ...message, text: "" };
-  if (message.text.endsWith("\n" + labels)) return { ...message, text: message.text.slice(0, -labels.length - 1) };
+  // Saved messages from before the file_read removal have the old label ending, so both endings are removed.
+  for (const legacy of [false, true]) {
+    const labels = files.map(item => fileLabel(item.name, item.contentType ?? "application/octet-stream", item.url, legacy)).join("\n");
+    if (message.text === labels) return { ...message, text: "" };
+    if (message.text.endsWith("\n" + labels)) return { ...message, text: message.text.slice(0, -labels.length - 1) };
+  }
   return message;
 }
 
 /** The same label removal for text alone, for a copied share. Only the fixed label wording is matched, so no attachment is needed. */
-const FILE_LABEL_LINE = /^\[Attachment .*, type .*: web-file:\S*; content not inspected; read with file_read, or if file_read cannot read this type, use sandbox import_attachment\]$/;
+const FILE_LABEL_LINE = /^\[Attachment .*, type .*: web-file:\S*; content not inspected(?:; read with file_read, or if file_read cannot read this type, use sandbox import_attachment)?\]$/;
 export function withoutFileLabelText(text: string): string {
   return text.split("\n").filter(line => !FILE_LABEL_LINE.test(line)).join("\n");
 }
