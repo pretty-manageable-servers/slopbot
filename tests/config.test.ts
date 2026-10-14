@@ -67,3 +67,7 @@ test("servers: empty allowlist allows all, initial channels need their server", 
   assert.throws(() => loadConfig({ ...base, DISCORD_CHANNEL_IDS: "12345678901234568" }), /DISCORD_GUILD_ID/);
   assert.throws(() => loadConfig({ ...base, DISCORD_GUILD_IDS: "my-server" }), /numeric IDs/);
 });
+
+test("VOICE_INSTRUCTIONS over 1000 characters fails startup", () => {
+  assert.throws(() => loadConfig({ ...env, VOICE_INSTRUCTIONS: "a".repeat(1001) }), /VOICE_INSTRUCTIONS/);
+});
