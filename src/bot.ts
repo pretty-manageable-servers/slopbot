@@ -64,8 +64,15 @@ export class Bot {
   }
 
   /** Lets the bot answer in the text chat of a voice channel while a voice session is live there. */
-  openVoiceChannel(server: string, channel: string): void { if (server === this.server) this.voiceChannels.add(channel); }
-  closeVoiceChannel(channel: string): void { this.voiceChannels.delete(channel); }
+  openVoiceChannel(server: string, channel: string): void {
+    if (server !== this.server) return;
+    this.voiceChannels.add(channel);
+    this.app.allowChannel(server, channel);
+  }
+  closeVoiceChannel(channel: string): void {
+    this.voiceChannels.delete(channel);
+    if (!this.channels.includes(channel)) this.app.disallowChannel(this.server, channel);
+  }
 
   /** Lets the bot answer in a private chat. Its messages are always addressed to the bot. */
   openPrivateChat(server: string, channel: string): void {
