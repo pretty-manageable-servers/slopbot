@@ -164,9 +164,32 @@ test('shell returns a timeout result instead of an error when the run times out'
   assert.equal(await f.invoke('shell', { command: 'sleep 99', timeout_seconds: 7 }, 's1'), 'Exit code: 124 (timed out after 7 s). The command may still run in the sandbox.');
 });
 
+test('an unfinished shell call stops blocking shell after the sandbox lifetime', async t => {
+  const f = setup(); t.after(() => f.store.close());
+  const start = Date.UTC(2026, 9, 13, 10, 0, 0);
+  let now = start;
+  t.mock.method(Date, 'now', () => now);
+  await f.invoke('write', { path: 'a.txt', content: 'x' }, 'w0');
+  const session = f.sessions.get('workspace-1')!;
+  let failNext = true;
+  session.run = async () => {
+    if (failNext) { failNext = false; throw new Error('connection lost'); }
+    return { stdout: 'ok', stderr: '', exitCode: 0 };
+  };
+  await assert.rejects(f.invoke('shell', { command: 'ok' }, 's1'), UncertainActionError);
+  now = start + 60000;
+  await assert.rejects(f.invoke('shell', { command: 'ok' }, 's2'), /did not finish/);
+  now = start + 600001;
+  // The lease has ended too, so the sandbox is replaced and the shell call runs.
+  assert.match(await f.invoke('shell', { command: 'ok' }, 's3'), /^New sandbox started; earlier files are gone\.\nExit code: 0/);
+});
+
 test('the file tools are top-level, member-only and inline', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const tools = sandboxFileTools(store);
+  assert.deepEqual(tools.map(tool => [tool.name, tool.retrySafe, tool.staleAfterMs]), [
+    ['read', true, undefined], ['write', true, undefined], ['edit', true, undefined], ['shell', false, 600000],
+  ]);
   assert.deepEqual(tools.map(tool => tool.name), ['read', 'write', 'edit', 'shell']);
   for (const tool of tools) {
     assert.equal(tool.surface, 'top');

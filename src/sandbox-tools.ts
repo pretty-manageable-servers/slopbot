@@ -2,7 +2,7 @@ import type { Message } from './domain.js';
 import type { RecordStore } from './records.js';
 import { requestTimings } from './request-timing.js';
 import type { SandboxProvider, SandboxSession } from './sandbox.js';
-import { SANDBOX_HOME, sandboxSession } from './sandbox-session.js';
+import { SANDBOX_HOME, SANDBOX_LIFETIME_MS, sandboxSession } from './sandbox-session.js';
 import { ToolError, UncertainActionError, type ToolArgs, type ToolContext, type ToolDefinition } from './tools.js';
 
 const readCharacters = 16000;
@@ -58,7 +58,7 @@ function readTool(store: RecordStore, provider?: SandboxProvider): ToolDefinitio
       offset: { type: 'integer', min: 1, description: 'First line to return, counted from 1. Default 1.' },
       limit: { type: 'integer', min: 1, max: readLineLimit, description: `Number of lines to return, at most ${readLineLimit}. Default ${readLineLimit}.` },
     },
-    access: 'member', effect: 'read', execution: 'inline', retrySafe: false,
+    access: 'member', effect: 'read', execution: 'inline', retrySafe: true,
     resource: sandboxResource,
     validate(args) { checkPath(args); return args; },
     async execute(context, args) {
@@ -94,7 +94,7 @@ function writeTool(store: RecordStore, provider?: SandboxProvider): ToolDefiniti
       path: { type: 'string', required: true, max: pathCharacters, description: 'File path. Absolute, or relative to /home/user.' },
       content: { type: 'string', required: true, max: writeCharacters, description: 'Full UTF-8 text of the file.' },
     },
-    access: 'member', effect: 'write', execution: 'inline', retrySafe: false,
+    access: 'member', effect: 'write', execution: 'inline', retrySafe: true,
     resource: sandboxResource,
     validate(args) {
       checkPath(args);
@@ -124,7 +124,7 @@ function editTool(store: RecordStore, provider?: SandboxProvider): ToolDefinitio
       new_string: { type: 'string', required: true, description: 'Text that replaces old_string. May be empty.' },
       replace_all: { type: 'boolean', description: 'Replace every occurrence of old_string. Default false.' },
     },
-    access: 'member', effect: 'write', execution: 'inline', retrySafe: false,
+    access: 'member', effect: 'write', execution: 'inline', retrySafe: true,
     resource: sandboxResource,
     validate(args) {
       checkPath(args);
@@ -158,6 +158,8 @@ function shellTool(store: RecordStore, provider?: SandboxProvider): ToolDefiniti
       timeout_seconds: { type: 'integer', min: 1, max: 120, description: 'Time limit in seconds. Default 30.' },
     },
     access: 'member', effect: 'write', execution: 'inline', retrySafe: false,
+    // A lost shell result is an orphan that expires on its own with the sandbox, so it must not block later shell calls forever.
+    staleAfterMs: SANDBOX_LIFETIME_MS,
     resource: sandboxResource,
     validate(args) {
       if (typeof args.command !== 'string' || !args.command.trim() || args.command.length > commandCharacters) throw new ToolError(`command must be text of 1-${commandCharacters} characters.`);
