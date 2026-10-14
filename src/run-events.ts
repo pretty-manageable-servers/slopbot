@@ -4,6 +4,7 @@ import type { ToolActivity } from "./tool-activity.js";
 import { transcriptSwitchOn } from "./server-tools.js";
 import type { MemberDirectory, MemberProfile } from "./member-directory.js";
 import { imageAttachments } from "./web-chat-images.js";
+import { fileAttachments, type ChatFileView } from "./web-chat-files.js";
 
 /** Kinds of events a web transcript stream sends. */
 export type ConversationKind = "message" | "run.start" | "run.delta" | "run.tool" | "run.end";
@@ -76,6 +77,8 @@ export interface TranscriptMessage {
   runIds: string[];
   /** Web chat images as saved placeholders. The page loads the bytes from the chat's image route. */
   images?: { imageId: string; name: string; contentType: string; size: number }[];
+  /** Web chat files as saved placeholders. The page shows a chip. The bytes come from the chat's file route. */
+  files?: ChatFileView[];
   /** True for Slopbot's own messages, and for a person's message that a reply run used. Live messages start false. */
   used: boolean;
 }
@@ -110,6 +113,7 @@ export function transcriptMessage(message: Message, slopbot: string | undefined,
     slopbot: isSlopbot,
     runIds: isSlopbot ? [...runIds] : [],
     ...(imageAttachments(message.attachments).length ? { images: imageAttachments(message.attachments) } : {}),
+    ...(fileAttachments(message.attachments).length ? { files: fileAttachments(message.attachments) } : {}),
     used: isSlopbot || used,
   };
 }

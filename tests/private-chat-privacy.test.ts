@@ -13,7 +13,9 @@ import { HistoryImporter } from "../src/history.js";
 import { privateChannel } from "../src/private-chat.js";
 import type { ParticipationGate } from "../src/participation.js";
 import { registerReportTools } from "../src/search/reports.js";
-import { ShareError, ShareService } from "../src/shares.js";
+import { ShareError, ShareService, buildMessages } from "../src/shares.js";
+import { transcriptMessage } from "../src/run-events.js";
+import { fileUrl } from "../src/web-chat-files.js";
 import { ChatError, WebChatService, type ChatHost } from "../src/web-chats.js";
 import { ToolRegistry } from "../src/tools.js";
 import { visibleConversations, type TranscriptHost } from "../src/web-transcripts.js";
@@ -238,6 +240,21 @@ test("a private chat never gets a JEV participation decision", async t => {
   await bot.receive(incoming);
   assert.equal(decided, 0, "the participation gate must not see a private chat");
   assert.equal(outputs.length, 1, "the private chat is still answered");
+});
+
+test("message view has files", () => {
+  const fileId = "0123456789abcdef0123456789abcdef.txt";
+  const message = { ...webMessage("web-file-msg", "see the notes"), attachments: [{ name: "notes.txt", url: fileUrl(server, "0123456789abcdef0123456789abcdef", fileId), contentType: "text/plain", size: 12 }] } as Message;
+  assert.deepEqual(transcriptMessage(message, undefined).files, [{ fileId, name: "notes.txt", contentType: "text/plain", size: 12 }]);
+  assert.equal("files" in transcriptMessage(webMessage("web-plain"), undefined), false, "a message without files has no files key");
+});
+
+test("share shows file names without file ids", () => {
+  const fileId = "fedcba9876543210fedcba9876543210.pdf";
+  const message = { ...webMessage("web-file-msg", "here is the report"), attachments: [{ name: "report.pdf", url: fileUrl(server, "0123456789abcdef0123456789abcdef", fileId), contentType: "application/pdf", size: 2048 }] } as Message;
+  const [item] = buildMessages([message], [], { show_thinking: false });
+  assert.deepEqual(item?.files, [{ name: "report.pdf", size: 2048 }], "the share keeps the name and size");
+  assert.ok(!JSON.stringify(item).includes(fileId), "the share never holds the file ID");
 });
 
 test("Postgres queries keep private chats out of the channel list, author lookup and memory index", () => {

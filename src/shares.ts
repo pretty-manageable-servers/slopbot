@@ -3,6 +3,7 @@ import type { Json, Message } from "./domain.js";
 import { webTranscriptsEnabled } from "./server-tools.js";
 import { PRIVATE_CHANNEL_PREFIX, isPrivateChannel, privateChannel } from "./private-chat.js";
 import { CHAT_IMAGE_ID, CHAT_IMAGE_MAX_BYTES, chatImageContentType, chatImageKey, imageAttachments } from "./web-chat-images.js";
+import { fileAttachments } from "./web-chat-files.js";
 import type { ObjectStorageProvider } from "./object-storage.js";
 
 /** One share link. The body is a frozen snapshot, stored as JSON text. */
@@ -33,6 +34,8 @@ export interface ShareMessage {
   author: string; bot: boolean; at?: number; text: string; attachments: number;
   /** Web chat images in this frozen copy. Only these IDs are served on the share's image route. */
   images?: { imageId: string; name: string }[];
+  /** Web chat files in this frozen copy: names and sizes only. Shares never serve file bytes. */
+  files?: { name: string; size: number }[];
   tools: ShareToolLine[]; thinking?: string;
 }
 /** Chat shares do not show thinking or avatars. Owners share the answer text and tool labels. */
@@ -137,6 +140,7 @@ export function buildMessages(messages: readonly Message[], events: readonly { r
       text: scrubText(message.text),
       attachments: message.attachments?.length ?? 0,
       ...(imageAttachments(message.attachments).length ? { images: imageAttachments(message.attachments).map(({ imageId, name }) => ({ imageId, name: scrubText(name) })) } : {}),
+      ...(fileAttachments(message.attachments).length ? { files: fileAttachments(message.attachments).map(({ name, size }) => ({ name: scrubText(name), size })) } : {}),
       tools: [],
     };
     const request = message.isBot ? message.replyTo : undefined;
