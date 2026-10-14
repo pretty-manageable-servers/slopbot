@@ -69,7 +69,7 @@ test('interaction evidence resolves a reply and retains execution version withou
   assert.match(result.text, /DECODE_FAILED/); assert.match(result.text, new RegExp(sha));
   assert.match(result.text, /prefixVersion/); assert.ok(!result.text.includes('private conversation')); assert.ok(!result.text.includes('secret system prompt'));
   assert.ok(!result.text.includes('github_pat_')); assert.equal(result.sources?.length, 2);
-  assert.ok(f.registry.definitions().find(d => d.name === 'interaction_inspect')?.programmatic);
+  assert.equal(f.registry.definitions().find(d => d.name === 'interaction_inspect')?.programmatic, undefined);
   f.denied.add('source');
   await assert.rejects(f.invoke('interaction_inspect', {}, 'inspect', { ...report, replyTo: output.id }), /denied/);
 });

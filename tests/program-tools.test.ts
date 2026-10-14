@@ -6,7 +6,6 @@ import { programTool } from '../src/program-tools.js';
 import { ToolError, ToolRegistry, type ToolDefinition, type ToolExecutor, type ToolResult } from '../src/tools.js';
 import { McpManager, mcpSchemaHash, mcpToolName, type McpTool } from '../src/mcp.js';
 import { registerWebSearch } from '../src/web-search.js';
-import type { Json } from '../src/domain.js';
 import type { LLM } from '../src/ports.js';
 
 const request = { server: 's', channel: 'c', taskId: 'c', id: 'm', author: 'alice', text: 'Compare the results.' };
@@ -25,33 +24,22 @@ test('private chats hide Discord-scoped tools and programs cannot bypass write r
   const catalog = JSON.parse(selected.catalog(message)) as { name: string; programmatic: boolean }[];
   assert.equal(catalog.find(tool => tool.name === 'read')?.programmatic, true);
   assert.equal(catalog.some(tool => tool.name === 'mixed'), false);
-  assert.match(selected.schemas(message).find(tool => tool.function.name === 'read')!.function.description, /program_exec/);
+  assert.equal(selected.schemas(message).some(tool => tool.function.name === 'read'), false);
   await assert.rejects(registry.invokeResult(message, 'mixed', { action: 'write' }, 'private-direct', 'agent'), /only available in Discord/);
   await assert.rejects(registry.invokeResult(message, 'program_exec', { tools: ['mixed'], code: 'await tools.mixed({action:"write"});' }, 'private-program', 'agent'), /cannot execute writes/);
   assert.equal(writes, 0);
 });
 
-test('a program composes native search with two MCP servers and preserves evidence and child journals', async t => {
+test('program_exec refuses MCP and web tools, which are no longer programmatic', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const registry = new ToolRegistry(store, async () => true);
   const remote: McpTool = { name: 'list_issues', inputSchema: { type: 'object', additionalProperties: false }, outputSchema: { type: 'object', properties: { count: { type: 'integer' } }, required: ['count'] } };
-  const manager = new McpManager('s', store, registry, async config => ({ listTools: async () => [remote], callTool: async () => ({ content: [], structuredContent: { count: config.id === 'github' ? 2 : 5 } }), close: async () => {} }));
+  const manager = new McpManager('s', store, registry, async () => ({ listTools: async () => [remote], callTool: async () => ({ content: [], structuredContent: { count: 2 } }), close: async () => {} }));
   t.after(() => manager.close());
-  for (const id of ['github', 'tickets']) await manager.configure('admin', { action: 'save', id, url: `https://${id}.example/mcp`, transport: 'http', enabled: true, tools: [{ name: remote.name, schemaHash: mcpSchemaHash(remote), effect: 'read', access: 'member' }] });
+  await manager.configure('admin', { action: 'save', id: 'github', url: 'https://github.example/mcp', transport: 'http', enabled: true, tools: [{ name: remote.name, schemaHash: mcpSchemaHash(remote), effect: 'read', access: 'member' }] });
   registerWebSearch(registry, { search: async () => [{ title: 'Reference', url: 'https://example.com/reference', snippet: 'Documentation' }] });
   registry.register(programTool(registry));
-  const names = [mcpToolName('github', remote.name), mcpToolName('tickets', remote.name), 'web_search'];
-  const activity: string[] = [];
-  const result = await registry.invokeResult(request, 'program_exec', { tools: names, code: `
-    const [a,b,search]=await Promise.all([tools.${names[0]}({}),tools.${names[1]}({}),tools.web_search({query:"reference"})]);
-    text({total:a.count+b.count, reference:search.results[0].url});
-  ` }, 'program', 'agent', undefined, { onActivity: async event => { activity.push(`${event.name}:${event.status}`); } });
-  assert.deepEqual((result.data as { outputs: Json[] }).outputs, [{ total: 7, reference: 'https://example.com/reference' }]);
-  assert.ok(result.sources?.some(source => source.kind === 'web' && source.url === 'https://example.com/reference'));
-  const childCalls = (result.data as { childCalls: { operationId: string; status: string }[] }).childCalls;
-  assert.equal(childCalls.length, 3);
-  for (const call of childCalls) { assert.equal(call.status, 'completed'); assert.equal((await store.operation(call.operationId))?.status, 'done'); }
-  assert.equal(activity.filter(value => value.endsWith(':completed')).length, 3);
+  await assert.rejects(registry.invokeResult(request, 'program_exec', { tools: [mcpToolName('github', remote.name), 'web_search'], code: 'text(1);' }, 'program', 'agent'), /not available to programs/);
 });
 
 test('programs cannot invoke writes, recursive programs, direct-only tools, or tools outside their allowlist', async t => {
@@ -107,7 +95,7 @@ test('interrupting an agent program terminates its worker and stops subsequent r
   const ready = new Promise<void>(resolve => { started = resolve; }), finish = new Promise<void>(resolve => { complete = resolve; });
   registry.register(readTool('read', async () => { calls++; started(); await finish; return { text: 'read', data: {} }; }));
   registry.register(programTool(registry));
-  const llm: LLM = { async *stream() { yield { kind: 'text', payload: { text: JSON.stringify({ tool_calls: [{ name: 'program_exec', arguments: { tools: ['read'], code: 'await tools.read({});await tools.read({});text("done");' } }] }) } }; } };
+  const llm: LLM = { async *stream() { yield { kind: 'tool_call', payload: [{ name: 'program_exec', arguments: { tools: ['read'], code: 'await tools.read({});await tools.read({});text("done");' } }] }; } };
   const app = new Application(store, llm, { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, { tools: { catalog: () => registry.catalog(), execute: (message, call, id, version, invocation) => registry.invokeResult(message, call.name, call.arguments, id, 'agent', version, invocation) } });
   const handle = app.handle(request), interrupted = assert.rejects(handle, /interrupted/);
   await ready; assert.equal(await app.interrupt('s', request.id), true); await interrupted;
@@ -137,7 +125,7 @@ test('the agent loop receives reduced output and child evidence, not intermediat
   registry.register(programTool(registry));
   let rounds = 0;
   const llm: LLM = { async *stream(prompt) {
-    if (++rounds === 1) yield { kind: 'text', payload: { text: JSON.stringify({ tool_calls: [{ name: 'program_exec', arguments: { tools: ['read'], code: 'const r=await tools.read({});text({sum:r.values.reduce((a,b)=>a+b,0)});' } }] }) } };
+    if (++rounds === 1) yield { kind: 'tool_call', payload: [{ name: 'program_exec', arguments: { tools: ['read'], code: 'const r=await tools.read({});text({sum:r.values.reduce((a,b)=>a+b,0)});' } }] };
     else {
       const trace = JSON.stringify(prompt.inputs);
       assert.ok(trace.includes('sum')); assert.ok(!trace.includes('RAWRAW'));

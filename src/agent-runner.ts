@@ -20,7 +20,7 @@ import { attribution, streamMetered, type UsageMeter } from "./usage-meter.js";
 import { GLOBAL_SETTINGS_SCOPE } from "./usage-cost.js";
 import { ByteTokenCounter, DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, type TokenCounter } from "./context.js";
 import { type ProfileStore } from "./profiles.js";
-import { displayToolResult, toolResult, toolFailed, parseToolCalls, toolInstructions, nativeToolInstructions, ToolError, stableOperationId, type ToolExecutor, type ToolCall } from "./tools.js";
+import { displayToolResult, toolResult, toolFailed, parseToolCalls, nativeToolInstructions, ToolError, stableOperationId, type ToolExecutor, type ToolCall } from "./tools.js";
 
 /** The system prompt used when no team prompt is saved and the policy gives none. */
 /** The base text plus the presentation rules. Runs and the admin view both build the system text here. */
@@ -232,7 +232,7 @@ export class AgentRunner {
     const modelTools = tools?.schemas?.(message);
     const native = modelTools !== undefined;
     const base = this.systemPrefix();
-    const prefix = tools ? base.map(item => ({ ...item, content: item.content + "\n" + (native ? nativeToolInstructions : toolInstructions + tools.catalog(message)) })) : base;
+    const prefix = tools ? base.map(item => ({ ...item, content: item.content + "\n" + nativeToolInstructions })) : base;
     const schemaBudget = modelTools ? this.counter.count([{ role: "system", content: JSON.stringify(modelTools) }]) : 0;
     const inputLimit = this.inputLimit - schemaBudget;
     const built = await requestTimings.measure(message, "context", () => this.contextBuilder.build(message, taskKey, this.recentMessages, (message, key, limit) => this.boundedHistory(message, key, limit), prefix, tools, schemaBudget));
@@ -366,7 +366,7 @@ export class AgentRunner {
       try {
         if (sourceVersion !== await this.store.contextVersion(message.server, message.channel) || !this.accepts(message)) throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel), { expectedVersion: sourceVersion, actualVersion: await this.store.contextVersion(message.server, message.channel) });
         let calls;
-        try { calls = fixedAnswer === undefined ? generatedCalls ?? (fixedText !== undefined || !native ? parseToolCalls(text) : undefined) : undefined; }
+        try { calls = fixedAnswer === undefined ? generatedCalls ?? (fixedText !== undefined ? parseToolCalls(text) : undefined) : undefined; }
         catch (error) {
           if (!(error instanceof ToolError) || !this.services.tools || protocolRepairs++ >= 2 || round === maxRounds) throw error;
           await this.store.fail(runId, "InvalidToolProtocol");
