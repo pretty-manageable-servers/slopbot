@@ -120,6 +120,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (accessId || accessSecret) {
     if (!accessId || !accessSecret || !env.SEARXNG_URL || new URL(env.SEARXNG_URL).protocol !== "https:") throw new Error("Protected search requires HTTPS SEARXNG_URL and both SEARXNG_ACCESS_CLIENT_ID and SEARXNG_ACCESS_CLIENT_SECRET");
   }
+  if ([...(env.VOICE_INSTRUCTIONS?.trim() ?? '')].length > 1000) throw new Error('VOICE_INSTRUCTIONS must be at most 1000 characters');
   return {
     ...(enabled('VOICE_ENABLED', true) ? { voice: { voice: env.VOICE_NAME?.trim() || 'alloy', ...(env.VOICE_INSTRUCTIONS?.trim() ? { instructions: env.VOICE_INSTRUCTIONS.trim() } : {}) } } : {}),
     ...(operations ? { operations } : {}),
