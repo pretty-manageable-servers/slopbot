@@ -87,7 +87,9 @@ const SESSION_AGE = SESSION_MS / 1000;
 const SESSION_SWEEP_MS = 3_600_000;
 /** The database stores only this hash of the cookie value. */
 const sessionHash = (id: string) => createHash('sha256').update(id).digest('hex');
-const allowed = new Set(['calibration', 'monitoring', 'context', 'cooldown', 'channels', 'index', 'profile', 'timing', 'tool_display', 'default_effort']);
+const allowed = new Set(['calibration', 'monitoring', 'context', 'cooldown', 'channels', 'index', 'profile', 'timing', 'tool_display', 'default_effort', 'voice']);
+/** The web may only read and set the voice style. Join, leave and propose need Discord. */
+const webVoiceActions = new Set(['status', 'style']);
 /** Team admin routes. Every one needs team membership; POST also needs an editing role, except the web key add and delete routes. */
 async function adminRoute(admin: ConsoleAdmin, user: string, method: string, path: string, query: URLSearchParams, body: unknown): Promise<unknown> {
   const role = await admin.role(user);
@@ -376,6 +378,7 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
           return send(res, 200, await backend.setTranscript(session.user, server, channel, enabled));
         }
         if (!input || typeof input.channel !== 'string' || typeof input.name !== 'string' || !allowed.has(input.name)) return send(res, 400, { error: 'Unsupported setting.' });
+        if (input.name === 'voice' && !webVoiceActions.has(String((input.args as { action?: unknown } | undefined)?.action))) return send(res, 400, { error: 'Unsupported setting.' });
         if (input.name === 'profile' && !['set', 'remove', 'lock'].includes(String(input.args?.action))) return send(res, 400, { error: 'Unsupported profile action.' });
         return send(res, 200, await backend.invoke(session.user, input.server, input.channel, input.name, input.args || {}));
       }
