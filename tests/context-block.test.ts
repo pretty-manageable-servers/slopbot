@@ -52,8 +52,26 @@ test("one context item", async () => {
 test("profiles keep user id", async () => {
   const built = await builder().build(message(), undefined, 0, async () => []);
   const content = built.inputs.find(item => item.contextOnly)!.content;
-  assert.ok(content.includes('- Alice Smith (user_id alice) discord={"discord_handle":"alice"}; github=alice-gh\n'));
+  assert.ok(content.includes('- Alice Smith (user_id alice) [requester] discord={"discord_handle":"alice"}; github=alice-gh\n'));
   assert.ok(content.includes("- Bob (user_id bob) discord="));
+});
+
+test("requester marked in people", async () => {
+  const built = await builder().build(message(), undefined, 0, async () => []);
+  const people = built.inputs.find(item => item.contextOnly)!.content.split("\n").filter(row => row.startsWith("- ") && row.includes("(user_id "));
+  assert.equal(people.filter(row => row.includes("[requester]")).length, 1);
+  assert.ok(people.some(row => row.startsWith("- Alice Smith (user_id alice) [requester]")));
+  assert.ok(people.some(row => row.startsWith("- Bob (user_id bob) discord=") && !row.includes("[requester]")));
+});
+
+test("request context has no raw ids", async () => {
+  const built = await builder().build(message(), undefined, 0, async () => []);
+  const content = built.inputs.find(item => item.contextOnly)!.content;
+  const request = content.slice(0, content.indexOf("\n\n"));
+  assert.ok(request.startsWith("Request context:\n"));
+  assert.ok(!/server_id|channel_id|requester_id/.test(request));
+  assert.ok(!/\d{17,20}/.test(request));
+  assert.ok(request.split("\n").includes("is_task: false"));
 });
 
 test("evidence keeps source ids", async () => {
@@ -72,10 +90,10 @@ test("voice rule kept", async () => {
 });
 
 test("block skips empty request fields and omits empty sections", () => {
-  const block = contextBlock({ request: { server_id: "s", is_task: false, task_id: null, requester_id: "alice" }, people: [], evidence: [] });
+  const block = contextBlock({ request: { is_task: false, task_id: null, private_chat_rule: "" }, people: [], evidence: [] });
   assert.equal(block.role, "user");
   assert.equal(block.contextOnly, true);
-  assert.equal(block.content, "Request context:\nserver_id: s\nis_task: false\nrequester_id: alice");
+  assert.equal(block.content, "Request context:\nis_task: false");
 });
 
 test("is_task false is shown", () => {
