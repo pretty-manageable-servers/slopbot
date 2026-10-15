@@ -46,9 +46,9 @@ jobs:
 
       - name: Run opencode
         # Pinned to github-v1.2.19 — update after reviewing the release diff.
-        uses: anomalyco/opencode/github@77fc88c8ade8e5a620ebbe1197f3a572d29ae91a
+        uses: anomalyco/opencode/github@733b2c627e5aec39cb33cc22373bdce33053ef2c # v1.19.0
         with:
-          model: opencode/mimo-v2.6-flash-free
+          model: opencode/deepseek-v4.1-flash-free
           variant: high
         env:
           OPENCODE_CONFIG_CONTENT: |
