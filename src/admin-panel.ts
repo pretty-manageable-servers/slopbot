@@ -1,6 +1,8 @@
 import { BOT_REPLY_LIMIT_KEY, DEFAULT_BOT_REPLY_LIMIT, MAX_BOT_REPLIES, MAX_BOT_REPLY_MINUTES, botReplyLimit, type BotReplyLimit } from "./bot-reply-limit.js";
 import type { Config } from "./config.js";
 import type { Json } from "./domain.js";
+import { scheduleLimits } from "./schedules/schedule-time.js";
+import { DEFAULT_SCHEDULE_LIMITS, MAX_MIN_MINUTES, MAX_SCHEDULE_LIMIT, SCHEDULE_LIMITS_KEY, type ScheduleLimits } from "./schedules/schedule-types.js";
 import type { KnownUserRow, Store, TokenSums, UserTokenTotalRow } from "./ports.js";
 import { limitOverride, savedLimit, USER_LIMIT_OVERRIDES_SETTING, USER_LIMIT_SCOPE, type UserLimiter, type UserLimitOverride, type UserUsageWindow } from "./user-limiter.js";
 import { activePrices, GLOBAL_SETTINGS_SCOPE, type ModelPrice } from "./usage-cost.js";
@@ -228,6 +230,39 @@ export class AdminPanel {
     if (minutes < 1) throw new AdminInputError(`Minutes must be a whole number from 1 to ${MAX_BOT_REPLY_MINUTES}.`);
     await this.store.setSetting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY, { replies, minutes });
     return this.botReplies();
+  }
+
+  /** Scheduled tasks: caps per server and per user, and the shortest interval for each run kind, for all servers. */
+  scheduleLimits(): ScheduleLimits & { default: ScheduleLimits } {
+    return { ...scheduleLimits(this.store.setting(GLOBAL_SETTINGS_SCOPE, SCHEDULE_LIMITS_KEY) as Json | undefined), default: DEFAULT_SCHEDULE_LIMITS };
+  }
+
+  async saveScheduleLimits(body: unknown): Promise<ScheduleLimits & { default: ScheduleLimits }> {
+    const input = object(body, "Send the limits as an object.");
+    const cap = (value: unknown, label: string) => {
+      const message = `${label} must be a whole number from 1 to ${MAX_SCHEDULE_LIMIT}.`;
+      const count = wholeNumber(value, MAX_SCHEDULE_LIMIT, message);
+      if (count < 1) throw new AdminInputError(message);
+      return count;
+    };
+    const minute = (value: unknown, label: string) => {
+      const message = `${label} must be a whole number from 1 to ${MAX_MIN_MINUTES}.`;
+      const minutes = wholeNumber(value, MAX_MIN_MINUTES, message);
+      if (minutes < 1) throw new AdminInputError(message);
+      return minutes;
+    };
+    const minutes = object(input.minMinutes, "Send the minimum minutes as an object.");
+    const limits = {
+      perServer: cap(input.perServer, "Per server"),
+      perUser: cap(input.perUser, "Per user"),
+      minMinutes: {
+        message: minute(minutes.message, "Minimum minutes for message"),
+        prompt: minute(minutes.prompt, "Minimum minutes for prompt"),
+        tool: minute(minutes.tool, "Minimum minutes for tool"),
+      },
+    };
+    await this.store.setSetting(GLOBAL_SETTINGS_SCOPE, SCHEDULE_LIMITS_KEY, limits);
+    return this.scheduleLimits();
   }
 
   /** The saved system prompt for all servers, or null when the default is used. */

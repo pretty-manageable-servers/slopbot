@@ -547,6 +547,11 @@ function priceCardKey(event) {
 function adminBotReplies(limit, off) {
   return `<form class="card" id="admin-bot-replies"><h2>Replies to other bots</h2><p class="scope">For all servers, counted for each channel. Default: ${limit.default.replies} in ${limit.default.minutes} minutes. Zero replies stops all replies to bots.</p><div class="row">${input('Replies','replies',limit.replies,1000)}${input('Minutes','minutes',limit.minutes,1440,1)}</div><button class="primary" id="admin-bot-replies-save"${off}>Save limit</button></form>`;
 }
+// Scheduled tasks: caps per server and per user, and the shortest interval for each run kind. Zero is not allowed.
+function adminScheduleLimits(limit, off) {
+  const d = limit.default, m = limit.minMinutes, dm = d.minMinutes;
+  return `<form class="card" id="admin-schedule-limits"><h2>Scheduled tasks</h2><p class="scope">For all servers. Default: ${d.perServer} per server, ${d.perUser} per user. Minimum minutes: message ${dm.message}, prompt ${dm.prompt}, tool ${dm.tool}.</p><div class="row">${input('Per server','perServer',limit.perServer,1000,1)}${input('Per user','perUser',limit.perUser,1000,1)}</div><div class="row">${input('Min minutes: message','minMessage',m.message,10080,1)}${input('Min minutes: prompt','minPrompt',m.prompt,10080,1)}${input('Min minutes: tool','minTool',m.tool,10080,1)}</div><button class="primary" id="admin-schedule-limits-save"${off}>Save limits</button></form>`;
+}
 function adminSystemPrompt(prompt, full, off) {
   // The field shows the saved text, or the default when nothing is saved.
   const text = prompt.text ?? prompt.default;
@@ -864,17 +869,18 @@ async function renderBotAdmin() {
   $('description').textContent = 'Usage, model prices, web search keys and the system prompt for all servers. Read-only members can view everything and add their own web search keys.';
   $('content').replaceChildren(busy('md', 'Loading…'));
   try {
-    const [totals, prices, webKeys, systemPrompt, full, botReplies] = await Promise.all([
+    const [totals, prices, webKeys, systemPrompt, full, botReplies, scheduleLimits] = await Promise.all([
       request('/api/admin/usage/total'),
       request('/api/admin/prices'),
       request('/api/admin/web-keys'),
       request('/api/admin/system-prompt'),
       request('/api/admin/system-prompt/full'),
       request('/api/admin/bot-replies'),
+      request('/api/admin/schedule-limits'),
     ]);
     if (tab !== 'bot') return;
     priceState = { prices, edit, editing: '' };
-    $('content').innerHTML = [adminTotals(totals), '<section class="card" id="admin-prices"></section>', adminWebKeys(webKeys, edit), adminBotReplies(botReplies, off), adminSystemPrompt(systemPrompt, full.text, off)].join('');
+    $('content').innerHTML = [adminTotals(totals), '<section class="card" id="admin-prices"></section>', adminWebKeys(webKeys, edit), adminBotReplies(botReplies, off), adminScheduleLimits(scheduleLimits, off), adminSystemPrompt(systemPrompt, full.text, off)].join('');
     paintPrices();
     wireSystemPrompt(systemPrompt);
     wireWebKeys(edit);
@@ -885,6 +891,12 @@ async function renderBotAdmin() {
         event.preventDefault();
         const form = event.currentTarget;
         adminRun($('admin-bot-replies-save'), async () => { await request('/api/admin/bot-replies', { replies: Number(form.replies.value), minutes: Number(form.minutes.value) }); notice('Bot reply limit saved.'); });
+      };
+      $('admin-schedule-limits').onsubmit = event => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const body = { perServer: Number(form.perServer.value), perUser: Number(form.perUser.value), minMinutes: { message: Number(form.minMessage.value), prompt: Number(form.minPrompt.value), tool: Number(form.minTool.value) } };
+        adminRun($('admin-schedule-limits-save'), async () => { await request('/api/admin/schedule-limits', body); notice('Scheduled task limits saved.'); });
       };
       $('admin-system-prompt').onsubmit = event => {
         event.preventDefault();
