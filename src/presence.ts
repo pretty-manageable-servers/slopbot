@@ -1,4 +1,5 @@
 import { logError } from "./errors.js";
+import type { LlmMode } from "./llm-mode.js";
 
 export const PRESENCE_INTERVAL_MS = 5 * 60_000;
 export const PRESENCE_TEXT_LIMIT = 128;
@@ -9,6 +10,7 @@ export interface PresenceOptions {
   guildCount: () => number;
   now?: () => number;
   intervalMs?: number;
+  mode?: () => LlmMode;
 }
 
 /** The first millisecond of the UTC day that contains `at`. */
@@ -17,9 +19,10 @@ export function utcMidnight(at: number): number {
   return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
 }
 
-/** The custom status text, for example "3 replies today · 1 server". */
-export function presenceText(replies: number, servers: number): string {
-  const text = `${replies} ${replies === 1 ? "reply" : "replies"} today · ${servers} ${servers === 1 ? "server" : "servers"}`;
+/** The custom status text, for example "3 replies today · 1 server". A reduced mode shows "Reduced capacity" instead of the count. */
+export function presenceText(replies: number, servers: number, reduced = false): string {
+  const count = reduced ? "Reduced capacity" : `${replies} ${replies === 1 ? "reply" : "replies"} today`;
+  const text = `${count} · ${servers} ${servers === 1 ? "server" : "servers"}`;
   return text.slice(0, PRESENCE_TEXT_LIMIT);
 }
 
@@ -30,6 +33,7 @@ export class PresenceUpdater {
   private readonly guildCount: () => number;
   private readonly now: () => number;
   private readonly intervalMs: number;
+  private readonly mode: () => LlmMode;
   private timer: NodeJS.Timeout | undefined;
   private stopped = false;
   private busy = false;
@@ -41,6 +45,7 @@ export class PresenceUpdater {
     this.guildCount = options.guildCount;
     this.now = options.now ?? Date.now;
     this.intervalMs = options.intervalMs ?? PRESENCE_INTERVAL_MS;
+    this.mode = options.mode ?? (() => "normal");
   }
 
   /** Refreshes now, then every intervalMs. The timer does not keep the process alive. */
@@ -70,7 +75,7 @@ export class PresenceUpdater {
         return;
       }
       if (this.stopped) return;
-      const text = presenceText(replies, this.guildCount());
+      const text = presenceText(replies, this.guildCount(), this.mode() !== "normal");
       if (text === this.text) return;
       try {
         this.setStatus(text);

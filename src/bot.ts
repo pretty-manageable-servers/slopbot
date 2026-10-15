@@ -15,6 +15,10 @@ import { UserLimitError, limitReply } from "./user-limiter.js";
 import { isPrivateChannel } from "./private-chat.js";
 import { renderTranscript, saveTaskRefs, type SettingsPort } from "./transcript.js";
 import { slopbotId, type ConversationEventStore } from "./run-events.js";
+import { DEFAULT_STATUS_NOTE_MINUTES, DEGRADED_NOTE, type LlmMode, type LlmRouter } from "./llm-mode.js";
+import { DegradedNotes } from "./degraded-notes.js";
+
+const BACKUP_FOOTER = "-# reduced capacity: backup model";
 
 export interface Incoming extends Message {
   readonly botAuthor: boolean;
@@ -45,6 +49,9 @@ export class Bot {
   private readonly classificationRetries = new Map<string, ReturnType<typeof setTimeout>>();
   // Open private chats of this server. A chat is added when its web chat row exists, and removed when it is deleted.
   private readonly privateChats = new Set<string>();
+  // Lazy reads: the admin can change the window while the bot runs.
+  private readonly unavailableNotes = new DegradedNotes(() => this.options.degraded?.statusNoteMinutes() ?? DEFAULT_STATUS_NOTE_MINUTES);
+  private readonly backupNotes = new DegradedNotes(() => this.options.degraded?.statusNoteMinutes() ?? DEFAULT_STATUS_NOTE_MINUTES);
 
   constructor(
     private readonly app: Application,
@@ -53,7 +60,7 @@ export class Bot {
     private readonly gateway: ChatGateway,
     private readonly server: string,
     private channels: readonly string[],
-    private readonly options: { knowledge?: Knowledge; participation?: ParticipationGate; worker?: TaskWorker; tools?: ToolRegistry; queueStore?: QueueStore; profiles?: ProfileStore; botReplyLimit?: () => BotReplyLimit; mutedUntil?: (user: string) => number | undefined; classificationRetryMs?: number } = {},
+    private readonly options: { knowledge?: Knowledge; participation?: ParticipationGate; worker?: TaskWorker; tools?: ToolRegistry; queueStore?: QueueStore; profiles?: ProfileStore; botReplyLimit?: () => BotReplyLimit; mutedUntil?: (user: string) => number | undefined; classificationRetryMs?: number; router?: LlmRouter; degraded?: { mode: () => LlmMode; statusNoteMinutes: () => number } } = {},
   ) {
     for (const task of registry.taskThreads(server)) {
       if (channels.includes(task.parent)) {
@@ -137,6 +144,8 @@ export class Bot {
       // Other bots' status/error commentary is evidence, not an automatic task
       // request. Explicit mentions and replies still support collaboration.
       if (message.botAuthor) { requestTimings.finish(message); return; }
+      // Unprompted replies (JEV) are off in a reduced mode. Only direct requests get answers.
+      if (this.reduced()) { requestTimings.finish(message); return; }
       const gate = this.options.participation;
       if (!gate) return;
       const context = await requestTimings.measure(message, "participation context", () => this.store.context(message, gate.options.contextMessages));
@@ -176,6 +185,8 @@ export class Bot {
       }
       return;
     }
+    // Checked before the queue, so a request in an outage is never queued for a later answer. Commands above need no model.
+    if (this.options.router && await this.declineWithoutModel(this.options.router, message, ingested)) return;
     if (!task && /^!task(?:\s|$)/i.test(text)) {
       if (privateChat) { if (!ingested && !await this.store.ingest({ ...message, addressed: false })) return; await this.send(message, discordOnlyMessage); return; }
       if (this.options.worker) { await this.options.worker.enqueue({ ...message, addressed: true }); return; }
@@ -198,6 +209,33 @@ export class Bot {
       await this.enqueue(request);
     } else { await this.process(request, ingested); }
   }
+  /** A reduced mode is on: the model service is down, or a backup model runs. */
+  private reduced(): boolean {
+    return (this.options.degraded?.mode() ?? "normal") !== "normal";
+  }
+
+  /** No model may answer this request now. It gets one note per channel, then a reaction. Nothing is charged. */
+  private async declineWithoutModel(router: LlmRouter, message: Incoming, ingested: boolean): Promise<boolean> {
+    if (router.select({ user: message.author, server: message.server, private: isPrivateChannel(message.channel) })) return false;
+    if (!ingested && !await this.store.ingest({ ...message, addressed: false })) return true;
+    // Bots get no note, so two bots cannot answer each other's notes.
+    if (!message.botAuthor) {
+      if (this.unavailableNotes.shouldPost(message.channel, Date.now())) await this.send(message, DEGRADED_NOTE);
+      else if (this.gateway.react) {
+        try { await this.gateway.react(message, "⏸️"); }
+        catch (error) { logError("discord_reaction_failed", error, { stage: "Discord reaction", server: message.server, channel: message.channel, messageId: message.id }, true); }
+      }
+    }
+    requestTimings.finish(message);
+    return true;
+  }
+
+  /** A backup model answers in a reduced mode. The reply says so once for each window in each channel. */
+  private backupFooter(message: Message, text: string): string {
+    if (this.options.degraded?.mode() !== "fallback" || !this.backupNotes.shouldPost(message.channel, Date.now())) return text;
+    return `${text}\n${BACKUP_FOOTER}`;
+  }
+
   private retryClassification(message: Incoming, attempt: number): void {
     const key = JSON.stringify([message.server, message.channel, message.id]);
     if (attempt >= 2 || this.classificationRetries.has(key) || this.classificationRetries.size >= 100 || Date.now() - (message.timestamp ?? Date.now()) > 60000) return;
@@ -319,7 +357,7 @@ export class Bot {
   async deliver(message: Message, reply: import("./domain.js").Reply, deliveryId: string): Promise<void> {
     if (!this.accepts(message.server, message.channel)) throw contextChangedError(message, await this.store.lastContextChange?.(message.server, message.channel));
     if (await this.requestDeleted(message)) return;
-    await this.send(message, reply.text || "The AI returned no answer.", reply.runId, deliveryId, reply.toolActivity, reply.ui);
+    await this.send(message, this.backupFooter(message, reply.text || "The AI returned no answer."), reply.runId, deliveryId, reply.toolActivity, reply.ui);
   }
   /** A deleted request gets no answer. A changed chat still gets its answer. */
   private async requestDeleted(message: Message): Promise<boolean> {
@@ -345,7 +383,7 @@ export class Bot {
     const stopTyping = this.gateway.typing(message.channel);
     try {
       const reply = await this.app.handle(message, ingested);
-      if (reply && !(await this.requestDeleted(message))) await this.send(message, reply.text || "The AI returned no answer. Please try again.", reply.runId, undefined, reply.toolActivity, reply.ui);
+      if (reply && !(await this.requestDeleted(message))) await this.send(message, this.backupFooter(message, reply.text || "The AI returned no answer. Please try again."), reply.runId, undefined, reply.toolActivity, reply.ui);
     } catch (error) {
       logError("request_failed", error, { server: message.server, channel: message.channel, messageId: message.id });
       const explanation = errorReply(error);
