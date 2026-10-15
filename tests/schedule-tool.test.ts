@@ -78,6 +78,10 @@ test("create message cron", async () => {
   assert.equal(schedule.expiresAt, new Date(base + 30 * DAY).toISOString());
   assert.equal(schedule.failures, 0);
   assert.equal(result.ui?.type, "card");
+  assert.deepEqual(
+    result.ui?.type === "card" ? result.ui.actions?.map(action => [action.action, action.arguments]) : undefined,
+    [["schedule.pause", { id }], ["schedule.cancel", { id }]],
+  );
 });
 
 test("server cap", async () => {
