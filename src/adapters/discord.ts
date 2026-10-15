@@ -62,6 +62,10 @@ import { PresenceUpdater } from "../presence.js";
 import type { Config } from "../config.js";
 import { parseEffort, type Json, type Message } from "../domain.js";
 import type { LLM } from "../ports.js";
+import type { LlmMode, LlmRouter } from "../llm-mode.js";
+
+/** Degraded-mode wiring for the server: the router, the live mode and the note window. Absent in mock runs. */
+export interface DegradedRouting { router: LlmRouter; mode: () => LlmMode; statusNoteMinutes: () => number }
 import type { RuntimeStore } from "../runtime-store.js";
 import { LLMClassifier, ParticipationGate } from "../participation.js";
 import { HistoryImporter } from "../history.js";
@@ -154,7 +158,7 @@ export class DiscordServer implements ChatGateway {
   private readonly voice: DiscordVoice | undefined;
   private readonly inbox: Inbox;
 
-  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">, private readonly team?: Pick<TeamAdmins, "canEdit">, private readonly sandboxProfile?: SandboxProfile) {
+  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">, private readonly team?: Pick<TeamAdmins, "canEdit">, private readonly sandboxProfile?: SandboxProfile, private readonly degraded?: DegradedRouting) {
     this.client = client;
     this.renderer = new ReplyRenderer(store, discordPresentation);
     this.chatGateway = new WebChatGateway(store, guildId);
@@ -176,7 +180,8 @@ export class DiscordServer implements ChatGateway {
     };
     const savedMonitoring = store.setting(guildId, "monitoring");
     const participation = new ParticipationGate(new DecisionClassifier({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.jevModel, usage }, store, undefined, new LLMClassifier(llm, store, usage)), {
-      enabled: (typeof savedMonitoring === "boolean" ? savedMonitoring : config.jevEnabled) && !config.mock,
+      // JEV runs only when a model may answer now. Outages and the mode switch are read on each message.
+      enabled: () => (typeof savedMonitoring === "boolean" ? savedMonitoring : config.jevEnabled) && !config.mock && (this.degraded === undefined || this.degraded.router.select(undefined) !== undefined),
       thresholds: decisionThresholds(store.setting(guildId, 'participation_thresholds'), config.jevThresholds),
       reactionFrequency: savedLimit("reaction_frequency", store.setting(guildId, "reactions_enabled") === false ? 0 : 60, 100),
       contextMessages: Math.min(CLASSIFIER_CONTEXT_LIMIT, savedLimit("classifier_context", config.jevContextMessages, 100)),
@@ -270,6 +275,7 @@ export class DiscordServer implements ChatGateway {
       },
       overGrace:who=>usage.overGrace(who),
       now:()=>new Date(),
+      llmMode:()=>this.degraded?.mode()??"normal",
     });
     registerUiTool(this.tools);
     registerProfileTools(this.tools, store);
@@ -323,7 +329,7 @@ export class DiscordServer implements ChatGateway {
     });
     // Voice posts transcripts through webReplies, so it is made after webReplies.
     if (config.voice) {
-      this.voice = new DiscordVoice(client, guildId, config, this.webReplies, usage, user => Boolean(mutedUsers(store.setting(guildId, MUTED_USERS_KEY))[user]), () => voiceInstructions(store.setting(guildId, VOICE_INSTRUCTIONS_KEY) as string | undefined, config.voice?.instructions, (config.voice?.voice ?? VOICE_NAME_DEFAULT) !== VOICE_NAME_DEFAULT), value => store.setSetting(guildId, VOICE_INSTRUCTIONS_KEY, value));
+      this.voice = new DiscordVoice(client, guildId, config, this.webReplies, usage, user => Boolean(mutedUsers(store.setting(guildId, MUTED_USERS_KEY))[user]), () => voiceInstructions(store.setting(guildId, VOICE_INSTRUCTIONS_KEY) as string | undefined, config.voice?.instructions, (config.voice?.voice ?? VOICE_NAME_DEFAULT) !== VOICE_NAME_DEFAULT), value => store.setSetting(guildId, VOICE_INSTRUCTIONS_KEY, value), undefined, undefined, this.degraded?.router);
       this.voice.register(this.tools);
       this.voice.onSession = (channel, previous) => { if (previous) this.bot.closeVoiceChannel(previous); if (channel) this.bot.openVoiceChannel(guildId, channel); };
     }
@@ -387,7 +393,7 @@ export class DiscordServer implements ChatGateway {
       if (!this.bot.accepts(job.message.server, job.message.channel)) return;
       await this.reply(job.message, errorReply(error, job.id), `job-error:${job.id}`);
     });
-    this.bot = new Bot(this.app, store, store, this, guildId, this.channels, { profiles: store, knowledge: store, participation, worker: this.worker, tools: this.tools, queueStore: store, botReplyLimit: () => botReplyLimit(store.setting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY)), mutedUntil: user => mutedUsers(store.setting(guildId, MUTED_USERS_KEY))[user] });
+    this.bot = new Bot(this.app, store, store, this, guildId, this.channels, { profiles: store, knowledge: store, participation, worker: this.worker, tools: this.tools, queueStore: store, botReplyLimit: () => botReplyLimit(store.setting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY)), mutedUntil: user => mutedUsers(store.setting(guildId, MUTED_USERS_KEY))[user], ...(this.degraded ? { router: this.degraded.router, degraded: { mode: this.degraded.mode, statusNoteMinutes: this.degraded.statusNoteMinutes } } : {}) });
   }
   /** Private chats: the chat service opens, closes and hands messages in through these. */
   openChat(channel: string): void { this.bot.openPrivateChat(this.guildId, channel); }
@@ -998,7 +1004,7 @@ export class DiscordAdapter {
   /** Deletes inbox items past INBOX_TTL_MS. Started by start(), cleared by stop(). */
   private inboxTimer: ReturnType<typeof setInterval> | undefined;
 
-  constructor(private readonly config: Config, private readonly store: RuntimeStore, private readonly llm: LLM, client?: Client) {
+  constructor(private readonly config: Config, private readonly store: RuntimeStore, private readonly llm: LLM, client?: Client, private readonly degraded?: DegradedRouting) {
     this.usage = createUsageMeter(config, store);
     this.client = client ?? new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates], partials: [Partials.Message, Partials.Channel] });
     this.members = new MemberDirectory(discordMemberSource(this.client));
@@ -1009,6 +1015,7 @@ export class DiscordAdapter {
       setStatus: text => { this.client.user?.setPresence({ activities: [{ type: ActivityType.Custom, name: 'custom', state: text }], status: 'online' }); },
       countReplies: since => this.store.countRepliesSince(since),
       guildCount: () => this.client.guilds.cache.size,
+      mode: () => this.degraded?.mode() ?? "normal",
     });
     runEvents.attach(store);
     this.shareRule = { manager: (user, server) => this.hasManageServer(user, server), teamAdmin: user => this.team.canEdit(user) };
@@ -1039,7 +1046,7 @@ export class DiscordAdapter {
     if (existing) return existing;
     if (!this.allowed(guildId)) return Promise.reject(new ToolError("Slopbot is not enabled for this server."));
     const opening = (async () => {
-      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage, this.access, this.members, this.team, this.sandboxProfile);
+      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage, this.access, this.members, this.team, this.sandboxProfile, this.degraded);
       server.webChat = this.webChat;
       await server.start();
       await server.ready(this.botUser!);

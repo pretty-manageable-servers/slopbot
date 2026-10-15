@@ -1,7 +1,8 @@
 import { FREE_PLAN_SCHEDULE_DAYS, MAX_FAILURES, SCHEDULE_KIND, SCHEDULE_RETRY_MS, SCHEDULE_TICK_MS, scheduleDeliveryId, scheduleMessageId, type Schedule } from "./schedule-types.js";
 import { nextRun } from "./schedule-time.js";
 import type { Json, Message } from "../domain.js";
-import { errorSummary, logError, ToolError } from "../errors.js";
+import { describeError, errorSummary, logError, ToolError } from "../errors.js";
+import { isOutageError, type LlmMode } from "../llm-mode.js";
 import type { AppRecord, RecordStore } from "../records.js";
 
 // Discord errors that do not change on retry: Unknown Channel, Missing Access, Missing Permissions.
@@ -24,6 +25,7 @@ function isPermanentDiscordError(error: unknown): boolean {
  *   to post nothing. ctx.id is the run's scheduleMessageId, used as the operation id.
  * - overGrace({server, user}): true when user is over the usage limit.
  * - now(): the current time.
+ * - llmMode: the LLM mode. Absent means normal. Prompt schedules pause while it is not normal.
  */
 export interface ScheduleWorkerDeps {
   server: string;
@@ -38,11 +40,13 @@ export interface ScheduleWorkerDeps {
   ): Promise<string | undefined>;
   overGrace(who: { server: string; user: string }): Promise<boolean>;
   now(): Date;
+  llmMode?: () => LlmMode;
 }
 
 type Stage = "check" | "authorize" | "run";
 
 const iso = (ms: number) => new Date(ms).toISOString();
+const outageNote = "Prompt schedules here are paused while Slopbot runs at reduced capacity. They resume by themselves.";
 
 // Copy without the fields that belong to one run. A new run sets them again.
 function withoutRun(schedule: Schedule): Schedule {
@@ -80,6 +84,12 @@ export class ScheduleWorker {
   }
 
   async tick(): Promise<void> {
+    try {
+      await this.outage();
+    } catch (error) {
+      logError("schedule_outage_failed", error, { stage: "schedule outage", server: this.deps.server });
+    }
+    // Read again: outage() may have changed the records.
     for (const record of await this.deps.store.records(this.deps.server, SCHEDULE_KIND)) {
       try {
         await this.process(record);
@@ -87,6 +97,31 @@ export class ScheduleWorker {
         logError("schedule_failed", error, { stage: "schedule", server: this.deps.server, operationId: record.id });
       }
     }
+  }
+
+  // Prompt schedules need a model, so they pause while the mode is not normal. Message and tool schedules keep running.
+  private async outage(): Promise<void> {
+    const mode = this.deps.llmMode?.() ?? "normal";
+    const now = this.deps.now();
+    const channels = new Set<string>();
+    for (const record of await this.deps.store.records(this.deps.server, SCHEDULE_KIND)) {
+      const schedule = record.value as unknown as Schedule;
+      if (mode === "normal") {
+        if (schedule.status === "paused" && schedule.pauseReason === "outage") await this.resume(record, schedule, now);
+      } else if (schedule.status === "active" && schedule.action.kind === "prompt") {
+        if (await this.write(record.id, { ...withoutRun(schedule), status: "paused", pauseReason: "outage" }, record.revision)) channels.add(schedule.channel);
+      }
+    }
+    for (const channel of channels) await this.note(channel, outageNote, `schedule:outage:${channel}:${now.getTime()}`);
+  }
+
+  // Like an owner resume: the next run is the first slot after now. Missed slots are not run.
+  private async resume(record: AppRecord, schedule: Schedule, now: Date): Promise<void> {
+    const next = nextRun(schedule.when, now);
+    const value: Schedule = next
+      ? { ...withoutRun(schedule), status: "active", nextAt: iso(next.getTime()), failures: 0 }
+      : { ...withoutRun(schedule), status: "done", nextAt: null, failures: 0 };
+    await this.write(record.id, value, record.revision);
   }
 
   private async process(record: AppRecord): Promise<void> {
@@ -168,6 +203,11 @@ export class ScheduleWorker {
       return;
     }
     logError("schedule_failed", error, context);
+    // An outage is not the schedule's fault, so it does not count toward MAX_FAILURES.
+    if (isOutageError(describeError(error).code)) {
+      await this.write(id, { ...base, status: "active", lastError: summary, retryAt: iso(now.getTime() + SCHEDULE_RETRY_MS) }, revision);
+      return;
+    }
     const failures = leased.failures + 1;
     if (failures >= MAX_FAILURES) {
       await this.write(id, { ...base, status: "paused", pauseReason: "failures", failures, lastError: summary }, revision);

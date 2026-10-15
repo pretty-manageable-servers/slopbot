@@ -85,3 +85,12 @@ pre{font:12px/1.6 'JetBrains Mono',monospace;white-space:pre-wrap;overflow-wrap:
 
 /* The theme switch cross-fades the whole page. */
 ::view-transition-old(root),::view-transition-new(root){animation-duration:.25s;animation-timing-function:ease-out}
+
+/* LLM mode banner under the top bar and the composer note (web/app.js). Colors come from the tokens above. */
+.llm-banner{margin:0;padding:10px 24px;background:var(--surface);border-bottom:1px solid var(--line);border-left:3px solid var(--usage-mid);color:var(--text)}
+.llm-banner.offline{border-left-color:var(--usage-high)}
+.llm-pause{margin:0 0 8px;color:var(--usage-high)}
+.llm-status{margin-bottom:8px}
+.llm-form h3{font-size:13px;color:var(--strong);margin:18px 0 4px}
+.llm-form .llm-zdr{margin-top:22px}
+@media(max-width:760px){.llm-banner{padding:10px 12px}.llm-form .llm-zdr{margin-top:0}}

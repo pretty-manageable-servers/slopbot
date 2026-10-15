@@ -32,7 +32,7 @@ export type ScheduleAction =
   | { kind: "tool"; tool: string; input: Record<string, Json> };
 
 export type ScheduleStatus = "active" | "running" | "paused" | "expired" | "cancelled" | "done";
-export type PauseReason = "owner" | "failures" | "usage" | "permission";
+export type PauseReason = "owner" | "failures" | "usage" | "permission" | "outage";
 
 export interface Schedule {
   id: string;

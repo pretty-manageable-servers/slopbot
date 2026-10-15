@@ -12,6 +12,8 @@ import { DEFAULT_INSTRUCTIONS, fullSystemText } from "./agent-runner.js";
 import type { PresentationPolicy } from "./presentation/policy.js";
 import { newProviderKeyRow, WebKeySecrets } from "./web-keys.js";
 import { DEFAULT_KEY_CAPS, KEY_CAPS_SETTING, KEY_ERRORS_SETTING, KEYED_PROVIDERS, usageMonth, type KeyedProvider, type KeyError } from "./web-providers.js";
+import { loadDegradedSettings, saveDegradedSettings, settingsView, testFallback, type FallbackTest, type LlmSettingsView } from "./llm-settings.js";
+import type { LlmModeState } from "./llm-mode.js";
 
 /** A bad value sent by a team admin. The console answers 400 with the message. */
 export class AdminInputError extends Error { override name = "AdminInputError"; }
@@ -36,7 +38,7 @@ const TOTAL_TOP = 10;
 const MAX_KEYS_PER_OWNER = 10;
 const MAX_KEY_CAP = 100000;
 
-export type AdminConfig = Pick<Config, "model" | "jevModel" | "embeddingModel" | "baseUrl" | "modelPrices" | "fallbackPrice" | "userLimit5hCostMicros" | "userLimitWeekCostMicros" | "userLimitGracePercent">;
+export type AdminConfig = Pick<Config, "model" | "jevModel" | "embeddingModel" | "baseUrl" | "modelPrices" | "fallbackPrice" | "userLimit5hCostMicros" | "userLimitWeekCostMicros" | "userLimitGracePercent"> & { apiKey?: string };
 /** resetProviderKey is optional: a store without it keeps the exhausted flag of a key until it has it. */
 export type AdminStore = Pick<Store, "listKnownUsers" | "userTokenTotalsByServer" | "resetUserUsage" | "grantResets" | "tokenTotalsSummary" | "listProviderKeys" | "addProviderKey" | "deleteProviderKey" | "providerKeyUsage"> & { setting(server: string, key: string): unknown; setSetting(server: string, key: string, value: Json): void | Promise<void>; resetProviderKey?(id: string, month: string): void | Promise<void> };
 export type WindowKind = "5h" | "week";
@@ -192,7 +194,7 @@ export class AdminPanel {
     const configured = activePrices({}, this.config.modelPrices);
     const overrides = activePrices(this.savedPrices(), {});
     const fallback = this.config.fallbackPrice;
-    const names = [...new Set([...modelsInUse(this.config), ...Object.keys(configured), ...Object.keys(overrides)])].sort();
+    const names = [...new Set([...modelsInUse(this.config, loadDegradedSettings(this.store).fallback?.model), ...Object.keys(configured), ...Object.keys(overrides)])].sort();
     return {
       models: names.map((model): PriceRow => {
         const price = configured[model];
@@ -466,4 +468,23 @@ export class AdminPanel {
     const saved = this.store.setting(GLOBAL_SETTINGS_SCOPE, KEY_CAPS_SETTING);
     return saved && typeof saved === "object" && !Array.isArray(saved) ? { ...saved } as Record<string, Json> : {};
   }
+
+  private llmState?: () => LlmModeState;
+
+  /** Wires the live LLM mode from the breaker. Until it is set, the panel shows normal. */
+  setLlmState(read: () => LlmModeState): void { this.llmState = read; }
+
+  /** The LLM degraded-mode settings and the live mode. Never includes the fallback key. */
+  llm(state: LlmModeState = this.llmState?.() ?? { mode: "normal", source: "breaker", since: 0 }): { settings: LlmSettingsView; state: LlmModeState } {
+    return { settings: settingsView(loadDegradedSettings(this.store)), state };
+  }
+
+  /** Saves the degraded-mode settings. A refused save changes nothing. Returns what llm() returns. */
+  async saveLlm(body: unknown): Promise<{ settings: LlmSettingsView; state: LlmModeState }> {
+    await saveDegradedSettings(this.store, this.secrets, object(body, "Send the settings as an object."));
+    return this.llm();
+  }
+
+  /** One 1-token request to the saved fallback endpoint. The primary key is reused only on the primary origin. */
+  testLlm(): Promise<FallbackTest> { return testFallback(this.store, this.secrets, this.config.apiKey ? { baseUrl: this.config.baseUrl, apiKey: this.config.apiKey } : undefined); }
 }

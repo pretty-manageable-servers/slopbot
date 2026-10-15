@@ -66,7 +66,8 @@ export class LLMClassifier implements Classifier {
 export interface ParticipationOptions {
   thresholds?: DecisionThresholds;
   reactionFrequency?: number;
-  enabled: boolean;
+  // A function is read on each message, so a mode change takes effect at once.
+  enabled: boolean | (() => boolean);
   contextMessages: number;
   cooldownMs: number;
   maxUnsolicitedPerHour: number;
@@ -93,7 +94,7 @@ export class ParticipationGate {
     try {
       const thresholds = decisionThresholds(this.options.thresholds);
       const finish = (decision: ParticipationDecision, detail: string) => this.finish(key, decision, message, thresholds, detail);
-      if (!this.options.enabled) return finish({ respond: false, addressed: false, reason: "monitoring_disabled" }, 'Monitoring is disabled.');
+      if (!(typeof this.options.enabled === 'function' ? this.options.enabled() : this.options.enabled)) return finish({ respond: false, addressed: false, reason: "monitoring_disabled" }, 'Monitoring is disabled.');
       let decision: ParticipationDecision;
       const recent = this.recentReplies.get(key);
       const age = recent ? Date.now() - recent.at : Infinity;

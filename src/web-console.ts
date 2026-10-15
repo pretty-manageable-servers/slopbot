@@ -16,6 +16,9 @@ import { ChatError } from './web-chats.js';
 import { CHAT_FILE_MAX_BYTES } from './web-chat-files.js';
 import { runtimeVersion } from './operations-config.js';
 import type { InboxItem } from './inbox.js';
+import { SERVER_NON_ZDR_SETTING, USER_NON_ZDR_SETTING, type LlmMode } from './llm-mode.js';
+import { GLOBAL_SETTINGS_SCOPE } from './usage-cost.js';
+import type { Json } from './domain.js';
 
 /** Team admin backend. Roles come from the Developer Portal team; panel holds the limits, prices and usage. */
 export interface ConsoleAdmin {
@@ -63,8 +66,10 @@ export interface ConsoleBackend {
   /** Login sessions. The database is the source of truth, so logins survive restarts. */
   sessions: WebSessionStore;
 }
-/** siteDir is the landing page export. It defaults to site/out. */
-export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string; siteDir?: string }
+/** siteDir is the landing page export. It defaults to site/out. llmStatus gives the signed-in user's LLM mode; without it the mode is normal. settings holds the non-ZDR switches. */
+export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string; siteDir?: string; llmStatus?: (user: string) => { mode: LlmMode; canChat: boolean }; settings?: ConsoleSettings }
+/** Reads and writes of the non-ZDR switches. Users use the global scope; each server uses its own scope. */
+export interface ConsoleSettings { setting(server: string, key: string): unknown; setSetting(server: string, key: string, value: Json): void | Promise<void> }
 export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOptions | undefined {
   if (env.WEB_ENABLED !== 'true') return undefined;
   const origin = new URL(env.WEB_ORIGIN || 'http://localhost:3000');
@@ -115,6 +120,7 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
     if (path === '/api/admin/usage/total') return panel.totalUsage(id => admin.serverInfo(id));
     if (path === '/api/admin/system-prompt/full') return panel.fullSystemPrompt();
     if (path === '/api/admin/web-keys') return panel.webKeys(user);
+    if (path === '/api/admin/llm') return panel.llm();
     return undefined;
   }
   if (path === '/api/admin/limits') return panel.saveLimits(body);
@@ -127,6 +133,8 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
   if (path === '/api/admin/system-prompt') return panel.saveSystemPrompt(body);
   if (path === '/api/admin/bot-replies') return panel.saveBotReplies(body);
   if (path === '/api/admin/schedule-limits') return panel.saveScheduleLimits(body);
+  if (path === '/api/admin/llm') return panel.saveLlm(body);
+  if (path === '/api/admin/llm/test') return panel.testLlm();
   if (path === '/api/admin/transcripts') {
     const input = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
     if (typeof input.enabled !== 'boolean') throw new AdminInputError('Invalid web transcript setting.');
@@ -162,6 +170,11 @@ async function readInside(root: string, name: string): Promise<StaticFile | unde
   return info?.isFile() ? { content: await readFile(file), type } : undefined;
 }
 const noticePage = (title: string, text: string, link: [string, string][]) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><link rel="stylesheet" href="/console/style.css"></head><body><main style="max-width:480px;margin:15vh auto;padding:0 16px;font-family:system-ui,sans-serif"><h1>${title}</h1><p>${text}</p><p>${link.map(([href, label]) => `<a href="${href}">${label}</a>`).join(' &middot; ')}</p></main></body></html>`;
+/** Team routes for the non-ZDR switch. Reading needs membership; writing needs an editor. The errors match adminRoute's. */
+async function teamAccess(admin: ConsoleAdmin, user: string, editor: boolean): Promise<void> {
+  if (!await admin.role(user)) throw new ToolError('Team membership is required.');
+  if (editor && !await admin.canEdit(user)) throw new ToolError('Team editor role is required.');
+}
 export function createConsole(options: ConsoleOptions, backend: ConsoleBackend): Server {
   const sessions = backend.sessions;
   const states = new Map<string, number>();
@@ -174,6 +187,9 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
     const value = await adminRoute(backend.admin, user, method, path, query, body);
     return value === undefined ? send(res, 404, { error: 'Not found.' }) : send(res, 200, value);
   };
+  // Writes of the non-ZDR switches run one at a time. A user's write reads the whole record first, so two saves must not interleave.
+  let settingWrites: Promise<unknown> = Promise.resolve();
+  const queueSetting = (write: () => Promise<void>): Promise<void> => { const next = settingWrites.then(write); settingWrites = next.catch(() => undefined); return next; };
   /** Finds the live login for a cookie value. Expired rows are deleted. A login close to its end is extended, and its cookie is sent again. */
   const loadSession = async (res: ServerResponse, id: string, now: number): Promise<{ user: string; csrf: string; hash: string } | undefined> => {
     if (!id) return undefined;
@@ -297,6 +313,21 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
           if (!(await backend.canSignIn(session.user))) { await sessions.deleteSession(session.hash); res.setHeader('Set-Cookie', cookie('slopbot_session', '', 0)); return send(res, 401, { error: 'Sign in with Discord to continue.' }); }
           return send(res, 200, { data: await backend.snapshot(session.user, server), csrf: session.csrf });
         }
+        // The LLM mode for the banner and the composer. Without llmStatus the model is always up.
+        if (req.method === 'GET' && routePath === '/api/status') {
+          const status = options.llmStatus?.(session.user) ?? { mode: 'normal' as const, canChat: true };
+          return send(res, 200, { mode: status.mode, canChat: status.canChat });
+        }
+        if (req.method === 'GET' && routePath === '/api/settings/non-zdr') {
+          if (!options.settings) return send(res, 404, { error: 'Not found.' });
+          const saved = options.settings.setting(GLOBAL_SETTINGS_SCOPE, USER_NON_ZDR_SETTING) as Record<string, unknown> | null | undefined;
+          return send(res, 200, { allow: saved?.[session.user] === true });
+        }
+        if (req.method === 'GET' && routePath === '/api/admin/servers/non-zdr') {
+          if (!options.settings || !backend.admin) return send(res, 404, { error: 'Not found.' });
+          await teamAccess(backend.admin, session.user, false);
+          return send(res, 200, { allow: options.settings.setting(snowflake(url.searchParams.get('server'), 'server'), SERVER_NON_ZDR_SETTING) === true });
+        }
         if (req.method === 'GET' && routePath.startsWith('/api/admin/')) return await admin(res, session.user, 'GET', routePath, url.searchParams, undefined);
         if (req.method === 'GET' && routePath === '/api/web-transcripts/channels') {
           const server = url.searchParams.get('server') ?? '';
@@ -366,12 +397,34 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
             throw error;
           }
         }
-        if (!routePath.startsWith('/api/admin/') && !['/api/settings', '/api/mcp', '/api/web-transcripts/channels'].includes(routePath) && !isShareWrite(routePath)) return send(res, 404, { error: 'Not found.' });
+        if (!routePath.startsWith('/api/admin/') && !['/api/settings', '/api/settings/non-zdr', '/api/mcp', '/api/web-transcripts/channels'].includes(routePath) && !isShareWrite(routePath)) return send(res, 404, { error: 'Not found.' });
         if (!req.headers['content-type']?.startsWith('application/json')) return send(res, 415, { error: 'Send JSON.' });
         let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > (routePath === '/api/mcp' ? 65536 : 16384)) return send(res, 413, { error: 'Request too large.' }); }
         let input: { server?: string; channel?: string; name?: string; args?: ToolArgs; enabled?: boolean };
         try { input = JSON.parse(body); } catch { return send(res, 400, { error: 'Invalid JSON.' }); }
         if (input?.server !== undefined && (typeof input.server !== 'string' || !/^\d{17,20}$/.test(input.server))) return send(res, 400, { error: 'Invalid server.' });
+        if (routePath === '/api/settings/non-zdr') {
+          if (!options.settings) return send(res, 404, { error: 'Not found.' });
+          const allow = (input as { allow?: unknown } | null)?.allow;
+          if (typeof allow !== 'boolean') throw new AdminInputError('Send allow as true or false.');
+          const store = options.settings, user = session.user;
+          await queueSetting(async () => {
+            const next: Record<string, boolean> = { ...(store.setting(GLOBAL_SETTINGS_SCOPE, USER_NON_ZDR_SETTING) as Record<string, boolean> | null | undefined) };
+            if (allow) next[user] = true; else delete next[user];
+            await store.setSetting(GLOBAL_SETTINGS_SCOPE, USER_NON_ZDR_SETTING, next);
+          });
+          return send(res, 200, { allow });
+        }
+        if (routePath === '/api/admin/servers/non-zdr') {
+          if (!options.settings || !backend.admin) return send(res, 404, { error: 'Not found.' });
+          await teamAccess(backend.admin, session.user, true);
+          const payload = input as { server?: unknown; allow?: unknown } | null;
+          const server = snowflake(payload?.server, 'server'), allow = payload?.allow;
+          if (typeof allow !== 'boolean') throw new AdminInputError('Send allow as true or false.');
+          const store = options.settings;
+          await queueSetting(async () => { await store.setSetting(server, SERVER_NON_ZDR_SETTING, allow); });
+          return send(res, 200, { allow });
+        }
         if (routePath.startsWith('/api/admin/')) return await admin(res, session.user, 'POST', routePath, url.searchParams, input);
         if (isShareWrite(routePath)) {
           if (!backend.shares) return send(res, 404, { error: 'Not found.' });
