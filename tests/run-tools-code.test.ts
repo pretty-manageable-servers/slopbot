@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { Application } from '../src/application.js';
 import type { Json } from '../src/domain.js';
-import { runToolsCodeTool } from '../src/run-tools-code.js';
+import { programText, runToolsCodeTool } from '../src/run-tools-code.js';
 import type { SandboxProvider, SandboxSession } from '../src/sandbox.js';
 import { ToolRegistry, type ToolContext, type ToolDefinition, type ToolExecutor, type ToolResult } from '../src/tools.js';
 import type { ToolActivity } from '../src/tool-activity.js';
@@ -300,4 +300,33 @@ test('bad_arg_lists_fields', async t => {
   const [messages] = outputs(await registry.invokeResult(request, 'run_tools_code', { code }, 'bad-args', 'agent')) as [string[]];
   assert.match(messages![0]!, /pair takes: a \(required\), b \(required\)\./);
   assert.match(messages![1]!, /ping takes: no arguments\./);
+});
+
+const emptyOutcome = { outputs: [], failures: [] };
+
+test('model text shows the returned value', () => {
+  assert.equal(programText({ ...emptyOutcome, returned: { total: 3 }, logs: [], receipts: [] }), '{"total":3}');
+  assert.equal(programText({ ...emptyOutcome, returned: 'done' }), 'done');
+});
+
+test('model text shows logs', () => {
+  assert.equal(programText({ ...emptyOutcome, logs: ['[WARN] slow', 'hello'], receipts: [] }), 'Logs:\n[WARN] slow\nhello');
+});
+
+test('failed program keeps outputs and lists calls', () => {
+  const text = programText({
+    outputs: ['partial'], failures: [], error: { message: 'Program exceeded its wall-clock deadline.', status: 'failed' },
+    receipts: [{ id: 1, name: 'mute_list', status: 'ok', bytes: 2150 }, { id: 2, name: 'foo', status: 'failed', bytes: 0 }, { id: 3, name: 'bar', status: 'unfinished', bytes: 0 }],
+  });
+  assert.equal(text, 'Program failed: Program exceeded its wall-clock deadline.\npartial\nCalls: mute_list ok 2.1 KB, foo failed, bar unfinished');
+});
+
+test('no output gives the receipt hint', () => {
+  const text = programText({ ...emptyOutcome, logs: [], receipts: [{ id: 1, name: 'mute_list', status: 'ok', bytes: 100 }] });
+  assert.equal(text, 'Calls: mute_list ok 100 B\nNo output. The call results are not shown. To see data, return it or pass it to text().');
+});
+
+test('model text works without the contract fields', () => {
+  assert.equal(programText({ outputs: ['x'], failures: [] }), 'x');
+  assert.equal(programText({ outputs: [], failures: [{ name: 'a', error: 'bad' }] }), 'Incomplete program result: 1 tool call(s) failed. a: bad\nNo output. The call results are not shown. To see data, return it or pass it to text().');
 });
