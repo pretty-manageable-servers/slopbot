@@ -109,6 +109,7 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
     if (path === '/api/admin/prices') return panel.prices();
     if (path === '/api/admin/system-prompt') return panel.systemPrompt();
     if (path === '/api/admin/bot-replies') return panel.botReplies();
+    if (path === '/api/admin/schedule-limits') return panel.scheduleLimits();
     if (path === '/api/admin/servers') return admin.servers(serverPage(query));
     if (path === '/api/admin/servers/channels') return admin.serverChannels(snowflake(query.get('server'), 'server'));
     if (path === '/api/admin/usage/total') return panel.totalUsage(id => admin.serverInfo(id));
@@ -125,6 +126,7 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
   if (path === '/api/admin/prices') return panel.savePrice(body);
   if (path === '/api/admin/system-prompt') return panel.saveSystemPrompt(body);
   if (path === '/api/admin/bot-replies') return panel.saveBotReplies(body);
+  if (path === '/api/admin/schedule-limits') return panel.saveScheduleLimits(body);
   if (path === '/api/admin/transcripts') {
     const input = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
     if (typeof input.enabled !== 'boolean') throw new AdminInputError('Invalid web transcript setting.');
