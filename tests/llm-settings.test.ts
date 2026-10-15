@@ -94,6 +94,30 @@ test('removes key on empty', async t => {
   assert.deepEqual(view.settings.fallback, endpoint, 'the endpoint stays');
 });
 
+test('drops key when origin changes', async t => {
+  const { store, panel } = setup(); t.after(() => store.close());
+  await panel.saveLlm({ fallback: { ...endpoint, key: SECRET } });
+  await panel.saveLlm({ fallback: { ...endpoint, baseUrl: 'https://fallback.example.com/v2' } });
+  assert.notEqual(savedFallback(store).keySealed, undefined, 'a path change on the same origin keeps the key');
+  const moved = await panel.saveLlm({ fallback: { ...endpoint, baseUrl: 'https://attacker.example.net/v1' } });
+  assert.equal(Object.hasOwn(savedFallback(store), 'keySealed'), false, 'a new host gets no saved key');
+  assert.equal(Object.hasOwn(savedFallback(store), 'keyLast4'), false);
+  assert.equal(moved.settings.fallback?.baseUrl, 'https://attacker.example.net/v1');
+});
+
+test('test reuses primary key on same origin', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const panel = new AdminPanel({ ...config, baseUrl: endpoint.baseUrl, apiKey: 'primary-key-9999' }, store, new UserLimiter(store, { fiveHourCostMicros: 100, weekCostMicros: 0, gracePercent: 10 }), new MemberDirectory(fakeSource({})), undefined, new WebKeySecrets(KEY));
+  await panel.saveLlm({ fallback: endpoint });
+  const auth: (string | null)[] = [];
+  t.mock.method(globalThis, 'fetch', async (_url: string | URL | Request, init?: RequestInit) => { auth.push((init!.headers as Record<string, string>).Authorization ?? null); return Response.json({ choices: [] }); });
+
+  await panel.testLlm();
+  await panel.saveLlm({ fallback: { ...endpoint, baseUrl: 'https://other.example.net/v1' } });
+  await panel.testLlm();
+  assert.deepEqual(auth, ['Bearer primary-key-9999', null], 'the primary key goes to the primary origin only');
+});
+
 test('no secret configured', async t => {
   const { store, panel } = setup(new WebKeySecrets('')); t.after(() => store.close());
   await assert.rejects(panel.saveLlm({ fallback: { ...endpoint, key: SECRET } }), (error: unknown) => error instanceof AdminInputError && error.message === 'The operator must configure WEB_KEYS_SECRET before saving the fallback key.');

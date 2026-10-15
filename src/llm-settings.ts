@@ -85,12 +85,22 @@ function breakerInput(input: unknown, current: BreakerSettings): BreakerSettings
   return { failures: pick('failures', 'Breaker failures'), windowSeconds: pick('windowSeconds', 'Breaker window'), probeSeconds: pick('probeSeconds', 'Breaker probe interval'), recoverProbes: pick('recoverProbes', 'Breaker recovery probes') };
 }
 
-/** An endpoint from the request. A key that is not sent keeps the saved key. An empty key removes it. */
+/** The origin of a URL, or undefined when it does not parse. */
+function origin(value: string): string | undefined {
+  try { return new URL(value).origin; } catch { return undefined; }
+}
+
+/** A saved key is only ever sent to the origin it was saved for. */
+function sameOrigin(a: string, b: string): boolean {
+  return origin(a) !== undefined && origin(a) === origin(b);
+}
+
+/** An endpoint from the request. A key that is not sent keeps the saved key, unless the origin changed. An empty key removes it. */
 function fallbackInput(input: unknown, previous: FallbackEndpoint | undefined, secrets: WebKeySecrets): FallbackEndpoint {
   if (!isObject(input)) throw new AdminInputError('Send the fallback as an object.');
   const fields = endpointFields(input);
   const key = input.key;
-  if (key === undefined) return { ...previous, ...fields };
+  if (key === undefined) return previous && sameOrigin(previous.baseUrl, fields.baseUrl) ? { ...previous, ...fields } : fields;
   if (key === '') return fields;
   if (typeof key !== 'string') throw new AdminInputError('The fallback key must be text.');
   const secret = key.trim();
@@ -121,18 +131,25 @@ export function settingsView(settings: LlmDegradedSettings): LlmSettingsView {
   return { ...rest, fallback: visible };
 }
 
+/** The key to send to the fallback, or undefined for none. A sealed key always wins. Without one, the primary key is reused only on the same origin, so it never leaves the gateway. */
+export function openFallbackKey(settings: LlmDegradedSettings, secrets: WebKeySecrets, primary?: { baseUrl: string; apiKey: string }): string | undefined {
+  const fallback = settings.fallback;
+  if (!fallback) return undefined;
+  if (fallback.keySealed !== undefined) return secrets.open(fallback.keySealed, LLM_FALLBACK_KEY_ID);
+  return primary && sameOrigin(fallback.baseUrl, primary.baseUrl) ? primary.apiKey : undefined;
+}
+
 /** One 1-token chat request to the saved fallback, with a 15 s limit. Returns only the code, never the key or the reply. */
-export async function testFallback(store: SettingsStore, secrets: WebKeySecrets, fetcher: typeof fetch = fetch): Promise<FallbackTest> {
-  const fallback = loadDegradedSettings(store).fallback;
+export async function testFallback(store: SettingsStore, secrets: WebKeySecrets, primary?: { baseUrl: string; apiKey: string }, fetcher: typeof fetch = fetch): Promise<FallbackTest> {
+  const settings = loadDegradedSettings(store);
+  const fallback = settings.fallback;
   if (!fallback) throw new AdminInputError('Save a fallback endpoint before you test it.');
+  if (fallback.keySealed !== undefined && !secrets.enabled) throw new AdminInputError('The operator must configure WEB_KEYS_SECRET before testing the fallback key.');
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (fallback.keySealed !== undefined) {
-    if (!secrets.enabled) throw new AdminInputError('The operator must configure WEB_KEYS_SECRET before testing the fallback key.');
-    let key: string;
-    try { key = secrets.open(fallback.keySealed, LLM_FALLBACK_KEY_ID); }
-    catch { throw new AdminInputError('The saved fallback key cannot be opened. Save the key again.'); }
-    headers.Authorization = `Bearer ${key}`;
-  }
+  let key: string | undefined;
+  try { key = openFallbackKey(settings, secrets, primary); }
+  catch { throw new AdminInputError('The saved fallback key cannot be opened. Save the key again.'); }
+  if (key !== undefined) headers.Authorization = `Bearer ${key}`;
   const started = Date.now();
   try {
     const response = await fetcher(`${fallback.baseUrl}/chat/completions`, { method: 'POST', headers, body: JSON.stringify({ model: fallback.model, messages: [{ role: 'user', content: 'Reply with OK.' }], max_tokens: 1, stream: false }), signal: AbortSignal.timeout(TEST_TIMEOUT_MS) });

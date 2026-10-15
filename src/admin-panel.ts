@@ -38,7 +38,7 @@ const TOTAL_TOP = 10;
 const MAX_KEYS_PER_OWNER = 10;
 const MAX_KEY_CAP = 100000;
 
-export type AdminConfig = Pick<Config, "model" | "jevModel" | "embeddingModel" | "baseUrl" | "modelPrices" | "fallbackPrice" | "userLimit5hCostMicros" | "userLimitWeekCostMicros" | "userLimitGracePercent">;
+export type AdminConfig = Pick<Config, "model" | "jevModel" | "embeddingModel" | "baseUrl" | "modelPrices" | "fallbackPrice" | "userLimit5hCostMicros" | "userLimitWeekCostMicros" | "userLimitGracePercent"> & { apiKey?: string };
 /** resetProviderKey is optional: a store without it keeps the exhausted flag of a key until it has it. */
 export type AdminStore = Pick<Store, "listKnownUsers" | "userTokenTotalsByServer" | "resetUserUsage" | "grantResets" | "tokenTotalsSummary" | "listProviderKeys" | "addProviderKey" | "deleteProviderKey" | "providerKeyUsage"> & { setting(server: string, key: string): unknown; setSetting(server: string, key: string, value: Json): void | Promise<void>; resetProviderKey?(id: string, month: string): void | Promise<void> };
 export type WindowKind = "5h" | "week";
@@ -485,6 +485,6 @@ export class AdminPanel {
     return this.llm();
   }
 
-  /** One 1-token request to the saved fallback endpoint. */
-  testLlm(): Promise<FallbackTest> { return testFallback(this.store, this.secrets); }
+  /** One 1-token request to the saved fallback endpoint. The primary key is reused only on the primary origin. */
+  testLlm(): Promise<FallbackTest> { return testFallback(this.store, this.secrets, this.config.apiKey ? { baseUrl: this.config.baseUrl, apiKey: this.config.apiKey } : undefined); }
 }
