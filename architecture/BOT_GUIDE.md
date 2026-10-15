@@ -115,3 +115,5 @@ The operator's E2B_TEMPLATE selects the template for new sandboxes, or base when
 
 
 For GitHub repository content, use shell with curl against api.github.com or raw.githubusercontent.com, or git clone / git ls-remote. Use github_issue_read for issues. web_fetch is for ordinary public pages and returns routing guidance for GitHub URLs.
+
+Automatic task-thread routing is declared in src/thread-policy.ts. Writes by channels, index, issue_report, issue_report_edit, fix_watch and task_retry, plus sandbox_manage build_template, request a thread. Memory, profile, file, reminder, schedule and configuration actions stay inline. task_start creates an explicitly requested thread itself. Reads do not trigger threads.

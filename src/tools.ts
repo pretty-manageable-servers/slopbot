@@ -1,5 +1,6 @@
 import { ToolError, UncertainActionError, errorContext, errorSummary, redactErrorText, describeError } from "./errors.js";
 import {stableJson} from './prompt-cache.js';
+import { toolNeedsThread } from './thread-policy.js';
 import { requestTimings } from "./request-timing.js";
 import { createHash } from "node:crypto";
 import { MAX_TOOL_CALLS_PER_BATCH } from "./generation-policy.js";
@@ -71,9 +72,8 @@ export interface ToolDefinition {
   access: "member" | "admin";
   effect: "read" | "write";
   retrySafe: boolean;
+  /** External/custom tool default. Native routing is defined centrally in thread-policy.ts. */
   execution?: "inline" | "thread";
-  /** Overrides execution for some arguments: true starts a task thread, false runs inline. Used when only one action of a tool needs a thread. */
-  threadWhen?(args: ToolArgs): boolean;
   /** The tool acts on Discord itself (posts or edits Discord messages, threads, reactions, or changes Discord server or channel settings), so it is not offered in private web chats. */
   scope?: "discord";
   publicResult?(args: ToolArgs): boolean;
@@ -204,8 +204,7 @@ export class ToolRegistry {
   scopeOf(name: string): "discord" | undefined { return this.tools.get(name)?.scope; }
   requiresThread(name: string, args: ToolArgs): boolean {
     const tool = this.tools.get(name);
-    if (tool?.threadWhen) return this.effect(name, args) === "write" && tool.threadWhen(args);
-    return this.effect(name,args) === "write" && tool?.execution !== "inline";
+    return toolNeedsThread(name, args, this.effect(name, args), tool?.provider, tool?.execution);
   }
   validate(name: string, input: unknown): ToolArgs {
     const tool = this.tools.get(name);

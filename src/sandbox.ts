@@ -96,8 +96,6 @@ export function sandboxManageTool(store: RecordStore, provider?: SandboxProvider
       pip_packages: { type: 'json', schema: { type: 'array', maxItems: 40, items: { type: 'string', maxLength: 200 } }, description: 'build_template only: Python packages, optionally name==version, e.g. ["numpy", "pandas"]' },
     },
     access: 'member', effect: 'write', execution: 'inline', retrySafe: false,
-    // Only a template build is a task action. Its files are a new template, not the task workspace, so it runs in a thread.
-    threadWhen: args => args.action === 'build_template',
     // An uncertain create or command is an orphan or a lost result that expires on its own within this time.
     staleAfterMs: lifetimeMs,
     writes: args => !['status', 'templates'].includes(String(args.action)),

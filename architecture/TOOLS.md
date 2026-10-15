@@ -25,7 +25,7 @@ registry.register({
 
 - Fields are validated centrally. Structured `json` fields can declare a schema for the model; enforce that schema in the definition's `validate` callback.
 - `access` uses the requesting user's current Discord permissions. Connectors must also enforce access to their own resources. Never accept an admin flag from tool arguments.
-- `effect` separates reads from writes. Mixed-action tools supply `writes(args)`. Writes requested in a channel move into a task thread. Arguments and results are posted there, so never expose credentials through either.
+- `effect` separates reads from writes. Mixed-action tools supply `writes(args)`. Native automatic thread routing is declared in `src/thread-policy.ts`: channels, index, issue_report, issue_report_edit, fix_watch and task_retry request a thread for writes; sandbox_manage does so only for build_template. Other native tools stay inline. task_start creates an explicitly requested thread itself. Mixed-action reads never request a thread. External/custom writes default to a thread unless configured inline. Arguments and results are posted there, so never expose credentials through either.
 - `resource` identifies the shared object being changed. Writes serialize on that key; an unresolved operation blocks later writes to it. Call `assertActive()` again after asynchronous preparation and immediately before the external action.
 - Use the stable `operationId` as the external service's idempotency key. Set `retrySafe` only when repeating the operation is safe. Otherwise implement `reconcile`; an unknown result pauses the job. Throw `ToolError` only for a known rejection with no uncertain side effect.
 
