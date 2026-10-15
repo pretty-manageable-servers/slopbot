@@ -1,4 +1,4 @@
-import { errorSummary, logError } from "./errors.js";
+import { errorSummary, logError, ProviderError } from "./errors.js";
 import { participationPrompt, reactionEmoji } from "./participation-prompts.js";
 import { randomUUID } from "node:crypto";
 import { EventJournal } from "./event-journal.js";
@@ -15,7 +15,12 @@ export interface ParticipationDecision {
   respond: boolean;
   addressed: boolean;
   reason: string;
+  retryable?: boolean;
 }
+
+export const transientClassifierError = (error: unknown): boolean => error instanceof ProviderError
+  ? [408, 429, 500, 502, 503, 504].includes(error.status)
+  : error instanceof TypeError || error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name);
 
 export interface Classifier {
   classify(message: Message, context: readonly Message[]): Promise<ParticipationDecision>;
@@ -70,7 +75,8 @@ export class ParticipationGate {
   private readonly replies = new Map<string, number[]>();
   readonly diagnostics = new Map<string, string>();
 
-  constructor(private readonly classifier: Classifier, readonly options: ParticipationOptions, private readonly random: () => number = Math.random, private readonly store?: RecordStore) {}
+  constructor(private readonly classifier: Classifier, readonly options: ParticipationOptions, private readonly random: () => number = Math.random, private readonly store?: RecordStore,
+    private readonly wait: (ms: number) => Promise<void> = ms => new Promise(resolve => setTimeout(resolve, ms))) {}
 
   async decide(message: Message, context: readonly Message[]): Promise<ParticipationDecision> {
     const key = JSON.stringify([message.server, message.channel]);
@@ -86,14 +92,29 @@ export class ParticipationGate {
       const finish = (decision: ParticipationDecision, detail: string) => this.finish(key, decision, message, thresholds, detail);
       if (!this.options.enabled) return finish({ respond: false, addressed: false, reason: "monitoring_disabled" }, 'Monitoring is disabled.');
       let decision: ParticipationDecision;
-      try { decision = await requestTimings.measure(message, "decision classifier", () => this.classifier.classify(message, context)); }
-      catch (error) { logError("participation_classifier_failed_staying_silent", error, { stage: "participation classification", server: message.server, channel: message.channel, messageId: message.id }, true); return finish({ respond: false, addressed: false, reason: "classifier_failed" }, errorSummary(error)); }
+      const failures: string[] = [];
+      try {
+        for (let attempt = 0; ; attempt++) {
+          try { decision = await requestTimings.measure(message, "decision classifier", () => this.classifier.classify(message, context)); break; }
+          catch (error) {
+            failures.push(errorSummary(error));
+            if (!transientClassifierError(error) || attempt === 2) throw error;
+            await this.wait(250 * 2 ** attempt);
+          }
+        }
+        await this.health(message, 'healthy', failures.length);
+      } catch (error) {
+        logError("participation_classifier_outage", error, { stage: "participation classification", server: message.server, channel: message.channel, messageId: message.id }, true);
+        await this.health(message, 'unavailable', failures.length);
+        return finish({ respond: false, addressed: false, reason: "classifier_failed", retryable: transientClassifierError(error) }, `Classifier failed after ${failures.length} attempt(s): ${failures.join('; ')}`);
+      }
+      const retryDetail = failures.length ? `Recovered after ${failures.length} retry attempt(s): ${failures.join('; ')}. ` : '';
       if (decision.scores) decision = scoredDecision(decision.scores, thresholds);
       const emoji = reactionEmoji(decision.emoji);
       const frequency = Math.max(0, Math.min(100, this.options.reactionFrequency ?? 60));
       const allowReaction = emoji && frequency > 0 && (frequency === 100 || this.random() < frequency / 100);
       decision = { ...decision, emoji: allowReaction ? emoji : undefined };
-      const reaction = emoji ? allowReaction ? 'Reaction selected.' : `Reaction skipped by frequency setting (${frequency}%).` : 'No reaction selected.';
+      const reaction = retryDetail + (emoji ? allowReaction ? 'Reaction selected.' : `Reaction skipped by frequency setting (${frequency}%).` : 'No reaction selected.');
       if (!decision.respond) return finish({ ...decision, reason: "classifier_silent" }, reaction);
       if (!decision.addressed) {
         const now = Date.now();
@@ -124,11 +145,23 @@ export class ParticipationGate {
       await this.store.putRecord(message.server, 'participation_decision', message.id, { ...record, decision: { ...record.decision, respond: false, reason: 'usage_limit' }, detail: `${record.detail} Reply blocked by the user's usage limit.` } as unknown as Json, saved.revision);
     } catch (error) { logError('participation_diagnostic_save_failed', error, { server: message.server, channel: message.channel }, true); }
   }
+  private async health(message: Message, status: string, retries: number): Promise<void> {
+    if (!this.store) return;
+    try {
+      const old = await this.store.record(message.server, 'classifier_health', 'provider');
+      await this.store.putRecord(message.server, 'classifier_health', 'provider', { status, retries, at: Date.now(), messageId: message.id }, old?.revision ?? 0);
+    } catch (error) { logError('classifier_health_save_failed', error, { server: message.server }, true); }
+  }
   private async finish(key: string, decision: ParticipationDecision, message: Message, thresholds: DecisionThresholds, detail: string): Promise<ParticipationDecision> {
     this.diagnostics.set(key, decision.reason);
     if (this.store) {
       const record: ParticipationRecord = { messageId: message.id, channel: message.channel, author: message.author, text: message.text.slice(0, 240), timestamp: message.timestamp ?? Date.now(), decision, thresholds, detail };
-      try { await this.store.putRecord(message.server, 'participation_decision', message.id, record as unknown as Json, 0); }
+      try {
+        const old = await this.store.record(message.server, 'participation_decision', message.id);
+        const previous = old?.value as unknown as ParticipationRecord | undefined;
+        if (previous?.decision.reason === 'classifier_failed') record.detail = `${previous.detail} Recovery check: ${detail}`.slice(-4000);
+        await this.store.putRecord(message.server, 'participation_decision', message.id, record as unknown as Json, old?.revision ?? 0);
+      }
       catch (error) { logError('participation_diagnostic_save_failed', error, { server: message.server, channel: message.channel }, true); }
     }
     return decision;

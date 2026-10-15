@@ -41,6 +41,7 @@ export class Bot {
   /** Times of recent replies to other bots, per channel. Stops bot-to-bot loops. */
   private readonly botReplies = new Map<string, number[]>();
   private readonly replies = new Map<string, Promise<void>>();
+  private readonly classificationRetries = new Map<string, ReturnType<typeof setTimeout>>();
   // Open private chats of this server. A chat is added when its web chat row exists, and removed when it is deleted.
   private readonly privateChats = new Set<string>();
 
@@ -51,7 +52,7 @@ export class Bot {
     private readonly gateway: ChatGateway,
     private readonly server: string,
     private channels: readonly string[],
-    private readonly options: { knowledge?: Knowledge; participation?: ParticipationGate; worker?: TaskWorker; tools?: ToolRegistry; queueStore?: QueueStore; profiles?: ProfileStore; botReplyLimit?: () => BotReplyLimit; mutedUntil?: (user: string) => number | undefined } = {},
+    private readonly options: { knowledge?: Knowledge; participation?: ParticipationGate; worker?: TaskWorker; tools?: ToolRegistry; queueStore?: QueueStore; profiles?: ProfileStore; botReplyLimit?: () => BotReplyLimit; mutedUntil?: (user: string) => number | undefined; classificationRetryMs?: number } = {},
   ) {
     for (const task of registry.taskThreads(server)) {
       if (channels.includes(task.parent)) {
@@ -90,18 +91,18 @@ export class Bot {
   }
 
   /** `ingested` is true when the caller already saved the message, so it is not saved twice. */
-  async receive(message: Incoming, options: { ingested?: boolean } = {}): Promise<void> {
+  async receive(message: Incoming, options: { ingested?: boolean; classificationAttempt?: number } = {}): Promise<void> {
     if (!this.accepts(message.server, message.channel)) return;
     if (message.botAuthor) message = { ...message, isBot: true };
     requestTimings.begin(message);
-    try { await requestTimings.withScope(message, () => this.receiveScoped(message, options.ingested === true)); }
+    try { await requestTimings.withScope(message, () => this.receiveScoped(message, options.ingested === true, options.classificationAttempt ?? 0)); }
     catch (error) {
       if (!(error instanceof UserLimitError)) throw error;
       // Only a direct request gets the notice. Unsolicited replies stay silent.
       if (message.mentionsBot || message.repliesToBot || message.addressed === true || this.tasks.has(message.channel)) await this.send(message, limitReply(error.resetAt));
     }
   }
-  private async receiveScoped(message: Incoming, alreadyIngested: boolean): Promise<void> {
+  private async receiveScoped(message: Incoming, alreadyIngested: boolean, classificationAttempt: number): Promise<void> {
     const task = this.tasks.has(message.channel);
     const privateChat = isPrivateChannel(message.channel);
     // A web reply arrives with addressed=true, so it always gets an answer and skips JEV. A private chat always does, even without that flag.
@@ -124,7 +125,7 @@ export class Bot {
       return;
     }
     if (!addressed) {
-      if (!await this.store.ingest({ ...message, addressed: false })) return;
+      if (!ingested && !await this.store.ingest({ ...message, addressed: false })) return;
       ingested = true;
       // Other bots' status/error commentary is evidence, not an automatic task
       // request. Explicit mentions and replies still support collaboration.
@@ -133,6 +134,7 @@ export class Bot {
       if (!gate) return;
       const context = await requestTimings.measure(message, "participation context", () => this.store.context(message, gate.options.contextMessages));
       const decision = await requestTimings.measure(message, "participation", () => gate.decide(message, context));
+      if (decision.reason === 'classifier_failed' && decision.retryable) this.retryClassification(message, classificationAttempt);
       if (decision.emoji && this.gateway.react) {
         try { await requestTimings.measure(message, "reaction", () => this.gateway.react!(message, decision.emoji!)); }
         catch (error) { logError("discord_reaction_failed", error, { stage: "Discord reaction", server: message.server, channel: message.channel, messageId: message.id }, true); }
@@ -188,6 +190,23 @@ export class Bot {
     } else if (task) {
       await this.enqueue(request);
     } else { await this.process(request, ingested); }
+  }
+  private retryClassification(message: Incoming, attempt: number): void {
+    const key = JSON.stringify([message.server, message.channel, message.id]);
+    if (attempt >= 2 || this.classificationRetries.has(key) || this.classificationRetries.size >= 100 || Date.now() - (message.timestamp ?? Date.now()) > 60000) return;
+    const timer = setTimeout(() => {
+      this.classificationRetries.delete(key);
+      const recover = async () => {
+        const lookup = (this.store as { canonicalMessage?(server: string, id: string): Message | undefined | Promise<Message | undefined> }).canonicalMessage;
+        if (!lookup || !this.accepts(message.server, message.channel) || Date.now() - (message.timestamp ?? Date.now()) > 60000) return;
+        const current = await lookup.call(this.store, message.server, message.id);
+        if (!current || JSON.stringify([current.text, current.attachments, current.replyTo]) !== JSON.stringify([message.text, message.attachments, message.replyTo])) return;
+        await this.receive(message, { ingested: true, classificationAttempt: attempt + 1 });
+      };
+      void recover().catch(error => logError('classifier_recovery_failed', error, { server: message.server, channel: message.channel, messageId: message.id }, true));
+    }, this.options.classificationRetryMs ?? 10000);
+    timer.unref();
+    this.classificationRetries.set(key, timer);
   }
 
   /**
