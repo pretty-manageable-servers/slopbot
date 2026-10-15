@@ -10,6 +10,7 @@ import { attribution, DECISION_OUTPUT_TOKENS, promptEstimate, type UsageMeter } 
 
 import { decisionQuestions as questions } from "../participation-prompts.js";
 import { defaultDecisionThresholds, scoredDecision } from '../participation-history.js';
+import { classifierInput } from '../classifier-input.js';
 
 function probability(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) throw new Error("Invalid decision probability");
@@ -28,14 +29,14 @@ export class DecisionClassifier implements Classifier {
   async classify(message: Message, context: readonly Message[]): Promise<ParticipationDecision> {
     if (this.unsupported && this.fallback) return this.fallback.classify(message, context);
 
-    const state = JSON.stringify({ preceding: context, CURRENT: message });
+    const { state, preceding } = classifierInput(message, context);
     const prompt: Prompt = {
-      prefixVersion: "systemone-v3", prefix: [{ role: "system", content: JSON.stringify(questions) }],
+      prefixVersion: "systemone-v4", prefix: [{ role: "system", content: JSON.stringify(questions) }],
       history: [], inputs: [{ role: "user", content: state }],
     };
     const runId = randomUUID();
     await this.store.startRun(runId, message, prompt);
-    await this.store.recordSources(runId, message.server, [message.id, ...context.map(item => item.id)]);
+    await this.store.recordSources(runId, message.server, [message.id, ...preceding.map(item => item.id)]);
     try {
       const response = await this.aliases.request(this.options.model, model => requestTimings.wait("decision endpoint headers", () => this.fetcher(`${this.options.baseUrl.replace(/\/$/, "")}/systemone`, {
         method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.options.apiKey}` },

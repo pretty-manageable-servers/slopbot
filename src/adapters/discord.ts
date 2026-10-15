@@ -1,4 +1,5 @@
 import { LocalDiskStorage } from "../web-chat-images.js";
+import { CLASSIFIER_CONTEXT_LIMIT } from '../classifier-input.js';
 import { ChatFileFetcher } from "../web-chat-files.js";
 import { DiscordVoice, voiceTurnSkipped } from './discord-voice.js';
 import { containsSkipMarker, splitSpeak, VOICE_INSTRUCTIONS_KEY, VOICE_NAME_DEFAULT, VOICE_SKIP, voiceInstructions } from "../voice-rules.js";
@@ -172,7 +173,7 @@ export class DiscordServer implements ChatGateway {
       enabled: (typeof savedMonitoring === "boolean" ? savedMonitoring : config.jevEnabled) && !config.mock,
       thresholds: decisionThresholds(store.setting(guildId, 'participation_thresholds'), config.jevThresholds),
       reactionFrequency: savedLimit("reaction_frequency", store.setting(guildId, "reactions_enabled") === false ? 0 : 60, 100),
-      contextMessages: savedLimit("classifier_context", config.jevContextMessages, 100),
+      contextMessages: Math.min(CLASSIFIER_CONTEXT_LIMIT, savedLimit("classifier_context", config.jevContextMessages, 100)),
       cooldownMs: savedLimit("cooldown_seconds", config.jevCooldownSeconds, 3600) * 1000,
       maxUnsolicitedPerHour: savedLimit("max_unsolicited_per_hour", config.jevMaxRepliesPerHour, 1000),
     }, undefined, store);

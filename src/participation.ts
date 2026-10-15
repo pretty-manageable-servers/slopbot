@@ -8,6 +8,7 @@ import type { LLM, Store } from "./ports.js";
 import { attribution, streamMetered, type UsageMeter } from "./usage-meter.js";
 import { decisionThresholds, scoredDecision, type DecisionScores, type DecisionThresholds, type ParticipationRecord } from './participation-history.js';
 import type { RecordStore } from './records.js';
+import { classifierInput } from './classifier-input.js';
 
 export interface ParticipationDecision {
   scores?: DecisionScores;
@@ -30,14 +31,15 @@ export class LLMClassifier implements Classifier {
   constructor(private readonly llm: LLM, private readonly store: Store, private readonly usage?: UsageMeter) {}
 
   async classify(message: Message, context: readonly Message[]): Promise<ParticipationDecision> {
+    const { state, preceding } = classifierInput(message, context);
     const prompt: Prompt = {
-      prefixVersion: "participation-v2",
+      prefixVersion: "participation-v3",
       prefix: [{ role: "system", content: participationPrompt }],
-      history: [], inputs: [{ role: "user", content: JSON.stringify({ recent: context, current: message }) }],
+      history: [], inputs: [{ role: "user", content: state }],
     };
     const runId = randomUUID();
     await this.store.startRun(runId, message, prompt);
-    await this.store.recordSources(runId, message.server, [message.id, ...context.map(item => item.id)]);
+    await this.store.recordSources(runId, message.server, [message.id, ...preceding.map(item => item.id)]);
     const text: string[] = [];
     const journal = new EventJournal(this.store, runId, message, "participation");
     try {

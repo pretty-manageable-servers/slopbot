@@ -1,4 +1,5 @@
 import { MAX_MUTE_MINUTES, MUTED_USERS_KEY, mutedUsers, userId } from "./muted-users.js";
+import { CLASSIFIER_CONTEXT_LIMIT } from './classifier-input.js';
 import { BOT_REPLY_LIMIT_KEY, MAX_BOT_REPLIES, MAX_BOT_REPLY_MINUTES, botReplyLimit } from "./bot-reply-limit.js";
 import { GLOBAL_SETTINGS_SCOPE } from "./usage-cost.js";
 import { isPrivateChannel } from "./private-chat.js";
@@ -137,9 +138,9 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
       participation.options.reactionFrequency = frequency;
       return `Reaction frequency: ${frequency}/100. ${frequency === 0 ? "Reactions disabled." : `${frequency}% of suitable funny messages; no separate cooldown or hourly cap. Monitoring must be enabled.`}`;
     } });
-  add({ name: "context", scope: "discord", description: "Configure preceding messages for JEV or replies", fields: { messages: integer("0 to 100 preceding messages", 100), target: choice("Default: jev", ["jev", "reply"]) }, access: "admin", effect: "write", retrySafe: true,
+  add({ name: "context", scope: "discord", description: "Configure preceding messages for JEV (maximum 5) or replies (maximum 100)", fields: { messages: integer("0 to 100 preceding messages; JEV is capped at 5", 100), target: choice("Default: jev", ["jev", "reply"]) }, access: "admin", effect: "write", retrySafe: true,
     async execute(_context, args) {
-      const count = Number(args.messages), target = args.target ?? "jev";
+      const target = args.target ?? "jev", count = Math.min(Number(args.messages), target === 'reply' ? 100 : CLASSIFIER_CONTEXT_LIMIT);
       if (target === "reply") { await store.setSetting(server, "reply_context", count); services.setReplyContext(count); }
       else { await store.setSetting(server, "classifier_context", count); participation.options.contextMessages = count; }
       return `${target} receives up to ${count} preceding messages.`;

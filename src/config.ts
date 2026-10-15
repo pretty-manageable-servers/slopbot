@@ -1,4 +1,5 @@
 import { DEFAULT_MAX_TOOL_ROUNDS } from "./errors.js";
+import { CLASSIFIER_CONTEXT_LIMIT } from './classifier-input.js';
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, modelTokenLimits } from "./context.js";
 import { parseFallbackPrice, parseModelPrices, type ModelPrice, type PriceTable } from "./usage-cost.js";
 import { defaultDecisionThresholds, type DecisionThresholds } from './participation-history.js';
@@ -142,7 +143,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       unsolicited: threshold('JEV_UNSOLICITED_THRESHOLD', defaultDecisionThresholds.unsolicited),
       funny: threshold('JEV_FUNNY_THRESHOLD', defaultDecisionThresholds.funny),
     },
-    jevContextMessages: integer("JEV_CONTEXT_MESSAGES", 8, 100),
+    jevContextMessages: Math.min(CLASSIFIER_CONTEXT_LIMIT, integer("JEV_CONTEXT_MESSAGES", CLASSIFIER_CONTEXT_LIMIT, 100)),
     jevCooldownSeconds: integer("JEV_COOLDOWN_SECONDS", 60, 3600),
     jevMaxRepliesPerHour: integer("JEV_MAX_REPLIES_PER_HOUR", 3, 1000),
     replyContextMessages: integer("REPLY_CONTEXT_MESSAGES", 12, 100),
