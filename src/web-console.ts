@@ -115,6 +115,7 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
     if (path === '/api/admin/usage/total') return panel.totalUsage(id => admin.serverInfo(id));
     if (path === '/api/admin/system-prompt/full') return panel.fullSystemPrompt();
     if (path === '/api/admin/web-keys') return panel.webKeys(user);
+    if (path === '/api/admin/llm') return panel.llm();
     return undefined;
   }
   if (path === '/api/admin/limits') return panel.saveLimits(body);
@@ -127,6 +128,8 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
   if (path === '/api/admin/system-prompt') return panel.saveSystemPrompt(body);
   if (path === '/api/admin/bot-replies') return panel.saveBotReplies(body);
   if (path === '/api/admin/schedule-limits') return panel.saveScheduleLimits(body);
+  if (path === '/api/admin/llm') return panel.saveLlm(body);
+  if (path === '/api/admin/llm/test') return panel.testLlm();
   if (path === '/api/admin/transcripts') {
     const input = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
     if (typeof input.enabled !== 'boolean') throw new AdminInputError('Invalid web transcript setting.');
