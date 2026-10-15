@@ -1,6 +1,6 @@
 import type { Json, PromptItem } from "./domain.js";
 
-export interface ContextField { field: string; value: Json; self_reported: boolean; source_ids: readonly string[] }
+export interface ContextField { field: string; value: Json; self_reported: boolean; source_ids: readonly string[]; scope?: 'global' }
 export interface ContextPerson { user_id: string; display_name: string; requester?: true; discord?: Json; fields: readonly ContextField[] }
 export interface ContextInput { request: Record<string, Json>; people: readonly ContextPerson[]; evidence: readonly Json[] }
 
@@ -12,7 +12,7 @@ const scalar = (value: Json) => typeof value === "string" && !/[\r\n]/.test(valu
 const oneLine = (text: string) => text.replace(/[\r\n]+/g, " ");
 
 function fieldText(field: ContextField): string {
-  return `${oneLine(field.field)}=${scalar(field.value)}${field.self_reported ? "" : " (not self-reported)"}`;
+  return `${oneLine(field.field)}=${scalar(field.value)}${field.scope === 'global' ? ' (global, owner-supplied)' : ''}${field.self_reported ? "" : " (not self-reported)"}`;
 }
 
 /** One line of the People section. Used by contextBlock and by the budget count. */

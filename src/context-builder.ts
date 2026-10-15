@@ -5,6 +5,7 @@ import type { Store } from "./ports.js";
 import type { Recall } from "./memory.js";
 import type { TokenCounter } from "./context.js";
 import type { ProfileStore } from "./profiles.js";
+import { globalProfiles } from './global-profiles.js';
 import type { ToolExecutor } from "./tools.js";
 import { expandReplySubject, shouldRecall, personResponses, suggestRequestTool } from "./request-routing.js";
 import { isPrivateChannel } from "./private-chat.js";
@@ -22,7 +23,9 @@ interface ContextOptions {
 /** One person of the People section, with the fields of their profile. The requester is marked. */
 async function personFor(profiles: ProfileStore, message: Message, author: string): Promise<ContextPerson> {
   const profile = await profiles.profile(message.server, author);
-  return { user_id: author, display_name: profile.name, ...(author === message.author ? { requester: true as const } : {}), discord: profile.identity, fields: profile.fields.map(field => ({ field: field.field, value: field.value, self_reported: field.editor === author, source_ids: field.sourceIds })) };
+  const global = await globalProfiles(profiles)?.get(author);
+  const globalNames = new Set(global?.fields.map(field => field.field));
+  return { user_id: author, display_name: profile.name, ...(author === message.author ? { requester: true as const } : {}), discord: profile.identity, fields: [...profile.fields.filter(field => !globalNames.has(field.field)).map(field => ({ field: field.field, value: field.value, self_reported: field.editor === author, source_ids: field.sourceIds })), ...(global?.fields ?? []).map(field => ({ field: field.field, value: field.value, self_reported: true, source_ids: [], scope: 'global' as const }))] };
 }
 export class ContextBuilder {
   constructor(private readonly options: ContextOptions) {}

@@ -125,7 +125,7 @@ Profiles use stable Discord user IDs and are public within the configured server
 - `/slopbot profile action:history` privately lists your revisions; `action:undo revision:<id>` restores the previous valid value. Only the owner can undo; a newer edit must be undone first.
 - Ask conversationally: “Slopbot, add Oscar as a nickname for @RiceFarmer.” The same permission checks and edit journal apply. Writes run in a task thread.
 
-Current custom fields are scoped to this server. There is no automatic sharing across servers. Edits/deletes to supporting messages invalidate the associated profile entries. Profile aliases participate in exact name lookup; ambiguous names require a mention. The profile storage interface supports asynchronous database adapters.
+Custom fields default to this server. Use `/slopbot profile scope:global action:set field:github value:"https://github.com/you"` to publish an account-wide field, and `scope:global action:get` to read the same profile from any server. Only you can edit, remove, inspect history or undo your global fields; admins cannot override this or grant others edit access. Global owner fields override conflicting server fields in the bot's context. Global fields persist until you remove them, even if the original message is deleted. The latest 200 global edits are retained for undo. There is no automatic sharing of existing server fields. Edits/deletes to supporting messages invalidate the associated profile entries. Profile aliases participate in exact name lookup; ambiguous names require a mention. The profile storage interface supports asynchronous database adapters.
 
 ### Files
 
