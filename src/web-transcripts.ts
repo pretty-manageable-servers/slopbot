@@ -13,7 +13,7 @@ import { isPrivateChannel } from "./private-chat.js";
 import { conversationSummary, groupConversations, type ChannelReply, type ChannelRun, type ConversationGroup, type RunSource } from "./conversation-groups.js";
 
 export interface TranscriptRun { id: string; message: Message; purpose: string; status: string; result: string | null; context?: Json }
-export interface ToolTurn { calls: ToolCall[]; results: Record<string, ToolOutput> }
+export interface ToolTurn { calls: ToolCall[]; results: Record<string, ToolOutput>; diagnosticArgs?: Json[] | null }
 
 /** Everything the web transcript routes read. Both SQLite and PostgreSQL stores implement it. */
 export interface TranscriptStore extends ConversationEventStore {

@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { Json, Message } from './domain.js';
-import { redactErrorText, ToolError } from './errors.js';
+import { ToolError } from './errors.js';
+import { diagnosticText, safeDiagnosticData } from './diagnostic-data.js';
+export { diagnosticText, safeDiagnosticData } from './diagnostic-data.js';
 import type { OperationsConfig } from './operations-config.js';
 import { runtimeVersion } from './operations-config.js';
 import type { OperationsClient, PullRequest } from './adapters/operations-client.js';
@@ -10,15 +12,7 @@ import { toolResult, type ToolArgs, type ToolContext, type ToolDefinition, type 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 32);
 const evidenceId = (context: ToolContext) => hash(`${context.message.channel}:${context.operationId}`);
 const marker = (context: ToolContext) => `<!-- slopbot-operation:${hash(context.operationId)} -->`;
-// Preserve line breaks while using the existing credential redactor on every line.
-export const diagnosticText = (text: string, max = 16000) => text.replace(/-----BEGIN (?:RSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA )?PRIVATE KEY-----/g, '[redacted]').split('\n').map(line => redactErrorText(line).replace(/@(everyone|here)/gi, '@\u200b$1')).join('\n').slice(0, max);
 const json = (value: unknown): Json => JSON.parse(JSON.stringify(value)) as Json;
-export function safeDiagnosticData(value: Json): Json {
-  if (typeof value === 'string') return diagnosticText(value);
-  if (Array.isArray(value)) return value.map(safeDiagnosticData);
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, /token|secret|password|authorization|cookie|api[_-]?key|private[_-]?key/i.test(key) ? '[redacted]' : safeDiagnosticData(item)]));
-  return value;
-}
 const messageLink = (m: Pick<Message, 'server' | 'channel' | 'id'>) => /^\d+$/.test(m.id) ? `https://discord.com/channels/${m.server}/${m.channel}/${m.id}` : undefined;
 const integer = (description: string, max = Number.MAX_SAFE_INTEGER) => ({ type: 'integer' as const, description, min: 1, max });
 const text = (description: string, max = 2000, required = false) => ({ type: 'string' as const, description, max, required });
@@ -119,7 +113,7 @@ export class Operations {
         ...(args.include_text === true && run.status === 'completed' ? { response: diagnosticText(run.result ?? '', 2000) } : {}),
         tools: turns.slice(-16).flatMap(turn => turn.calls.map((call, index) => {
           const output = turn.results[String(index)]; const result = output === undefined ? undefined : toolResult(output);
-          return { name: call.name, status: result?.status ?? (result ? 'ok' : 'unfinished'), error: result?.reason ? diagnosticText(result.reason, 1000) : null };
+          return { name: call.name, args: turn.diagnosticArgs?.[index] ?? null, status: result?.status ?? (result ? 'ok' : 'unfinished'), error: result?.reason ? diagnosticText(result.reason, 1000) : null };
         })).slice(-32) });
     }
     const requests = new Set(runs.map(r => r.requestId)); requests.add(target.id);
@@ -163,7 +157,7 @@ export function registerOperationsTools(registry: ToolRegistry, services: Operat
     if (server && !services.config.servers.includes(server) && !memberReportingTools.has(definition.name)) return;
     registry.register(definition);
   };
-  add({ ...base, name: 'interaction_inspect', access: 'member', description: 'Collect durable evidence for a reported bot interaction. Reply to the affected message or supply its ID. Returns saved runs, tool statuses, failures, context inventory, timings and the version at execution. Text excerpts require include_text:true; use only relevant excerpts when filing an issue. Raw prompts and reasoning are excluded.',
+  add({ ...base, name: 'interaction_inspect', access: 'member', description: 'Collect durable evidence for a reported bot interaction. Reply to the affected message or supply its ID. Returns saved runs, tool statuses, redacted diagnostic arguments (2 KiB per call for new turns; null for old turns), failures, context inventory, timings and the version at execution. Text excerpts require include_text:true; use only relevant excerpts when filing an issue. Raw prompts and reasoning are excluded.',
     fields: { message_id: { type: 'message_ref', description: 'Affected request or response ID: a Discord message ID or a web chat message ID' }, include_text: { type: 'boolean', description: 'Include selected message/response excerpts for the report, default false' } }, execute: (context, args) => ops.interaction(context, args) });
   add({ ...base, name: 'deployment_inspect', description: 'Inspect actual production container image/status and recent GitHub deployment workflow runs. Running does not prove the bot behavior is healthy. Saves evidence with observation time; historical interactions have their own version.', fields: {},
     async execute(context) {

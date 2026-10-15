@@ -1,5 +1,6 @@
 import { readParticipationHistory, type ParticipationHistoryQuery } from '../participation-history.js';
 import { findIssueReportOrigin } from '../issue-report-origin.js';
+import { diagnosticArgs } from '../diagnostic-data.js';
 import { contextChangedError, legacyToolProgress, sourceFingerprint, type ContextChange } from "../source-context.js";
 import { logError } from "../errors.js";
 import type { HarnessJournal, HarnessState, HarnessEvent } from "../harness-state.js";
@@ -397,6 +398,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     if (!this.db.prepare("PRAGMA table_info(web_replies)").all().some(column => column.name === "via")) this.db.exec("ALTER TABLE web_replies ADD COLUMN via TEXT NOT NULL DEFAULT 'webhook'");
     if (!this.db.prepare("PRAGMA table_info(web_chats)").all().some(column => column.name === "effort")) this.db.exec("ALTER TABLE web_chats ADD COLUMN effort TEXT");
     const operationColumns = this.db.prepare("PRAGMA table_info(tool_operations)").all();
+    if (!this.db.prepare('PRAGMA table_info(agent_turns)').all().some(column => column.name === 'diagnostic_args')) this.db.exec('ALTER TABLE agent_turns ADD COLUMN diagnostic_args TEXT');
     if (!operationColumns.some(column => column.name === "resource")) this.db.exec("ALTER TABLE tool_operations ADD COLUMN resource TEXT");
     const jobColumns = this.db.prepare("PRAGMA table_info(jobs)").all();
     if (!jobColumns.some(column => column.name === "available_at")) this.db.exec("ALTER TABLE jobs ADD COLUMN available_at INTEGER NOT NULL DEFAULT 0");
@@ -567,8 +569,8 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   addAgentTurn(message: Message, text: string, calls: ToolCall[]): AgentTurn {
     const version = Number(this.db.prepare("SELECT version FROM context_versions WHERE server=? AND channel=?").get(message.server, message.channel)?.version ?? 0);
     const turn: AgentTurn = { id: randomUUID(), text, calls, results: {}, version };
-    this.db.prepare("INSERT INTO agent_turns(id,server,message_id,text,calls,results,version) VALUES(?,?,?,?,?,?,?)")
-      .run(turn.id, message.server, message.id, text, JSON.stringify(calls), "{}", version);
+    this.db.prepare("INSERT INTO agent_turns(id,server,message_id,text,calls,results,version,diagnostic_args) VALUES(?,?,?,?,?,?,?,?)")
+      .run(turn.id, message.server, message.id, text, JSON.stringify(calls), "{}", version, JSON.stringify(calls.map(call => diagnosticArgs(call.arguments))));
     return turn;
   }
   agentResult(turnId: string, index: number, result: ToolOutput): void {
@@ -774,9 +776,9 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     if (!row) return undefined;
     return { id: String(row.id), message: parseMessage(JSON.parse(String(row.message))), purpose: String(JSON.parse(String(row.prompt)).purpose ?? "reply"), status: String(row.status), result: row.result === null ? null : String(row.result), context: promptInventory(JSON.parse(String(row.prompt))) };
   }
-  async toolTurns(server: string, messageId: string): Promise<{ calls: ToolCall[]; results: Record<string, ToolOutput> }[]> {
-    return this.db.prepare("SELECT calls,results FROM agent_turns WHERE server=? AND message_id=? AND valid=1 ORDER BY sequence")
-      .all(server, messageId).map(row => ({ calls: JSON.parse(String(row.calls)), results: JSON.parse(String(row.results)) }));
+  async toolTurns(server: string, messageId: string): Promise<{ calls: ToolCall[]; results: Record<string, ToolOutput>; diagnosticArgs: Json[] | null }[]> {
+    return this.db.prepare("SELECT calls,results,diagnostic_args FROM agent_turns WHERE server=? AND message_id=? AND valid=1 ORDER BY sequence")
+      .all(server, messageId).map(row => ({ calls: JSON.parse(String(row.calls)), results: JSON.parse(String(row.results)), diagnosticArgs: row.diagnostic_args === null ? null : JSON.parse(String(row.diagnostic_args)) }));
   }
   async appendConversationEvent(row: { server: string; channel: string; kind: string; ref: string; data: Json; createdAt: number }): Promise<number> {
     const saved = this.db.prepare("INSERT INTO conversation_events(server,channel,kind,ref,data,created_at) VALUES(?,?,?,?,?,?) RETURNING stream_id")

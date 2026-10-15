@@ -8,6 +8,8 @@ import { FixWatchWorker } from '../src/fix-watch-worker.js';
 import { ToolRegistry } from '../src/tools.js';
 import type { Message, Json } from '../src/domain.js';
 import { loadOperationsConfig } from '../src/operations-config.js';
+import { runToolsCodeTool } from '../src/run-tools-code.js';
+import { Application } from '../src/application.js';
 
 const sha = 'a'.repeat(40), oldSha = 'b'.repeat(40);
 const report: Message = { server: 's', channel: 'task', id: 'report', author: 'admin', text: 'Investigate and file an issue' };
@@ -69,6 +71,21 @@ async function fixture(t: { after(fn: () => void): void }, servers = ['s']) {
   return { store, client, registry, ops, denied, invoke, evidence, setAdmin(value: boolean) { admin = value; } };
 }
 const reportArgs = (id: string) => ({ title: 'Attachment decoding fails', expected: 'Summary of the attachment', actual: 'DECODE_FAILED', steps: 'Reply to the linked attachment', acceptance: 'Attachment summary succeeds', evidence_ids: [id] });
+
+test('interaction inspection returns the persisted redacted code after running run_tools_code', async t => {
+  const f = await fixture(t); f.registry.register(runToolsCodeTool(f.registry)); let rounds = 0;
+  const code = 'const api_key = "github_pat_abcdefghijklmnop";\ntext(1 + 1);';
+  const app = new Application(f.store, { async *stream() { yield ++rounds === 1 ? { kind: 'tool_call', payload: [{ name: 'run_tools_code', arguments: { code } }] } : { kind: 'text', payload: { text: 'Done' } }; } }, { allowedChannels: [{ server: 's', channel: 'source' }] }, undefined,
+    { harness: f.store, tools: { schemas: () => f.registry.schemas(), catalog: () => f.registry.catalog(), execute: (message, call, id) => f.registry.invokeResult(message, call.name, call.arguments, id, 'agent') } });
+  const executed = { ...request, id: 'chat-diagnostic-args', text: 'Run this program', addressed: true };
+  await app.handle(executed); assert.equal(rounds, 2);
+  const result = await f.invoke('interaction_inspect', { message_id: executed.id }, 'inspect-code');
+  const data = result.data as unknown as { data: { runs: { tools: { name: string; args: { code: string } }[] }[] } };
+  const tool = data.data.runs.flatMap(run => run.tools).find(tool => tool.name === 'run_tools_code')!;
+  assert.match(tool.args.code, /text\(1 \+ 1\)/); assert.match(tool.args.code, /\n/);
+  assert.ok(!tool.args.code.includes('github_pat_')); assert.ok(Buffer.byteLength(JSON.stringify(tool.args)) <= 2048);
+  assert.ok(!result.text.includes('github_pat_'));
+});
 
 test('the original reporter can remove evidence and replace their report without creating duplicates', async t => {
   const f = await fixture(t); const e = await f.evidence();

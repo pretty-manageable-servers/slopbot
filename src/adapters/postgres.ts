@@ -1,5 +1,6 @@
 import { readParticipationHistory, type ParticipationHistoryQuery } from '../participation-history.js';
 import { findIssueReportOrigin } from '../issue-report-origin.js';
+import { diagnosticArgs } from '../diagnostic-data.js';
 import { contextChangedError, legacyToolProgress, sourceFingerprint, type ContextChange } from "../source-context.js";
 import { logError } from "../errors.js";
 import { promptInventory, saveRunRuntime } from '../run-diagnostics.js';
@@ -412,8 +413,8 @@ export class PostgresStore {
     async addAgentTurn(message: Message, text: string, calls: ToolCall[]): Promise<AgentTurn> {
         const version = Number((await this.db.prepare("SELECT version FROM context_versions WHERE server=? AND channel=?").get(message.server, message.channel))?.version ?? 0);
         const turn: AgentTurn = { id: randomUUID(), text, calls, results: {}, version };
-        (await this.db.prepare("INSERT INTO agent_turns(id,server,message_id,text,calls,results,version) VALUES(?,?,?,?,?,?,?)")
-            .run(turn.id, message.server, message.id, text, JSON.stringify(calls), "{}", version));
+        (await this.db.prepare("INSERT INTO agent_turns(id,server,message_id,text,calls,results,version,diagnostic_args) VALUES(?,?,?,?,?,?,?,?)")
+            .run(turn.id, message.server, message.id, text, JSON.stringify(calls), "{}", version, JSON.stringify(calls.map(call => diagnosticArgs(call.arguments)))));
         return turn;
     }
     async agentResult(turnId: string, index: number, result: ToolOutput): Promise<void> {
@@ -623,9 +624,9 @@ export class PostgresStore {
         if (!row) return undefined;
         return { id: String(row.id), message: parseMessage(JSON.parse(String(row.message))), purpose: String(JSON.parse(String(row.prompt)).purpose ?? "reply"), status: String(row.status), result: row.result === null ? null : String(row.result), context: promptInventory(JSON.parse(String(row.prompt))) };
     }
-    async toolTurns(server: string, messageId: string): Promise<{ calls: ToolCall[]; results: Record<string, ToolOutput> }[]> {
-        return (await this.db.prepare("SELECT calls,results FROM agent_turns WHERE server=? AND message_id=? AND valid=1 ORDER BY sequence")
-            .all(server, messageId)).map(row => ({ calls: JSON.parse(String(row.calls)), results: JSON.parse(String(row.results)) }));
+    async toolTurns(server: string, messageId: string): Promise<{ calls: ToolCall[]; results: Record<string, ToolOutput>; diagnosticArgs: Json[] | null }[]> {
+        return (await this.db.prepare("SELECT calls,results,diagnostic_args FROM agent_turns WHERE server=? AND message_id=? AND valid=1 ORDER BY sequence")
+            .all(server, messageId)).map(row => ({ calls: JSON.parse(String(row.calls)), results: JSON.parse(String(row.results)), diagnosticArgs: row.diagnostic_args === null ? null : JSON.parse(String(row.diagnostic_args)) }));
     }
     async appendConversationEvent(row: { server: string; channel: string; kind: string; ref: string; data: Json; createdAt: number }): Promise<number> {
         const saved = await this.db.prepare("INSERT INTO conversation_events(server,channel,kind,ref,data,created_at) VALUES(?,?,?,?,?,?) RETURNING stream_id")

@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS agent_turns (
         sequence BIGSERIAL PRIMARY KEY, id TEXT NOT NULL UNIQUE, server TEXT NOT NULL, message_id TEXT NOT NULL,
         text TEXT NOT NULL, calls TEXT NOT NULL, results TEXT NOT NULL, version BIGINT NOT NULL, valid BIGINT NOT NULL DEFAULT 1
       );
+ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS diagnostic_args TEXT;
 CREATE TABLE IF NOT EXISTS author_directory (server TEXT NOT NULL, author TEXT NOT NULL, names TEXT NOT NULL, bot BIGINT NOT NULL, identity TEXT NOT NULL DEFAULT '{}', PRIMARY KEY(server,author));
 CREATE TABLE IF NOT EXISTS context_versions (
         server TEXT NOT NULL, channel TEXT NOT NULL, version BIGINT NOT NULL,
