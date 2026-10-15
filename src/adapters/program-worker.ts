@@ -23,6 +23,15 @@ function errorText(handle: QuickJSHandle): string {
   try { return result.error ? 'Execution interrupted or memory exhausted.' : vm.getString(result.value); }
   finally { result.dispose(); }
 }
+function returnedJson(handle: QuickJSHandle): { json?: string; unserializable?: boolean } {
+  // The guest stringifies its own return value. The host never evaluates guest source.
+  if (vm.typeof(handle) === 'undefined') return {};
+  vm.setProp(vm.global, '__returned', handle);
+  const result = slice(() => vm.evalCode('(() => { try { return JSON.stringify(__returned); } finally { delete globalThis.__returned; } })()'));
+  if (result.error) { result.error.dispose(); return { unserializable: true }; }
+  try { return vm.typeof(result.value) === 'string' ? { json: vm.getString(result.value) } : { unserializable: true }; }
+  finally { result.value.dispose(); }
+}
 function fail(reason: string) { if (!ended) { ended = true; port.postMessage({ kind: 'error', error: reason }); } }
 
 const call = vm.newFunction('__call', (name, args) => {
@@ -39,13 +48,27 @@ const text = vm.newFunction('__text', value => {
   if (json.length > limits.maxOutputBytes) throw Error('Output exceeds limit');
   port.postMessage({ kind: 'text', json });
 });
-vm.setProp(vm.global, '__call', call); vm.setProp(vm.global, '__text', text); call.dispose(); text.dispose();
+const log = vm.newFunction('__log', (level, value) => {
+  // The guest trims each console line to 1000 characters before it calls this bridge.
+  if (ended || vm.typeof(level) !== 'string' || vm.typeof(value) !== 'string') return;
+  port.postMessage({ kind: 'log', level: vm.getString(level), text: vm.getString(value) });
+});
+vm.setProp(vm.global, '__call', call); vm.setProp(vm.global, '__text', text); vm.setProp(vm.global, '__log', log);
+call.dispose(); text.dispose(); log.dispose();
 const setup = slice(() => vm.evalCode(`(() => {
-  const call = __call, emit = __text, stringify = JSON.stringify;
-  delete globalThis.__call; delete globalThis.__text;
+  const call = __call, emit = __text, record = __log, stringify = JSON.stringify;
+  delete globalThis.__call; delete globalThis.__text; delete globalThis.__log;
   const tools = Object.create(null);
   // A missing argument is sent as null; the host reads null and undefined as no arguments.
   const send = (name, args) => call(name, stringify(args) ?? 'null');
+  // Console values print as text: strings as they are, other values as JSON, else String(value).
+  const show = value => {
+    if (typeof value === 'string') return value;
+    try { return stringify(value) ?? String(value); }
+    catch { try { return String(value); } catch { return '[unprintable]'; } }
+  };
+  const write = level => (...values) => record(level, values.map(show).join(' ').slice(0, 1000));
+  Object.defineProperty(globalThis, 'console', { value: Object.freeze({ log: write('log'), info: write('log'), warn: write('warn'), error: write('error') }) });
   for (const name of ${JSON.stringify(names)}) tools[name] = args => send(name, args);
   // Each tool is also a global NAME(args), unless the name is reserved or already a JavaScript global.
   const reserved = ['tools', 'text', 'list_tools', 'describe_tool', 'save_to_sandbox'];
@@ -72,7 +95,12 @@ function pump() {
     jobs.dispose();
     const state = vm.getPromiseState(program);
     if (state.type === 'rejected') { fail(errorText(state.error)); state.error.dispose(); }
-    else if (state.type === 'fulfilled') { state.value.dispose(); ended = true; port.postMessage({ kind: 'done' }); }
+    else if (state.type === 'fulfilled') {
+      const returned = returnedJson(state.value);
+      state.value.dispose(); ended = true;
+      if (returned.unserializable) port.postMessage({ kind: 'log', level: 'warn', text: 'Return value is not JSON serializable.' });
+      port.postMessage(returned.json === undefined ? { kind: 'done' } : { kind: 'done', json: returned.json });
+    }
     else if (runtime.hasPendingJob()) setImmediate(pump);
     else if (!pending.size) fail('Program is awaiting a promise that no tool can resolve.');
   } catch { fail('Execution interrupted or memory exhausted.'); }
