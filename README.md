@@ -1,6 +1,6 @@
 # Slopbot
 
-Discord bot for the [context architecture](architecture/CONTEXT.md). Mentions and replies get fresh answers. `@Slopbot !task <goal>` creates a shared thread with persistent conversation history.
+Discord bot for the [context architecture](architecture/CONTEXT.md), with an agent lifecycle that follows [Auger's state machine](architecture/HARNESS.md). Mentions and replies get fresh answers. `@Slopbot !task <goal>` creates a shared thread with persistent conversation history.
 
 The optional [web configuration console](architecture/WEB_UI.md) provides Discord sign-in and live controls for server participation, monitored channels, history imports and your profile. Its setup and branding sources are documented there.
 
