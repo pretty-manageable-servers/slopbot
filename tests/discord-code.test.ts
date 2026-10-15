@@ -136,10 +136,10 @@ test('confirm message shows the call, arguments in a json block, and Confirm and
   assert.deepEqual(sent[0].allowedMentions, { users: ['requester'] });
 });
 
-test('show code buttons appear for summary runs and for full runs with long code only', () => {
+test('one tool trace button appears in summary and full modes', () => {
   const short = { id: 'a', name: 'run_tools_code', status: 'completed' as const, code: 'text(1)' };
   const long = { id: 'b', name: 'run_tools_code', status: 'completed' as const, code: 'x\n'.repeat(SHOW_CODE_INLINE_LINES + 1) };
-  assert.equal(showCodeRows([short], 'full').length, 0);
+  assert.equal(showCodeRows([short], 'full').length, 1);
   assert.equal(showCodeRows([short], 'summary').length, 1);
   assert.equal(showCodeRows([short, long], 'full').length, 1);
   assert.equal(showCodeRows([short, long], 'none').length, 0);

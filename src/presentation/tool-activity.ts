@@ -1,6 +1,5 @@
 import type { ToolActivity } from "../tool-activity.js";
 import { currentStep, slopbotEmoji, toolEmoji, toolGroup } from "./tool-labels.js";
-import { codeBlock, codeFitsInline } from "../code-display.js";
 
 const PROGRAM_TOOL = "run_tools_code";
 // Child calls of a code run are shown under the run, not in the summary counts.
@@ -42,9 +41,7 @@ export function toolFooter(activity: readonly ToolActivity[], mode: ToolDisplayM
   const groups = [...counts(topLevel(activity).filter(item => item.status === 'completed'))].map(([name, count]) => `${toolEmoji(name)} ${count} ${toolGroup(name)[count === 1 ? 0 : 1]}`);
   const unknown = activity.filter(item => item.status === 'running').map(item => `-# ${toolGroup(item.name)[0]} outcome unknown: no confirmed result.`);
   const failures = mode === "full" ? activity.filter(failed).map(item => `-# ❌ ${toolGroup(item.name)[0]} ${status(item)}${reason(item, 200)}`) : [];
-  // Full mode shows short program code inline. Longer code gets a Show code button instead.
-  const code = mode === "full" ? topLevel(activity).filter(item => item.name === PROGRAM_TOOL && typeof item.code === "string" && codeFitsInline(item.code)).map(item => codeBlock(item.code!)) : [];
-  const lines = [...(groups.length ? [`-# ${groups.join(" · ")}${totalTime(activity)}`] : []), ...code, ...failures, ...unknown];
+  const lines = [...(groups.length ? [`-# ${groups.join(" · ")}${totalTime(activity)}`] : []), ...failures, ...unknown];
   return lines.length ? "\n\n" + lines.join("\n") : '';
 }
 export function toolProgress(activity: readonly ToolActivity[], funLine: string): string {

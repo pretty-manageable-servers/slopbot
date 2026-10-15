@@ -56,15 +56,15 @@ test('activity_keeps_code: a final status update keeps the code of a run_tools_c
   assert.equal(reply?.toolActivity?.[0]?.code, code);
 });
 
-test('show_code_button_attached: a run with code gets a Show code button in summary mode and in full mode when the code is long', () => {
+test('one tool trace entry covers all programs and child calls', () => {
   const short: ToolActivity = { id: 'short', name: 'run_tools_code', status: 'completed', code: 'return 1' };
   const long: ToolActivity = { id: 'long', name: 'run_tools_code', status: 'completed', code: 'x\n'.repeat(20) };
   const child: ToolActivity = { id: 'child', name: 'web_search', status: 'completed', parentId: 'short' };
   const summary = showCodeRows([short, long, child], 'summary');
   assert.equal(summary.length, 1);
-  assert.deepEqual(summary[0]!.toJSON().components.map(button => (button as { custom_id?: string }).custom_id), ['slopcode:short', 'slopcode:long']);
+  assert.deepEqual(summary[0]!.toJSON().components.map(button => (button as { custom_id?: string }).custom_id), ['sloptrace:short']);
   const full = showCodeRows([short, long], 'full');
-  assert.deepEqual(full[0]!.toJSON().components.map(button => (button as { custom_id?: string }).custom_id), ['slopcode:long']);
+  assert.deepEqual(full[0]!.toJSON().components.map(button => (button as { custom_id?: string }).custom_id), ['sloptrace:short']);
   assert.equal(showCodeRows([short], 'none').length, 0);
-  assert.equal(showCodeRows([short], 'full').length, 0);
+  assert.equal(showCodeRows([short], 'full').length, 1);
 });

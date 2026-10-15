@@ -29,6 +29,8 @@ import {UiRuntime,registerUiTool,registerPollTool} from '../ui/runtime.js';
 import type {UiDocument} from '../ui/schema.js';
 import {discordUi} from './discord-ui.js';
 import { DiscordToolProgress } from './discord-tool-progress.js';
+import { saveToolTrace } from '../tool-trace.js';
+import { handleToolTrace } from './discord-tool-trace.js';
 import { CONFIRM_RECORD, handleConfirm, handleShowCode, postConfirmation, saveConfirmation, showCodeRows, startCodeMaintenance } from './discord-code.js';
 import { toolFooter, toolDisplayMode } from '../presentation/tool-activity.js';
 import type { ToolActivity } from '../tool-activity.js';
@@ -403,7 +405,7 @@ export class DiscordServer implements ChatGateway {
     // Reopens the private chats of this server, so a restart keeps them answering.
     for (const channel of await this.store.liveWebChatChannels(this.guildId)) this.bot.openPrivateChat(this.guildId, channel);
     this.worker.start();
-    this.codeMaintenance = startCodeMaintenance(this.store);
+    this.codeMaintenance = startCodeMaintenance(this.store, this.guildId);
     const sync = () => { for (const channel of this.channels) void this.history.start(channel).catch(error => logError("History import startup failed", error, { server: this.guildId })); };
     this.reminders.start();
     this.schedules.start();
@@ -419,6 +421,7 @@ export class DiscordServer implements ChatGateway {
     if (interaction.isChatInputCommand() && interaction.commandName === "usage") void this.usageCommand(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isButton() && interaction.customId.startsWith("slopstop:")) void this.continueButton(interaction).catch(error => logError("Continue button failed.", error));
     if (interaction.isButton() && interaction.customId.startsWith("slopvoice:")) void this.voice?.button(interaction).catch(error => logError("Voice button failed.", error));
+    if (interaction.isButton() && (interaction.customId.startsWith("sloptrace:") || interaction.customId.startsWith("sloptracepage:"))) void handleToolTrace(interaction, this.store, message => this.validateChannel(message, message.channel)).catch(error => logError("Tool trace button failed.", error));
     if (interaction.isButton() && interaction.customId.startsWith("slopcode:")) void handleShowCode(interaction, this.store).catch(error => logError("Show code button failed.", error));
     if (interaction.isButton() && interaction.customId.startsWith("slopconfirm:")) void handleConfirm(interaction, this.store, this.tools).catch(error => logError("Confirm button failed.", error));
     if (interaction.isChatInputCommand() && interaction.commandName === "stop") void this.stopCommand(interaction).catch(error => logError("Command failed.", error));
@@ -769,8 +772,10 @@ export class DiscordServer implements ChatGateway {
     const rendered = await this.renderer.render(message.server, chat + toolFooter(activity, toolDisplayMode(this.store.setting(message.server, "tool_display"))) + footer);
     const flags = suppressLinkPreviews(rendered) ? MessageFlags.SuppressEmbeds : undefined;
     const payloads: import('discord.js').MessageCreateOptions[] = chat ? splitReply(rendered).map(content=>({content,flags})) : [];
-    // Show code buttons for the programs of this reply. They go on the first part of the reply.
-    const codeRows = showCodeRows(activity, toolDisplayMode(this.store.setting(message.server, "tool_display")));
+    // Freeze one trace for the whole reply before publishing its entry point.
+    const displayMode = toolDisplayMode(this.store.setting(message.server, "tool_display"));
+    const traceId = payloads.length && displayMode !== "none" ? await saveToolTrace(this.store, message, activity) : undefined;
+    const codeRows = showCodeRows(activity, displayMode, traceId);
     if (payloads.length && codeRows.length) payloads[0] = { ...payloads[0]!, components: codeRows };
     if(ui){const state=await this.uiRuntime.prepare(message,ui,deliveryId??message.id);payloads.push(discordUi(ui,state.id,state.revision));}
     for (const payload of payloads) {

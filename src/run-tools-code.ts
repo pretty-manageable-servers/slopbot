@@ -168,8 +168,8 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
         const clean = registry.validate(name, values);
         const operationId = stableOperationId(parentId, 'program', String(index), name, stableJson(clean));
         const call = { name, operationId, status: 'running' }; childCalls.push(call);
-        const started = performance.now();
-        const childReport = (status: 'running' | 'completed' | 'rejected' | 'failed', reused = false, reason?: string) => report({ id: operationId, name, arguments: clean, status, reused, parentId, ...(reason ? { reason } : {}), ...(status !== 'running' ? { durationMs: Math.round(performance.now() - started) } : {}) });
+        const started = performance.now(), startedAt = Date.now();
+        const childReport = (status: 'running' | 'completed' | 'rejected' | 'failed', reused = false, reason?: string) => report({ id: operationId, name, arguments: clean, status, reused, parentId, startedAt, ...(reason ? { reason } : {}), ...(status !== 'running' ? { durationMs: Math.round(performance.now() - started) } : {}) });
         await childReport('running');
         try {
           const previous = await registry.recordedOperation(operationId);

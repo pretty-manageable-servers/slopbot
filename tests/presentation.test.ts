@@ -56,10 +56,10 @@ test('code runs show a progress line with child call counts and no child rows in
   assert.equal(toolFooter(activity, 'summary'), '\n\n-# 🧩 1 code run');
 });
 
-test('full footer shows short program code in a js block and longer code only as a button', async () => {
+test('full footer stays compact while program details are available in the trace pager', async () => {
   const { toolFooter } = await import('../src/presentation/tool-activity.js');
   const short = [{ id: 'run', name: 'run_tools_code', status: 'completed' as const, code: 'text(1)' }];
-  assert.equal(toolFooter(short), '\n\n-# 🧩 1 code run\n```js\ntext(1)\n```');
+  assert.equal(toolFooter(short), '\n\n-# 🧩 1 code run');
   assert.equal(toolFooter(short, 'summary'), '\n\n-# 🧩 1 code run');
   const long = [{ id: 'run', name: 'run_tools_code', status: 'completed' as const, code: Array.from({ length: 16 }, (_, i) => `line${i}`).join('\n') }];
   assert.equal(toolFooter(long), '\n\n-# 🧩 1 code run');

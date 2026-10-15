@@ -5,7 +5,9 @@ import type { RecordStore } from "../records.js";
 import type { ConfirmationRequired, ToolArgs, ToolJournal, ToolRegistry } from "../tools.js";
 import { displayToolResult, ToolError, toolFailed } from "../tools.js";
 import type { ToolActivity } from "../tool-activity.js";
-import { codeBlock, codeFitsInline, codeParts, PROGRAM_CODE_KEEP_MS } from "../code-display.js";
+import { toolTraceRows } from "./discord-tool-trace.js";
+import { pruneToolTraces } from "../tool-trace.js";
+import { codeBlock, codeParts, PROGRAM_CODE_KEEP_MS } from "../code-display.js";
 
 const PROGRAM_TOOL = "run_tools_code";
 const CODE_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
@@ -18,14 +20,9 @@ export type CodeStore = RecordStore & Pick<ToolJournal, "operation" | "pruneOper
 /** The tool runner that a confirmed call goes through. */
 export type CodeRunner = Pick<ToolRegistry, "invokeResult">;
 
-/** The Show code button for each run that needs one: every run in summary mode, and full runs whose code is too long for the footer. */
-export function showCodeRows(activity: readonly ToolActivity[], mode: "none" | "summary" | "full"): ActionRowBuilder<ButtonBuilder>[] {
-  if (mode === "none") return [];
-  const buttons = activity
-    .filter(item => !item.parentId && item.name === PROGRAM_TOOL && typeof item.code === "string" && (mode === "summary" || !codeFitsInline(item.code)))
-    .slice(0, 5)
-    .map(item => new ButtonBuilder().setCustomId(`slopcode:${item.id}`).setLabel("Show code").setStyle(ButtonStyle.Secondary));
-  return buttons.length ? [new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons)] : [];
+/** One entry point for all tool runs in a reply. Legacy slopcode buttons remain readable. */
+export function showCodeRows(activity: readonly ToolActivity[], mode: "none" | "summary" | "full", traceId = activity[0]?.id): ActionRowBuilder<ButtonBuilder>[] {
+  return mode !== "none" && activity.length && traceId ? toolTraceRows(traceId) : [];
 }
 
 /** Posts the Confirm and Cancel message for a call that stopped a run_tools_code program. The record is saved before this runs. */
@@ -115,8 +112,9 @@ export async function handleConfirm(interaction: ButtonInteraction, store: CodeS
 }
 
 /** Deletes program code older than PROGRAM_CODE_KEEP_MS, once an hour. Returns a function that stops the timer. */
-export function startCodeMaintenance(store: Pick<CodeStore, "pruneOperations">): () => void {
+export function startCodeMaintenance(store: Pick<CodeStore, "pruneOperations"> & RecordStore, server: string): () => void {
   const timer = setInterval(() => {
+    void pruneToolTraces(store, server).catch(error => logError("tool_trace_prune_failed", error, {}, true));
     void Promise.resolve(store.pruneOperations?.(PROGRAM_TOOL, Date.now() - PROGRAM_CODE_KEEP_MS))
       .catch(error => logError("run_tools_code_prune_failed", error, {}, true));
   }, CODE_PRUNE_INTERVAL_MS);
