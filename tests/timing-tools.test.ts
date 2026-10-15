@@ -5,6 +5,14 @@ import { ToolRegistry, toolResult } from "../src/tools.js";
 import { registerTimingTools, saveRequestTiming } from "../src/timing-tools.js";
 import { requestTimings } from "../src/request-timing.js";
 
+test('timing inspection with no reply target returns actionable guidance without a block', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const registry = new ToolRegistry(store, async () => false);
+  registerTimingTools(registry, { store, async authorize() {} });
+  const result = await registry.invokeResult({ server: 's', channel: 'task', id: 'query', author: 'a', text: 'timing' }, 'timing_inspect', { view: 'summary' }, 'no-target', 'agent');
+  assert.match(result.text, /message_id.*timing_active/); assert.notEqual(result.status, 'rejected');
+});
+
 test("timing lookup resolves reply outputs, survives recovery and rechecks channel access", async (t) => {
   const store = new SQLiteStore();
   t.after(() => store.close());

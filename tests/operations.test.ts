@@ -81,6 +81,15 @@ test('source edits invalidate saved evidence before publication, even on replay'
   assert.equal(f.client.creates, 0);
 });
 
+test('interaction inspection without a usable default target returns guidance instead of a block', async t => {
+  const f = await fixture(t);
+  const missing = await f.invoke('interaction_inspect', {}, 'no-target');
+  assert.match(missing.text, /supply message_id/); assert.notEqual(missing.status, 'rejected');
+  const anchor = await f.invoke('interaction_inspect', {}, 'missing-anchor', { ...report, replyTo: 'unavailable-anchor' });
+  assert.match(anchor.text, /selected message is unavailable/); assert.notEqual(anchor.status, 'rejected');
+  await assert.rejects(f.invoke('interaction_inspect', { message_id: '99999999999999999' }, 'invalid-target'), /Invalid message_id: 99999999999999999.*accessible/);
+});
+
 test('issue creation reconciles a lost response and exact duplicates become comments', async t => {
   const f = await fixture(t); const e = await f.evidence(); const args = reportArgs(e.evidence_id);
   f.client.loseWrite = true;

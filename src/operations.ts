@@ -86,9 +86,13 @@ export class Operations {
     let origin = context.message;
     if (origin.id.startsWith('task-seed:')) origin = await this.services.store.canonicalMessage(origin.server, origin.id.slice(10)) ?? origin;
     const targetId = String(args.message_id ?? origin.replyTo ?? '');
-    if (!targetId) throw new ToolError('Reply to the affected interaction or supply its message_id');
+    if (!targetId) return { text: 'No affected interaction was selected. Reply to the affected request or bot response, or supply message_id with its Discord or web chat message ID.' };
     const target = await this.services.store.canonicalMessage(context.message.server, targetId);
-    if (!target) throw new ToolError('Reported message is unavailable');
+    if (!target) {
+      const guidance = 'The selected message is unavailable. Supply message_id with an accessible affected request or bot response ID.';
+      if (!args.message_id) return { text: guidance };
+      throw new ToolError(`Invalid message_id: ${targetId}. ${guidance}`);
+    }
     await this.services.authorize(context.message, target.channel);
     const ids = [...new Set([...(await this.services.store.replyRunIds(target.server, target.id)), ...(await this.services.store.requestRunIds(target.server, target.id))])];
     const runs = []; const sources = new Map<string, Message>([[target.id, target]]);

@@ -177,9 +177,7 @@ export function registerTimingTools(
       const message = context.message;
       const requested = String(args.message_id ?? message.replyTo ?? "");
       if (!requested)
-        throw new ToolError(
-          "Reply to a request or bot response, or provide message_id.",
-        );
+        return { text: "No completed reply target was selected. Reply to a completed bot response or supply message_id with its request or response ID. Use timing_active to inspect work that is still running." };
       let id = key(message.channel, requested);
       const link = await services.store.record(
         message.server,

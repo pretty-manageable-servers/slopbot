@@ -67,7 +67,7 @@ export function errorReply(error: unknown, jobId?: string): string {
 }
 export function logError(event: string, error: unknown, context: ErrorContext = {}, warning = false): void {
   const info = describeError(error);
-  const line = JSON.stringify({ type: 'error', event: redactErrorText(event), ...info, context: Object.fromEntries(Object.entries({ ...context, ...info.context }).map(([key, val]) => [key, typeof val === "string" ? redactErrorText(val) : val])) });
+  const line = JSON.stringify({ type: 'error', timestamp: new Date().toISOString(), event: redactErrorText(event), ...info, context: Object.fromEntries(Object.entries({ ...context, ...info.context }).map(([key, val]) => [key, typeof val === "string" ? redactErrorText(val) : val])) });
   if (warning) console.warn(line); else console.error(line);
 }
 
