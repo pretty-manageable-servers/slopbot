@@ -104,22 +104,30 @@ test('outputs and logs survive a later program error', async () => {
   assert.deepEqual(result.logs, ['line']);
 });
 
-test('deadline keeps earlier outputs', async () => {
-  const result = await failed(new ProgramRuntime({ ...programLimits, timeoutMs: 50 }).run('text("first"); await tools.read({});', ['read'], async () => new Promise(() => {})), /deadline/);
+test('a guest limit keeps earlier outputs', async () => {
+  // Guest messages arrive in order, so 'first' is handled before the CPU limit message.
+  // The CPU limit counts guest run time only, so worker startup on a slow runner does not affect it.
+  const result = await failed(new ProgramRuntime({ ...programLimits, cpuMs: 200 }).run('text("first"); while (true) {}', [], async () => ({})), /interrupted|failed/);
   assert.deepEqual(result.outputs, ['first']);
 });
 
 test('unfinished calls get receipts', async () => {
-  const result = await failed(new ProgramRuntime({ ...programLimits, timeoutMs: 100 }).run(`
+  // Guest messages arrive in order. The hang call is sent before the guest error,
+  // so dispatch has seen every call when the error ends the program.
+  const seen: string[] = [];
+  const result = await failed(new ProgramRuntime().run(`
     const first = await tools.fast({});
     try { await tools.bad({}); } catch {}
     text(first);
-    await tools.hang({});
+    tools.hang({});
+    throw new Error('stop');
   `, ['fast', 'bad', 'hang'], async name => {
+    seen.push(name);
     if (name === 'bad') throw new ToolError('Denied');
     if (name === 'fast') return {};
     return new Promise(() => {});
-  }), /deadline/);
+  }), /stop/);
+  assert.deepEqual(seen, ['fast', 'bad', 'hang']);
   assert.deepEqual(result.receipts, [
     { id: 0, name: 'fast', status: 'ok', bytes: 2 },
     { id: 1, name: 'bad', status: 'failed', bytes: 0 },
