@@ -156,14 +156,14 @@ function consoleAdmin(teams: TeamAdmins, panel: AdminPanel): ConsoleAdmin {
 }
 
 /** Starts a console with the team below. login(id) signs in as that Discord user and returns the headers for its requests. */
-async function teamConsole(t: TestContext, store: SQLiteStore, panel: AdminPanel, members: TeamSnapshot['members']) {
+async function teamConsole(t: TestContext, panel: AdminPanel, members: TeamSnapshot['members']) {
   const teams = new TeamAdmins({ async load() { return { ownerId: OWNER, members: [...members] }; } });
-  const server = createConsole({ origin: 'http://localhost:3000', host: '127.0.0.1', port: 3000, clientId: 'id', clientSecret: 'secret' }, { sessions: new SQLiteStore(), async canSignIn() { return true; },
+  const sessions = new SQLiteStore(); t.after(() => sessions.close());
+  const server = createConsole({ origin: 'http://localhost:3000', host: '127.0.0.1', port: 3000, clientId: 'id', clientSecret: 'secret' }, { sessions, async canSignIn() { return true; },
     async snapshot() { return {}; }, async invoke() { return {}; }, admin: consoleAdmin(teams, panel),
   });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
-  t.after(() => store.close());
   const address = server.address(); assert.ok(address && typeof address !== 'string');
   const base = `http://127.0.0.1:${address.port}`, originalFetch = globalThis.fetch;
   let identity = '';
@@ -189,9 +189,9 @@ async function teamConsole(t: TestContext, store: SQLiteStore, panel: AdminPanel
 const members: TeamSnapshot['members'] = [{ id: DEVELOPER, role: 'developer', accepted: true }, { id: READER, role: 'read_only', accepted: true }];
 
 test('GET never returns keySealed', async t => {
-  const store = new SQLiteStore();
+  const store = new SQLiteStore(); t.after(() => store.close());
   const panel = new AdminPanel(config, store, new UserLimiter(store, { fiveHourCostMicros: 100, weekCostMicros: 0, gracePercent: 10 }), new MemberDirectory(fakeSource({})), undefined, new WebKeySecrets(KEY));
-  const { login, get } = await teamConsole(t, store, panel, members);
+  const { login, get } = await teamConsole(t, panel, members);
   await panel.saveLlm({ fallback: { ...endpoint, key: SECRET } });
   for (const id of [DEVELOPER, READER]) {
     const response = await get('/api/admin/llm', await login(id));
@@ -203,9 +203,9 @@ test('GET never returns keySealed', async t => {
 });
 
 test('llm routes: members read, only editors save, test needs a saved fallback', async t => {
-  const store = new SQLiteStore();
+  const store = new SQLiteStore(); t.after(() => store.close());
   const panel = new AdminPanel(config, store, new UserLimiter(store, { fiveHourCostMicros: 100, weekCostMicros: 0, gracePercent: 10 }), new MemberDirectory(fakeSource({})), undefined, new WebKeySecrets(KEY));
-  const { login, get, post } = await teamConsole(t, store, panel, members);
+  const { login, get, post } = await teamConsole(t, panel, members);
   const outsider = await login(OUTSIDER), reader = await login(READER), developer = await login(DEVELOPER);
 
   assert.equal((await get('/api/admin/llm', outsider)).status, 403, 'a non member cannot read');
