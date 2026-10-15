@@ -195,9 +195,26 @@ function dismissNotice() {
   $('notice').hidden = true;
   $('notice-text').textContent = '';
 }
+function renderConsoleText(node, text) {
+  node.replaceChildren();
+  const value = String(text); let offset = 0;
+  for (const match of value.matchAll(/<(@!?|@&|#)(\d+)>/g)) {
+    node.append(document.createTextNode(value.slice(offset, match.index)));
+    const kind = match[1], id = match[2];
+    if (kind === '#' && state.server?.id) {
+      const link = document.createElement('a');
+      const channel = state.channels?.find(channel => channel.id === id);
+      link.textContent = channel ? `#${channel.name}` : `#channel ${id}`;
+      link.href = `https://discord.com/channels/${encodeURIComponent(state.server.id)}/${encodeURIComponent(id)}`;
+      link.target = '_blank'; link.rel = 'noopener noreferrer'; node.append(link);
+    } else node.append(document.createTextNode(`${kind === '#' ? '#channel' : kind === '@&' ? '@role' : '@user'} ${id}`));
+    offset = match.index + match[0].length;
+  }
+  node.append(document.createTextNode(value.slice(offset)));
+}
 function notice(text, sticky = false) {
   clearTimeout(noticeTimer);
-  $('notice-text').textContent = text;
+  renderConsoleText($('notice-text'), text);
   $('notice').hidden = !text;
   noticeTimer = sticky || !text ? 0 : setTimeout(dismissNotice, 5000);
 }
@@ -416,7 +433,7 @@ async function loadVoiceStatus() {
   if (!channel) { box.textContent = 'You and Slopbot need access to a server text channel.'; return; }
   try {
     const result = await request('/api/settings', { name: 'voice', args: { action: 'status' }, channel, server: id });
-    if (state.server?.id === id) box.textContent = result.text || '';
+    if (state.server?.id === id) renderConsoleText(box, result.text || '');
   } catch (error) { if (state.server?.id === id) box.textContent = error.message; }
 }
 async function loadTranscripts() {
