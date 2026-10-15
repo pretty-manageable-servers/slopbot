@@ -152,7 +152,7 @@ export function registerOperationsTools(registry: ToolRegistry, services: Operat
     registry.register(definition);
   };
   add({ ...base, name: 'interaction_inspect', access: 'member', description: 'Collect durable evidence for a reported bot interaction. Reply to the affected message or supply its ID. Returns saved runs, tool statuses, failures, context inventory, timings and the version at execution. Text excerpts require include_text:true; use only relevant excerpts when filing an issue. Raw prompts and reasoning are excluded.',
-    fields: { message_id: text('Affected request or response ID'), include_text: { type: 'boolean', description: 'Include selected message/response excerpts for the report, default false' } }, execute: (context, args) => ops.interaction(context, args) });
+    fields: { message_id: { type: 'message_ref', description: 'Affected request or response ID: a Discord message ID or a web chat message ID' }, include_text: { type: 'boolean', description: 'Include selected message/response excerpts for the report, default false' } }, execute: (context, args) => ops.interaction(context, args) });
   add({ ...base, name: 'deployment_inspect', description: 'Inspect actual production container image/status and recent GitHub deployment workflow runs. Running does not prove the bot behavior is healthy. Saves evidence with observation time; historical interactions have their own version.', fields: {},
     async execute(context) {
       const results = await Promise.allSettled([services.client.runs(), services.client.containers()]);

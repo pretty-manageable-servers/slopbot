@@ -12,7 +12,7 @@ import { loadOperationsConfig } from '../src/operations-config.js';
 const sha = 'a'.repeat(40), oldSha = 'b'.repeat(40);
 const report: Message = { server: 's', channel: 'task', id: 'report', author: 'admin', text: 'Investigate and file an issue' };
 const request: Message = { ...report, channel: 'source', id: 'request', text: 'private conversation text', timestamp: Date.now() };
-const output: Message = { ...request, id: 'output', isBot: true, text: 'private answer' };
+const output: Message = { ...request, id: '20000000000000001', isBot: true, text: 'private answer' };
 const issue = (number: number, title = 'Attachment decoding fails', body = ''): Issue => ({ number, title, body, state: 'open', html_url: `https://github.com/o/r/issues/${number}` });
 class FakeClient implements OperationsClient {
   repository = 'o/r';
@@ -114,7 +114,7 @@ test('member reports preserve guild/task boundaries while infrastructure remains
   f.setAdmin(true);
   await assert.rejects(f.invoke('issue_report', reportArgs(e.evidence_id), 'foreign-task', { ...report, channel: 'another' }), /another task/);
   await assert.rejects(f.invoke('deployment_inspect', {}, 'foreign-guild', { ...report, server: 'foreign' }), /not enabled/);
-  await assert.rejects(f.invoke('pipeline_read', { path: '.env' }, 'env-file'), /Invalid choice/);
+  await assert.rejects(f.invoke('pipeline_read', { path: '.env' }, 'env-file'), /Invalid choice for path: ".env"\. Use one of: /);
   assert.equal(f.client.creates, 1);
 });
 

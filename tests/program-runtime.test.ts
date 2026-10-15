@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ProgramRuntime, programLimits } from '../src/program-runtime.js';
-import { ToolError } from '../src/tools.js';
+import { ProgramRuntime, programLimits, type ProgramResult } from '../src/program-runtime.js';
+import { ConfirmationRequired, ToolError } from '../src/tools.js';
+
+async function failed(run: Promise<ProgramResult>, pattern: RegExp): Promise<ProgramResult> {
+  const result = await run;
+  assert.ok(result.error, 'the program should fail');
+  assert.match(result.error.message, pattern);
+  return result;
+}
 
 test('programs await parallel reads, derive arguments, and return only reduced outputs', async () => {
   let active = 0, peak = 0;
@@ -33,12 +40,12 @@ test('guest code has no Node, host globals, network, timers, or module access', 
 });
 
 test('CPU, memory, output, call-count, argument-size, and input limits stop programs', async () => {
-  await assert.rejects(new ProgramRuntime({ ...programLimits, cpuMs: 50 }).run('while(true){}', [], async () => ({})), /interrupted|failed/);
-  await assert.rejects(new ProgramRuntime({ ...programLimits, memoryBytes: 1024 * 1024 }).run('const a=[]; while(true)a.push({text:"x".repeat(1000)});', [], async () => ({})), /memory|failed|exited/);
-  await assert.rejects(new ProgramRuntime({ ...programLimits, maxOutputBytes: 100 }).run('text("x".repeat(101));', [], async () => ({})), /limit|failed/);
-  await assert.rejects(new ProgramRuntime({ ...programLimits, maxCalls: 2 }).run('await Promise.all([tools.read({}),tools.read({}),tools.read({})]); text("done");', ['read'], async () => ({})), /limit|failed/);
-  await assert.rejects(new ProgramRuntime().run('await tools.read({x:"x".repeat(65000)});text("done");', ['read'], async () => ({})), /limit|failed/);
-  await assert.rejects(new ProgramRuntime({ ...programLimits, maxInputBytes: 100 }).run('text(await tools.read({}));', ['read'], async () => ({ x: 'x'.repeat(101) })), /input budget/);
+  await failed(new ProgramRuntime({ ...programLimits, cpuMs: 50 }).run('while(true){}', [], async () => ({})), /interrupted|failed/);
+  await failed(new ProgramRuntime({ ...programLimits, memoryBytes: 1024 * 1024 }).run('const a=[]; while(true)a.push({text:"x".repeat(1000)});', [], async () => ({})), /memory|failed|exited/);
+  await failed(new ProgramRuntime({ ...programLimits, maxOutputBytes: 100 }).run('text("x".repeat(101));', [], async () => ({})), /limit|failed/);
+  await failed(new ProgramRuntime({ ...programLimits, maxCalls: 2 }).run('await Promise.all([tools.read({}),tools.read({}),tools.read({})]); text("done");', ['read'], async () => ({})), /limit|failed/);
+  await failed(new ProgramRuntime().run('await tools.read({x:"x".repeat(65000)});text("done");', ['read'], async () => ({})), /limit|failed/);
+  await failed(new ProgramRuntime({ ...programLimits, maxInputBytes: 100 }).run('text(await tools.read({}));', ['read'], async () => ({ x: 'x'.repeat(101) })), /input budget/);
 });
 
 test('wall-clock deadline and cancellation terminate the worker and abort host dispatch', async () => {
@@ -51,14 +58,119 @@ test('wall-clock deadline and cancellation terminate the worker and abort host d
   }, controller.signal);
   const rejected = assert.rejects(program, /interrupted/);
   await started; controller.abort(); await rejected; assert.equal(received!.aborted, true);
-  await assert.rejects(new ProgramRuntime({ ...programLimits, timeoutMs: 50 }).run('await tools.read({});', ['read'], async () => new Promise(() => {})), /deadline/);
+  await failed(new ProgramRuntime({ ...programLimits, timeoutMs: 50 }).run('await tools.read({});', ['read'], async () => new Promise(() => {})), /deadline/);
   // Resource slots and guest state are released after a failure.
   assert.deepEqual((await runtime.run('text(typeof priorRun);', [], async () => ({}))).outputs, ['undefined']);
 });
 
-test('unresolved promises and missing output fail instead of silently completing', async () => {
-  await assert.rejects(new ProgramRuntime().run('await new Promise(()=>{});', [], async () => ({})), /promise/);
-  await assert.rejects(new ProgramRuntime().run('const value=1;', [], async () => ({})), /text/);
+test('unresolved promises fail instead of silently completing', async () => {
+  await failed(new ProgramRuntime().run('await new Promise(()=>{});', [], async () => ({})), /promise/);
+});
+
+test('returns the program return value', async () => {
+  const result = await new ProgramRuntime().run('return {sum: 3, items: [1, 2]};', [], async () => ({}));
+  assert.equal(result.error, undefined);
+  assert.deepEqual(result.returned, { sum: 3, items: [1, 2] });
+  assert.deepEqual(result.outputs, []);
+  // A return value that cannot be JSON serialized gives a warning and no value.
+  const unserializable = await new ProgramRuntime().run('return () => 1;', [], async () => ({}));
+  assert.equal(unserializable.returned, undefined);
+  assert.equal(unserializable.error, undefined);
+  assert.deepEqual(unserializable.logs, ['[WARN] Return value is not JSON serializable.']);
+  // A return value over the output limit fails and keeps earlier outputs.
+  await failed(new ProgramRuntime({ ...programLimits, maxOutputBytes: 100 }).run('text("kept"); return "x".repeat(200);', [], async () => ({})), /output limit/);
+});
+
+test('no return and no text is ok', async () => {
+  const result = await new ProgramRuntime().run('const value = 1;', [], async () => ({}));
+  assert.equal(result.error, undefined);
+  assert.deepEqual(result.outputs, []);
+  assert.equal(result.returned, undefined);
+  assert.deepEqual(result.logs, []);
+});
+
+test('console lines are captured with prefixes', async () => {
+  const result = await new ProgramRuntime().run(`
+    console.log('a', {b: 1}); console.info('i'); console.warn('w'); console.error('e');
+    return 1;
+  `, [], async () => ({}));
+  assert.deepEqual(result.logs, ['a {"b":1}', 'i', '[WARN] w', '[ERROR] e']);
+  assert.equal(result.returned, 1);
+});
+
+test('outputs and logs survive a later program error', async () => {
+  const result = await failed(new ProgramRuntime().run('text("kept"); console.log("line"); throw new Error("boom");', [], async () => ({})), /boom/);
+  assert.deepEqual(result.outputs, ['kept']);
+  assert.deepEqual(result.logs, ['line']);
+});
+
+test('a guest limit keeps earlier outputs', async () => {
+  // Guest messages arrive in order, so 'first' is handled before the CPU limit message.
+  // The CPU limit counts guest run time only, so worker startup on a slow runner does not affect it.
+  const result = await failed(new ProgramRuntime({ ...programLimits, cpuMs: 200 }).run('text("first"); while (true) {}', [], async () => ({})), /interrupted|failed/);
+  assert.deepEqual(result.outputs, ['first']);
+});
+
+test('unfinished calls get receipts', async () => {
+  // Guest messages arrive in order. The hang call is sent before the guest error,
+  // so dispatch has seen every call when the error ends the program.
+  const seen: string[] = [];
+  const result = await failed(new ProgramRuntime().run(`
+    const first = await tools.fast({});
+    try { await tools.bad({}); } catch {}
+    text(first);
+    tools.hang({});
+    throw new Error('stop');
+  `, ['fast', 'bad', 'hang'], async name => {
+    seen.push(name);
+    if (name === 'bad') throw new ToolError('Denied');
+    if (name === 'fast') return {};
+    return new Promise(() => {});
+  }), /stop/);
+  assert.deepEqual(seen, ['fast', 'bad', 'hang']);
+  assert.deepEqual(result.receipts, [
+    { id: 0, name: 'fast', status: 'ok', bytes: 2 },
+    { id: 1, name: 'bad', status: 'failed', bytes: 0 },
+    { id: 2, name: 'hang', status: 'unfinished', bytes: 0 },
+  ]);
+});
+
+test('log output counts against the output limit', async () => {
+  const result = await new ProgramRuntime({ ...programLimits, maxOutputBytes: 100 }).run(`
+    for (let i = 0; i < 40; i++) console.log('line ' + i);
+  `, [], async () => ({}));
+  assert.equal(result.error, undefined);
+  assert.ok(result.logs.length < 40);
+  assert.equal(result.logs.at(-1), '[WARN] Output limit reached; later output dropped.');
+  assert.ok(result.logs.slice(0, -1).every(line => line.startsWith('line ')));
+});
+
+test('the log line cap and the byte budget give different warnings', async () => {
+  const lines = await new ProgramRuntime().run(`
+    for (let i = 0; i < 70; i++) console.log('l' + i);
+  `, [], async () => ({}));
+  assert.equal(lines.error, undefined);
+  assert.equal(lines.logs.length, 65);
+  assert.equal(lines.logs.at(-1), '[WARN] Log line limit (64) reached; later logs dropped.');
+  const bytes = await new ProgramRuntime({ ...programLimits, maxOutputBytes: 100 }).run(`
+    for (let i = 0; i < 40; i++) console.log('line ' + i);
+  `, [], async () => ({}));
+  assert.equal(bytes.logs.at(-1), '[WARN] Output limit reached; later output dropped.');
+});
+
+test('a replaced JSON.stringify does not change the return value', async () => {
+  const result = await new ProgramRuntime().run('JSON.stringify = () => "not json"; return {a: 1};', [], async () => ({}));
+  assert.equal(result.error, undefined);
+  assert.deepEqual(result.returned, { a: 1 });
+  assert.deepEqual(result.logs, []);
+});
+
+test('confirmation and abort still reject', async () => {
+  const confirmation = new ConfirmationRequired({ name: 'write', arguments: {}, operationId: 'op', parentOperationId: 'parent' });
+  await assert.rejects(new ProgramRuntime().run(`
+    try { await tools.write({}); } catch { text('caught'); }
+  `, ['write'], async () => { throw confirmation; }), ConfirmationRequired);
+  await assert.rejects(new ProgramRuntime().run('text(1);', [], async () => ({}), AbortSignal.abort()), /interrupted/);
 });
 
 test('caught tool failures remain visible and fire-and-forget calls are drained', async () => {

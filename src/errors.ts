@@ -13,7 +13,7 @@ export class ProviderError extends Error {
   override name = 'ProviderError';
   constructor(readonly status: number, options?: ErrorOptions, readonly providerCode?: string) { super(`AI provider returned HTTP ${status}`, options); }
 }
-export interface ErrorContext { stage?: string; server?: string; channel?: string; messageId?: string; jobId?: string; runId?: string; tool?: string; operationId?: string; round?: number }
+export interface ErrorContext { stage?: string; server?: string; channel?: string; messageId?: string; jobId?: string; runId?: string; tool?: string; operationId?: string; round?: number; calls?: number }
 const contexts = new WeakMap<Error, ErrorContext>();
 export function errorContext(error: unknown, context: ErrorContext): Error {
   const value = error instanceof Error ? error : new Error(typeof error === 'string' ? error : 'Non-Error exception');

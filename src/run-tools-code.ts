@@ -74,14 +74,45 @@ function catalogLines(registry: ToolRegistry): string {
     .join('\n');
 }
 
+/** A program outcome as the model reads it. The contract fields are optional here, so a result without them still works. */
+export interface ProgramOutcome {
+  outputs: Json[];
+  returned?: Json;
+  logs?: string[];
+  receipts?: { id: number; name: string; status: 'ok' | 'failed' | 'unfinished'; bytes: number }[];
+  failures: { name: string; error: string }[];
+  error?: { message: string; status: 'failed' | 'rejected' };
+}
+
+const plainText = (value: Json): string => typeof value === 'string' ? value : JSON.stringify(value);
+const byteSize = (bytes: number): string => bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
+const receiptText = (receipt: NonNullable<ProgramOutcome['receipts']>[number]): string =>
+  receipt.status === 'ok' ? `${receipt.name} ok ${byteSize(receipt.bytes)}` : `${receipt.name} ${receipt.status}`;
+
+/** The text the model reads for a program outcome. Empty parts are skipped. */
+export function programText(result: ProgramOutcome): string {
+  const logs = result.logs ?? [], receipts = result.receipts ?? [];
+  const returned = result.returned;
+  const noOutput = !result.outputs.length && returned === undefined;
+  const parts: string[] = [];
+  if (result.error) parts.push(`Program failed: ${result.error.message}`);
+  if (result.failures.length) parts.push(`Incomplete program result: ${result.failures.length} tool call(s) failed. ${result.failures.map(failure => `${failure.name}: ${failure.error}`).join('; ')}`);
+  parts.push(...result.outputs.map(plainText));
+  if (returned !== undefined) parts.push(plainText(returned));
+  if (logs.length) parts.push(['Logs:', ...logs].join('\n'));
+  if (receipts.length && (result.error || noOutput)) parts.push(`Calls: ${receipts.map(receiptText).join(', ')}`);
+  if (noOutput && !logs.length && !result.error) parts.push('No output. The call results are not shown. To see data, end with return result, or call text(result).');
+  return parts.join('\n');
+}
+
 /** Creates the run_tools_code tool. It runs JavaScript in the QuickJS worker and calls other tools as tools.NAME(arguments). */
 export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOptions = {}): ToolDefinition {
   const runtime = options.runtime ?? new ProgramRuntime();
   return {
     name: RUN_TOOLS_CODE, surface: 'top', access: 'member', effect: 'read', retrySafe: true,
-    description: 'Compose bot tools in JavaScript using top-level await, Promise.all, loops, and conditions. Call tools as tools.NAME({...}) or NAME({...}) for any tool in the catalog below or any tool that list_tools() returns; each call returns the tool structured data, or { text } for a tool without structured data. Built-ins: list_tools() returns the tools you can use; describe_tool(name) returns a tool full argument schema; save_to_sandbox(path, data) writes a string, or JSON for other data, to a file in the sandbox, relative to the sandbox home directory. Writes are allowed. A write that needs confirmation stops the program: the requester gets Confirm and Cancel buttons. Emit a compact JSON-serializable result with text(value), including URLs or message IDs needed for evidence. No Node, imports, network, filesystem, processes, timers, or persistent state. Limits: 64 calls, 4 simultaneous calls, 60 seconds elapsed, 2 seconds guest CPU, 32 MiB guest memory, 1 MB total tool data, 16 KB emitted output. Tool failures reject their promises; caught failures are still reported. Core catalog:\n' + catalogLines(registry),
+    description: 'Compose bot tools in JavaScript using top-level await, Promise.all, loops, and conditions. Call tools as tools.NAME({...}) or NAME({...}) for any tool in the catalog below or any tool that list_tools() returns; each call returns the tool structured data, or { text } for a tool without structured data. Built-ins: list_tools() returns the tools you can use; describe_tool(name) returns a tool full argument schema; save_to_sandbox(path, data) writes a string, or JSON for other data, to a file in the sandbox, relative to the sandbox home directory. Writes are allowed. A write that needs confirmation stops the program: the requester gets Confirm and Cancel buttons. Your code is the body of an async function. End with `return <value>`: a compact JSON-serializable result, including URLs or message IDs needed for evidence. console.log/warn/error output is returned as logs. text(value) also adds output. No Node, imports, network, filesystem, processes, timers, or persistent state. Limits: 64 calls, 4 simultaneous calls, 60 seconds elapsed, 2 seconds guest CPU, 32 MiB guest memory, 1 MB total tool data, 16 KB emitted output. Tool failures reject their promises; caught failures are still reported. Core catalog:\n' + catalogLines(registry),
     fields: {
-      code: { type: 'string', required: true, max: 16000, description: 'JavaScript async function body. Emit the reduced result with text(...).' },
+      code: { type: 'string', required: true, max: 16000, description: 'JavaScript async function body. End with return <result>.' },
     },
     authorize: async context => {
       // Returning a cached parent result must not bypass a child's access check after permissions have changed.
@@ -181,9 +212,9 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
           sources: [...sources.values()], artifacts: [...artifacts.values()],
         };
       }
-      const text = (result.failures.length ? `Incomplete program result: ${result.failures.length} tool call(s) failed. ${result.failures.map(failure => `${failure.name}: ${failure.error}`).join('; ')}\n` : '')
-        + result.outputs.map(output => typeof output === 'string' ? output : JSON.stringify(output)).join('\n');
-      return { text, data: { ...result, childCalls, limits } as unknown as Json,
+      // A program error is a normal result: outputs, logs and receipts are kept in data, and the error is logged once.
+      if (result.error) logError('program_failed', new ToolError(result.error.message, result.error.status), { stage: 'run_tools_code', calls: result.calls });
+      return { text: programText(result), data: { ...result, childCalls, limits } as unknown as Json,
         sources: [...sources.values()], artifacts: [...artifacts.values()] };
     },
   };

@@ -17,9 +17,20 @@ export const programLimits: Readonly<ProgramLimits> = Object.freeze({
 });
 /** Host-handled globals: list_tools(), describe_tool(name), save_to_sandbox(path, data). The worker sends them with these names. */
 export const programBuiltins = ['builtin:list_tools', 'builtin:describe_tool', 'builtin:save_to_sandbox'] as const;
-export interface ProgramResult { outputs: Json[]; calls: number; failures: { name: string; error: string }[] }
+export interface ProgramCallReceipt { id: number; name: string; status: 'ok' | 'failed' | 'unfinished'; bytes: number }
+export interface ProgramResult {
+  outputs: Json[];            // text(...) values, in order
+  returned?: Json;            // the program's return value; absent when undefined
+  logs: string[];             // console lines; '[WARN] ' and '[ERROR] ' prefixes
+  calls: number;
+  receipts: ProgramCallReceipt[];
+  failures: { name: string; error: string }[];
+  error?: { message: string; status: 'failed' | 'rejected' }; // the program failed; partial data above is kept
+}
 /** args is whatever the guest sent, parsed from JSON. The dispatcher decides what is a valid argument value. */
 export type ProgramDispatch = (name: string, args: unknown, index: number, signal: AbortSignal) => Promise<Json>;
+
+const maxLogLines = 64, maxLogText = 1000;
 
 // Guest code executes only in QuickJS's WASM heap. The Node worker loads our
 // bridge, never evaluates guest code with Node eval, Function, or node:vm.
@@ -35,15 +46,23 @@ export class ProgramRuntime {
     let worker: Worker | undefined;
     try {
       return await new Promise<ProgramResult>((resolve, reject) => {
-        const allowed = new Set<string>([...names, ...programBuiltins]), outputs: Json[] = [], failures: ProgramResult['failures'] = [];
+        const allowed = new Set<string>([...names, ...programBuiltins]), outputs: Json[] = [], logs: string[] = [], failures: ProgramResult['failures'] = [];
+        const receipts = new Map<number, ProgramCallReceipt>();
         const queue: { id: number; name: string; args: unknown }[] = [];
-        let finished = false, calls = 0, running = 0, inputBytes = 0, outputBytes = 0, completed = false, transientFailure = false;
+        let finished = false, calls = 0, running = 0, inputBytes = 0, outputBytes = 0, completed = false, transientFailure = false, logsDropped = false;
+        let returned: Json | undefined;
         const timer = setTimeout(() => finish(new ToolError('Program exceeded its wall-clock deadline.', 'failed')), this.limits.timeoutMs);
-        const abort = () => finish(new ToolError('Program interrupted.'));
-        const finish = (error?: Error) => {
+        const abort = () => finish(new ToolError('Program interrupted.'), true);
+        // Only confirmation, abort, and transient-failure stops reject. Every other stop resolves with error set,
+        // so outputs, logs and call receipts reach the caller.
+        const finish = (error?: Error, rejects = false) => {
           if (finished) return;
           finished = true; clearTimeout(timer); invocationSignal.removeEventListener('abort', abort);
-          if (error) reject(error); else resolve({ outputs, calls, failures });
+          if (error && rejects) { reject(error); return; }
+          const result: ProgramResult = { outputs, logs, calls, receipts: [...receipts.values()].map(receipt => ({ ...receipt })), failures };
+          if (returned !== undefined) result.returned = returned;
+          if (error) result.error = { message: error.message, status: error instanceof ToolError ? error.status : 'failed' };
+          resolve(result);
         };
         invocationSignal.addEventListener('abort', abort, { once: true });
         try {
@@ -56,6 +75,7 @@ export class ProgramRuntime {
           if (finished) return;
           while (running < this.limits.concurrency && queue.length) {
             const call = queue.shift()!;
+            const receipt = receipts.get(call.id)!;
             running++;
             void (async () => {
               try {
@@ -63,23 +83,23 @@ export class ProgramRuntime {
                 if (finished) return;
                 const json = JSON.stringify(result);
                 if (json === undefined) throw new ToolError('Tool returned no structured data.');
-                inputBytes += Buffer.byteLength(json);
+                const bytes = Buffer.byteLength(json);
+                inputBytes += bytes;
                 if (inputBytes > this.limits.maxInputBytes) { finish(new ToolError('Program tool results exceeded the input budget.')); return; }
+                receipt.status = 'ok'; receipt.bytes = bytes;
                 worker!.postMessage({ kind: 'result', id: call.id, json });
               } catch (error) {
                 if (finished) return;
                 // A confirmation stops the whole program, even when the guest code catches the error.
-                if (error instanceof ConfirmationRequired) { finish(error); return; }
+                if (error instanceof ConfirmationRequired) { finish(error, true); return; }
                 const reason = error instanceof ToolError ? error.message.slice(0, 500) : 'Tool failed. Inspect its recorded result before retrying.';
                 if (!(error instanceof ToolError)) transientFailure = true;
                 failures.push({ name: call.name, error: reason });
+                receipt.status = 'failed';
                 worker!.postMessage({ kind: 'result', id: call.id, error: reason });
               } finally {
                 running--; pump();
-                if (completed && !running && !queue.length && !finished) {
-                  if (!outputs.length) finish(new ToolError('Program must emit a result with text(...).'));
-                  else finish();
-                }
+                if (completed && !running && !queue.length && !finished) finish();
               }
             })();
           }
@@ -92,26 +112,45 @@ export class ProgramRuntime {
             if (item.kind === 'call') {
               if (completed || item.id !== calls || typeof item.name !== 'string' || !allowed.has(item.name) || typeof item.json !== 'string' || Buffer.byteLength(item.json) > 64000) throw new ToolError('Invalid or disallowed program tool call.');
               if (++calls > this.limits.maxCalls) throw new ToolError('Program exceeded its tool-call limit.');
-              queue.push({ id: item.id as number, name: item.name, args: JSON.parse(item.json) as unknown }); pump();
+              const id = item.id as number;
+              receipts.set(id, { id, name: item.name, status: 'unfinished', bytes: 0 });
+              queue.push({ id, name: item.name, args: JSON.parse(item.json) as unknown }); pump();
             } else if (item.kind === 'text') {
               if (typeof item.json !== 'string') throw new ToolError('Program output must be JSON serializable.');
               outputBytes += Buffer.byteLength(item.json);
               if (outputBytes > this.limits.maxOutputBytes || outputs.length >= 32) throw new ToolError('Program exceeded its output limit.');
               outputs.push(JSON.parse(item.json) as Json);
+            } else if (item.kind === 'log') {
+              if (typeof item.text !== 'string' || (item.level !== 'log' && item.level !== 'warn' && item.level !== 'error')) throw new ToolError('Invalid program bridge message.');
+              // Logs are a notice when they run out of room, so they are dropped with one warning line, not an error.
+              if (logsDropped) return;
+              const prefix = item.level === 'warn' ? '[WARN] ' : item.level === 'error' ? '[ERROR] ' : '';
+              const line = prefix + item.text.slice(0, maxLogText), bytes = Buffer.byteLength(line);
+              if (logs.length >= maxLogLines) {
+                logsDropped = true; logs.push(`[WARN] Log line limit (${maxLogLines}) reached; later logs dropped.`);
+                return;
+              }
+              if (outputBytes + bytes > this.limits.maxOutputBytes) {
+                logsDropped = true; logs.push('[WARN] Output limit reached; later output dropped.');
+                return;
+              }
+              outputBytes += bytes; logs.push(line);
             } else if (item.kind === 'done') {
               completed = true;
+              if (typeof item.json === 'string') {
+                outputBytes += Buffer.byteLength(item.json);
+                if (outputBytes > this.limits.maxOutputBytes) throw new ToolError('Program exceeded its output limit.');
+                returned = JSON.parse(item.json) as Json;
+              }
               // Fire-and-forget tool requests still belong to this program.
               // Wait for their journaled results before returning to the model.
-              if (!running && !queue.length) {
-                if (!outputs.length) throw new ToolError('Program must emit a result with text(...).');
-                finish();
-              }
+              if (!running && !queue.length) finish();
             } else if (item.kind === 'error') {
-              if (transientFailure) throw new Error('Program failed after a transient tool failure. Completed reads remain journaled.');
-              throw new ToolError(`Program failed: ${typeof item.error === 'string' ? item.error.slice(0, 1000) : 'runtime error'}`, 'failed');
+              if (transientFailure) { finish(new Error('Program failed after a transient tool failure. Completed reads remain journaled.'), true); return; }
+              throw new ToolError(typeof item.error === 'string' ? item.error.slice(0, 1000) : 'runtime error', 'failed');
             }
             else throw new ToolError('Invalid program bridge message.');
-          } catch (error) { finish(error instanceof Error ? error : new ToolError('Program bridge failed.')); }
+          } catch (error) { finish(error instanceof Error ? error : new ToolError('Program bridge failed.', 'failed')); }
         });
         worker.once('error', () => finish(new ToolError('Program worker failed or exceeded its memory limit.', 'failed')));
         worker.once('exit', () => { if (!finished) finish(new ToolError('Program worker exited before completion.', 'failed')); });
