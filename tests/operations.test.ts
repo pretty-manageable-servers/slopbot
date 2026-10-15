@@ -16,11 +16,17 @@ const output: Message = { ...request, id: '20000000000000001', isBot: true, text
 const issue = (number: number, title = 'Attachment decoding fails', body = ''): Issue => ({ number, title, body, state: 'open', html_url: `https://github.com/o/r/issues/${number}` });
 class FakeClient implements OperationsClient {
   repository = 'o/r';
-  issues: Issue[] = []; notes: Issue[] = []; creates = 0; commentsWritten = 0; loseWrite = false;
+  issues: Issue[] = []; notes: Issue[] = []; creates = 0; commentsWritten = 0; edits = 0; loseWrite = false;
   image = `ghcr.io/o/r:${sha}`; issueState = 'open';
   pullValue: PullRequest = { number: 2, title: 'Fix', state: 'closed', merged: true, merge_commit_sha: sha, html_url: 'https://github.com/o/r/pull/2', head: { sha } };
   async searchIssues() { return { items: this.issues, total: this.issues.length }; }
-  async issue(number: number) { return { ...issue(number), state: this.issueState }; }
+  async issue(number: number) { return { ...(this.issues.find(value => value.number === number) ?? issue(number)), state: this.issueState }; }
+  async updateIssue(number: number, body: string) {
+    this.edits++;
+    const value = this.issues.find(value => value.number === number)!; value.body = body;
+    if (this.loseWrite) { this.loseWrite = false; throw new Error('connection lost after edit'); }
+    return value;
+  }
   async comments() { return this.notes; }
   async createIssue(title: string, body: string) {
     this.creates++; const value = issue(this.creates, title, body); this.issues.push(value);
@@ -63,6 +69,40 @@ async function fixture(t: { after(fn: () => void): void }, servers = ['s']) {
   return { store, client, registry, ops, denied, invoke, evidence, setAdmin(value: boolean) { admin = value; } };
 }
 const reportArgs = (id: string) => ({ title: 'Attachment decoding fails', expected: 'Summary of the attachment', actual: 'DECODE_FAILED', steps: 'Reply to the linked attachment', acceptance: 'Attachment summary succeeds', evidence_ids: [id] });
+
+test('the original reporter can remove evidence and replace their report without creating duplicates', async t => {
+  const f = await fixture(t); const e = await f.evidence();
+  await f.invoke('issue_report', reportArgs(e.evidence_id), 'owned-create'); f.setAdmin(false);
+  await assert.rejects(f.invoke('issue_report_edit', { issue_number: 1, action: 'remove_evidence' }, 'foreign-edit', { ...report, author: 'another-user' }), /original reporter/);
+  await f.invoke('issue_report_edit', { issue_number: 1, action: 'remove_evidence' }, 'remove-evidence');
+  assert.ok(!f.client.issues[0]!.body!.includes('## Collected evidence')); assert.match(f.client.issues[0]!.body!, /Acceptance check/);
+  // Source edits invalidate evidence for publication, but cannot prevent its reporter removing a public report's diagnostics.
+  await f.store.revise({ ...request, text: 'edited' });
+  await f.invoke('issue_report_edit', { issue_number: 1, action: 'replace', body: 'A concise report. secret=github_pat_abcdefghijklmnop' }, 'replace-body');
+  assert.match(f.client.issues[0]!.body!, /A concise report/); assert.ok(!f.client.issues[0]!.body!.includes('github_pat_'));
+  assert.equal(f.client.creates, 1); assert.equal(f.client.commentsWritten, 0);
+});
+
+test('lost issue edits reconcile once and a spoofed public footer cannot establish ownership', async t => {
+  const f = await fixture(t); const e = await f.evidence();
+  await f.invoke('issue_report', reportArgs(e.evidence_id), 'original-create');
+  f.client.issues.push(issue(99, 'Spoof', f.client.issues[0]!.body ?? ''));
+  await assert.rejects(f.invoke('issue_report_edit', { issue_number: 99, action: 'remove_evidence' }, 'spoof-edit'), /durable creation record/);
+  const args = { issue_number: 1, action: 'replace', body: 'New concise report' };
+  f.client.loseWrite = true;
+  await assert.rejects(f.invoke('issue_report_edit', args, 'lost-edit'), /uncertain/);
+  assert.match((await f.invoke('issue_report_edit', args, 'lost-edit')).text, /Recovered GitHub edit/);
+  assert.equal(f.client.edits, 1);
+});
+
+test('issue edits PATCH the existing GitHub issue body', async () => {
+  const client = new HttpOperationsClient({ servers: ['s'], repository: 'o/r', githubToken: 'test-token', containers: ['slopbot'] }, async (url, init) => {
+    assert.equal(String(url), 'https://api.github.com/repos/o/r/issues/1'); assert.equal(init?.method, 'PATCH');
+    assert.deepEqual(JSON.parse(String(init?.body)), { body: 'Replacement' });
+    return Response.json(issue(1, 'Existing', 'Replacement'));
+  });
+  assert.equal((await client.updateIssue(1, 'Replacement')).body, 'Replacement');
+});
 
 test('interaction evidence resolves a reply and retains execution version without prompt/text/arguments', async t => {
   const f = await fixture(t); const result = await f.invoke('interaction_inspect', {}, 'inspect', { ...report, replyTo: output.id });
@@ -139,7 +179,7 @@ test('member reports preserve guild/task boundaries while infrastructure remains
 test('dynamic servers can file member reports without a guild allowlist; admin diagnostics stay unavailable', async t => {
   const f = await fixture(t, []);
   f.setAdmin(false);
-  assert.deepEqual(f.registry.definitions().map(d => d.name).sort(), ['github_issue_read', 'interaction_inspect', 'issue_report']);
+  assert.deepEqual(f.registry.definitions().map(d => d.name).sort(), ['github_issue_read', 'interaction_inspect', 'issue_report', 'issue_report_edit']);
   const e = await f.evidence();
   await f.invoke('github_issue_read', { query: 'attachment' }, 'dynamic-search');
   await f.invoke('issue_report', reportArgs(e.evidence_id), 'dynamic-report');

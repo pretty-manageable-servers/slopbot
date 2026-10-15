@@ -13,6 +13,7 @@ export interface OperationsClient {
   issue(number: number): Promise<Issue>;
   comments(number: number, page?: number): Promise<Issue[]>;
   createIssue(title: string, body: string): Promise<Issue>;
+  updateIssue(number: number, body: string): Promise<Issue>;
   comment(number: number, body: string): Promise<Issue>;
   findIssue(marker: string): Promise<Issue | undefined>;
   findComment(number: number, marker: string): Promise<Issue | undefined>;
@@ -122,6 +123,10 @@ export class HttpOperationsClient implements OperationsClient {
   comment(number: number, body: string) {
     if (!this.config.githubToken && !this.config.githubApp) throw new ToolError('Configure GitHub App credentials or SLOPBOT_GITHUB_TOKEN with Issues write permission');
     return this.gh<Issue>(`/issues/${number}/comments`, 'POST', { body });
+  }
+  updateIssue(number: number, body: string) {
+    if (!this.config.githubToken && !this.config.githubApp) throw new ToolError('Configure GitHub App credentials or SLOPBOT_GITHUB_TOKEN with Issues write permission');
+    return this.gh<Issue>(`/issues/${number}`, 'PATCH', { body });
   }
   async findIssue(marker: string) {
     // Do not rely on search indexing for recovery. Absence never authorizes another POST.

@@ -1,4 +1,5 @@
 import { readParticipationHistory, type ParticipationHistoryQuery } from '../participation-history.js';
+import { findIssueReportOrigin } from '../issue-report-origin.js';
 import { contextChangedError, legacyToolProgress, sourceFingerprint, type ContextChange } from "../source-context.js";
 import { logError } from "../errors.js";
 import type { HarnessJournal, HarnessState, HarnessEvent } from "../harness-state.js";
@@ -874,6 +875,9 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   operation(id: string): ToolOperation | undefined {
     const row = this.db.prepare("SELECT * FROM tool_operations WHERE id=?").get(id);
     return row ? { id, name: String(row.name), args: JSON.parse(String(row.args)) as ToolArgs, resource: row.resource === null ? null : String(row.resource), status: row.status as ToolOperation["status"], result: row.result === null ? null : String(row.result) } : undefined;
+  }
+  issueReportOrigin(server: string, url: string, body: string) {
+    return findIssueReportOrigin(this.db.prepare("SELECT id,author,channel,result FROM tool_operations WHERE server=? AND name='issue_report' AND status='done' AND result LIKE ?").all(server, `%${url}%`) as { id: unknown; author: unknown; channel: unknown; result: unknown }[], url, body);
   }
   blockingOperation(resource: string, exceptId: string): BlockingOperation | undefined {
     const row = this.db.prepare("SELECT id,created_at FROM tool_operations WHERE resource=? AND id<>? AND status='started' LIMIT 1").get(resource, exceptId);
