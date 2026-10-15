@@ -58,7 +58,7 @@
   }
 
   function openDialog(server, channel, range) {
-    const thinking = el('input', { type: 'checkbox', id: 'share-thinking' });
+    const thinking = el('input', { type: 'checkbox', id: 'share-thinking', checked: true });
     const error = el('p', { class: 'error', role: 'alert' });
     const result = el('div');
     const create = el('button', { type: 'button' }, 'Create link');
