@@ -133,3 +133,41 @@ test("known read intents return the tool result without model guessing", async t
     { tools: { schemas: () => [], catalog: () => registry.catalog(), suggest: m => registry.suggest(m), execute: (m,c,id) => registry.invoke(m,c.name,c.arguments,id,"agent") } });
   assert.equal((await app.handle(message))?.text, "700 messages indexed");
 });
+
+test("invalid choice lists the valid values", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const registry = new ToolRegistry(store, async () => true);
+  registry.register({ name: "pick", description: "Pick a file", fields: { path: { type: "string", description: "file", required: true, choices: ["a.ts", "b.ts", "c.ts"] } }, access: "member", effect: "read", retrySafe: true,
+    async execute() { return "ok"; } });
+  assert.throws(() => registry.validate("pick", { path: "x.env" }), error =>
+    error instanceof ToolError && error.message === 'Invalid choice for path: "x.env". Use one of: a.ts, b.ts, c.ts.');
+  assert.throws(() => registry.validate("pick", { path: "y".repeat(150) }), error =>
+    error instanceof ToolError && error.message === `Invalid choice for path: "${"y".repeat(100)}". Use one of: a.ts, b.ts, c.ts.`);
+  assert.deepEqual(registry.validate("pick", { path: "b.ts" }), { path: "b.ts" });
+});
+
+test("message_ref accepts Discord and chat IDs", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const registry = new ToolRegistry(store, async () => true);
+  registry.register({ name: "inspect", description: "Inspect", fields: { message_id: { type: "message_ref", description: "message" } }, access: "member", effect: "read", retrySafe: true, surface: "top",
+    async execute() { return "ok"; } });
+  for (const message_id of ["12345678901234567", "12345678901234567890", "chat-reply-0123abcd", "chat-5f2c1e0a-7b1d-4c8e-9a2f-123456789abc"])
+    assert.deepEqual(registry.validate("inspect", { message_id }), { message_id });
+  const [schema] = registry.schemas();
+  const property = (schema!.function.parameters as { properties: Record<string, Record<string, unknown>> }).properties.message_id!;
+  assert.equal(property.type, "string");
+  assert.equal(property.minLength, 1);
+  assert.equal(property.maxLength, 4000);
+  assert.equal(property.pattern, "^(\\d{17,20}|chat-[A-Za-z0-9-]{1,120})$");
+  assert.ok(new RegExp(property.pattern as string).test("chat-reply-0123abcd"));
+});
+
+test("message_ref rejects other text", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const registry = new ToolRegistry(store, async () => true);
+  registry.register({ name: "inspect", description: "Inspect", fields: { message_id: { type: "message_ref", description: "message" } }, access: "member", effect: "read", retrySafe: true,
+    async execute() { return "ok"; } });
+  const expected = "Use a Discord message ID (17 to 20 digits) or a web chat message ID (chat-…) for message_id";
+  for (const message_id of ["1234567890123456", "123456789012345678901", "12345678901234567a", "chat-", "chat-bad space", "chat-x/../y", "https://discord.com/channels/1/2/3"])
+    assert.throws(() => registry.validate("inspect", { message_id }), error => error instanceof ToolError && error.message === expected);
+});

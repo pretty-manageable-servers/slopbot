@@ -33,8 +33,10 @@ export function decodeToolResult(value: string): ToolResult {
 }
 
 export type ToolArgs = Record<string, Json>;
+/** A Discord message ID (17 to 20 digits) or a web chat message ID (chat-…). */
+const messageRefPattern = /^(\d{17,20}|chat-[A-Za-z0-9-]{1,120})$/;
 export interface ToolField {
-  type: "string" | "integer" | "boolean" | "channel" | "json";
+  type: "string" | "integer" | "boolean" | "channel" | "json" | "message_ref";
   description: string;
   required?: boolean;
   min?: number;
@@ -228,7 +230,8 @@ export class ToolRegistry {
       } else {
         if (typeof value !== "string" || !value.trim() || value.length > (field.max ?? 4000)) throw new ToolError(`Invalid text: ${key}`);
         if (field.type === "channel" && !/^\d{17,20}$/.test(value)) throw new ToolError(`Use a Discord channel ID for ${key}`);
-        if (field.choices && !field.choices.includes(value)) throw new ToolError(`Invalid choice: ${key}`);
+        if (field.type === "message_ref" && !messageRefPattern.test(value)) throw new ToolError(`Use a Discord message ID (17 to 20 digits) or a web chat message ID (chat-…) for ${key}`);
+        if (field.choices && !field.choices.includes(value)) throw new ToolError(`Invalid choice for ${key}: ${JSON.stringify(value.slice(0, 100))}. Use one of: ${field.choices.join(', ')}.`);
       }
       clean[key] = value as Json;
     }
@@ -334,12 +337,12 @@ function schemasOf(definitions: readonly ToolDefinition[], message?: Message): r
     for (const [name, field] of Object.entries(tool.fields)) {
       if (field.required) required.push(name);
       properties[name] = field.schema ?? {
-        ...(field.type === 'json' ? {} : { type: field.type === 'channel' ? 'string' : field.type }),
+        ...(field.type === 'json' ? {} : { type: field.type === 'channel' || field.type === 'message_ref' ? 'string' : field.type }),
         description: field.description,
         ...(field.choices ? { enum: [...field.choices] } : {}),
         ...(field.type === 'integer' ? { minimum: field.min ?? 0, ...(field.max !== undefined ? { maximum: field.max } : {}) } : {}),
-        ...(field.type === 'string' || field.type === 'channel' ? { minLength: 1, maxLength: field.max ?? 4000 } : {}),
-        ...(field.type === 'channel' ? { pattern: '^\\d{17,20}$' } : {}),
+        ...(field.type === 'string' || field.type === 'channel' || field.type === 'message_ref' ? { minLength: 1, maxLength: field.max ?? 4000 } : {}),
+        ...(field.type === 'channel' ? { pattern: '^\\d{17,20}$' } : field.type === 'message_ref' ? { pattern: messageRefPattern.source } : {}),
       };
     }
     return { type: 'function', function: { name: tool.name,
