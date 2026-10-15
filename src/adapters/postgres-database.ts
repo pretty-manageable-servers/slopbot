@@ -2,6 +2,25 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { requestTimings } from "../request-timing.js";
 import { Client, types } from "pg";
 import { readFileSync } from "node:fs";
+import { errorContext } from "../errors.js";
+
+// PostgreSQL text/jsonb cannot represent NUL or lone UTF-16 surrogates.
+// Decode JSON before repairing it so a literal backslash-u sequence stays literal.
+export function postgresValue(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const cleanText = (text: string) => text.replace(/[\u0000\uD800-\uDFFF]/gu, '\uFFFD');
+  const cleanJson = (item: unknown): unknown => {
+    if (typeof item === 'string') return cleanText(item);
+    if (Array.isArray(item)) return item.map(cleanJson);
+    if (item && typeof item === 'object') return Object.fromEntries(Object.entries(item).map(([key, field]) => [cleanText(key), cleanJson(field)]));
+    return item;
+  };
+  if (/\\u(?:0000|d[89a-f][0-9a-f]{2})/i.test(value)) {
+    try { return JSON.stringify(cleanJson(JSON.parse(value))); }
+    catch { /* Plain text containing escape-like sequences is not JSON. */ }
+  }
+  return cleanText(value);
+}
 
 // Millisecond timestamps and counters fit exactly in JS safe integers.
 types.setTypeParser(20, value => { const number = Number(value); if (!Number.isSafeInteger(number)) throw new Error("Database integer exceeds safe range"); return number; });
@@ -30,7 +49,9 @@ export class PostgresDatabase {
       const translated = postgresSql(sql, values);
       const operation = sql.trim().split(/\s+/)[0]!.toLowerCase();
       const table = sql.match(/\b(?:FROM|INTO|UPDATE)\s+([a-z_]+)/i)?.[1] ?? "statement";
-      return requestTimings.wait(`database ${operation} ${table}`, () => this.client.query(translated.sql, translated.values));
+      try {
+        return await requestTimings.wait(`database ${operation} ${table}`, () => this.client.query(translated.sql, translated.values.map(postgresValue)));
+      } catch (error) { throw errorContext(error, { stage: `database ${operation} ${table}` }); }
     };
     return {
       get: async (...values: unknown[]): Promise<Row | undefined> => (await query(values)).rows[0],

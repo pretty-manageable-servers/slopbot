@@ -63,7 +63,7 @@ export function errorSummary(error: unknown): string {
 export function errorReply(error: unknown, jobId?: string): string {
   const info = describeError(error);
   const escape = (text: string) => text.replace(/[\\`*_~<>|\[\]]/g, '\\$&');
-  return `${escape(errorSummary(error))}\n${escape(info.recovery)}${jobId ? `\nJob ID: ${escape(jobId)}` : ''}`;
+  return `${escape(errorSummary(error))}\n${escape(info.recovery)}${info.context.messageId ? `\nRequest ID: ${escape(info.context.messageId)}` : ''}${jobId ? `\nJob ID: ${escape(jobId)}` : ''}`;
 }
 export function logError(event: string, error: unknown, context: ErrorContext = {}, warning = false): void {
   const info = describeError(error);
