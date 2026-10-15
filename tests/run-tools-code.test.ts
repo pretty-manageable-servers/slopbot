@@ -196,7 +196,9 @@ test('discord_scope_blocks_private_chat', async t => {
   let ran = 0;
   registry.register(readTool('discord_write', async () => { ran++; return { text: 'ran', data: {} }; }, { scope: 'discord', effect: 'write' }));
   registry.register(runToolsCodeTool(registry));
-  await assert.rejects(registry.invokeResult(privateRequest, 'run_tools_code', { code: 'await tools.discord_write({});text("done");' }, 'private', 'agent'), /only available in Discord/);
+  const result = await registry.invokeResult(privateRequest, 'run_tools_code', { code: 'await tools.discord_write({});text("done");' }, 'private', 'agent');
+  assert.match(result.text, /Program failed: .*only available in Discord/);
+  assert.ok((result.data as { error?: unknown }).error);
   assert.equal(ran, 0);
 });
 
