@@ -62,6 +62,7 @@ import { PresenceUpdater } from "../presence.js";
 import type { Config } from "../config.js";
 import { parseEffort, type Json, type Message } from "../domain.js";
 import type { LLM } from "../ports.js";
+import type { LlmRouter } from "../llm-mode.js";
 import type { RuntimeStore } from "../runtime-store.js";
 import { LLMClassifier, ParticipationGate } from "../participation.js";
 import { HistoryImporter } from "../history.js";
@@ -154,7 +155,7 @@ export class DiscordServer implements ChatGateway {
   private readonly voice: DiscordVoice | undefined;
   private readonly inbox: Inbox;
 
-  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">, private readonly team?: Pick<TeamAdmins, "canEdit">, private readonly sandboxProfile?: SandboxProfile) {
+  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">, private readonly team?: Pick<TeamAdmins, "canEdit">, private readonly sandboxProfile?: SandboxProfile, private readonly router?: LlmRouter) {
     this.client = client;
     this.renderer = new ReplyRenderer(store, discordPresentation);
     this.chatGateway = new WebChatGateway(store, guildId);
@@ -176,7 +177,8 @@ export class DiscordServer implements ChatGateway {
     };
     const savedMonitoring = store.setting(guildId, "monitoring");
     const participation = new ParticipationGate(new DecisionClassifier({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.jevModel, usage }, store, undefined, new LLMClassifier(llm, store, usage)), {
-      enabled: (typeof savedMonitoring === "boolean" ? savedMonitoring : config.jevEnabled) && !config.mock,
+      // JEV runs only when a model may answer now. Outages and the mode switch are read on each message.
+      enabled: () => (typeof savedMonitoring === "boolean" ? savedMonitoring : config.jevEnabled) && !config.mock && (this.router === undefined || this.router.select(undefined) !== undefined),
       thresholds: decisionThresholds(store.setting(guildId, 'participation_thresholds'), config.jevThresholds),
       reactionFrequency: savedLimit("reaction_frequency", store.setting(guildId, "reactions_enabled") === false ? 0 : 60, 100),
       contextMessages: Math.min(CLASSIFIER_CONTEXT_LIMIT, savedLimit("classifier_context", config.jevContextMessages, 100)),
@@ -998,7 +1000,7 @@ export class DiscordAdapter {
   /** Deletes inbox items past INBOX_TTL_MS. Started by start(), cleared by stop(). */
   private inboxTimer: ReturnType<typeof setInterval> | undefined;
 
-  constructor(private readonly config: Config, private readonly store: RuntimeStore, private readonly llm: LLM, client?: Client) {
+  constructor(private readonly config: Config, private readonly store: RuntimeStore, private readonly llm: LLM, client?: Client, private readonly router?: LlmRouter) {
     this.usage = createUsageMeter(config, store);
     this.client = client ?? new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates], partials: [Partials.Message, Partials.Channel] });
     this.members = new MemberDirectory(discordMemberSource(this.client));
@@ -1039,7 +1041,7 @@ export class DiscordAdapter {
     if (existing) return existing;
     if (!this.allowed(guildId)) return Promise.reject(new ToolError("Slopbot is not enabled for this server."));
     const opening = (async () => {
-      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage, this.access, this.members, this.team, this.sandboxProfile);
+      const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage, this.access, this.members, this.team, this.sandboxProfile, this.router);
       server.webChat = this.webChat;
       await server.start();
       await server.ready(this.botUser!);

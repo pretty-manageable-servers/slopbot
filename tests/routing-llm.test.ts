@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { RoutingLLM, outageCode } from '../src/adapters/routing-llm.js';
+import { DynamicLLM, RoutingLLM, outageCode, probePrimary } from '../src/adapters/routing-llm.js';
+import { ParticipationGate, type ParticipationDecision } from '../src/participation.js';
+import { openFallbackKey } from '../src/llm-settings.js';
+import { WebKeySecrets } from '../src/web-keys.js';
 import { modelsInUse } from '../src/usage-meter.js';
 import { DEFAULT_BREAKER, DEFAULT_STATUS_NOTE_MINUTES, type FallbackEndpoint, type LlmDegradedSettings, type LlmHealth, type LlmMode, type LlmModeState } from '../src/llm-mode.js';
 import { ProviderError, RequestError } from '../src/errors.js';
 import type { LLM } from '../src/ports.js';
-import type { ModelEvent, Prompt } from '../src/domain.js';
+import type { Message, ModelEvent, Prompt } from '../src/domain.js';
 
 class FakeHealth implements LlmHealth {
   mode: LlmMode = 'normal';
@@ -38,6 +41,8 @@ function sseFetch(sent: Sent[]): typeof fetch {
   }) as typeof fetch;
 }
 
+const openKey = (endpoint: FallbackEndpoint) => endpoint.keySealed === undefined ? undefined : `key-for-${endpoint.keySealed}`;
+
 function endpoint(overrides: Partial<FallbackEndpoint> = {}): FallbackEndpoint {
   return { baseUrl: 'https://backup.example.test/v1', model: 'backup-model', zdr: true, contextTokens: 8192, outputTokens: 1024, keySealed: 'sealed-1', ...overrides };
 }
@@ -58,7 +63,7 @@ const who = { user: 'u1', server: 's1', private: false };
 
 test('normal uses primary', async () => {
   const primary = new FakePrimary();
-  const router = new RoutingLLM(primary, new FakeHealth(), () => settings(endpoint()), key => `key-for-${key}`);
+  const router = new RoutingLLM(primary, new FakeHealth(), () => settings(endpoint()), openKey);
   const selected = router.select(who);
   assert.ok(selected);
   assert.equal(selected.model, 'primary-model');
@@ -70,7 +75,7 @@ test('normal uses primary', async () => {
 test('offline returns undefined', () => {
   const health = new FakeHealth();
   health.mode = 'offline';
-  const router = new RoutingLLM(new FakePrimary(), health, () => settings(endpoint()), key => key);
+  const router = new RoutingLLM(new FakePrimary(), health, () => settings(endpoint()), openKey);
   assert.equal(router.select(who), undefined);
   assert.equal(router.select(undefined), undefined);
 });
@@ -80,7 +85,7 @@ test('fallback zdr used', async () => {
   health.mode = 'fallback';
   const sent: Sent[] = [];
   const primary = new FakePrimary();
-  const router = new RoutingLLM(primary, health, () => settings(endpoint()), key => `key-for-${key}`, { fetcher: sseFetch(sent) });
+  const router = new RoutingLLM(primary, health, () => settings(endpoint()), openKey, { fetcher: sseFetch(sent) });
   const selected = router.select(who);
   assert.ok(selected);
   await drain(selected);
@@ -93,7 +98,7 @@ test('non-zdr needs opt-in', () => {
   const health = new FakeHealth();
   health.mode = 'fallback';
   const cloud = endpoint({ zdr: false });
-  const router = new RoutingLLM(new FakePrimary(), health, () => settings(cloud), key => key, { consent: { user: () => false, server: () => true } });
+  const router = new RoutingLLM(new FakePrimary(), health, () => settings(cloud), openKey, { consent: { user: () => false, server: () => true } });
   assert.equal(router.select(who), undefined);
   assert.equal(router.select({ ...who, private: true }), undefined);
   assert.equal(router.select(undefined), undefined);
@@ -103,16 +108,16 @@ test('non-zdr in shared channel needs server allow', () => {
   const health = new FakeHealth();
   health.mode = 'fallback';
   const cloud = endpoint({ zdr: false });
-  const denied = new RoutingLLM(new FakePrimary(), health, () => settings(cloud), key => key, { consent: { user: () => true, server: () => false } });
+  const denied = new RoutingLLM(new FakePrimary(), health, () => settings(cloud), openKey, { consent: { user: () => true, server: () => false } });
   assert.equal(denied.select(who), undefined);
-  const allowed = new RoutingLLM(new FakePrimary(), health, () => settings(cloud), key => key, { consent: { user: () => true, server: s => s === 's1' } });
+  const allowed = new RoutingLLM(new FakePrimary(), health, () => settings(cloud), openKey, { consent: { user: () => true, server: s => s === 's1' } });
   assert.ok(allowed.select(who));
 });
 
 test('non-zdr in private chat with opt-in', () => {
   const health = new FakeHealth();
   health.mode = 'fallback';
-  const router = new RoutingLLM(new FakePrimary(), health, () => settings(endpoint({ zdr: false })), key => key, { consent: { user: () => true, server: () => false } });
+  const router = new RoutingLLM(new FakePrimary(), health, () => settings(endpoint({ zdr: false })), openKey, { consent: { user: () => true, server: () => false } });
   assert.ok(router.select({ ...who, private: true }));
 });
 
@@ -121,7 +126,7 @@ test('outage error feeds breaker', async () => {
   const network = new RequestError('PROVIDER_NETWORK', 'down', 'retry');
   const overloaded = new ProviderError(503, undefined, 'overloaded');
   for (const error of [network, overloaded]) {
-    const router = new RoutingLLM(new FakePrimary(error), health, () => settings(endpoint()), key => key);
+    const router = new RoutingLLM(new FakePrimary(error), health, () => settings(endpoint()), openKey);
     await assert.rejects(drain(router.select(who)!), error);
   }
   assert.deepEqual(health.failures, ['PROVIDER_NETWORK', 'PROVIDER_HTTP_503']);
@@ -133,7 +138,7 @@ test('400 does not feed breaker', async () => {
   const bad = new ProviderError(400);
   const filtered = new RequestError('PROVIDER_CONTENT_FILTERED', 'filtered', 'review');
   for (const error of [bad, filtered]) {
-    const router = new RoutingLLM(new FakePrimary(error), health, () => settings(endpoint()), key => key);
+    const router = new RoutingLLM(new FakePrimary(error), health, () => settings(endpoint()), openKey);
     await assert.rejects(drain(router.select(who)!), error);
   }
   assert.deepEqual(health.failures, []);
@@ -141,7 +146,7 @@ test('400 does not feed breaker', async () => {
 
 test('primary success recorded, fallback not', async () => {
   const health = new FakeHealth();
-  const router = new RoutingLLM(new FakePrimary(), health, () => settings(endpoint()), key => key, { fetcher: sseFetch([]) });
+  const router = new RoutingLLM(new FakePrimary(), health, () => settings(endpoint()), openKey, { fetcher: sseFetch([]) });
   await drain(router.select(who)!);
   assert.equal(health.successes, 1);
   health.mode = 'fallback';
@@ -154,7 +159,7 @@ test('fallback rebuilt on settings change', async () => {
   health.mode = 'fallback';
   const sent: Sent[] = [];
   let current = settings(endpoint());
-  const router = new RoutingLLM(new FakePrimary(), health, () => current, key => `key-for-${key}`, { fetcher: sseFetch(sent) });
+  const router = new RoutingLLM(new FakePrimary(), health, () => current, openKey, { fetcher: sseFetch(sent) });
   const first = router.select(who)!;
   assert.equal(router.select(who), first);
   current = settings(endpoint({ model: 'backup-two', keySealed: 'sealed-2' }));
@@ -169,4 +174,73 @@ test('modelsInUse includes fallback', () => {
   assert.deepEqual(modelsInUse(config), modelsInUse(config, undefined));
   assert.ok(modelsInUse(config, 'backup-model').includes('backup-model'));
   assert.equal(modelsInUse(config, 'nimbus').filter(id => id === 'nimbus').length, 1);
+});
+
+test('dynamic uses fallback when breaker open', async () => {
+  const health = new FakeHealth();
+  health.mode = 'fallback';
+  const sent: Sent[] = [];
+  const primary = new FakePrimary();
+  const dynamic = new DynamicLLM(new RoutingLLM(primary, health, () => settings(endpoint()), openKey, { fetcher: sseFetch(sent) }), primary);
+  const texts = (await drain(dynamic)).flatMap(event => event.kind === 'text' ? [event.payload.text] : []);
+  assert.deepEqual(texts, ['backup']);
+  assert.deepEqual(sent.map(call => call.model), ['backup-model']);
+  assert.equal(primary.calls, 0);
+});
+
+test('dynamic throws LLM_OFFLINE when offline', async () => {
+  const health = new FakeHealth();
+  health.mode = 'offline';
+  const primary = new FakePrimary();
+  const dynamic = new DynamicLLM(new RoutingLLM(primary, health, () => settings(endpoint()), openKey), primary);
+  await assert.rejects(drain(dynamic), (error: unknown) => error instanceof RequestError && error.code === 'LLM_OFFLINE');
+  assert.equal(primary.calls, 0);
+});
+
+test('dynamic model getter follows mode', () => {
+  const health = new FakeHealth();
+  const primary = new FakePrimary();
+  const dynamic = new DynamicLLM(new RoutingLLM(primary, health, () => settings(endpoint()), openKey), primary);
+  assert.equal(dynamic.model, 'primary-model');
+  health.mode = 'fallback';
+  assert.equal(dynamic.model, 'backup-model');
+  assert.equal(dynamic.outputTokenLimit, 1024);
+  assert.equal(dynamic.contextTokenLimit, 8192);
+  health.mode = 'offline';
+  assert.equal(dynamic.model, 'primary-model');
+});
+
+test('probe returns false on network error', async () => {
+  const down = (async () => { throw new TypeError('fetch failed'); }) as typeof fetch;
+  assert.equal(await probePrimary('https://gateway.example.test/v1', 'key', 'nimbus', down), false);
+  const unavailable = (async () => new Response('{}', { status: 503 })) as typeof fetch;
+  assert.equal(await probePrimary('https://gateway.example.test/v1', 'key', 'nimbus', unavailable), false);
+  const up = (async () => new Response('{}', { status: 200 })) as typeof fetch;
+  assert.equal(await probePrimary('https://gateway.example.test/v1', 'key', 'nimbus', up), true);
+});
+
+test('participation off when no model', async () => {
+  const health = new FakeHealth();
+  health.mode = 'offline';
+  const router = new RoutingLLM(new FakePrimary(), health, () => settings(endpoint()), openKey);
+  const decision: ParticipationDecision = { respond: true, addressed: false, reason: 'helpful' };
+  const gate = new ParticipationGate({ classify: async () => decision }, { enabled: () => router.select(undefined) !== undefined, contextMessages: 8, cooldownMs: 0, maxUnsolicitedPerHour: 10 });
+  const message: Message = { id: '1', server: 's', channel: 'c', author: 'a', text: 'Slopbot help' };
+  assert.equal((await gate.decide(message, [])).reason, 'monitoring_disabled');
+  health.mode = 'normal';
+  assert.notEqual((await gate.decide({ ...message, id: '2' }, [])).reason, 'monitoring_disabled');
+});
+
+test('same-gateway fallback reuses primary key', async () => {
+  const primaryGateway = { baseUrl: 'https://gateway.example.test/v1', apiKey: 'primary-key' };
+  const secrets = new WebKeySecrets('');
+  const health = new FakeHealth();
+  health.mode = 'fallback';
+  const sent: Sent[] = [];
+  const same: FallbackEndpoint = { baseUrl: 'https://gateway.example.test/v1/', model: 'backup-model', zdr: true, contextTokens: 8192, outputTokens: 1024 };
+  const sameKey = (endpointValue: FallbackEndpoint) => openFallbackKey(settings(endpointValue), secrets, primaryGateway);
+  await drain(new RoutingLLM(new FakePrimary(), health, () => settings(same), sameKey, { fetcher: sseFetch(sent) }).select(who)!);
+  const other: FallbackEndpoint = { ...same, baseUrl: 'https://backup.example.test/v1' };
+  await drain(new RoutingLLM(new FakePrimary(), health, () => settings(other), sameKey, { fetcher: sseFetch(sent) }).select(who)!);
+  assert.deepEqual(sent.map(call => call.auth), ['Bearer primary-key', '']);
 });

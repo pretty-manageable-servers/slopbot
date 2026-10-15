@@ -194,7 +194,7 @@ export class AdminPanel {
     const configured = activePrices({}, this.config.modelPrices);
     const overrides = activePrices(this.savedPrices(), {});
     const fallback = this.config.fallbackPrice;
-    const names = [...new Set([...modelsInUse(this.config), ...Object.keys(configured), ...Object.keys(overrides)])].sort();
+    const names = [...new Set([...modelsInUse(this.config, loadDegradedSettings(this.store).fallback?.model), ...Object.keys(configured), ...Object.keys(overrides)])].sort();
     return {
       models: names.map((model): PriceRow => {
         const price = configured[model];
