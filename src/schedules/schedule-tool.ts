@@ -179,6 +179,10 @@ export function registerScheduleTool(registry: ToolRegistry, services: ScheduleT
             type: "card",
             title: "Schedule",
             text: `${name}\nNext run: ${schedule.nextAt ?? "none"}${schedule.expiresAt ? `\nExpires: ${schedule.expiresAt}` : ""}`,
+            actions: [
+              { label: "Pause", action: "schedule.pause", arguments: { id } },
+              { label: "Cancel", action: "schedule.cancel", arguments: { id } },
+            ],
           },
         };
       }
