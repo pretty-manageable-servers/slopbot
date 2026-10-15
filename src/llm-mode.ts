@@ -5,6 +5,7 @@ export type LlmMode = 'normal' | 'fallback' | 'offline';
 export type LlmOverride = 'auto' | LlmMode;
 
 export const LLM_DEGRADED_SETTING = 'llm_degraded';
+// AAD for sealing the fallback key inside the llm_degraded setting. Not a provider_keys row id.
 export const LLM_FALLBACK_KEY_ID = 'llm-fallback';
 export const USER_NON_ZDR_SETTING = 'user_non_zdr';
 export const SERVER_NON_ZDR_SETTING = 'allow_non_zdr';
@@ -53,11 +54,13 @@ export interface LlmRouter {
   select(who: LlmCaller | undefined): LLM | undefined;
 }
 
-const OUTAGE_CODES = new Set(['PROVIDER_NETWORK', 'PROVIDER_HTTP_502', 'PROVIDER_HTTP_503', 'PROVIDER_HTTP_504', 'PROVIDER_MODEL_NOT_FOUND', 'PROVIDER_STREAM_ERROR']);
+// REQUEST_TIMEOUT is a hung gateway; REQUEST_ABORTED is a user stop and stays out. HTTP 500 stays out because one bad request can cause it.
+// PROVIDER_MODEL_NOT_FOUND counts because a removed primary model is how a model outage shows on the gateway.
+const OUTAGE_CODES = new Set(['PROVIDER_NETWORK', 'PROVIDER_HTTP_502', 'PROVIDER_HTTP_503', 'PROVIDER_HTTP_504', 'PROVIDER_MODEL_NOT_FOUND', 'PROVIDER_STREAM_ERROR', 'PROVIDER_STREAM_INTERRUPTED', 'REQUEST_TIMEOUT']);
 
 // Only errors that mean the service is down. Auth, budget, rate limit and request errors would trip the breaker for the wrong reason.
 export function isOutageError(code: string): boolean {
-  return OUTAGE_CODES.has(code) || code.startsWith('PROVIDER_STREAM_ERROR');
+  return OUTAGE_CODES.has(code);
 }
 
 export const DEGRADED_NOTE = 'Slopbot is running at reduced capacity because its model service is down. Slash commands still work. Messages sent now will not be answered later.';
