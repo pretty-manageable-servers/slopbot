@@ -1,0 +1,68 @@
+name: PR to Discord
+
+# Posts new PRs to Discord as one embed.
+# Needs the DISCORD_PR_WEBHOOK secret.
+# Must never check out PR code: pull_request_target runs with secrets.
+# Posts only for same-repo branches and for owners, members and collaborators,
+# so outside users cannot spam the channel.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  post:
+    # A branch in this repo needs write access, so bot PRs (OpenCode) post too.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository ||
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post the PR
+        # A Discord error (for example a 429) must not mark the PR red.
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_PR_WEBHOOK }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+          URL: ${{ github.event.pull_request.html_url }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD: ${{ github.event.pull_request.head.label }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "DISCORD_PR_WEBHOOK is not set. Nothing posted."
+            exit 0
+          fi
+          title="#$NUMBER $TITLE"
+          [ "$DRAFT" = "true" ] && title="[draft] $title"
+          payload=$(jq -n \
+            --arg title "${title:0:256}" \
+            --arg url "$URL" \
+            --arg body "${BODY:0:3990}" \
+            --arg author "$AUTHOR" \
+            --arg branches "$HEAD → $BASE" \
+            --arg footer "${REPO#*/} · pull request" \
+            '{
+              username: "Slopbot PRs",
+              allowed_mentions: {parse: []},
+              embeds: [{
+                title: $title,
+                url: $url,
+                description: (if $body == "" then "No description." else $body end),
+                color: 2450411,
+                fields: [
+                  {name: "Author", value: $author, inline: true},
+                  {name: "Branch", value: $branches, inline: true}
+                ],
+                footer: {text: $footer}
+              }]
+            }')
+          curl --fail-with-body -sS -X POST -H 'Content-Type: application/json' \
+            -d "$payload" "$DISCORD_WEBHOOK_URL"
+          echo "Posted: $REPO #$NUMBER"
