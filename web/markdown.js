@@ -113,8 +113,14 @@
     });
     // Discord escapes: a backslash before punctuation shows the punctuation as plain text.
     s = s.replace(/\\(&(?:amp|lt|gt|quot|#39);|[!-\/:-@\[-`{-~])/g, (_, ch) => hold(ch));
-    s = s.replace(/\[([^\]\u0001\u0002]+)\]\(((?:[^\s()\u0001\u0002]|\([^\s()\u0001\u0002]*\))+)\)/g, (match, label, url) => {
+    s = s.replace(/(!?)\[([^\]\u0001\u0002]+)\]\(((?:[^\s()\u0001\u0002]|\([^\s()\u0001\u0002]*\))+)\)/g, (match, image, label, url) => {
       const href = safeHref(unesc(url));
+      if (href) {
+        const parsed = new URL(href);
+        if ((image || /\.(?:png|jpe?g|gif|webp|avif)$/i.test(parsed.pathname)) && parsed.protocol === 'https:' && !parsed.username && !parsed.password) {
+          return hold(anchor(href, `<img src="${esc(href)}" alt="${label}" loading="lazy" referrerpolicy="no-referrer">`));
+        }
+      }
       return href ? hold(anchor(href, label)) : match;
     });
     s = s.replace(/&lt;(@&amp;|@!?|#)\d+&gt;/g, (_, kind) => {

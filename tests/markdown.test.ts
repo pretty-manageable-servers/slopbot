@@ -18,6 +18,18 @@ function loadAsModule(): Render {
 
 const render = loadAsModule();
 
+test('generated images and linked graph files render inline with safe URLs and escaped labels', () => {
+  for (const text of ['![Earth temperature](https://s3.example/plot.png?signature=abc)', '[Earth temperature](https://s3.example/plot.png?signature=abc)']) {
+    const { document } = parseHTML(render(text));
+    assert.equal(document.querySelector('img')?.getAttribute('src'), 'https://s3.example/plot.png?signature=abc');
+    assert.equal(document.querySelector('img')?.getAttribute('alt'), 'Earth temperature');
+    assert.equal(document.querySelector('a')?.getAttribute('href'), 'https://s3.example/plot.png?signature=abc');
+  }
+  for (const url of ['javascript:alert(1)', 'data:image/svg+xml,evil', 'http://example.com/plot.png', 'https://user:password@example.com/plot.png']) assert.ok(!render(`![x](${url})`).includes('<img'));
+  const hostile = render('![" onerror="alert(1)](https://example.com/plot.png)');
+  const { document } = parseHTML(hostile); assert.equal(document.querySelector('img')?.getAttribute('onerror'), null);
+});
+
 test("browser build exposes window.SlopbotMarkdown and no top-level names", () => {
   const win: { SlopbotMarkdown?: { renderMarkdown: Render } } = {};
   runInNewContext(source, { window: win, URL });

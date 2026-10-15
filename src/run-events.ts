@@ -3,7 +3,7 @@ import type { Json, Message, ModelEvent } from "./domain.js";
 import type { ToolActivity } from "./tool-activity.js";
 import { transcriptSwitchOn } from "./server-tools.js";
 import type { MemberDirectory, MemberProfile } from "./member-directory.js";
-import { imageAttachments } from "./web-chat-images.js";
+import { imageAttachments, remoteImageAttachments } from "./web-chat-images.js";
 import { fileAttachments, parseFileUrl, type ChatFileView } from "./web-chat-files.js";
 import { LEGACY_FILE_NOTE } from "./source-context.js";
 
@@ -78,6 +78,7 @@ export interface TranscriptMessage {
   runIds: string[];
   /** Web chat images as saved placeholders. The page loads the bytes from the chat's image route. */
   images?: { imageId: string; name: string; contentType: string; size: number }[];
+  remoteImages?: { src: string; name: string; size: number }[];
   /** Web chat files as saved placeholders. The page shows a chip. The bytes come from the chat's file route. */
   files?: ChatFileView[];
   /** True for Slopbot's own messages, and for a person's message that a reply run used. Live messages start false. */
@@ -139,6 +140,7 @@ export function transcriptMessage(stored: Message, slopbot: string | undefined, 
     slopbot: isSlopbot,
     runIds: isSlopbot ? [...runIds] : [],
     ...(imageAttachments(message.attachments).length ? { images: imageAttachments(message.attachments) } : {}),
+    ...(remoteImageAttachments(message.attachments).length ? { remoteImages: remoteImageAttachments(message.attachments) } : {}),
     ...(fileAttachments(message.attachments).length ? { files: fileAttachments(message.attachments) } : {}),
     used: isSlopbot || used,
   };

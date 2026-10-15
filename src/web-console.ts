@@ -140,7 +140,7 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
 }
 type StaticFile = { content: Buffer; type: string };
 const contentTypes: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webp': 'image/webp', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8', '.json': 'application/json' };
-const consoleCsp = "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' https://cdn.discordapp.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+const consoleCsp = "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 // The Next static export uses inline scripts. Only the landing HTML gets this relaxation.
 const landingCsp = consoleCsp.replace("script-src 'self'", "script-src 'self' 'unsafe-inline'");
 /** Console file for a /console path, or undefined. Only these names are served. */

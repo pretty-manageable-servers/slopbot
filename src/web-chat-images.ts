@@ -37,6 +37,16 @@ export function imageAttachments(attachments: readonly Attachment[] | undefined)
     .map(item => ({ imageId: item.url.slice(CHAT_IMAGE_SCHEME.length), name: item.name, contentType: item.contentType ?? "image/png", size: item.size ?? 0 }));
 }
 
+export function remoteImageAttachments(attachments: readonly Attachment[] | undefined): { src: string; name: string; size: number }[] {
+  return (attachments ?? []).flatMap(item => {
+    try {
+      const url = new URL(item.url);
+      const image = /^image\/(?:png|jpeg|gif|webp|avif)$/i.test(item.contentType?.split(';')[0] ?? '') || !item.contentType && /\.(?:png|jpe?g|gif|webp|avif)$/i.test(url.pathname);
+      return image && url.protocol === 'https:' && !url.username && !url.password ? [{ src: url.href, name: item.name, size: item.size ?? 0 }] : [];
+    } catch { return []; }
+  }).slice(0, CHAT_IMAGE_MAX_COUNT);
+}
+
 /** Clean file name for display: no path, no control characters, at most 100 characters. */
 export function imageName(raw: string | null, extension: string): string {
   const base = (raw ?? "").split(/[\\/]/).pop()!.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 100);

@@ -1143,7 +1143,7 @@ function messageNode(m) {
     const bubble = textNode('div', '', 'chat-text');
     if (m.timestamp) bubble.title = timeLabel(m.timestamp);
     renderText(bubble, m.text);
-    if (m.images && m.images.length) article.append(imageStrip(m));
+    if (m.images?.length || m.remoteImages?.length) article.append(imageStrip(m));
     if (m.files && m.files.length) article.append(fileChips(m));
     article.append(bubble);
     if (m.editedAt) article.append(textNode('span', 'edited', 'chat-edited'));
@@ -1166,6 +1166,8 @@ function messageNode(m) {
   const body = textNode('div', '', 'chat-text');
   renderText(body, m.text);
   article.append(body);
+  if (m.images?.length || m.remoteImages?.length) article.append(imageStrip(m));
+  if (m.files?.length) article.append(fileChips(m));
   return article;
 }
 
@@ -2263,12 +2265,14 @@ const sizeLabel = bytes => bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} M
 function imageStrip(m) {
   const strip = textNode('div', '', 'chat-images');
   const chat = String(m.channel || '').replace(/^web:/, '');
-  for (const image of m.images) {
+  for (const image of [...(m.images || []).map(image => ({ ...image, src: imageUrl(chat, image.imageId) })), ...(m.remoteImages || [])]) {
     const img = document.createElement('img');
-    img.src = imageUrl(chat, image.imageId); img.alt = image.name; img.loading = 'lazy';
+    img.src = image.src; img.alt = image.name; img.loading = 'lazy'; img.referrerPolicy = 'no-referrer';
     img.title = `${image.name} (${sizeLabel(image.size)})`;
+    const link = textNode('a', '', 'chat-image-link');
+    link.href = image.src; link.target = '_blank'; link.rel = 'noopener noreferrer';
     img.addEventListener('error', () => img.replaceWith(textNode('span', `${image.name} (${sizeLabel(image.size)})`, 'chat-image-chip')));
-    strip.append(img);
+    link.append(img); strip.append(link);
   }
   return strip;
 }
