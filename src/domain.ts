@@ -37,6 +37,10 @@ export interface Message {
   readonly uploads?: { readonly files: readonly string[]; readonly failed: readonly string[] };
 }
 
+export function hasMessageContent(message: Message): boolean {
+  return Boolean(message.text.trim() || message.attachments?.length || message.modelImages?.length || message.uploads?.files.length);
+}
+
 export interface PromptItem {
   readonly role: "system" | "user" | "assistant" | "tool";
   readonly toolCalls?: readonly ModelToolCall[];

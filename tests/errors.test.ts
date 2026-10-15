@@ -33,6 +33,14 @@ test('causes are bounded and uncertainty survives added diagnostic context', () 
   assert.ok(errorSummary(new Error('x'.repeat(3000))).length <= 1000);
 });
 
+test('Discord error notices keep brackets and underscores readable and cannot break out of their text block', () => {
+  const error = errorContext(new RequestError('CONTEXT_CHANGED', 'message_edited with ``` injected markdown', 'Inspect request_id'), { stage: 'agent round', messageId: 'request-1' });
+  const notice = errorReply(error, 'job-1');
+  assert.ok(notice.startsWith('```text\n[CONTEXT_CHANGED]'));
+  assert.ok(!notice.includes('\\[')); assert.ok(!notice.includes('\\_'));
+  assert.equal(notice.match(/```/g)?.length, 2); assert.match(notice, /Request ID: request-1/);
+});
+
 test('provider and limit errors give specific recovery instructions', () => {
   assert.match(errorReply(new ProviderError(429)), /PROVIDER.*429/);
   assert.match(errorReply(new ProviderError(429)), /rate limit/);

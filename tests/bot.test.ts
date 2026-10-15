@@ -11,6 +11,22 @@ const incoming = (id: string, text: string, extra: Partial<Incoming> = {}): Inco
   botAuthor: false, mentionsBot: false, repliesToBot: false, ...extra,
 });
 
+test('empty requests do not call the model or queue a task, while attachment-only requests do', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close()); let models = 0; let jobs = 0;
+  const app = new Application(store, { async *stream() { models++; yield { kind: 'text', payload: { text: 'Attachment received' } }; } }, { allowedChannels: [{ server: 's', channel: 'c' }] });
+  const gateway: ChatGateway = { async reply() { return []; }, async createTaskThread() { throw new Error('No thread expected'); }, typing() { return () => {}; } };
+  const bot = new Bot(app, store, store, gateway, 's', ['c']);
+  await bot.receive(incoming('empty', '   ', { mentionsBot: true }));
+  assert.equal(models, 0); assert.equal((await store.jobs('s', 'c')).length, 0);
+  assert.equal(await app.handle({ id: 'direct-empty', server: 's', channel: 'c', author: 'alice', text: '', addressed: true }), undefined);
+  await bot.receive(incoming('attachment', '', { mentionsBot: true, attachments: [{ name: 'plot.png', url: 'https://cdn.discordapp.com/plot.png' }] }));
+  assert.equal(models, 1);
+  const queued = incoming('queued', 'old goal', { addressed: true });
+  await store.ingest(queued); await store.revise({ ...queued, text: '' });
+  assert.equal(await app.handle(queued, true), undefined); assert.equal(models, 1);
+  jobs = (await store.jobs('s', 'c')).length; assert.equal(jobs, 0);
+});
+
 function setup() {
   const store = new SQLiteStore();
   const llm = new FakeLLM();

@@ -4,6 +4,7 @@ import { replySubject, type ProfileStore } from "./profiles.js";
 import { requestTimings } from "./request-timing.js";
 import { Application } from "./application.js";
 import type { Message } from "./domain.js";
+import { hasMessageContent } from './domain.js';
 import type { Store } from "./ports.js";
 import type { Knowledge } from "./memory.js";
 import type { TaskWorker, QueueStore } from "./queue.js";
@@ -103,6 +104,12 @@ export class Bot {
     }
   }
   private async receiveScoped(message: Incoming, alreadyIngested: boolean, classificationAttempt: number): Promise<void> {
+    if (!hasMessageContent(message)) {
+      if (!alreadyIngested) await this.store.ingest({ ...message, addressed: false });
+      await this.options.participation?.recordBlocked(message, 'empty_message');
+      requestTimings.finish(message);
+      return;
+    }
     const task = this.tasks.has(message.channel);
     const privateChat = isPrivateChannel(message.channel);
     // A web reply arrives with addressed=true, so it always gets an answer and skips JEV. A private chat always does, even without that flag.
@@ -351,7 +358,7 @@ export class Bot {
       // Link first: the web console checks which messages a run used when the saved reply shows up.
       await this.store.linkOutput(sent, runId, message.id);
       await this.store.ingest({ ...sent, addressed: false });
-      this.options.participation?.recordReply(message, sent);
+      this.options.participation?.recordReply?.(message, sent);
     }
   }
 }

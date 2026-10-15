@@ -2,7 +2,7 @@ import type { ToolActivityObserver } from './tool-activity.js';
 import { requestTimings } from "./request-timing.js";
 import type { PresentationPolicy } from './presentation/policy.js';
 import type { HarnessJournal } from "./harness-state.js";
-import { parseMessage, type Reply } from "./domain.js";
+import { hasMessageContent, parseMessage, type Message, type Reply } from "./domain.js";
 import type { LLM, Store } from "./ports.js";
 import type { Recall } from "./memory.js";
 import type { ProfileStore } from "./profiles.js";
@@ -30,6 +30,12 @@ export class Application {
   }
   private async handleScoped(message: import('./domain.js').Message, alreadyIngested: boolean): Promise<Reply | undefined> {
     if (!this.runner.accepts(message)) return undefined;
+    if (!hasMessageContent(message)) return undefined;
+    if (alreadyIngested) {
+      const lookup = (this.store as { canonicalMessage?(server: string, id: string): Message | undefined | Promise<Message | undefined> }).canonicalMessage;
+      const current = await lookup?.call(this.store, message.server, message.id);
+      if (current && !hasMessageContent(current)) return undefined;
+    }
     if (message.taskId && message.addressed !== false) {
       const key = JSON.stringify([message.server, message.channel, message.taskId]);
       const previous = this.taskTails.get(key) ?? Promise.resolve();
