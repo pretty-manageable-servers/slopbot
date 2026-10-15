@@ -21,6 +21,9 @@ import { registerTimingTools, saveRequestTiming } from "../timing-tools.js";
 import {handleDiscordUi} from './discord-ui-interactions.js';
 import {registerTaskTools} from '../productivity/tasks.js';
 import {registerReminderTools,ReminderWorker} from '../productivity/reminders.js';
+import {registerScheduleTool} from '../schedules/schedule-tool.js';
+import {ScheduleWorker} from '../schedules/schedule-worker.js';
+import {SCHEDULE_KIND} from '../schedules/schedule-types.js';
 import {registerReportTools} from '../search/reports.js';
 import {UiRuntime,registerUiTool,registerPollTool} from '../ui/runtime.js';
 import type {UiDocument} from '../ui/schema.js';
@@ -55,7 +58,7 @@ import { Application } from "../application.js";
 import { Bot, splitReply, type ChatGateway, type Incoming } from "../bot.js";
 import { PresenceUpdater } from "../presence.js";
 import type { Config } from "../config.js";
-import { parseEffort, type Message } from "../domain.js";
+import { parseEffort, type Json, type Message } from "../domain.js";
 import type { LLM } from "../ports.js";
 import type { RuntimeStore } from "../runtime-store.js";
 import { LLMClassifier, ParticipationGate } from "../participation.js";
@@ -131,6 +134,7 @@ export class DiscordServer implements ChatGateway {
   private readonly app: Application;
   private readonly renderer: ReplyRenderer;
   private readonly reminders: ReminderWorker;
+  private readonly schedules: ScheduleWorker;
   private readonly fixWatches: FixWatchWorker | undefined;
   private readonly uiRuntime: UiRuntime;
   private readonly toolProgress = new DiscordToolProgress();
@@ -247,7 +251,24 @@ export class DiscordServer implements ChatGateway {
     registerPollTool(this.tools);
     registerTaskTools(this.tools,{store,authorize:authorizeFeature});
     registerReminderTools(this.tools,{store,authorize:authorizeFeature,reminderChannel:message=>message.source==='voice'?this.voice?.taskParent(message.channel):undefined});
+    registerScheduleTool(this.tools,{store,authorize:authorizeFeature,isTeamEditor:async user=>team?await team.canEdit(user).catch(()=>false):false});
     this.reminders=new ReminderWorker(guildId,store,async(message,text,id)=>{await this.reply(message,text,id);},authorizeFeature);
+    this.schedules=new ScheduleWorker({
+      server:guildId,store,authorize:authorizeFeature,
+      // deliveryId is schedule:<id>:<slot or note>. The id is hex, so it has no colon. The owner is the mention target.
+      reply:async(channel,text,deliveryId)=>{
+        const record=await store.record(guildId,SCHEDULE_KIND,deliveryId.split(':')[1]??'');
+        const owner=String((record?.value as Record<string,Json>|undefined)?.owner??'');
+        await this.reply({server:guildId,channel,author:owner,id:`command:${deliveryId}`,text:'',addressed:false,timestamp:Date.now()},text,deliveryId);
+      },
+      enqueuePrompt:async message=>{await this.worker.enqueue(message);},
+      invokeTool:async(name,input,ctx)=>{
+        const message:Message={server:guildId,channel:ctx.channel,author:ctx.author,id:ctx.id,text:`/slopbot ${name} ${JSON.stringify(input)}`,addressed:false,timestamp:Date.now()};
+        return displayToolResult(await this.tools.invokeResult(message,name,input,ctx.id,ctx.source));
+      },
+      overGrace:who=>usage.overGrace(who),
+      now:()=>new Date(),
+    });
     registerUiTool(this.tools);
     registerProfileTools(this.tools, store);
     // Free steps first. Team keys from the admin panel are used only when the free step fails.
@@ -385,6 +406,7 @@ export class DiscordServer implements ChatGateway {
     this.codeMaintenance = startCodeMaintenance(this.store);
     const sync = () => { for (const channel of this.channels) void this.history.start(channel).catch(error => logError("History import startup failed", error, { server: this.guildId })); };
     this.reminders.start();
+    this.schedules.start();
     this.fixWatches?.start();
     sync(); this.historyTimer = setInterval(sync, 60000);
     void this.registerCommands().catch(error => logError("Could not register /slopbot, /usage, /stop, /inbox, /voice and message app commands. Check application command permissions.", error, { server: this.guildId }));
@@ -770,7 +792,7 @@ export class DiscordServer implements ChatGateway {
         (await this.store.finishDelivery(id!, result)); outputs.push(result); continue;
       }
       if (id) (await this.store.prepareDelivery(id, message, content));
-      const sent = await requestTimings.wait<DiscordMessage>("Discord reply send", async () => channel.send({ ...payload, allowedMentions: { parse: [], repliedUser: false, ...(message.id.startsWith('command:reminder:') ? {users:[message.author]} : {}) },
+      const sent = await requestTimings.wait<DiscordMessage>("Discord reply send", async () => channel.send({ ...payload, allowedMentions: { parse: [], repliedUser: false, ...(message.id.startsWith('command:reminder:') || message.id.startsWith('command:schedule:') ? {users:[message.author]} : {}) },
         ...(id ? { nonce: id, enforceNonce: true } : {}),
         ...(message.id.startsWith("app:") && message.replyTo ? { reply: { messageReference: message.replyTo, failIfNotExists: false } }
           : !message.id.startsWith("task-seed:") && !message.id.startsWith("command:") && !message.id.startsWith("app:") ? { reply: { messageReference: message.id, failIfNotExists: false } } : {}) }));
@@ -934,6 +956,7 @@ export class DiscordServer implements ChatGateway {
     if (this.historyTimer) clearInterval(this.historyTimer);
     this.codeMaintenance?.();
     await this.reminders.stop();
+    await this.schedules.stop();
     await this.fixWatches?.stop();
     await this.history.stop(); await this.worker.stop(); await this.mcp.close();
   }
