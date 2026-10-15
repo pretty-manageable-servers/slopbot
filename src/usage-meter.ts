@@ -68,9 +68,9 @@ export async function* streamMetered(llm: LLM, prompt: Prompt, options: { usage?
   if (!reported) await options.usage?.record(options.who, model, estimate);
 }
 
-/** Every model id Slopbot can call. Admins set prices for these ids. */
-export function modelsInUse(config: Pick<Config, "model" | "jevModel" | "embeddingModel" | "baseUrl">): string[] {
-  return [...new Set([config.model, config.jevModel, embeddingPriceModel(config.baseUrl, config.embeddingModel)])];
+/** Every model id Slopbot can call. Admins set prices for these ids. The fallback model comes from the saved degraded-mode settings. */
+export function modelsInUse(config: Pick<Config, "model" | "jevModel" | "embeddingModel" | "baseUrl">, fallbackModel?: string): string[] {
+  return [...new Set([config.model, config.jevModel, embeddingPriceModel(config.baseUrl, config.embeddingModel), ...(fallbackModel ? [fallbackModel] : [])])];
 }
 
 /** Builds the one meter for the process. Limits and prices come from the config and the saved settings. */
