@@ -7,7 +7,8 @@ import { AudioPlayerStatus, EndBehaviorType, NoSubscriberBehavior, StreamType, V
 import type { Config } from '../config.js';
 import { ToolError, type ToolRegistry } from '../tools.js';
 import type { Message } from '../domain.js';
-import { errorReply, logError } from '../errors.js';
+import { describeError, errorReply, logError } from '../errors.js';
+import { DEGRADED_NOTE, isOutageError, type LlmRouter } from '../llm-mode.js';
 import type { UsageMeter } from '../usage-meter.js';
 import type { WebReplies } from '../web-replies.js';
 import { containsSkipMarker, cutSpoken, heldSkipLength, heldTagLength, isErrorReply, plainSpoken, SentenceSplitter, splitSpeak, spokenText, VOICE_FILLER_GAP_MS, VOICE_FILLER_MAX, VOICE_FILLER_TEXTS, VOICE_INSTRUCTIONS_MAX, VOICE_LIMIT_TEXT, VOICE_SPOKEN_MAX, VOICE_TURN_TIMEOUT_MS } from '../voice-rules.js';
@@ -107,6 +108,8 @@ interface Session {
   fillers: { instructions: string; clips: Map<string, Promise<Buffer>> } | undefined;
   /** Time (ms since epoch) of the last limit notice, by user. Keeps each notice to one per LIMIT_NOTICE_MS. */
   limitNotices: Map<string, number>;
+  /** WP7: true once the degraded note was spoken or posted in this session. It is said once per session. */
+  noted: boolean;
   refresh(): void;
   fail(error: unknown): void;
   stop(): void;
@@ -357,7 +360,7 @@ export class DiscordVoice {
   private readonly unlisten: () => void;
 
   /** `instructions` returns the voice description for this server. `saveInstructions` stores a new one; "" clears it. */
-  constructor(private readonly client: Client, private readonly server: string, private readonly config: Config, private readonly poster: VoicePoster, private readonly usage: UsageMeter, private readonly muted: (user: string) => boolean, private readonly instructions: () => string, private readonly saveInstructions: (value: string) => void | Promise<void>, private readonly connect: typeof joinVoiceChannel = joinVoiceChannel, private readonly createPlayer: () => AudioPlayer = () => createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Stop, maxMissedFrames: MAX_MISSED_FRAMES } })) {
+  constructor(private readonly client: Client, private readonly server: string, private readonly config: Config, private readonly poster: VoicePoster, private readonly usage: UsageMeter, private readonly muted: (user: string) => boolean, private readonly instructions: () => string, private readonly saveInstructions: (value: string) => void | Promise<void>, private readonly connect: typeof joinVoiceChannel = joinVoiceChannel, private readonly createPlayer: () => AudioPlayer = () => createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Stop, maxMissedFrames: MAX_MISSED_FRAMES } }), private readonly router?: LlmRouter) {
     this.onVoiceState = (_old, next) => {
       if (next.guild.id !== server || !this.session) return;
       if (next.id === client.user?.id && next.channelId !== this.session.channel) { this.leave(); return; }
@@ -564,7 +567,7 @@ export class DiscordVoice {
         void target.send({ content: `Voice conversation failed. ${errorReply(error)}`, allowedMentions: { parse: [] } }).catch(error => logError('discord_voice_notice_failed', error, { server: this.server, channel }));
       }
     };
-    const session: Session = { channel, connection, abort, player, audio, replies, busy: false, turn: undefined, fillers: undefined, limitNotices: new Map(), origin, listening: undefined, listeningAt: Number.NEGATIVE_INFINITY, refresh, fail, stop: () => {
+    const session: Session = { channel, connection, abort, player, audio, replies, busy: false, turn: undefined, fillers: undefined, limitNotices: new Map(), noted: false, origin, listening: undefined, listeningAt: Number.NEGATIVE_INFINITY, refresh, fail, stop: () => {
       // Leaving: no listening line for the turn that ends here. The line is removed.
       abort.abort(); clearTimeout(idle); if (session.turn) this.endTurn(session, session.turn); player.stop(true);
       void this.removeListening(session).catch(error => logError('discord_voice_listening_failed', error, { server: this.server, channel }));
@@ -594,15 +597,28 @@ export class DiscordVoice {
         const pcm = await this.capture(connection, user, captures, abort.signal);
         if (pcm.length < 19200 || member.voice.channelId !== channel || this.muted(user)) return;
         if (!(await this.usage.limiter.check(user)).allowed) { await this.limitNotice(session, user); return; }
-        const transcript = await audio.transcribe(pcm, abort.signal);
+        let transcript: string;
+        try { transcript = await audio.transcribe(pcm, abort.signal); }
+        catch (error) {
+          // WP7: an outage of the audio service ends the session after the note. Other errors fail as before.
+          if (this.router === undefined || !isOutageError(describeError(error).code)) throw error;
+          logError('discord_voice_outage', error, { server: this.server, channel }, true);
+          await this.degradedNote(session, user);
+          if (this.session === session) this.leave();
+          return;
+        }
         // Squall is billed at $0.004/minute, independent of token prices.
         await this.usage.limiter.record(user, Math.ceil(pcm.length / 192000 / 60 * 4000));
         if (!transcript) return;
         if (await this.usage.overGrace({ server: this.server, user })) { await this.limitNotice(session, user); return; }
         if (session.turn !== turn || abort.signal.aborted) return;
+        // WP7: with no model for this caller, the transcript is still posted, but its reply is skipped (no chat, no speech) and the note is said.
+        const off = this.router !== undefined && this.router.select({ user, server: this.server, private: false }) === undefined;
+        if (off) this.skipTurn(turn);
         const sent = await this.poster.reply({ user, server: this.server, channel, text: transcript.slice(0, 2000), kind: 'voice' });
         posted = true;
         turn.transcript = { channel, messageId: sent.messageId };
+        if (off) { void this.signTranscript(turn, SLEEP); void this.degradedNote(session, user); return; }
         this.startFillers(session, turn);
         void this.signTranscript(turn, EAR);
       })().catch(error => { failed = true; fail(error); }).finally(() => { if (!posted) this.endTurn(session, turn, !failed && !abort.signal.aborted); });
@@ -708,6 +724,28 @@ export class DiscordVoice {
       const pcm = await this.clipFor(session, VOICE_LIMIT_TEXT);
       if (!session.abort.signal.aborted) this.playClip(session, pcm);
     } catch (error) { logError('discord_voice_limit_failed', error, { server: this.server, channel: session.channel }); }
+  }
+
+  /**
+   * WP7: tells the session once that replies are off. A voice session hears DEGRADED_NOTE, and resolves when it has played.
+   * A text session, or a session whose speech fails, gets it as chat text. Later calls say nothing.
+   */
+  private async degradedNote(session: Session, user: string): Promise<void> {
+    if (session.noted) return;
+    session.noted = true;
+    if (session.replies === 'voice') {
+      try {
+        const pcm = await this.clipFor(session, DEGRADED_NOTE, user);
+        if (session.abort.signal.aborted) return;
+        this.playClip(session, pcm);
+        await sleepUntil(Date.now() + pcm.length / PCM_BYTES_PER_MS, session.abort.signal);
+        return;
+      } catch (error) { logError('discord_voice_degraded_failed', error, { server: this.server, channel: session.channel }); }
+    }
+    try {
+      const channel = await this.textChannel(session.channel);
+      await channel?.send({ content: DEGRADED_NOTE, allowedMentions: { parse: [] } });
+    } catch (error) { logError('discord_voice_degraded_failed', error, { server: this.server, channel: session.channel }); }
   }
 
   /** Live reply text. Sentences of a reply in a voice turn are queued for speech as the model streams them. */
