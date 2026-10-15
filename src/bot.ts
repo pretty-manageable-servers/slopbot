@@ -351,6 +351,7 @@ export class Bot {
       // Link first: the web console checks which messages a run used when the saved reply shows up.
       await this.store.linkOutput(sent, runId, message.id);
       await this.store.ingest({ ...sent, addressed: false });
+      this.options.participation?.recordReply(message, sent);
     }
   }
 }

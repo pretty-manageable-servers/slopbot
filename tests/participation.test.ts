@@ -14,6 +14,33 @@ const message: Message = { id: "1", server: "s", channel: "c", author: "a", text
 const options = { enabled: true, contextMessages: 8, cooldownMs: 60000, maxUnsolicitedPerHour: 1 };
 const decision: ParticipationDecision = { respond: true, addressed: false, reason: "helpful" };
 
+test('recent delivered replies raise same-person follow-up scores with decay and retain raw scores in why', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const signals: unknown[] = [];
+  const gate = new ParticipationGate({ async classify(_message, _context, followup) { signals.push(followup); return { ...decision, scores: { addressed: 0.48, respond: 0.7 } }; } }, options, undefined, store);
+  const followup = { ...message, text: 'do the second one' };
+  const outside = await gate.decide(followup, []); assert.equal(outside.respond, false);
+  gate.recordReply(message, { ...message, id: 'bot-reply', author: 'slopbot', isBot: true, timestamp: Date.now() - 1000 });
+  const inside = await gate.decide({ ...followup, id: 'inside' }, []);
+  assert.equal(inside.respond, true); assert.equal(inside.addressed, true);
+  assert.ok(inside.scores!.addressed > outside.scores!.addressed); assert.ok(signals[1]);
+  const saved = (await store.record('s', 'participation_decision', 'inside'))?.value as unknown as ParticipationRecord;
+  assert.match(saved.detail, /raw addressed=0.480, boost=0.24/);
+  gate.recordReply(message, { ...message, id: 'old-reply', timestamp: Date.now() - 31000 });
+  assert.equal((await gate.decide({ ...followup, id: 'expired' }, [])).respond, false);
+});
+
+test('post-reply sensitivity leaves low-score chatter silent and ends when another person speaks', async () => {
+  let score = 0.1;
+  const gate = new ParticipationGate({ async classify() { return { ...decision, scores: { addressed: score, respond: 0.7 } }; } }, options);
+  gate.recordReply(message, { ...message, id: 'reply', timestamp: Date.now() });
+  assert.equal((await gate.decide(message, [])).respond, false);
+  score = 0.48;
+  assert.equal((await gate.decide({ ...message, author: 'someone-else' }, [])).respond, false);
+  assert.equal((await gate.decide(message, [])).respond, false);
+  assert.equal((await gate.decide({ ...message, channel: 'other-channel' }, [])).respond, false);
+});
+
 test('transient classifier failures retry with bounded backoff and why retains the outcome', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   let calls = 0; const delays: number[] = [];

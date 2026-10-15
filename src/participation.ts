@@ -8,7 +8,7 @@ import type { LLM, Store } from "./ports.js";
 import { attribution, streamMetered, type UsageMeter } from "./usage-meter.js";
 import { decisionThresholds, scoredDecision, type DecisionScores, type DecisionThresholds, type ParticipationRecord } from './participation-history.js';
 import type { RecordStore } from './records.js';
-import { classifierInput } from './classifier-input.js';
+import { classifierInput, type FollowupSignal } from './classifier-input.js';
 
 export interface ParticipationDecision {
   scores?: DecisionScores;
@@ -24,14 +24,14 @@ export const transientClassifierError = (error: unknown): boolean => error insta
   : error instanceof TypeError || error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name);
 
 export interface Classifier {
-  classify(message: Message, context: readonly Message[]): Promise<ParticipationDecision>;
+  classify(message: Message, context: readonly Message[], followup?: FollowupSignal): Promise<ParticipationDecision>;
 }
 
 export class LLMClassifier implements Classifier {
   constructor(private readonly llm: LLM, private readonly store: Store, private readonly usage?: UsageMeter) {}
 
-  async classify(message: Message, context: readonly Message[]): Promise<ParticipationDecision> {
-    const { state, preceding } = classifierInput(message, context);
+  async classify(message: Message, context: readonly Message[], followup?: FollowupSignal): Promise<ParticipationDecision> {
+    const { state, preceding } = classifierInput(message, context, followup);
     const prompt: Prompt = {
       prefixVersion: "participation-v3",
       prefix: [{ role: "system", content: participationPrompt }],
@@ -75,6 +75,7 @@ export interface ParticipationOptions {
 export class ParticipationGate {
   private readonly channelTails = new Map<string, Promise<void>>();
   private readonly replies = new Map<string, number[]>();
+  private readonly recentReplies = new Map<string, { author: string; replyId: string; at: number }>();
   readonly diagnostics = new Map<string, string>();
 
   constructor(private readonly classifier: Classifier, readonly options: ParticipationOptions, private readonly random: () => number = Math.random, private readonly store?: RecordStore,
@@ -94,10 +95,14 @@ export class ParticipationGate {
       const finish = (decision: ParticipationDecision, detail: string) => this.finish(key, decision, message, thresholds, detail);
       if (!this.options.enabled) return finish({ respond: false, addressed: false, reason: "monitoring_disabled" }, 'Monitoring is disabled.');
       let decision: ParticipationDecision;
+      const recent = this.recentReplies.get(key);
+      const age = recent ? Date.now() - recent.at : Infinity;
+      const followup = recent && recent.author === message.author && age >= 0 && age < 30000 ? { replyId: recent.replyId, ageMs: age } : undefined;
+      if (!followup) this.recentReplies.delete(key);
       const failures: string[] = [];
       try {
         for (let attempt = 0; ; attempt++) {
-          try { decision = await requestTimings.measure(message, "decision classifier", () => this.classifier.classify(message, context)); break; }
+          try { decision = await requestTimings.measure(message, "decision classifier", () => this.classifier.classify(message, context, followup)); break; }
           catch (error) {
             failures.push(errorSummary(error));
             if (!transientClassifierError(error) || attempt === 2) throw error;
@@ -111,12 +116,17 @@ export class ParticipationGate {
         return finish({ respond: false, addressed: false, reason: "classifier_failed", retryable: transientClassifierError(error) }, `Classifier failed after ${failures.length} attempt(s): ${failures.join('; ')}`);
       }
       const retryDetail = failures.length ? `Recovered after ${failures.length} retry attempt(s): ${failures.join('; ')}. ` : '';
-      if (decision.scores) decision = scoredDecision(decision.scores, thresholds);
+      let followupDetail = '';
+      if (decision.scores) {
+        const boost = followup && decision.scores.addressed >= 0.3 && decision.scores.respond >= thresholds.respond ? 0.25 * (1 - followup.ageMs / 30000) : 0;
+        if (boost) followupDetail = `Recent assistant reply ${followup!.replyId}: raw addressed=${decision.scores.addressed.toFixed(3)}, boost=${boost.toFixed(3)}. `;
+        decision = scoredDecision({ ...decision.scores, addressed: Math.min(1, decision.scores.addressed + boost) }, thresholds);
+      }
       const emoji = reactionEmoji(decision.emoji);
       const frequency = Math.max(0, Math.min(100, this.options.reactionFrequency ?? 60));
       const allowReaction = emoji && frequency > 0 && (frequency === 100 || this.random() < frequency / 100);
       decision = { ...decision, emoji: allowReaction ? emoji : undefined };
-      const reaction = retryDetail + (emoji ? allowReaction ? 'Reaction selected.' : `Reaction skipped by frequency setting (${frequency}%).` : 'No reaction selected.');
+      const reaction = retryDetail + followupDetail + (emoji ? allowReaction ? 'Reaction selected.' : `Reaction skipped by frequency setting (${frequency}%).` : 'No reaction selected.');
       if (!decision.respond) return finish({ ...decision, reason: "classifier_silent" }, reaction);
       if (!decision.addressed) {
         const now = Date.now();
@@ -133,7 +143,13 @@ export class ParticipationGate {
   }
 
   async recordBypass(message: Message, reason: string): Promise<void> {
+    const key = JSON.stringify([message.server, message.channel]);
+    if (this.recentReplies.get(key)?.author !== message.author) this.recentReplies.delete(key);
     await this.finish(JSON.stringify([message.server, message.channel]), { respond: true, addressed: true, reason }, message, decisionThresholds(this.options.thresholds), 'Classifier bypassed. Reply delivery is a separate step.');
+  }
+  recordReply(request: Message, reply: Message): void {
+    if (request.isBot || reply.channel !== request.channel || reply.server !== request.server) return;
+    this.recentReplies.set(JSON.stringify([request.server, request.channel]), { author: request.author, replyId: reply.id, at: reply.timestamp ?? Date.now() });
   }
   async recordBlocked(message: Message, reason: string): Promise<void> {
     await this.finish(JSON.stringify([message.server, message.channel]), { respond: false, addressed: false, reason }, message, decisionThresholds(this.options.thresholds), 'Participation blocked before classification.');

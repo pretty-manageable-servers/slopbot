@@ -10,7 +10,7 @@ import { attribution, DECISION_OUTPUT_TOKENS, promptEstimate, type UsageMeter } 
 
 import { decisionQuestions as questions } from "../participation-prompts.js";
 import { defaultDecisionThresholds, scoredDecision } from '../participation-history.js';
-import { classifierInput } from '../classifier-input.js';
+import { classifierInput, type FollowupSignal } from '../classifier-input.js';
 
 function probability(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) throw new Error("Invalid decision probability");
@@ -26,10 +26,10 @@ export class DecisionClassifier implements Classifier {
     private readonly fallback?: Classifier,
   ) { this.aliases = new ModelAliases(options.baseUrl); }
 
-  async classify(message: Message, context: readonly Message[]): Promise<ParticipationDecision> {
-    if (this.unsupported && this.fallback) return this.fallback.classify(message, context);
+  async classify(message: Message, context: readonly Message[], followup?: FollowupSignal): Promise<ParticipationDecision> {
+    if (this.unsupported && this.fallback) return this.fallback.classify(message, context, followup);
 
-    const { state, preceding } = classifierInput(message, context);
+    const { state, preceding } = classifierInput(message, context, followup);
     const prompt: Prompt = {
       prefixVersion: "systemone-v4", prefix: [{ role: "system", content: JSON.stringify(questions) }],
       history: [], inputs: [{ role: "user", content: state }],
@@ -58,7 +58,7 @@ export class DecisionClassifier implements Classifier {
       if (error instanceof ProviderError && error.status === 404 && this.fallback) {
         this.unsupported = true;
         logError("decision_endpoint_unavailable_using_chat_classifier", error, { stage: "participation classification", runId }, true);
-        return this.fallback.classify(message, context);
+        return this.fallback.classify(message, context, followup);
       }
       throw error;
     }
