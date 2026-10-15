@@ -230,3 +230,20 @@ test('llm routes: members read, only editors save, test needs a saved fallback',
   assert.equal(body.settings.override, 'offline');
   assert.deepEqual(body.settings.fallback, { ...endpoint, keyLast4: '1234' });
 });
+
+test('cooldown ranges and maximum order', async t => {
+  const { store, panel } = setup(); t.after(() => store.close());
+  await assert.rejects(panel.saveLlm({ breaker: { cooldownSeconds: 59 } }), /Breaker cooldown must be a whole number from 60 to 86400/);
+  await assert.rejects(panel.saveLlm({ breaker: { cooldownSeconds: 86401 } }), /Breaker cooldown must be a whole number from 60 to 86400/);
+  await assert.rejects(panel.saveLlm({ breaker: { maxCooldownSeconds: 59 } }), /Breaker maximum cooldown must be a whole number from 60 to 86400/);
+  await assert.rejects(panel.saveLlm({ breaker: { cooldownSeconds: 600, maxCooldownSeconds: 300 } }), /maximum cooldown must be at least the cooldown/);
+  assert.equal(store.setting(GLOBAL_SETTINGS_SCOPE, LLM_DEGRADED_SETTING), undefined, 'refused saves change nothing');
+  await panel.saveLlm({ breaker: { cooldownSeconds: 900, maxCooldownSeconds: 1800 } });
+  assert.deepEqual(loadDegradedSettings(store).breaker, { failures: 5, windowSeconds: 60, cooldownSeconds: 900, maxCooldownSeconds: 1800 });
+});
+
+test('old probe fields load with cooldown defaults', async t => {
+  const { store } = setup(); t.after(() => store.close());
+  store.setSetting(GLOBAL_SETTINGS_SCOPE, LLM_DEGRADED_SETTING, { breaker: { failures: 3, windowSeconds: 90, probeSeconds: 45, recoverProbes: 4 } });
+  assert.deepEqual(loadDegradedSettings(store).breaker, { failures: 3, windowSeconds: 90, cooldownSeconds: 600, maxCooldownSeconds: 7200 });
+});

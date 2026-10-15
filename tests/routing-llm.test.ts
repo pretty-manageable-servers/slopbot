@@ -1,6 +1,7 @@
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { DynamicLLM, RoutingLLM, outageCode, probePrimary } from '../src/adapters/routing-llm.js';
+import { DynamicLLM, RoutingLLM, outageCode } from '../src/adapters/routing-llm.js';
+import { BreakerHealth } from '../src/llm-health.js';
 import { ParticipationGate, type ParticipationDecision } from '../src/participation.js';
 import { openFallbackKey } from '../src/llm-settings.js';
 import { WebKeySecrets } from '../src/web-keys.js';
@@ -18,6 +19,9 @@ class FakeHealth implements LlmHealth {
   recordFailure(code: string): void { this.failures.push(code); }
   recordSuccess(): void { this.successes++; }
   onChange(): () => void { return () => undefined; }
+  trialDue(): boolean { return false; }
+  claimTrial(): boolean { return false; }
+  endTrial(): void { /* no trials in this fake */ }
 }
 
 class FakePrimary implements LLM {
@@ -181,7 +185,7 @@ test('dynamic uses fallback when breaker open', async () => {
   health.mode = 'fallback';
   const sent: Sent[] = [];
   const primary = new FakePrimary();
-  const dynamic = new DynamicLLM(new RoutingLLM(primary, health, () => settings(endpoint()), openKey, { fetcher: sseFetch(sent) }), primary);
+  const dynamic = new DynamicLLM(new RoutingLLM(primary, health, () => settings(endpoint()), openKey, { fetcher: sseFetch(sent) }), primary, health);
   const texts = (await drain(dynamic)).flatMap(event => event.kind === 'text' ? [event.payload.text] : []);
   assert.deepEqual(texts, ['backup']);
   assert.deepEqual(sent.map(call => call.model), ['backup-model']);
@@ -192,7 +196,7 @@ test('dynamic throws LLM_OFFLINE when offline', async () => {
   const health = new FakeHealth();
   health.mode = 'offline';
   const primary = new FakePrimary();
-  const dynamic = new DynamicLLM(new RoutingLLM(primary, health, () => settings(endpoint()), openKey), primary);
+  const dynamic = new DynamicLLM(new RoutingLLM(primary, health, () => settings(endpoint()), openKey), primary, health);
   await assert.rejects(drain(dynamic), (error: unknown) => error instanceof RequestError && error.code === 'LLM_OFFLINE');
   assert.equal(primary.calls, 0);
 });
@@ -200,7 +204,7 @@ test('dynamic throws LLM_OFFLINE when offline', async () => {
 test('dynamic model getter follows mode', () => {
   const health = new FakeHealth();
   const primary = new FakePrimary();
-  const dynamic = new DynamicLLM(new RoutingLLM(primary, health, () => settings(endpoint()), openKey), primary);
+  const dynamic = new DynamicLLM(new RoutingLLM(primary, health, () => settings(endpoint()), openKey), primary, health);
   assert.equal(dynamic.model, 'primary-model');
   health.mode = 'fallback';
   assert.equal(dynamic.model, 'backup-model');
@@ -210,14 +214,6 @@ test('dynamic model getter follows mode', () => {
   assert.equal(dynamic.model, 'primary-model');
 });
 
-test('probe returns false on network error', async () => {
-  const down = (async () => { throw new TypeError('fetch failed'); }) as typeof fetch;
-  assert.equal(await probePrimary('https://gateway.example.test/v1', 'key', 'nimbus', down), false);
-  const unavailable = (async () => new Response('{}', { status: 503 })) as typeof fetch;
-  assert.equal(await probePrimary('https://gateway.example.test/v1', 'key', 'nimbus', unavailable), false);
-  const up = (async () => new Response('{}', { status: 200 })) as typeof fetch;
-  assert.equal(await probePrimary('https://gateway.example.test/v1', 'key', 'nimbus', up), true);
-});
 
 test('participation off when no model', async () => {
   const health = new FakeHealth();
@@ -243,4 +239,73 @@ test('same-gateway fallback reuses primary key', async () => {
   const other: FallbackEndpoint = { ...same, baseUrl: 'https://backup.example.test/v1' };
   await drain(new RoutingLLM(new FakePrimary(), health, () => settings(other), sameKey, { fetcher: sseFetch(sent) }).select(who)!);
   assert.deepEqual(sent.map(call => call.auth), ['Bearer primary-key', '']);
+});
+
+// A real breaker with a clock, so the trial tests run the whole path.
+function trialRig(t: TestContext, fallback?: FallbackEndpoint) {
+  t.mock.method(console, 'log', () => {});
+  let clock = 1_000_000;
+  const cfg = { settings: settings(fallback) };
+  const health = new BreakerHealth(() => cfg.settings, () => clock);
+  return {
+    cfg,
+    health,
+    advance: (seconds: number) => { clock += seconds * 1000; },
+    open: () => { for (let index = 0; index < 5; index++) health.recordFailure('PROVIDER_HTTP_503'); },
+  };
+}
+
+test('no requests while open without traffic', async t => {
+  const r = trialRig(t, endpoint());
+  const primary = new FakePrimary();
+  const router = new RoutingLLM(primary, r.health, () => r.cfg.settings, openKey);
+  r.open();
+  r.advance(7200 * 2);
+  assert.equal(primary.calls, 0, 'nothing calls the model without a user request');
+  assert.equal(router.select(who)?.model, 'primary-model', 'select offers the primary when a trial is due');
+  assert.equal(r.health.trialDue(), true, 'select does not claim the trial');
+  assert.equal(primary.calls, 0);
+});
+
+test('trial outage falls back in same request', async t => {
+  const r = trialRig(t, endpoint());
+  r.open();
+  r.advance(600);
+  const sent: Sent[] = [];
+  const primary = new FakePrimary(new ProviderError(503, undefined, 'overloaded'));
+  const dynamic = new DynamicLLM(new RoutingLLM(primary, r.health, () => r.cfg.settings, openKey, { fetcher: sseFetch(sent) }), primary, r.health);
+  const texts = (await drain(dynamic)).flatMap(event => event.kind === 'text' ? [event.payload.text] : []);
+  assert.deepEqual(texts, ['backup']);
+  assert.equal(primary.calls, 1);
+  assert.equal(sent.length, 1);
+  assert.equal(r.health.state().mode, 'fallback');
+  assert.equal(r.health.state().lastError, 'PROVIDER_HTTP_503');
+});
+
+test('trial outage without fallback throws LLM_OFFLINE', async t => {
+  const r = trialRig(t);
+  r.open();
+  r.advance(600);
+  const primary = new FakePrimary(new ProviderError(503, undefined, 'overloaded'));
+  const dynamic = new DynamicLLM(new RoutingLLM(primary, r.health, () => r.cfg.settings, openKey), primary, r.health);
+  await assert.rejects(drain(dynamic), (error: unknown) => error instanceof RequestError && error.code === 'LLM_OFFLINE');
+  assert.equal(r.health.state().mode, 'offline');
+});
+
+test('trial counted once', async t => {
+  const r = trialRig(t);
+  r.open();
+  r.advance(600);
+  const recorded: string[] = [];
+  const original = r.health.recordFailure.bind(r.health);
+  r.health.recordFailure = code => { recorded.push(code); original(code); };
+  const primary = new FakePrimary(new ProviderError(503, undefined, 'overloaded'));
+  const dynamic = new DynamicLLM(new RoutingLLM(primary, r.health, () => r.cfg.settings, openKey), primary, r.health);
+  await assert.rejects(drain(dynamic));
+  assert.deepEqual(recorded, [], 'the trial reports only through endTrial');
+  // One doubling only: 600 s to the first retry, then 1200 s after the failed trial.
+  r.advance(1199);
+  assert.equal(r.health.trialDue(), false);
+  r.advance(1);
+  assert.equal(r.health.trialDue(), true);
 });

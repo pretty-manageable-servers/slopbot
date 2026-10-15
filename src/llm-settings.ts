@@ -16,8 +16,8 @@ const OVERRIDES: readonly LlmOverride[] = ['auto', 'normal', 'fallback', 'offlin
 // Same rule as the web key secrets in web-keys.ts, which does not export it.
 const SECRET_PATTERN = /^[\x21-\x7e]{8,200}$/;
 const TEST_TIMEOUT_MS = 15_000;
-// The plan gives no ranges for these, so the ranges are a choice. They keep the probe from running too often and the window from being unbounded.
-const RANGES = { failures: [1, 100], windowSeconds: [10, 3600], probeSeconds: [5, 3600], recoverProbes: [1, 10], statusNoteMinutes: [1, 1440] } as const;
+// The plan gives no ranges for these, so the ranges are a choice. The cooldown is at least a minute, so a model server is not woken too often.
+const RANGES = { failures: [1, 100], windowSeconds: [10, 3600], cooldownSeconds: [60, 86400], maxCooldownSeconds: [60, 86400], statusNoteMinutes: [1, 1440] } as const;
 
 const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 const wholeIn = (value: unknown, [min, max]: readonly [number, number]): number | undefined => typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max ? value : undefined;
@@ -68,21 +68,30 @@ export function loadDegradedSettings(store: SettingsStore): LlmDegradedSettings 
   return {
     override: OVERRIDES.find(mode => mode === raw.override) ?? 'auto',
     ...(fallback ? { fallback } : {}),
-    breaker: {
-      failures: wholeIn(breaker.failures, RANGES.failures) ?? DEFAULT_BREAKER.failures,
-      windowSeconds: wholeIn(breaker.windowSeconds, RANGES.windowSeconds) ?? DEFAULT_BREAKER.windowSeconds,
-      probeSeconds: wholeIn(breaker.probeSeconds, RANGES.probeSeconds) ?? DEFAULT_BREAKER.probeSeconds,
-      recoverProbes: wholeIn(breaker.recoverProbes, RANGES.recoverProbes) ?? DEFAULT_BREAKER.recoverProbes,
-    },
+    // Settings saved before the cooldown fields (probeSeconds, recoverProbes) take the defaults for them.
+    breaker: breakerStored(breaker),
     statusNoteMinutes: wholeIn(raw.statusNoteMinutes, RANGES.statusNoteMinutes) ?? DEFAULT_STATUS_NOTE_MINUTES,
   };
+}
+
+function breakerStored(raw: Record<string, unknown>): BreakerSettings {
+  const stored = {
+    failures: wholeIn(raw.failures, RANGES.failures) ?? DEFAULT_BREAKER.failures,
+    windowSeconds: wholeIn(raw.windowSeconds, RANGES.windowSeconds) ?? DEFAULT_BREAKER.windowSeconds,
+    cooldownSeconds: wholeIn(raw.cooldownSeconds, RANGES.cooldownSeconds) ?? DEFAULT_BREAKER.cooldownSeconds,
+    maxCooldownSeconds: wholeIn(raw.maxCooldownSeconds, RANGES.maxCooldownSeconds) ?? DEFAULT_BREAKER.maxCooldownSeconds,
+  };
+  // A stored pair that breaks the order is replaced by the defaults, so the breaker still has a valid cooldown.
+  return stored.maxCooldownSeconds >= stored.cooldownSeconds ? stored : { ...DEFAULT_BREAKER };
 }
 
 function breakerInput(input: unknown, current: BreakerSettings): BreakerSettings {
   if (input === undefined) return current;
   if (!isObject(input)) throw new AdminInputError('Send the breaker as an object.');
   const pick = (key: keyof BreakerSettings, label: string) => input[key] === undefined ? current[key] : whole(input[key], RANGES[key], label);
-  return { failures: pick('failures', 'Breaker failures'), windowSeconds: pick('windowSeconds', 'Breaker window'), probeSeconds: pick('probeSeconds', 'Breaker probe interval'), recoverProbes: pick('recoverProbes', 'Breaker recovery probes') };
+  const next = { failures: pick('failures', 'Breaker failures'), windowSeconds: pick('windowSeconds', 'Breaker window'), cooldownSeconds: pick('cooldownSeconds', 'Breaker cooldown'), maxCooldownSeconds: pick('maxCooldownSeconds', 'Breaker maximum cooldown') };
+  if (next.maxCooldownSeconds < next.cooldownSeconds) throw new AdminInputError('The breaker maximum cooldown must be at least the cooldown.');
+  return next;
 }
 
 /** The origin of a URL, or undefined when it does not parse. */

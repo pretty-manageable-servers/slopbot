@@ -22,8 +22,9 @@ export interface FallbackEndpoint {
   keyLast4?: string;
 }
 
-export interface BreakerSettings { failures: number; windowSeconds: number; probeSeconds: number; recoverProbes: number }
-export const DEFAULT_BREAKER: BreakerSettings = { failures: 5, windowSeconds: 60, probeSeconds: 30, recoverProbes: 2 };
+export interface BreakerSettings { failures: number; windowSeconds: number; cooldownSeconds: number; maxCooldownSeconds: number }
+// No probes. The breaker waits cooldownSeconds, then lets one real request try the primary. Each failed try doubles the wait, up to maxCooldownSeconds.
+export const DEFAULT_BREAKER: BreakerSettings = { failures: 5, windowSeconds: 60, cooldownSeconds: 600, maxCooldownSeconds: 7200 };
 export const DEFAULT_STATUS_NOTE_MINUTES = 30;
 
 export interface LlmDegradedSettings {
@@ -45,6 +46,11 @@ export interface LlmHealth {
   recordFailure(code: string): void;
   recordSuccess(): void;
   onChange(listener: (state: LlmModeState) => void): () => void;
+  // The half-open trial. Only real user requests make it. Slopbot never sends its own test request.
+  // trialDue() does not claim the slot. claimTrial() claims it. endTrial() releases it; code is the redacted error for 'outage'.
+  trialDue(): boolean;
+  claimTrial(): boolean;
+  endTrial(result: 'success' | 'outage' | 'other', code?: string): void;
 }
 
 export interface LlmCaller { user: string; server: string; private: boolean }

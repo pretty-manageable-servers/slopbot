@@ -1,23 +1,22 @@
 import { isOutageError, type LlmDegradedSettings, type LlmHealth, type LlmModeState } from './llm-mode.js';
 
-type Timer = ReturnType<typeof setTimeout>;
-
 // Breaker state lives here. The effective mode also follows the admin override, which is read from settings on each call.
+// There is no probe. Slopbot never sends its own test request, because a model server may boot on each request and cost money.
+// After the cooldown, one real user request is the trial. Its outcome comes back through endTrial.
 export class BreakerHealth implements LlmHealth {
   private failures: number[] = [];
   private open = false;
-  private probeSuccesses = 0;
   private lastError: string | undefined;
-  private running = false;
-  // One probe chain at a time. A probe in flight blocks a new timer, so stop and start cannot double the probes.
-  private probing = false;
-  private timer: Timer | undefined;
+  // When the next trial may start, and the current cooldown in seconds.
+  private retryAt = 0;
+  private cooldown = 0;
+  // True while one trial request is in flight.
+  private trial = false;
   private current: LlmModeState;
   private listeners = new Set<(state: LlmModeState) => void>();
 
   constructor(
     private settings: () => LlmDegradedSettings,
-    private probe: () => Promise<boolean>,
     private now = Date.now,
   ) {
     this.current = this.snapshot(this.effective(), now());
@@ -29,6 +28,7 @@ export class BreakerHealth implements LlmHealth {
 
   recordFailure(code: string): void {
     // Other codes are not outages. Counting them would trip the breaker for the wrong reason.
+    // While open, a failure only sets lastError. The trial reports its own outcome through endTrial.
     if (!isOutageError(code)) return;
     this.lastError = code;
     if (!this.open) {
@@ -39,8 +39,8 @@ export class BreakerHealth implements LlmHealth {
       if (this.failures.length >= breaker.failures) {
         this.open = true;
         this.failures = [];
-        this.probeSuccesses = 0;
-        this.schedule();
+        this.cooldown = this.settings().breaker.cooldownSeconds;
+        this.retryAt = at + this.cooldown * 1000;
       }
     }
     this.sync();
@@ -55,15 +55,39 @@ export class BreakerHealth implements LlmHealth {
     return () => { this.listeners.delete(listener); };
   }
 
-  start(): void {
-    this.running = true;
-    this.schedule();
+  /** True when a trial may start now. It does not claim the slot. */
+  trialDue(): boolean {
+    return this.canTrial() && !this.trial && this.now() >= this.retryAt;
   }
 
-  stop(): void {
-    this.running = false;
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = undefined;
+  /** Claims the one trial slot. False when it is not due or another trial is in flight. */
+  claimTrial(): boolean {
+    if (!this.trialDue()) return false;
+    this.trial = true;
+    return true;
+  }
+
+  /** Releases the slot. success closes the breaker. outage doubles the cooldown, up to the maximum. other only releases the slot. */
+  endTrial(result: 'success' | 'outage' | 'other', code?: string): void {
+    if (!this.trial) return;
+    this.trial = false;
+    if (result === 'success') {
+      this.open = false;
+      this.failures = [];
+      this.cooldown = this.settings().breaker.cooldownSeconds;
+      this.lastError = undefined;
+    } else if (result === 'outage') {
+      const { maxCooldownSeconds } = this.settings().breaker;
+      this.cooldown = Math.min(this.cooldown * 2, maxCooldownSeconds);
+      this.retryAt = this.now() + this.cooldown * 1000;
+      if (code !== undefined) this.lastError = code;
+    }
+    this.sync();
+  }
+
+  // Trials run only while the breaker decides the mode. An admin override takes the mode, so no trial runs.
+  private canTrial(): boolean {
+    return this.open && this.settings().override === 'auto';
   }
 
   private effective(): Pick<LlmModeState, 'mode' | 'source'> {
@@ -92,32 +116,5 @@ export class BreakerHealth implements LlmHealth {
 
   private snapshot(next: Pick<LlmModeState, 'mode' | 'source'>, since: number): LlmModeState {
     return this.lastError === undefined ? { ...next, since } : { ...next, since, lastError: this.lastError };
-  }
-
-  private schedule(): void {
-    if (!this.running || !this.open || this.timer || this.probing) return;
-    this.timer = setTimeout(() => void this.probeOnce(), this.settings().breaker.probeSeconds * 1000);
-    this.timer.unref();
-  }
-
-  private async probeOnce(): Promise<void> {
-    this.timer = undefined;
-    this.probing = true;
-    let ok = false;
-    try { ok = await this.probe(); } catch { ok = false; }
-    this.probing = false;
-    if (this.open) {
-      const { recoverProbes } = this.settings().breaker;
-      // A failed probe starts the count again, so recovery needs consecutive good probes.
-      this.probeSuccesses = ok ? this.probeSuccesses + 1 : 0;
-      if (this.probeSuccesses >= recoverProbes) {
-        this.open = false;
-        this.failures = [];
-        this.probeSuccesses = 0;
-        this.lastError = undefined;
-      }
-    }
-    this.sync();
-    this.schedule();
   }
 }

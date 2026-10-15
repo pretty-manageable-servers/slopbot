@@ -11,5 +11,5 @@ test('non-outage codes', () => {
 });
 
 test('breaker defaults', () => {
-  assert.deepEqual(DEFAULT_BREAKER, { failures: 5, windowSeconds: 60, probeSeconds: 30, recoverProbes: 2 });
+  assert.deepEqual(DEFAULT_BREAKER, { failures: 5, windowSeconds: 60, cooldownSeconds: 600, maxCooldownSeconds: 7200 });
 });

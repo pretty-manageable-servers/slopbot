@@ -895,8 +895,8 @@ function adminLlm(view, edit) {
     + `<p class="small">Untick ZDR for a cloud model. A cloud model answers only users who opted in (see My profile).</p>`
     + `<label>API key<input name="key" type="password" maxlength="300" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Leave empty to keep the saved key"${off}></label><p class="small">${keyText} The key is never sent back to the browser.</p>`
     + `<label class="checkbox-field"><input type="checkbox" name="removeKey"${off}>Remove the saved key</label>`;
-  const breaker = `<h3>Circuit breaker</h3><p class="small">After the failures in the window, the breaker moves Slopbot to the backup model, or to offline when no backup model is set. A probe checks the primary model until it recovers.</p>`
-    + `<div class="row">${numberField('Failures', 'failures', b.failures, 1, off)}${numberField('Window, seconds', 'windowSeconds', b.windowSeconds, 1, off)}${numberField('Probe every, seconds', 'probeSeconds', b.probeSeconds, 1, off)}${numberField('Good probes to recover', 'recoverProbes', b.recoverProbes, 1, off)}</div>`
+  const breaker = `<h3>Circuit breaker</h3><p class="small">After the failures in the window, Slopbot uses the backup model, or goes offline when no backup model is set. Slopbot sends no test requests. After the cooldown, the next real request tries the main model again; each failed try doubles the cooldown, up to the maximum.</p>`
+    + `<div class="row">${numberField('Failures', 'failures', b.failures, 1, off)}${numberField('Window, seconds', 'windowSeconds', b.windowSeconds, 1, off)}${numberField('Cooldown, seconds', 'cooldownSeconds', b.cooldownSeconds, 60, off)}${numberField('Max cooldown, seconds', 'maxCooldownSeconds', b.maxCooldownSeconds, 60, off)}</div>`
     + `${numberField('Status note every, minutes', 'statusNoteMinutes', s.statusNoteMinutes, 1, off)}`;
   const buttons = edit ? '<button class="primary">Save model settings</button> <button type="button" id="admin-llm-test">Test backup model</button><p class="small">The test uses the saved backup model. Save first.</p>' : '';
   return `<section class="card" id="admin-llm"><h2>Model service</h2><p class="scope">Slopbot's own models and the backup model. Applies to all servers.</p><p class="llm-status">Mode: <strong>${LLM_MODE_TEXT[st.mode] ?? esc(st.mode)}</strong> since ${esc(when(st.since))}, ${origin}.${last}</p><form id="admin-llm-form" class="llm-form">${select}${fallback}${breaker}${buttons}</form></section>`;
@@ -906,7 +906,7 @@ function wireLlm(edit) {
   $('admin-llm-form').onsubmit = event => {
     event.preventDefault();
     const form = event.currentTarget, data = new FormData(form);
-    const body = { override: data.get('override'), breaker: { failures: Number(data.get('failures')), windowSeconds: Number(data.get('windowSeconds')), probeSeconds: Number(data.get('probeSeconds')), recoverProbes: Number(data.get('recoverProbes')) }, statusNoteMinutes: Number(data.get('statusNoteMinutes')) };
+    const body = { override: data.get('override'), breaker: { failures: Number(data.get('failures')), windowSeconds: Number(data.get('windowSeconds')), cooldownSeconds: Number(data.get('cooldownSeconds')), maxCooldownSeconds: Number(data.get('maxCooldownSeconds')) }, statusNoteMinutes: Number(data.get('statusNoteMinutes')) };
     const url = String(data.get('baseUrl') || '').trim();
     // Without a base URL no backup model is sent, so the saved one is kept.
     if (url) {

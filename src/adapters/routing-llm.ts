@@ -15,7 +15,6 @@ export interface RoutingOptions {
 }
 
 const NO_CONSENT: NonZdrConsent = { user: () => false, server: () => false };
-const PROBE_TIMEOUT_MS = 15_000;
 
 /** HTTP 502, 503 and 504 always mean an outage, even when the provider sent its own code. */
 export function outageCode(error: unknown): string {
@@ -70,6 +69,8 @@ export class RoutingLLM implements LlmRouter {
   }
 
   select(who: LlmCaller | undefined): LLM | undefined {
+    // A trial due: the primary is offered, so the gates let the request through. Only DynamicLLM claims the trial.
+    if (this.health.trialDue()) return this.primary;
     const state = this.health.state();
     if (state.mode === "normal") return this.primary;
     if (state.mode === "offline") return undefined;
@@ -107,32 +108,46 @@ export class RoutingLLM implements LlmRouter {
 
 /** The LLM the adapters hold. Each call asks the router for the model that may answer now, with no caller. */
 export class DynamicLLM implements LLM {
-  constructor(private readonly router: LlmRouter, private readonly primary: LLM) {}
+  constructor(private readonly router: LlmRouter, private readonly primary: LLM, private readonly health: LlmHealth) {}
   get model(): string { return this.current().model ?? UNKNOWN_MODEL; }
   get outputTokenLimit(): number { return this.current().outputTokenLimit ?? DEFAULT_OUTPUT_TOKENS; }
   get contextTokenLimit(): number { return this.current().contextTokenLimit ?? DEFAULT_CONTEXT_TOKENS; }
 
   async *stream(prompt: Prompt, signal?: AbortSignal): AsyncIterable<ModelEvent> {
+    if (this.health.claimTrial()) { yield* this.trial(prompt, signal); return; }
     const llm = this.router.select(undefined);
-    if (!llm) throw new RequestError("LLM_OFFLINE", DEGRADED_NOTE, "Wait for the model service, or ask a team admin to set a backup model.");
+    if (!llm) throw offlineError();
     yield* llm.stream(prompt, signal);
+  }
+
+  // The trial calls the raw primary, not the tracked one, so an outage is counted once, through endTrial.
+  // If the primary fails before any event, the same request goes to the fallback. That fallback is priced at the primary's price, which is accepted.
+  private async *trial(prompt: Prompt, signal?: AbortSignal): AsyncIterable<ModelEvent> {
+    let settled = false;
+    let emitted = false;
+    try {
+      for await (const event of this.primary.stream(prompt, signal)) {
+        if (!emitted) { emitted = true; settled = true; this.health.endTrial("success"); }
+        yield event;
+      }
+    } catch (error) {
+      if (emitted) throw error;
+      settled = true;
+      const code = outageCode(error);
+      if (!isOutageError(code)) { this.health.endTrial("other"); throw error; }
+      this.health.endTrial("outage", code);
+      const fallback = this.router.select(undefined);
+      if (!fallback) throw offlineError();
+      yield* fallback.stream(prompt, signal);
+    } finally {
+      // An empty stream, or a consumer that stops early, releases the slot without a verdict.
+      if (!settled) this.health.endTrial("other");
+    }
   }
 
   private current(): LLM { return this.router.select(undefined) ?? this.primary; }
 }
 
-/** One 1-token chat request to the primary model. True when the gateway answers 2xx. Never throws. */
-export async function probePrimary(baseUrl: string, apiKey: string, model: string, fetcher: typeof fetch = fetch): Promise<boolean> {
-  try {
-    const response = await fetcher(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream: false }),
-      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-    });
-    void response.body?.cancel().catch(() => undefined);
-    return response.ok;
-  } catch {
-    return false;
-  }
+function offlineError(): RequestError {
+  return new RequestError("LLM_OFFLINE", DEGRADED_NOTE, "Wait for the model service, or ask a team admin to set a backup model.");
 }
