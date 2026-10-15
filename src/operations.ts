@@ -206,7 +206,7 @@ export function registerOperationsTools(registry: ToolRegistry, services: Operat
       return { text: diagnosticText(JSON.stringify(safe, null, 2)), data: safe };
     } });
   add({ ...base, name: 'issue_report', access: 'member', effect: 'write', retrySafe: false, confirm: () => true, resource: () => `github-issues:${services.config.repository}`,
-    description: 'When the requester asks to file a bug, create an evidence-backed GitHub issue or append evidence to issue_number. Search existing issues first. Exact title matches are reused. Include expected/actual behavior, steps, acceptance check, facts, hypotheses and missing evidence. Only selected snapshots from this task are attached, with secrets redacted. Reconciliation prevents duplicate writes after a lost response. Does not change code.',
+    description: 'When the requester asks to file a bug, create an evidence-backed GitHub issue or append evidence to issue_number. Search existing issues first. Exact title matches are reused. Include concise expected/actual behavior, steps, acceptance check, facts, hypotheses and missing evidence. Reports must fit 8 KiB. Selected evidence contributes source links only; never paste diagnostic snapshots into report fields. Reconciliation prevents duplicate writes after a lost response. Does not change code.',
     fields: { title: text('Concrete bug title', 200, true), expected: text('Expected behavior', 2000, true), actual: text('Observed behavior', 2000, true), steps: text('Reproduction steps or explicitly unknown', 3000, true), acceptance: text('Concrete check a coding agent can use to verify the fix', 2000, true), hypotheses: text('Suspected causes, clearly unconfirmed', 2000), missing: text('Missing evidence or uncertainty', 2000), issue_number: integer('Existing issue to append evidence to'), evidence_ids: { type: 'json', description: '1–8 diagnostic evidence IDs collected in this task', required: true, schema: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 8 } } },
     authorize: async (context, args) => { await ops.authorize(context); await ops.selectedEvidence(context, args); },
     async execute(context, args) {
@@ -222,10 +222,12 @@ export function registerOperationsTools(registry: ToolRegistry, services: Operat
       const report = [
         '## Report', `Expected: ${args.expected}`, `Actual: ${args.actual}`, '## Reproduction', String(args.steps), '## Acceptance check', String(args.acceptance),
         '## Unconfirmed hypotheses', String(args.hypotheses ?? 'None established.'), '## Missing evidence', String(args.missing ?? 'No additional gaps reported; see snapshot limitations.'),
-        '## Collected evidence', ...evidence.map(e => `### ${e.value.kind} (${new Date(e.value.capturedAt).toISOString()})\nEvidence ID: ${e.id}\n${e.value.sources.map(s => messageLink(s)).filter(Boolean).join('\n')}\n\`\`\`json\n${JSON.stringify(e.value.data, null, 2).replace(/```/g, '\u0060\u200b\u0060\u200b\u0060')}\n\`\`\``),
+        '## Collected evidence', ...new Set(evidence.flatMap(e => e.value.sources.map(s => messageLink(s)).filter((link): link is string => Boolean(link)))),
+        'Permission-checked diagnostic snapshots are retained privately. Runtime inventories are not published.',
         `Reported by Discord user ${context.message.author}. Investigation by Slopbot; code changes belong to coding agents.`,
       ].join('\n\n');
-      const body = diagnosticText(report, 55000) + (report.length > 55000 ? '\n\nEvidence attachment truncated to the issue size budget. Query smaller excerpts for full detail.' : '') + `\n\n${marker(context)}`;
+      const body = diagnosticText(report) + `\n\n${marker(context)}`;
+      if (Buffer.byteLength(body, 'utf8') > 8192) throw new ToolError('Report exceeds 8 KiB. Shorten expected, actual, steps, acceptance, hypotheses or missing; include only relevant excerpts.');
       await ops.authorize(context); await ops.selectedEvidence(context, args); await context.assertActive();
       const issue = number ? await services.client.comment(number, body) : await services.client.createIssue(diagnosticText(String(args.title), 200), body);
       return { text: `${number ? 'Evidence added' : 'Issue created'}: ${issue.html_url}`, data: { number: number ?? issue.number, url: issue.html_url }, artifacts: [{ url: issue.html_url, label: number ? 'Issue evidence' : 'GitHub issue' }] };

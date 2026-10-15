@@ -392,6 +392,17 @@ test('web_fetch gives the page text, the source and a note when the text is cut'
   assert.deepEqual(whole.data, {title: 'Long page', url: 'https://page.example/', text: 'short', truncated: false});
 });
 
+test('web_fetch routes GitHub reads to shell without fetching HTML or counting a block', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const registry = new ToolRegistry(store, async () => false);
+  registerWebFetch(registry, { fetch: async () => { throw new Error('GitHub must not be fetched'); } });
+  const message = { id: 'm', server: 's', channel: 'c', author: 'a', text: 'read releases' };
+  for (const host of ['github.com', 'www.github.com', 'api.github.com', 'raw.githubusercontent.com']) {
+    const result = await registry.invokeResult(message, 'web_fetch', { url: `https://${host}/o/r/releases` }, host, 'agent');
+    assert.match(result.text, /shell.*curl/); assert.notEqual(result.status, 'rejected');
+  }
+});
+
 test('StoreKeyPool uses the saved caps, the UTC usage month and the opened secret', async () => {
   const store = new FakeKeyStore({[KEY_CAPS_SETTING]: {tavily: 300, firecrawl: 0}});
   store.row = {id: 'k1', provider: 'tavily', owner: 'o', label: 'main', last4: '1234', secretEncrypted: 'sealed', createdAt: 1};

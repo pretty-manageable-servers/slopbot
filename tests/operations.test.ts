@@ -88,10 +88,19 @@ test('issue creation reconciles a lost response and exact duplicates become comm
   const recovered = await f.invoke('issue_report', args, 'create-one'); assert.match(recovered.text, /Recovered/); assert.equal(f.client.creates, 1);
   const body = f.client.issues[0]!.body!;
   assert.match(body, /Acceptance check/); assert.match(body, /slopbot-operation:/); assert.ok(!body.includes('github_pat_')); assert.ok(!body.includes('private conversation'));
+  assert.match(body, new RegExp(output.id));
+  assert.ok(!body.includes(sha)); assert.ok(!body.includes('prefixVersion')); assert.ok(!body.includes('requestId'));
+  assert.ok(!body.includes('```json')); assert.ok(Buffer.byteLength(body) <= 8192);
   await f.invoke('issue_report', args, 'duplicate'); assert.equal(f.client.creates, 1); assert.equal(f.client.commentsWritten, 1);
   f.client.loseWrite = true;
   await assert.rejects(f.invoke('issue_report', { ...args, issue_number: 1 }, 'comment-one'), /uncertain/);
   await f.invoke('issue_report', { ...args, issue_number: 1 }, 'comment-one'); assert.equal(f.client.commentsWritten, 2);
+});
+
+test('public reports reject oversized multibyte text without publishing a partial report', async t => {
+  const f = await fixture(t); const e = await f.evidence();
+  await assert.rejects(f.invoke('issue_report', { ...reportArgs(e.evidence_id), expected: '界'.repeat(1800), actual: '界'.repeat(1800) }, 'oversized'), /exceeds 8 KiB/);
+  assert.equal(f.client.creates, 0); assert.equal(f.client.commentsWritten, 0);
 });
 
 test('unresolved writes stay blocked and do not blindly create another issue', async t => {
