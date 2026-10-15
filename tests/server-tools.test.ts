@@ -50,6 +50,19 @@ test("channel changes persist and bot calls use the same handler and admin check
   assert.equal(f.participation.options.cooldownMs, 60000);
 });
 
+test('parent memory listings link accessible task scopes without exposing their contents', async t => {
+  const f = setup(); t.after(() => f.store.close());
+  const threadMessage = { ...message, channel: other, id: 'thread-memory-source' };
+  await f.store.ingest(threadMessage); await f.store.registerTask(server, other, channel);
+  await f.store.remember(threadMessage, 'thread-only content');
+  const result = await f.registry.invoke(message, 'memory', {}, 'scoped-list', 'command');
+  assert.match(result, new RegExp(`separate task-thread scope <#${other}>`)); assert.ok(!result.includes('thread-only content'));
+  const hidden = { ...message, channel: 'hidden-thread', id: 'hidden-memory-source' };
+  await f.store.ingest(hidden); await f.store.registerTask(server, hidden.channel, channel); await f.store.remember(hidden, 'private');
+  const filtered = await f.registry.invoke(message, 'memory', {}, 'filtered-scoped-list', 'command');
+  assert.ok(!filtered.includes('hidden-thread')); assert.ok(!filtered.includes('private'));
+});
+
 test("read-only index and channel actions do not require a task thread; memory ownership is enforced", async t => {
   const f = setup(); t.after(() => f.store.close());
   assert.equal(f.registry.effect("index", { action: "status" }), "read");

@@ -445,6 +445,12 @@ export class AgentRunner {
         const shown = fromModel ? linkRefs(rendered, refs, { server: message.server, channel: message.channel }, knownUsers, sourcePlace) : rendered;
         return { runId, text: shown, contextVersion: sourceVersion, toolActivity: activity, ...(ui ? {ui} : {}) };
       } catch (error) {
+        const unfinished = activity.filter(item => item.status === 'running');
+        if (unfinished.length) {
+          const unknown = `Tool outcome unknown; no confirmed result for ${unfinished.map(item => item.name).join(', ')}. Check the action journal before retrying writes.`;
+          if (error instanceof Error) error.message += ` ${unknown}`;
+          for (const item of unfinished) await report({ ...item, status: 'failed', reason: unknown });
+        }
         if (error instanceof RequestGone) throw error;
         await this.store.fail(runId, errorSummary(error)).catch(secondary => logError("run_failure_record_failed", secondary, { runId })); throw errorContext(error, { stage: "agent round", runId, round });
       }

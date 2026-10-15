@@ -5,6 +5,7 @@ import { DiscordToolProgress } from '../src/adapters/discord-tool-progress.js';
 import { Application } from '../src/application.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { ToolError } from '../src/tools.js';
+import { RequestError } from '../src/errors.js';
 import type { ToolActivity } from '../src/tool-activity.js';
 
 test('summary footer counts calls by tool with plural forms and no durations', () => {
@@ -27,8 +28,20 @@ test('full footer shows counts and only the blocked calls', () => {
     {id:'3',name:'index',status:'rejected'},
     {id:'4',name:'index',status:'completed',reused:true},
   ];
-  assert.equal(toolFooter(calls), '\n\n-# 🔎 2 web searches · 🛠️ 2 index\n-# ❌ index blocked');
+  assert.equal(toolFooter(calls), '\n\n-# 🔎 2 web searches · 🛠️ 1 index\n-# ❌ index blocked');
   assert.match(toolProgress(calls, 'Blooming…'), /🔎 Web search × 2/);
+});
+
+test('unfinished writes are not counted as completed and their interrupted run reports an unknown outcome', async t => {
+  const calls: ToolActivity[] = [{ id: 'write', name: 'file_store', status: 'running' }, { id: 'read', name: 'file_read', status: 'completed' }];
+  const footer = toolFooter(calls, 'summary');
+  assert.match(footer, /outcome unknown/); assert.ok(!footer.includes('1 file store'));
+  const store = new SQLiteStore(); t.after(() => store.close()); const events: ToolActivity[] = [];
+  const app = new Application(store, { async *stream() { yield { kind: 'tool_call', payload: [{ name: 'file_store', arguments: {} }] }; } }, { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined,
+    { harness: store, onToolActivity: async (_message, event) => { events.push(event); }, tools: { schemas: () => [], catalog: () => '', execute: async () => { throw new RequestError('CONTEXT_BUDGET', 'Interrupted before the result was saved', 'Inspect the journal'); } } });
+  await assert.rejects(app.handle({ server: 's', channel: 'c', author: 'a', id: 'unknown', text: 'save file', addressed: true }), /Tool outcome unknown/);
+  assert.equal(events.at(-1)?.status, 'failed'); assert.match(events.at(-1)?.reason ?? '', /no confirmed result/);
+  assert.deepEqual((await store.agentTurns({ server: 's', channel: 'c', author: 'a', id: 'unknown', text: '' }))[0]?.results, {});
 });
 
 test('tool errors retain distinct reasons and render them as bounded plain text', () => {
@@ -129,9 +142,9 @@ test('completed replies support hidden, grouped, and expanded tool activity', ()
     {id:'3',name:'shell',status:'failed',arguments:{command:'ls'},reason:'Unavailable'},
   ];
   assert.equal(toolFooter(calls, 'none'), '');
-  assert.equal(toolFooter(calls, 'summary'), '\n\n-# 🔎 2 web searches · 💻 1 shell');
+  assert.equal(toolFooter(calls, 'summary'), '\n\n-# 🔎 2 web searches');
   const full = toolFooter(calls, 'full');
-  assert.equal(full, '\n\n-# 🔎 2 web searches · 💻 1 shell\n-# ❌ shell failed: Unavailable');
+  assert.equal(full, '\n\n-# 🔎 2 web searches\n-# ❌ shell failed: Unavailable');
   assert.ok(!full.includes('weather') && !full.includes('```'));
   assert.equal(toolDisplayMode(undefined), 'summary');
   assert.equal(toolDisplayMode('invalid'), 'summary');

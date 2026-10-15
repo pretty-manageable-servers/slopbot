@@ -39,11 +39,13 @@ export function toolDisplayMode(value: unknown): ToolDisplayMode {
 const clip = (text: string, limit: number) => text.length <= limit ? text : text.slice(0, Math.max(0, limit - 1)).replace(/[\uD800-\uDBFF]$/, "") + "…";
 export function toolFooter(activity: readonly ToolActivity[], mode: ToolDisplayMode = "full"): string {
   if (!activity.length || mode === "none") return "";
-  const groups = [...counts(topLevel(activity))].map(([name, count]) => `${toolEmoji(name)} ${count} ${toolGroup(name)[count === 1 ? 0 : 1]}`);
+  const groups = [...counts(topLevel(activity).filter(item => item.status === 'completed'))].map(([name, count]) => `${toolEmoji(name)} ${count} ${toolGroup(name)[count === 1 ? 0 : 1]}`);
+  const unknown = activity.filter(item => item.status === 'running').map(item => `-# ${toolGroup(item.name)[0]} outcome unknown: no confirmed result.`);
   const failures = mode === "full" ? activity.filter(failed).map(item => `-# ❌ ${toolGroup(item.name)[0]} ${status(item)}${reason(item, 200)}`) : [];
   // Full mode shows short program code inline. Longer code gets a Show code button instead.
   const code = mode === "full" ? topLevel(activity).filter(item => item.name === PROGRAM_TOOL && typeof item.code === "string" && codeFitsInline(item.code)).map(item => codeBlock(item.code!)) : [];
-  return "\n\n" + [`-# ${groups.join(" · ")}${totalTime(activity)}`, ...code, ...failures].join("\n");
+  const lines = [...(groups.length ? [`-# ${groups.join(" · ")}${totalTime(activity)}`] : []), ...code, ...failures, ...unknown];
+  return lines.length ? "\n\n" + lines.join("\n") : '';
 }
 export function toolProgress(activity: readonly ToolActivity[], funLine: string): string {
   const runs = topLevel(activity).filter(item => item.name === PROGRAM_TOOL).map(run => {

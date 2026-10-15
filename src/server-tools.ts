@@ -15,6 +15,7 @@ import { ToolError, type ToolField, type ToolRegistry, type ToolDefinition } fro
 import type { Inbox } from "./inbox.js";
 
 export interface ServerToolStore extends Knowledge, QueueStore, ParticipationHistoryStore {
+  taskThreads(server: string): { thread: string; parent: string }[];
   setting(server: string, key: string): unknown;
   setSetting(server: string, key: string, value: Json): void | Promise<void>;
   indexStats(server: string, channel: string): {
@@ -251,8 +252,19 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
   add({ name: "memory_remember", description: "Save an attributed statement with its source message", fields: { text: { type: "string", description: "Statement to save", max: 2000, required: true } }, access: "member", effect: "write", retrySafe: false, execution: "inline",
     async execute(context, args) { const note = await store.remember((await services.originMessage(context.message)), String(args.text)); return `Saved as your statement, not a group agreement. Memory ID: ${note.id}`; },
     async reconcile(context, args) { const origin = await services.originMessage(context.message); const found = (await store.memories(context.message.server, origin.channel)).find(note => note.author === context.message.author && note.content === args.text && note.sourceIds.includes(origin.id)); return found ? `Saved memory ID: ${found.id}` : undefined; } });
-  add({ name: "memory", description: "List active source-linked memories in this channel", fields: {}, access: "member", effect: "read", retrySafe: true,
-    async execute(context) { const notes = await store.memories(context.message.server, (await services.originMessage(context.message)).channel); return notes.length ? notes.slice(0, 20).map(note => `${note.id} | author ${note.author} | ${note.content}`).join("\n") : "No active saved memories in this channel."; } });
+  add({ name: "memory", description: "List active source-linked memories in this channel and identify separate memory scopes in accessible task threads", fields: {}, access: "member", effect: "read", retrySafe: true,
+    async execute(context) {
+      const origin = await services.originMessage(context.message);
+      const notes = await store.memories(origin.server, origin.channel);
+      const scopes: string[] = [];
+      for (const task of store.taskThreads(origin.server).filter(task => task.parent === origin.channel).slice(-20)) {
+        try { await services.validateChannel(context.message, task.thread); }
+        catch (error) { if (error instanceof ToolError) continue; throw error; }
+        const memories = await store.memories(origin.server, task.thread);
+        if (memories.length) scopes.push(`${memories.length} saved memories in separate task-thread scope <#${task.thread}>. Use memory there to read or manage them.`);
+      }
+      return [notes.length ? notes.slice(0, 20).map(note => `${note.id} | author ${note.author} | ${note.content}`).join("\n") : "No active saved memories in this channel.", ...scopes].join('\n');
+    } });
   add({ name: "memory_forget", description: "Forget one of your saved statements", fields: { id: { type: "string", description: "Memory ID", required: true } }, access: "member", effect: "write", retrySafe: true, execution: "inline",
     async execute(context, args) { return await store.forget(context.message.server, (await services.originMessage(context.message)).channel, String(args.id), context.message.author) ? "Memory forgotten." : "No active memory with that ID owned by you in this channel."; } });
   add({ name: "task_start", surface: "top", scope: "discord", description: "Move sustained work or an action request into a dedicated task thread", fields: { goal: { type: "string", description: "Task goal", required: true } }, access: "member", effect: "write", retrySafe: false, resource: message => `task-thread:${message.server}:${message.id}`,
