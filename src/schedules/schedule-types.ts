@@ -53,6 +53,8 @@ export interface Schedule {
   lastError?: string;
   retryAt?: string;
   createdAt: string;
+  /** Original request that created the schedule. Absent on older records. */
+  requestId?: string;
   renewedAt?: string;
 }
 

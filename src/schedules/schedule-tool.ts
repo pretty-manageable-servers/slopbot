@@ -1,6 +1,7 @@
 import type { Json, Message } from "../domain.js";
 import type { AppRecord, RecordStore } from "../records.js";
 import { ToolError, type ToolRegistry, type ToolResult } from "../tools.js";
+import { stableJson } from "../prompt-cache.js";
 import { uiKey } from "../ui/runtime.js";
 import { GLOBAL_SETTINGS_SCOPE } from "../usage-cost.js";
 import { nextRun, scheduleLimits, validateWhen } from "./schedule-time.js";
@@ -75,6 +76,26 @@ function describe(schedule: Schedule): string {
   return `${schedule.name} — ${when} — next ${schedule.nextAt ?? "none"} — expires ${schedule.expiresAt ?? "never"} — ${state}\nReference: ${schedule.id}`;
 }
 
+function createdResult(schedule: Schedule): ToolResult {
+  return {
+    text: `Schedule "${schedule.name}" created. Next run: ${schedule.nextAt ?? "none"}.\nReference: ${schedule.id}`,
+    ui: {
+      version: 1,
+      type: "card",
+      title: "Schedule",
+      text: `${schedule.name}\nNext run: ${schedule.nextAt ?? "none"}${schedule.expiresAt ? `\nExpires: ${schedule.expiresAt}` : ""}`,
+      actions: [
+        { label: "Pause", action: "schedule.pause", arguments: { id: schedule.id } },
+        { label: "Cancel", action: "schedule.cancel", arguments: { id: schedule.id } },
+      ],
+    },
+  };
+}
+
+function createId(message: Message, name: string, when: ScheduleWhen, run: ScheduleAction): string {
+  return uiKey(stableJson(["schedule", message.server, message.channel, message.author, message.id, name, when, run]));
+}
+
 export function registerScheduleTool(registry: ToolRegistry, services: ScheduleToolServices, now = Date.now): void {
   const { store } = services;
 
@@ -124,6 +145,15 @@ export function registerScheduleTool(registry: ToolRegistry, services: ScheduleT
     access: "member",
     effect: "write",
     retrySafe: true,
+    reconcileBlocking: true,
+    async reconcile(context, args) {
+      if (args.action !== "create") return undefined;
+      const when = parseWhen(args.when);
+      const run = await parseRun(registry, context.message, args.run);
+      const id = createId(context.message, String(args.name ?? "").trim(), when, run);
+      const record = await store.record(context.message.server, SCHEDULE_KIND, id);
+      return record ? createdResult(scheduleOf(record)) : undefined;
+    },
     execution: "inline",
     writes: (args) => args.action !== "list",
     resource: (message) => `schedules:${message.server}`,
@@ -146,6 +176,11 @@ export function registerScheduleTool(registry: ToolRegistry, services: ScheduleT
         if (!name) throw new ToolError("Schedule name is required.");
         const when = parseWhen(args.when);
         const run = await parseRun(registry, message, args.run);
+        // A program retry has a new operation ID but still belongs to the same request.
+        // Include the payload so one request can intentionally create distinct schedules.
+        const id = createId(message, name, when, run);
+        const existing = await store.record(message.server, SCHEDULE_KIND, id);
+        if (existing) return createdResult(scheduleOf(existing));
         // Limits are read after parsing so a bad request is reported before any cap message.
         const limits = scheduleLimits(store.setting(GLOBAL_SETTINGS_SCOPE, SCHEDULE_LIMITS_KEY) as Json | undefined);
         validateWhen(when, run.kind, limits, new Date(current));
@@ -156,7 +191,6 @@ export function registerScheduleTool(registry: ToolRegistry, services: ScheduleT
           throw new ToolError(`You have reached your schedule limit (${limits.perUser}).`);
 
         const next = nextRun(when, new Date(current));
-        const id = uiKey(context.operationId);
         const schedule: Schedule = {
           id,
           server: message.server,
@@ -170,21 +204,12 @@ export function registerScheduleTool(registry: ToolRegistry, services: ScheduleT
           expiresAt: when.kind === "cron" ? iso(current + FREE_PLAN_SCHEDULE_DAYS * DAY_MS) : null,
           failures: 0,
           createdAt: iso(current),
+          requestId: message.id,
         };
-        await store.putRecord(message.server, SCHEDULE_KIND, id, schedule as unknown as Json, 0);
-        return {
-          text: `Schedule "${name}" created. Next run: ${schedule.nextAt ?? "none"}.\nReference: ${id}`,
-          ui: {
-            version: 1,
-            type: "card",
-            title: "Schedule",
-            text: `${name}\nNext run: ${schedule.nextAt ?? "none"}${schedule.expiresAt ? `\nExpires: ${schedule.expiresAt}` : ""}`,
-            actions: [
-              { label: "Pause", action: "schedule.pause", arguments: { id } },
-              { label: "Cancel", action: "schedule.cancel", arguments: { id } },
-            ],
-          },
-        };
+        await context.assertActive();
+        if (!(await store.putRecord(message.server, SCHEDULE_KIND, id, schedule as unknown as Json, 0)))
+          return createdResult(scheduleOf(await load(message.server, id)));
+        return createdResult(schedule);
       }
 
       // pause, resume, renew and cancel all act on one existing schedule.

@@ -190,7 +190,8 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
           const reused = Boolean(await registry.recordedResult(operationId));
           const output = toolResult(await registry.invokeResult(message, name, clean, operationId, context.source, context.invocation?.expectedVersion, { signal }));
           if (output.status === 'rejected' || output.status === 'failed') throw new ToolError(output.reason ?? output.text, output.status);
-          if (output.handoff || output.ui) throw new ToolError('Program tool returned a handoff or UI result. Use a direct call.');
+          if (output.handoff) throw new ToolError('Program tool returned a handoff. Use a direct call.');
+          // Cards supplement the result text. A completed write must not be rejected for returning one.
           for (const source of output.sources ?? []) sources.set(stableJson(source), source);
           for (const artifact of output.artifacts ?? []) artifacts.set(artifact.url, artifact);
           call.status = 'completed'; await childReport('completed', reused);

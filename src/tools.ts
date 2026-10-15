@@ -86,6 +86,8 @@ export interface ToolDefinition {
   authorize?(context: ToolContext, args: ToolArgs): Promise<void>;
   execute(context: ToolContext, args: ToolArgs): Promise<ToolOutput>;
   reconcile?(context: ToolContext, args: ToolArgs): Promise<ToolOutput | undefined>;
+  /** Allow a later call to reconcile a blocking write using its durable receipt. */
+  reconcileBlocking?: boolean;
 }
 export interface ToolOperation {
   id: string; name: string; args: ToolArgs; resource: string | null; status: "started" | "done" | "failed"; result: string | null;
@@ -282,7 +284,14 @@ export class ToolRegistry {
       // An uncertain write that outlived its own lifetime cannot have a live effect, so it stops blocking.
       if (tool!.staleAfterMs !== undefined) await this.journal.expireOperations(context.resource, Date.now() - tool!.staleAfterMs, operationId, encodeToolResult({ text: "abandoned", reason: "abandoned", status: "failed", failure: { causes: [] } }));
       const blocking = await this.journal.blockingOperation(context.resource, operationId);
-      if (blocking) throw blockedError(message, name, blocking, tool!.staleAfterMs);
+      if (blocking) {
+        const pending = tool!.reconcileBlocking ? await this.journal.operation(blocking.id) : undefined;
+        const recovered = pending?.name === name
+          ? await tool!.reconcile?.({ ...context, operationId: pending.id, arguments: pending.args }, pending.args)
+          : undefined;
+        if (recovered === undefined) throw blockedError(message, name, blocking, tool!.staleAfterMs);
+        await this.journal.endOperation(blocking.id, encodeToolResult(recovered));
+      }
     }
     if (previous) {
       if (previous.name !== name || JSON.stringify(previous.args) !== JSON.stringify(args)) throw new UncertainActionError("Operation ID was reused with different arguments");
