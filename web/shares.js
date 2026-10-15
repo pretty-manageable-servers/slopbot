@@ -69,7 +69,7 @@
     const dialog = el('dialog', { class: 'share-dialog', 'aria-labelledby': 'share-title' },
       el('h2', { id: 'share-title' }, 'Share this conversation'),
       el('p', { class: 'small' }, scope),
-      el('label', {}, thinking, 'Include Slopbot thinking'),
+      el('label', {}, thinking, 'Include Slopbot reasoning and tool activity'),
       error, result,
       el('div', { class: 'actions' }, close, create));
     create.addEventListener('click', async () => {

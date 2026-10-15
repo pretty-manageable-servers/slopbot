@@ -90,7 +90,7 @@ test('create needs channel view and the web transcript switch', async () => {
   await assert.rejects(off.service.create(admin, { server, channel }), (error: unknown) => error instanceof ShareError && error.status === 403);
 });
 
-test('snapshot keeps text and tool labels, and leaves out user IDs, cost, tool results, attachments and later messages', async () => {
+test('snapshot keeps text and leaves out unselected tool details, user IDs, cost, results, attachments and later messages', async () => {
   const { service, clock } = await fixture();
   const { id } = await service.create(admin, { server, channel, to: answer });
   clock.now = 9000;
@@ -104,7 +104,7 @@ test('snapshot keeps text and tool labels, and leaves out user IDs, cost, tool r
     'hello @member mail [email] id [id]', 'Answer text',
   ]);
   assert.deepEqual(snapshot.messages[0]!.attachments, 1);
-  assert.deepEqual(snapshot.messages[1]!.tools, [{ name: 'web_search', status: 'Searched the web' }]);
+  assert.deepEqual(snapshot.messages[1]!.tools, []);
   assert.equal(snapshot.messages[1]!.thinking, undefined);
   assert.equal(snapshot.created_at, 5000);
 });
@@ -134,6 +134,8 @@ test('thinking appears only when asked for', async () => {
   assert.equal(JSON.stringify(await service.snapshot(plain.id)).includes('Reasoning about the question'), false);
   const shown = await service.snapshot(thinking.id);
   assert.equal(shown!.messages[1]!.thinking, 'Reasoning about the question');
+  assert.deepEqual(shown!.messages[1]!.tools, [{ name: 'web_search', status: 'Searched the web' }]);
+  assert.deepEqual((await service.snapshot(plain.id))!.messages[1]!.tools, []);
   assert.deepEqual(shown!.options, { show_avatars: true, show_thinking: true });
   assert.deepEqual((await service.snapshot(plain.id))!.options, { show_avatars: false, show_thinking: false });
 });

@@ -126,7 +126,7 @@ function optionalFlag(value: unknown, name: string): boolean {
 }
 
 /** Builds the snapshot from stored messages. Only the message's own answer gets tool lines and thinking. */
-export function buildMessages(messages: readonly Message[], events: readonly { request: string; kind: string; payload: Json }[], options: { show_thinking: boolean }): ShareMessage[] {
+export function buildMessages(messages: readonly Message[], events: readonly { request: string; kind: string; payload: Json }[], options: { show_thinking: boolean; show_tools?: boolean }): ShareMessage[] {
   const tools = new Map<string, string[]>(), thinking = new Map<string, string>();
   for (const event of events) {
     if (event.kind === "tool_call") tools.set(event.request, [...(tools.get(event.request) ?? []), ...toolNames(event.payload)]);
@@ -147,7 +147,7 @@ export function buildMessages(messages: readonly Message[], events: readonly { r
     const request = message.isBot ? message.replyTo : undefined;
     if (request && !claimed.has(request)) {
       claimed.add(request);
-      item.tools = (tools.get(request) ?? []).map(toolLine);
+      if (options.show_tools ?? options.show_thinking) item.tools = (tools.get(request) ?? []).map(toolLine);
       if (options.show_thinking && thinking.get(request)) item.thinking = scrubText(thinking.get(request)!);
     }
     return item;
@@ -155,7 +155,7 @@ export function buildMessages(messages: readonly Message[], events: readonly { r
 }
 
 /** The stored messages of a range, as snapshot messages. Tool lines and thinking come from the runs of the answers. */
-async function snapshotOf(store: Pick<ShareStore, "shareMessages" | "shareRequestEvents">, server: string, channel: string, range: ShareMessageRange, options: { show_thinking: boolean }): Promise<{ messages: ShareMessage[]; more: boolean }> {
+async function snapshotOf(store: Pick<ShareStore, "shareMessages" | "shareRequestEvents">, server: string, channel: string, range: ShareMessageRange, options: { show_thinking: boolean; show_tools?: boolean }): Promise<{ messages: ShareMessage[]; more: boolean }> {
   const found = await store.shareMessages(server, channel, range);
   const requests = [...new Set(found.messages.flatMap(message => message.isBot && message.replyTo ? [message.replyTo] : []))];
   const events = await store.shareRequestEvents(server, requests);
@@ -290,7 +290,7 @@ export class ChatShareService {
   /** Freezes the newest messages of the chat up to now, as a channel share does with no range. Later messages are not added. */
   async create(chat: { id: string; server: string }, user: string): Promise<{ id: string }> {
     const channel = privateChannel(chat.id);
-    const found = await snapshotOf(this.store, chat.server, channel, { limit: MAX_SHARE_MESSAGES }, CHAT_SHARE_OPTIONS);
+    const found = await snapshotOf(this.store, chat.server, channel, { limit: MAX_SHARE_MESSAGES }, { ...CHAT_SHARE_OPTIONS, show_tools: true });
     if (!found.messages.length) throw new ShareError(400, "Send a message before you share this chat.");
     const created_at = this.now();
     const id = randomBytes(16).toString("base64url");
