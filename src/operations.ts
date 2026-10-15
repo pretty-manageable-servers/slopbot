@@ -44,13 +44,17 @@ export class Operations {
   async evidence(message: Message, id: string): Promise<Evidence> {
     const record = await this.services.store.record(message.server, 'diagnostic_evidence', id);
     const evidence = record?.value as unknown as Evidence | undefined;
-    if (!evidence || evidence.channel !== message.channel) throw new ToolError('Evidence belongs to another task or is unavailable');
+    if (!evidence) throw new ToolError(`Evidence ${id} is unavailable; its owning task is unknown. Collect it again.`);
     await this.services.authorize(message, evidence.channel);
+    // A requester can carry their selected evidence into a follow-up or confirmation task.
+    // Every channel and source is checked again below before it can be published.
+    if (evidence.channel !== message.channel && evidence.owner !== message.author)
+      throw new ToolError(`Evidence ${id} belongs to another task ${evidence.channel}, owned by ${evidence.owner}. Collect evidence in this task.`);
     for (const channel of evidence.channels) await this.services.authorize(message, channel);
     for (const source of evidence.sources) {
       await this.services.authorize(message, source.channel);
       const current = await this.services.store.canonicalMessage(message.server, source.id);
-      if (source.server !== message.server || !current || current.channel !== source.channel || hash(JSON.stringify(current)) !== source.fingerprint) throw new ToolError('Evidence source was edited, deleted, or is no longer accessible. Collect it again.');
+      if (source.server !== message.server || !current || current.channel !== source.channel || hash(JSON.stringify(current)) !== source.fingerprint) throw new ToolError(`Evidence ${id} from task ${evidence.channel}: source ${source.id} was edited, deleted, or is no longer accessible. Collect it again.`);
     }
     return evidence;
   }

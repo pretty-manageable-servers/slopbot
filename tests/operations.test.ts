@@ -9,6 +9,8 @@ import { ToolRegistry } from '../src/tools.js';
 import type { Message, Json } from '../src/domain.js';
 import { loadOperationsConfig } from '../src/operations-config.js';
 import { runToolsCodeTool } from '../src/run-tools-code.js';
+import type { ButtonInteraction } from 'discord.js';
+import { handleConfirm, saveConfirmation, CONFIRM_RECORD } from '../src/adapters/discord-code.js';
 import { Application } from '../src/application.js';
 
 const sha = 'a'.repeat(40), oldSha = 'b'.repeat(40);
@@ -187,7 +189,7 @@ test('member reports preserve guild/task boundaries while infrastructure remains
   await assert.rejects(f.invoke('deployment_inspect', {}, 'infra-no-admin'), /Manage Server/);
   await f.invoke('interaction_inspect', { message_id: output.id }, 'member');
   f.setAdmin(true);
-  await assert.rejects(f.invoke('issue_report', reportArgs(e.evidence_id), 'foreign-task', { ...report, channel: 'another' }), /another task/);
+  await assert.rejects(f.invoke('issue_report', reportArgs(e.evidence_id), 'foreign-task', { ...report, channel: 'another', author: 'other' }), /another task/);
   await assert.rejects(f.invoke('deployment_inspect', {}, 'foreign-guild', { ...report, server: 'foreign' }), /not enabled/);
   await assert.rejects(f.invoke('pipeline_read', { path: '.env' }, 'env-file'), /Invalid choice for path: ".env"\. Use one of: /);
   assert.equal(f.client.creates, 1);
@@ -355,4 +357,49 @@ test('issue_report always needs Confirm; reads do not', async t => {
   const f = await fixture(t);
   assert.equal(f.registry.definitions().find(d => d.name === 'issue_report')?.confirm?.({}), true);
   assert.equal(f.registry.definitions().find(d => d.name === 'interaction_inspect')?.confirm, undefined);
+});
+
+test('confirmed report carries owner evidence across tasks and remains retryable after an access block', async t => {
+  const f = await fixture(t);
+  const evidence = await f.evidence();
+  f.registry.register(runToolsCodeTool(f.registry, { confirmations: {
+    record: async (server, id) => (await f.store.record(server, CONFIRM_RECORD, id))?.value,
+    save: (server, id, value) => saveConfirmation(f.store, server, id, value),
+  } }));
+  const followup = { ...report, channel: 'followup', id: 'originating-report', taskId: 'followup' };
+  const queued = await f.registry.invokeResult(followup, 'run_tools_code', { code: `return await tools.issue_report(${JSON.stringify(reportArgs(evidence.evidence_id))})` }, 'queued-report', 'agent');
+  const id = (queued.data as { confirmation: { operationId: string } }).confirmation.operationId;
+  assert.equal(((await f.store.record('s', CONFIRM_RECORD, id))!.value as { requestId: string }).requestId, followup.id);
+  const replies: { content?: string; components?: unknown[] }[] = [];
+  const interaction = {
+    customId: `slopconfirm:${id}:yes`, guildId: 's', channelId: 'followup', id: 'confirm-click', user: { id: report.author },
+    deferUpdate: async () => {}, followUp: async (payload: { content?: string }) => { replies.push(payload); },
+    editReply: async (payload: { content?: string; components?: unknown[] }) => { replies.push(payload); },
+  } as unknown as ButtonInteraction;
+  f.denied.add('task');
+  await handleConfirm(interaction, f.store, f.registry);
+  assert.equal(f.client.creates, 0);
+  const pending = (await f.store.record('s', CONFIRM_RECORD, id))!.value as { done?: boolean };
+  assert.equal(pending.done, undefined);
+  assert.match(replies.at(-1)!.content!, /still pending/);
+  assert.equal(replies.at(-1)!.components, undefined);
+  f.denied.delete('task');
+  await handleConfirm(interaction, f.store, f.registry);
+  assert.equal(f.client.creates, 1);
+  assert.match(replies.at(-1)!.content!, /https:\/\/github.com\/o\/r\/issues\/1/);
+  await handleConfirm(interaction, f.store, f.registry);
+  assert.equal(f.client.creates, 1);
+});
+
+test('evidence scope errors identify the selected ID and owning task', async t => {
+  const f = await fixture(t);
+  const evidence = await f.evidence();
+  await assert.rejects(f.invoke('issue_report', reportArgs(evidence.evidence_id), 'wrong-owner', { ...report, channel: 'elsewhere', author: 'other' }), error => {
+    assert.ok(error instanceof Error);
+    assert.ok(error.message.includes(evidence.evidence_id));
+    assert.match(error.message, /task task, owned by admin/);
+    return true;
+  });
+  await assert.rejects(f.invoke('issue_report', reportArgs('missing-id'), 'missing-evidence'), /Evidence missing-id is unavailable; its owning task is unknown/);
+  assert.equal(f.client.creates, 0);
 });

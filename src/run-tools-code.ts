@@ -183,7 +183,7 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
             }
             // Confirm was given. Its result is in the journal, so the call below uses it.
             if ((saved as Record<string, Json> | undefined)?.done !== true) {
-              await options.confirmations?.save(message.server, operationId, { name, arguments: clean, parentOperationId: parentId, channel: message.channel, author: message.author, createdAt: Date.now() });
+              await options.confirmations?.save(message.server, operationId, { name, arguments: clean, parentOperationId: parentId, channel: message.channel, author: message.author, requestId: message.id, ...(message.taskId ? { taskId: message.taskId } : {}), ...(message.replyTo ? { replyTo: message.replyTo } : {}), createdAt: Date.now() });
               throw new ConfirmationRequired({ name, arguments: clean, operationId, parentOperationId: parentId });
             }
           }

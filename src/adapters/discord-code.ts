@@ -3,7 +3,7 @@ import { errorReply, logError } from "../errors.js";
 import type { Json, Message } from "../domain.js";
 import type { RecordStore } from "../records.js";
 import type { ConfirmationRequired, ToolArgs, ToolJournal, ToolRegistry } from "../tools.js";
-import { displayToolResult } from "../tools.js";
+import { displayToolResult, ToolError, toolFailed } from "../tools.js";
 import type { ToolActivity } from "../tool-activity.js";
 import { codeBlock, codeFitsInline, codeParts, PROGRAM_CODE_KEEP_MS } from "../code-display.js";
 
@@ -58,7 +58,7 @@ export async function handleShowCode(interaction: ButtonInteraction, store: Code
   for (const part of rest) await interaction.followUp({ content: codeBlock(part), flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
 }
 
-interface PendingConfirmation { name: string; arguments: ToolArgs; channel: string; author: string }
+interface PendingConfirmation { name: string; arguments: ToolArgs; channel: string; author: string; requestId?: string; taskId?: string; replyTo?: string }
 
 function pendingOf(value: Json | undefined): PendingConfirmation | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -67,7 +67,7 @@ function pendingOf(value: Json | undefined): PendingConfirmation | undefined {
   const args = record.arguments;
   if (typeof record.name !== "string" || typeof record.channel !== "string" || typeof record.author !== "string") return undefined;
   if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
-  return { name: record.name, arguments: args as ToolArgs, channel: record.channel, author: record.author };
+  return { name: record.name, arguments: args as ToolArgs, channel: record.channel, author: record.author, ...(typeof record.requestId === "string" ? { requestId: record.requestId } : {}), ...(typeof record.taskId === "string" ? { taskId: record.taskId } : {}), ...(typeof record.replyTo === "string" ? { replyTo: record.replyTo } : {}) };
 }
 
 /** Saves a pending confirmation. A record that is still pending is kept, so its Confirm and Cancel buttons still work. A done record is replaced. Retries a revision conflict, and throws rather than losing the record. */
@@ -97,14 +97,19 @@ export async function handleConfirm(interaction: ButtonInteraction, store: CodeS
   // A Cancel is marked, so the program does not ask the same call again.
   if (!await store.putRecord(server, CONFIRM_RECORD, operationId, choice === "no" ? { done: true, cancelled: true } : { done: true }, record.revision)) { await notice("This confirmation was already handled."); return; }
   if (choice === "no") { await interaction.editReply({ content: "Cancelled.", components: [], allowedMentions: { parse: [] } }); return; }
-  const message: Message = { server, channel: pending.channel, author: pending.author, id: `interaction:${interaction.id}`, text: `Confirmed ${pending.name}`, timestamp: Date.now() };
+  const message: Message = { server, channel: pending.channel, author: pending.author, id: pending.requestId ?? `interaction:${interaction.id}`, ...(pending.taskId ? { taskId: pending.taskId } : {}), ...(pending.replyTo ? { replyTo: pending.replyTo } : {}), text: `Confirmed ${pending.name}`, timestamp: Date.now() };
   let content: string;
   try {
-    const shown = displayToolResult(await tools.invokeResult(message, pending.name, pending.arguments, operationId, "command"));
+    const result = await tools.invokeResult(message, pending.name, pending.arguments, operationId, "command");
+    if (toolFailed(result)) throw new ToolError(result.reason ?? result.text, result.status === "failed" ? "failed" : "rejected");
+    const shown = displayToolResult(result);
     content = `Confirmed ${pending.name}.\n${shown.length > 1800 ? `${shown.slice(0, 1799)}…` : shown}`;
   } catch (error) {
     logError("confirmed_tool_failed", error, { tool: pending.name, operationId, server, channel: pending.channel }, true);
-    content = `Confirmed ${pending.name}, but it failed.\n${errorReply(error)}`;
+    // Authorization failures happen before the journal starts. Keep the same approved call retryable.
+    const retryable = await store.putRecord(server, CONFIRM_RECORD, operationId, record.value, record.revision + 1);
+    content = `Could not complete ${pending.name}.\n${errorReply(error)}${retryable ? "\nThe saved action is still pending. Use Confirm to retry or Cancel." : ""}`;
+    if (retryable) { await interaction.editReply({ content, allowedMentions: { parse: [] } }); return; }
   }
   await interaction.editReply({ content, components: [], allowedMentions: { parse: [] } });
 }
