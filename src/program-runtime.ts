@@ -126,7 +126,11 @@ export class ProgramRuntime {
               if (logsDropped) return;
               const prefix = item.level === 'warn' ? '[WARN] ' : item.level === 'error' ? '[ERROR] ' : '';
               const line = prefix + item.text.slice(0, maxLogText), bytes = Buffer.byteLength(line);
-              if (logs.length >= maxLogLines || outputBytes + bytes > this.limits.maxOutputBytes) {
+              if (logs.length >= maxLogLines) {
+                logsDropped = true; logs.push(`[WARN] Log line limit (${maxLogLines}) reached; later logs dropped.`);
+                return;
+              }
+              if (outputBytes + bytes > this.limits.maxOutputBytes) {
                 logsDropped = true; logs.push('[WARN] Output limit reached; later output dropped.');
                 return;
               }

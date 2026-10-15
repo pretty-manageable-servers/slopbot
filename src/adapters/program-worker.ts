@@ -23,11 +23,12 @@ function errorText(handle: QuickJSHandle): string {
   try { return result.error ? 'Execution interrupted or memory exhausted.' : vm.getString(result.value); }
   finally { result.dispose(); }
 }
+// The built-in JSON.stringify is captured before guest code runs. The guest can replace the global JSON object,
+// but it cannot reach this function handle, so a replaced JSON.stringify never changes a return value.
+const serializer = slice(() => vm.unwrapResult(vm.evalCode('(() => { const stringify = JSON.stringify; return value => stringify(value); })()')));
 function returnedJson(handle: QuickJSHandle): { json?: string; unserializable?: boolean } {
-  // The guest stringifies its own return value. The host never evaluates guest source.
   if (vm.typeof(handle) === 'undefined') return {};
-  vm.setProp(vm.global, '__returned', handle);
-  const result = slice(() => vm.evalCode('(() => { try { return JSON.stringify(__returned); } finally { delete globalThis.__returned; } })()'));
+  const result = slice(() => vm.callFunction(serializer, vm.undefined, [handle]));
   if (result.error) { result.error.dispose(); return { unserializable: true }; }
   try { return vm.typeof(result.value) === 'string' ? { json: vm.getString(result.value) } : { unserializable: true }; }
   finally { result.value.dispose(); }

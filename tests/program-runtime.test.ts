@@ -145,6 +145,26 @@ test('log output counts against the output limit', async () => {
   assert.ok(result.logs.slice(0, -1).every(line => line.startsWith('line ')));
 });
 
+test('the log line cap and the byte budget give different warnings', async () => {
+  const lines = await new ProgramRuntime().run(`
+    for (let i = 0; i < 70; i++) console.log('l' + i);
+  `, [], async () => ({}));
+  assert.equal(lines.error, undefined);
+  assert.equal(lines.logs.length, 65);
+  assert.equal(lines.logs.at(-1), '[WARN] Log line limit (64) reached; later logs dropped.');
+  const bytes = await new ProgramRuntime({ ...programLimits, maxOutputBytes: 100 }).run(`
+    for (let i = 0; i < 40; i++) console.log('line ' + i);
+  `, [], async () => ({}));
+  assert.equal(bytes.logs.at(-1), '[WARN] Output limit reached; later output dropped.');
+});
+
+test('a replaced JSON.stringify does not change the return value', async () => {
+  const result = await new ProgramRuntime().run('JSON.stringify = () => "not json"; return {a: 1};', [], async () => ({}));
+  assert.equal(result.error, undefined);
+  assert.deepEqual(result.returned, { a: 1 });
+  assert.deepEqual(result.logs, []);
+});
+
 test('confirmation and abort still reject', async () => {
   const confirmation = new ConfirmationRequired({ name: 'write', arguments: {}, operationId: 'op', parentOperationId: 'parent' });
   await assert.rejects(new ProgramRuntime().run(`

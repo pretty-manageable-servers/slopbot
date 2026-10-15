@@ -325,10 +325,15 @@ test('failed program keeps outputs and lists calls', () => {
 
 test('no output gives the receipt hint', () => {
   const text = programText({ ...emptyOutcome, logs: [], receipts: [{ id: 1, name: 'mute_list', status: 'ok', bytes: 100 }] });
-  assert.equal(text, 'Calls: mute_list ok 100 B\nNo output. The call results are not shown. To see data, return it or pass it to text().');
+  assert.equal(text, 'Calls: mute_list ok 100 B\nNo output. The call results are not shown. To see data, end with return result, or call text(result).');
+});
+
+test('logs-only program still lists calls', () => {
+  const text = programText({ ...emptyOutcome, logs: ['hi'], receipts: [{ id: 1, name: 'mute_list', status: 'ok', bytes: 100 }] });
+  assert.equal(text, 'Logs:\nhi\nCalls: mute_list ok 100 B');
 });
 
 test('model text works without the contract fields', () => {
   assert.equal(programText({ outputs: ['x'], failures: [] }), 'x');
-  assert.equal(programText({ outputs: [], failures: [{ name: 'a', error: 'bad' }] }), 'Incomplete program result: 1 tool call(s) failed. a: bad\nNo output. The call results are not shown. To see data, return it or pass it to text().');
+  assert.equal(programText({ outputs: [], failures: [{ name: 'a', error: 'bad' }] }), 'Incomplete program result: 1 tool call(s) failed. a: bad\nNo output. The call results are not shown. To see data, end with return result, or call text(result).');
 });

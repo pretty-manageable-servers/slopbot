@@ -1,4 +1,4 @@
-import { errorSummary, logError } from './errors.js';
+import { errorSummary, logError, type ErrorContext } from './errors.js';
 import type { Json } from './domain.js';
 import { isPrivateChannel } from './private-chat.js';
 import { stableJson } from './prompt-cache.js';
@@ -93,15 +93,15 @@ const receiptText = (receipt: NonNullable<ProgramOutcome['receipts']>[number]): 
 export function programText(result: ProgramOutcome): string {
   const logs = result.logs ?? [], receipts = result.receipts ?? [];
   const returned = result.returned;
-  const empty = !result.outputs.length && returned === undefined && !logs.length;
+  const noOutput = !result.outputs.length && returned === undefined;
   const parts: string[] = [];
   if (result.error) parts.push(`Program failed: ${result.error.message}`);
   if (result.failures.length) parts.push(`Incomplete program result: ${result.failures.length} tool call(s) failed. ${result.failures.map(failure => `${failure.name}: ${failure.error}`).join('; ')}`);
   parts.push(...result.outputs.map(plainText));
   if (returned !== undefined) parts.push(plainText(returned));
   if (logs.length) parts.push(['Logs:', ...logs].join('\n'));
-  if (receipts.length && (result.error || empty)) parts.push(`Calls: ${receipts.map(receiptText).join(', ')}`);
-  if (empty && !result.error) parts.push('No output. The call results are not shown. To see data, return it or pass it to text().');
+  if (receipts.length && (result.error || noOutput)) parts.push(`Calls: ${receipts.map(receiptText).join(', ')}`);
+  if (noOutput && !logs.length && !result.error) parts.push('No output. The call results are not shown. To see data, end with return result, or call text(result).');
   return parts.join('\n');
 }
 
@@ -212,7 +212,9 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
           sources: [...sources.values()], artifacts: [...artifacts.values()],
         };
       }
-      // A program error is a normal result: outputs, logs and receipts are kept in data.
+      // A program error is a normal result: outputs, logs and receipts are kept in data, and the error is logged once.
+      // ErrorContext has no calls key; the cast keeps calls in the logged JSON without changing errors.ts.
+      if (result.error) logError('program_failed', new ToolError(result.error.message, result.error.status), { stage: 'run_tools_code', calls: result.calls } as ErrorContext);
       return { text: programText(result), data: { ...result, childCalls, limits } as unknown as Json,
         sources: [...sources.values()], artifacts: [...artifacts.values()] };
     },
