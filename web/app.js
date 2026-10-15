@@ -417,10 +417,11 @@ function renderSettings() {
   } else if (tab === 'mcp') {
     renderMcp();
   } else {
-    $('content').innerHTML = card('lock','Profile ownership','Your profile in this server',checkbox('Allow other members to edit my profile','allow_edits',state.profile.allowEdits)) + '<section class="card"><h2>Saved profile fields</h2>' + (state.profile.fields.map(f=>`<div class="field"><strong>${esc(f.field)}</strong><pre>${esc(JSON.stringify(f.value))}</pre><p class="small">${f.editor === state.user ? 'Self-reported' : 'Added by another member'}</p><button data-remove="${esc(f.field)}">Remove</button></div>`).join('') || '<p>No custom fields yet.</p>') + '</section>' + card('profile','Add or update a field','Your profile in this server','<label>Field name<input name="field" placeholder="interests" maxlength="100" required></label><label>Value<input name="value" placeholder="What would you like your team to know?" maxlength="2000" required></label>');
+    $('content').innerHTML = nonZdrUserCard() + card('lock','Profile ownership','Your profile in this server',checkbox('Allow other members to edit my profile','allow_edits',state.profile.allowEdits)) + '<section class="card"><h2>Saved profile fields</h2>' + (state.profile.fields.map(f=>`<div class="field"><strong>${esc(f.field)}</strong><pre>${esc(JSON.stringify(f.value))}</pre><p class="small">${f.editor === state.user ? 'Self-reported' : 'Added by another member'}</p><button data-remove="${esc(f.field)}">Remove</button></div>`).join('') || '<p>No custom fields yet.</p>') + '</section>' + card('profile','Add or update a field','Your profile in this server','<label>Field name<input name="field" placeholder="interests" maxlength="100" required></label><label>Value<input name="value" placeholder="What would you like your team to know?" maxlength="2000" required></label>');
     bind('lock',f=>save('profile',{action:'lock',allow_edits:f.has('allow_edits')}));
     bind('profile',f=>save('profile',{action:'set',field:f.get('field'),value:f.get('value')}));
     document.querySelectorAll('[data-remove]').forEach(button=>{button.onclick=() => run(button, () => save('profile',{action:'remove',field:button.dataset.remove}));});
+    loadNonZdrUser();
   }
 }
 // The Voice card for the server tab. Save is the first button, so run() shows its loader on Save. Reset is bound in renderSettings.
@@ -878,6 +879,89 @@ function wireWebKeys(edit) {
     adminRun(form.querySelector('button'), async () => { await request('/api/admin/web-keys/caps', body); notice('Key caps saved.'); });
   };
 }
+// Bot admin: the model service. The mode, the override, the backup model and the breaker. Read-only for members without canEdit.
+const LLM_OVERRIDES = [['auto', 'Auto (the breaker decides)'], ['normal', 'Normal'], ['fallback', 'Backup model'], ['offline', 'Offline']];
+const LLM_MODE_TEXT = { normal: 'Normal', fallback: 'Backup model', offline: 'Offline' };
+const numberField = (label, name, value, min, off) => `<label>${label}<input name="${name}" type="number" min="${min}" step="1" value="${esc(value ?? '')}"${off}></label>`;
+function adminLlm(view, edit) {
+  const { settings: s, state: st } = view, fb = s.fallback, b = s.breaker, off = edit ? '' : ' disabled';
+  const origin = st.source === 'override' ? 'set by an admin' : 'set by the circuit breaker';
+  const last = st.lastError ? ` Last error: <code>${esc(st.lastError)}</code>.` : '';
+  const select = `<label>Mode<select name="override"${off}>${LLM_OVERRIDES.map(([value, label]) => `<option value="${value}"${s.override === value ? ' selected' : ''}>${label}</option>`).join('')}</select></label>`;
+  const keyText = fb?.keyLast4 ? `A key ending in ${esc(fb.keyLast4)} is saved. Type a new key to replace it.` : 'No backup key is saved.';
+  const fallback = `<h3>Backup model</h3><label>Base URL<input name="baseUrl" type="url" maxlength="300" value="${esc(fb?.baseUrl ?? '')}" placeholder="https://models.example.com/v1"${off}></label>`
+    + `<div class="row"><label>Model<input name="model" maxlength="200" value="${esc(fb?.model ?? '')}"${off}></label>${numberField('Context tokens', 'contextTokens', fb?.contextTokens, 2048, off)}</div>`
+    + `<div class="row">${numberField('Output tokens', 'outputTokens', fb?.outputTokens, 128, off)}<label class="checkbox-field llm-zdr"><input type="checkbox" name="zdr"${fb?.zdr ? ' checked' : ''}${off}>Zero data retention (ZDR)</label></div>`
+    + `<p class="small">Untick ZDR for a cloud model. A cloud model answers only users who opted in (see My profile).</p>`
+    + `<label>API key<input name="key" type="password" maxlength="300" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Leave empty to keep the saved key"${off}></label><p class="small">${keyText} The key is never sent back to the browser.</p>`
+    + `<label class="checkbox-field"><input type="checkbox" name="removeKey"${off}>Remove the saved key</label>`;
+  const breaker = `<h3>Circuit breaker</h3><p class="small">After the failures in the window, the breaker moves Slopbot to the backup model, or to offline when no backup key is saved. A probe checks the primary model until it recovers.</p>`
+    + `<div class="row">${numberField('Failures', 'failures', b.failures, 1, off)}${numberField('Window, seconds', 'windowSeconds', b.windowSeconds, 1, off)}${numberField('Probe every, seconds', 'probeSeconds', b.probeSeconds, 1, off)}${numberField('Good probes to recover', 'recoverProbes', b.recoverProbes, 1, off)}</div>`
+    + `${numberField('Status note every, minutes', 'statusNoteMinutes', s.statusNoteMinutes, 1, off)}`;
+  const buttons = edit ? '<button class="primary">Save model settings</button> <button type="button" id="admin-llm-test">Test backup model</button><p class="small">The test uses the saved backup model. Save first.</p>' : '';
+  return `<section class="card" id="admin-llm"><h2>Model service</h2><p class="scope">Slopbot's own models and the backup model. Applies to all servers.</p><p class="llm-status">Mode: <strong>${LLM_MODE_TEXT[st.mode] ?? esc(st.mode)}</strong> since ${esc(when(st.since))}, ${origin}.${last}</p><form id="admin-llm-form" class="llm-form">${select}${fallback}${breaker}${buttons}</form></section>`;
+}
+function wireLlm(edit) {
+  if (!edit) return;
+  $('admin-llm-form').onsubmit = event => {
+    event.preventDefault();
+    const form = event.currentTarget, data = new FormData(form);
+    const body = { override: data.get('override'), breaker: { failures: Number(data.get('failures')), windowSeconds: Number(data.get('windowSeconds')), probeSeconds: Number(data.get('probeSeconds')), recoverProbes: Number(data.get('recoverProbes')) }, statusNoteMinutes: Number(data.get('statusNoteMinutes')) };
+    const url = String(data.get('baseUrl') || '').trim();
+    // Without a base URL no backup model is sent, so the saved one is kept.
+    if (url) {
+      body.fallback = { baseUrl: url, model: String(data.get('model') || '').trim(), zdr: data.has('zdr'), contextTokens: Number(data.get('contextTokens')), outputTokens: Number(data.get('outputTokens')) };
+      if (data.has('removeKey')) body.fallback.key = '';
+      else if (data.get('key')) body.fallback.key = String(data.get('key'));
+    }
+    // The key leaves the field at once, so it does not stay in the page after the request.
+    form.querySelector('[name=key]').value = '';
+    adminRun(form.querySelector('button.primary'), async () => { await request('/api/admin/llm', body); notice('Model settings saved.'); });
+  };
+  $('admin-llm-test').onclick = async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const result = await request('/api/admin/llm/test', {});
+      notice(result.ok ? `The backup model answered in ${result.ms} ms.` : `The backup model failed${result.code ? ` (${result.code})` : ''} after ${result.ms} ms.`);
+    } catch (error) { fail(error); }
+    finally { button.disabled = false; }
+  };
+}
+// Cloud models when ours are down. This is not zero data retention, so each user opts in. Confirm before turning it on.
+const nonZdrUserCard = () => `<section class="card" id="user-non-zdr"><h2>Model fallback</h2><p class="scope">Applies to you in every server</p><label class="checkbox-field"><input type="checkbox" id="user-non-zdr-allow" disabled>Allow cloud models when ours are down (not zero data retention)</label><p class="small">When Slopbot's models are down, some of your prompts can go to cloud models. In private chats and DMs, this setting is enough. In a server, the server must also allow cloud models.</p></section>`;
+async function loadNonZdrUser() {
+  const box = $('user-non-zdr-allow');
+  if (!box) return;
+  try { box.checked = (await request('/api/settings/non-zdr')).allow; box.disabled = false; }
+  catch (error) { if (error.status !== 404) fail(error); return; }
+  box.onchange = async () => {
+    const allow = box.checked;
+    if (allow && !await askConfirm({ title: 'Allow cloud models?', body: 'When Slopbot\'s own models are down, your prompts can go to cloud models. Those providers do not keep zero data retention.', confirmLabel: 'Allow' })) { box.checked = false; return; }
+    box.disabled = true;
+    try { box.checked = (await request('/api/settings/non-zdr', { allow })).allow; notice(box.checked ? 'Cloud models are allowed for you when ours are down.' : 'Cloud models are off for you.'); }
+    catch (error) { box.checked = !allow; fail(error); }
+    finally { box.disabled = false; }
+  };
+}
+// The server switch on the server page. Members see it; editors change it.
+async function loadServerNonZdr(server, edit) {
+  const card = $('admin-non-zdr');
+  if (!card) return;
+  card.innerHTML = '<h2>Cloud models</h2><p class="scope">This server only</p><label class="checkbox-field"><input type="checkbox" id="admin-non-zdr-allow" disabled>Allow cloud models in channels</label><p class="small">When Slopbot\'s models are down, channel replies in this server can use cloud models. Those do not keep zero data retention. Only users who opted in get these replies.</p>';
+  const box = $('admin-non-zdr-allow');
+  try {
+    const { allow } = await request(`/api/admin/servers/non-zdr?server=${encodeURIComponent(server)}`);
+    if (tab !== 'servers-admin' || adminServer !== server) return;
+    box.checked = allow; box.disabled = !edit;
+  } catch (error) { if (error.status !== 404 && tab === 'servers-admin') fail(error); return; }
+  box.onchange = async () => {
+    box.disabled = true;
+    try { box.checked = (await request('/api/admin/servers/non-zdr', { server, allow: box.checked })).allow; notice(box.checked ? 'Cloud models are allowed in this server when ours are down.' : 'Cloud models are off in this server.'); }
+    catch (error) { box.checked = !box.checked; fail(error); }
+    finally { box.disabled = !edit; }
+  };
+}
 // Bot admin: usage over all servers, model prices, web search keys and the system prompt. Same for every team member; writes need canEdit, except the member's own keys.
 async function renderBotAdmin() {
   const edit = admin.canEdit, off = edit ? '' : ' disabled';
@@ -886,7 +970,7 @@ async function renderBotAdmin() {
   $('description').textContent = 'Usage, model prices, web search keys and the system prompt for all servers. Read-only members can view everything and add their own web search keys.';
   $('content').replaceChildren(busy('md', 'Loading…'));
   try {
-    const [totals, prices, webKeys, systemPrompt, full, botReplies, scheduleLimits] = await Promise.all([
+    const [totals, prices, webKeys, systemPrompt, full, botReplies, scheduleLimits, llm] = await Promise.all([
       request('/api/admin/usage/total'),
       request('/api/admin/prices'),
       request('/api/admin/web-keys'),
@@ -894,13 +978,15 @@ async function renderBotAdmin() {
       request('/api/admin/system-prompt/full'),
       request('/api/admin/bot-replies'),
       request('/api/admin/schedule-limits'),
+      request('/api/admin/llm'),
     ]);
     if (tab !== 'bot') return;
     priceState = { prices, edit, editing: '' };
-    $('content').innerHTML = [adminTotals(totals), '<section class="card" id="admin-prices"></section>', adminWebKeys(webKeys, edit), adminBotReplies(botReplies, off), adminScheduleLimits(scheduleLimits, off), adminSystemPrompt(systemPrompt, full.text, off)].join('');
+    $('content').innerHTML = [adminTotals(totals), adminLlm(llm, edit), '<section class="card" id="admin-prices"></section>', adminWebKeys(webKeys, edit), adminBotReplies(botReplies, off), adminScheduleLimits(scheduleLimits, off), adminSystemPrompt(systemPrompt, full.text, off)].join('');
     paintPrices();
     wireSystemPrompt(systemPrompt);
     wireWebKeys(edit);
+    wireLlm(edit);
     if (edit) {
       $('admin-prices').onclick = priceCardClick;
       $('admin-prices').onkeydown = priceCardKey;
@@ -981,9 +1067,11 @@ async function renderServerDetail() {
     $('content').innerHTML = [
       '<p><a href="#" id="admin-back">All servers</a></p>',
       adminTranscripts(adminServer, channels.channels, off),
+      '<section class="card" id="admin-non-zdr"></section>',
       '<section class="card" id="admin-shares"></section>',
     ].join('');
     wireBack();
+    loadServerNonZdr(adminServer, edit);
     $('admin-transcripts').onclick = async event => {
       const button = event.target.closest('button[data-action="rotate"]');
       if (!button || !edit) return;
@@ -1082,6 +1170,41 @@ async function loadVersion() {
 }
 loadVersion();
 boot().catch(error => { if (error.status === 401) { showScreen('login'); if (takeAsk()) notice('Sign in with Discord to send your question to Slopbot.'); } else { showScreen('none'); notice(error.message, true); } });
+
+// The LLM mode banner under the top bar. Its text matches DEGRADED_NOTE and FALLBACK_NOTE in src/llm-mode.ts, and a test checks it.
+const LLM_DEGRADED_TEXT = 'Slopbot is running at reduced capacity because its model service is down. Slash commands still work. Messages sent now will not be answered later.';
+const LLM_FALLBACK_TEXT = 'Slopbot is running at reduced capacity on a backup model. Answers can be weaker.';
+const LLM_PAUSED_TEXT = 'Chat is paused while the model service is down.';
+const llmBanner = document.createElement('div');
+llmBanner.id = 'llm-banner'; llmBanner.className = 'llm-banner'; llmBanner.setAttribute('role', 'status'); llmBanner.hidden = true;
+document.querySelector('.topbar').after(llmBanner);
+let llmStatus = { mode: 'normal', canChat: true }, llmTimer = 0;
+// Shows the mode and pauses the composers while the user cannot chat. It runs again after each change in the chat view, because conversations.js redraws its composer.
+// Only controls this function disabled are enabled again, so the send buttons that conversations.js disables while a send runs keep their state.
+function paintLlm() {
+  llmBanner.hidden = llmStatus.mode === 'normal';
+  llmBanner.className = `llm-banner ${llmStatus.mode}`;
+  llmBanner.textContent = llmStatus.mode === 'offline' ? LLM_DEGRADED_TEXT : llmStatus.mode === 'fallback' ? LLM_FALLBACK_TEXT : '';
+  const paused = !llmStatus.canChat;
+  document.querySelectorAll('#chat-host .chat-form, #chat-host .reply-box').forEach(form => {
+    const note = form.querySelector(':scope > .llm-pause');
+    if (paused && !note) form.prepend(Object.assign(document.createElement('p'), { className: 'small llm-pause', textContent: LLM_PAUSED_TEXT }));
+    else if (!paused && note) note.remove();
+    form.querySelectorAll('textarea, input, button').forEach(control => {
+      if (paused && !control.disabled) { control.disabled = true; control.dataset.llmPaused = ''; }
+      else if (!paused && 'llmPaused' in control.dataset) { control.disabled = false; delete control.dataset.llmPaused; }
+    });
+  });
+}
+// Signed-out pages get 401. The poll stops then, and the page shows no banner.
+async function loadStatus() {
+  try { llmStatus = await request('/api/status'); }
+  catch (error) { if (error.status !== 401) return; clearInterval(llmTimer); llmTimer = 0; llmStatus = { mode: 'normal', canChat: true }; }
+  paintLlm();
+}
+loadStatus();
+llmTimer = setInterval(loadStatus, 30000);
+new MutationObserver(paintLlm).observe($('chat-host'), { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled'] });
 
 // Reply box for one conversation. A transcript view calls renderReplyBox(container, server, channel).
 // The server sends the reply as the signed-in user through a channel webhook, or as Slopbot when the bot lacks Manage Webhooks.
