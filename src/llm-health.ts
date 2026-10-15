@@ -70,7 +70,8 @@ export class BreakerHealth implements LlmHealth {
     const settings = this.settings();
     if (settings.override !== 'auto') return { mode: settings.override, source: 'override' };
     if (!this.open) return { mode: 'normal', source: 'breaker' };
-    return { mode: settings.fallback?.keySealed ? 'fallback' : 'offline', source: 'breaker' };
+    // A fallback without a sealed key still counts: a same-gateway fallback reuses the primary key.
+    return { mode: settings.fallback ? 'fallback' : 'offline', source: 'breaker' };
   }
 
   // Updates the state. Listeners run only when the effective mode changes. A settings change is seen on the next call.

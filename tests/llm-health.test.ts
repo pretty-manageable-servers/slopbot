@@ -56,13 +56,14 @@ test('override wins', t => {
   assert.deepEqual({ mode: r.health.state().mode, source: r.health.state().source }, { mode: 'offline', source: 'override' });
 });
 
-test('fallback vs offline by key', t => {
+test('fallback vs offline by endpoint', t => {
   const r = rig(t);
-  const { keySealed: _key, ...unsealed } = fallback;
-  r.cfg.settings = settingsFor({ fallback: unsealed });
   r.fail(5);
   assert.equal(r.health.state().mode, 'offline');
   r.cfg.settings = settingsFor({ fallback });
+  assert.equal(r.health.state().mode, 'fallback');
+  const { keySealed: _key, ...unsealed } = fallback;
+  r.cfg.settings = settingsFor({ fallback: unsealed });
   assert.equal(r.health.state().mode, 'fallback');
 });
 
