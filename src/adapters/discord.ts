@@ -87,7 +87,7 @@ import { displayToolResult, ToolError, ToolRegistry, UncertainActionError, stabl
 import { WebReplies, asWebUser, webReplyKey } from "../web-replies.js";
 import { MemberDirectory, discordMemberSource } from "../member-directory.js";
 import { discordWebReplies } from "./discord-web-replies.js";
-import { isPrivateChannel } from "../private-chat.js";
+import { isPrivateChannel, isDirectMessageChannel, directMessageChannel, discordChannelId } from "../private-chat.js";
 import { registerOperationsTools } from '../operations.js';
 import { HttpOperationsClient } from './operations-client.js';
 import { FixWatchWorker } from '../fix-watch-worker.js';
@@ -228,7 +228,7 @@ export class DiscordServer implements ChatGateway {
       reconcileTask: async message => {
         const registered = (await store.taskForSource(message.server, message.id));
         if (registered) { await this.bot.startTask(message, message.text); return registered; }
-        const channel = await this.client.channels.fetch(message.channel);
+        const channel = await this.client.channels.fetch(discordChannelId(message.channel));
         if (channel?.type !== ChannelType.GuildText || message.id.startsWith("command:")) return undefined;
         const source = await channel.messages.fetch(message.id);
         if (!source.hasThread) return undefined;
@@ -291,9 +291,9 @@ export class DiscordServer implements ChatGateway {
       const known = (await store.canonicalMessage(request.server, id));
       const parent = allowParent ? store.taskThreads(request.server).find(task => task.thread === request.channel)?.parent : undefined;
       if (!known || (known.channel !== request.channel && known.channel !== parent) || !this.bot.accepts(request.server, known.channel)) throw new ToolError("File source must be in this permitted channel or the task's permitted parent channel.");
-      if (isPrivateChannel(known.channel)) throw new ToolError("Files in private chats are not available yet.");
+      if (isPrivateChannel(known.channel) && !isDirectMessageChannel(known.channel)) throw new ToolError("Files in private chats are not available yet.");
       await this.validateChannel(request, known.channel);
-      const channel = await this.client.channels.fetch(known.channel);
+      const channel = await this.client.channels.fetch(discordChannelId(known.channel));
       if (!channel || !channel.isTextBased() || !("messages" in channel)) throw new ToolError("Source channel unavailable");
       const fresh = this.normalize(await channel.messages.fetch(id));
       // A changed source is saved and used as it is now. The run does not stop for it.
@@ -349,12 +349,12 @@ export class DiscordServer implements ChatGateway {
       if (message.source === "voice" && activity.status === "running") this.voice?.toolStarted(message.channel, activity.name);
       if (!this.bot.accepts(message.server, message.channel)) return;
       publishTool(message, activity);
-      // A private chat shows tool progress in its own stream, not in Discord.
-      if (isPrivateChannel(message.channel)) return;
+      // Web chats show tool progress in their own stream. DMs use Discord status messages.
+      if (isPrivateChannel(message.channel) && !isDirectMessageChannel(message.channel)) return;
       // A run_tools_code program stopped at a call that needs Confirm. Its pending record is already saved.
       if (activity.parentId && activity.status === "rejected" && activity.reason?.includes("confirmation_required")) void this.postCodeConfirmation(message, activity);
       await this.toolProgress.update(JSON.stringify([message.server,message.channel,message.id]), activity, async content => {
-        const channel = await this.client.channels.fetch(message.channel);
+        const channel = await this.client.channels.fetch(discordChannelId(message.channel));
         if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Status channel unavailable");
         const sent = await channel.send({content,embeds:[{footer:{text:toolProgressFooter}}],...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? {reply:{messageReference:message.id,failIfNotExists:false}} : {}),allowedMentions:{parse:[],repliedUser:false}});
         return sent;
@@ -420,16 +420,17 @@ export class DiscordServer implements ChatGateway {
     void this.registerCommands().catch(error => logError("Could not register /slopbot, /usage, /stop, /inbox, /voice and message app commands. Check application command permissions.", error, { server: this.guildId }));
   }
   interaction(interaction: Interaction): void {
+    const scope = !interaction.guildId && interaction.channelId ? { server: this.guildId, channel: directMessageChannel(interaction.channelId) } : undefined;
     if ((interaction.isButton() || interaction.isStringSelectMenu()) && interaction.customId.startsWith('slopui:')) {
-      void handleDiscordUi(interaction,this.uiRuntime).catch(error => logError('UI interaction display failed.', error));
+      void handleDiscordUi(interaction,this.uiRuntime,scope).catch(error => logError('UI interaction display failed.', error));
     }
     if (interaction.isChatInputCommand() && (interaction.commandName === "slopbot" || interaction.commandName === "voice")) void this.command(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isChatInputCommand() && interaction.commandName === "usage") void this.usageCommand(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isButton() && interaction.customId.startsWith("slopstop:")) void this.continueButton(interaction).catch(error => logError("Continue button failed.", error));
     if (interaction.isButton() && interaction.customId.startsWith("slopvoice:")) void this.voice?.button(interaction).catch(error => logError("Voice button failed.", error));
-    if (interaction.isButton() && (interaction.customId.startsWith("sloptrace:") || interaction.customId.startsWith("sloptracepage:"))) void handleToolTrace(interaction, this.store, message => this.validateChannel(message, message.channel)).catch(error => logError("Tool trace button failed.", error));
+    if (interaction.isButton() && (interaction.customId.startsWith("sloptrace:") || interaction.customId.startsWith("sloptracepage:"))) void handleToolTrace(interaction, this.store, message => this.validateChannel(message, message.channel), scope).catch(error => logError("Tool trace button failed.", error));
     if (interaction.isButton() && interaction.customId.startsWith("slopcode:")) void handleShowCode(interaction, this.store).catch(error => logError("Show code button failed.", error));
-    if (interaction.isButton() && interaction.customId.startsWith("slopconfirm:")) void handleConfirm(interaction, this.store, this.tools).catch(error => logError("Confirm button failed.", error));
+    if (interaction.isButton() && interaction.customId.startsWith("slopconfirm:")) void handleConfirm(interaction, this.store, this.tools, scope).catch(error => logError("Confirm button failed.", error));
     if (interaction.isChatInputCommand() && interaction.commandName === "stop") void this.stopCommand(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isChatInputCommand() && interaction.commandName === "inbox") void this.inboxCommand(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isMessageContextMenuCommand() && interaction.commandName === CONTINUE_IN_WEB) void this.continueInWeb(interaction).catch(error => logError("Command failed.", error));
@@ -440,7 +441,7 @@ export class DiscordServer implements ChatGateway {
     try {
       const pending = await this.store.record(message.server, CONFIRM_RECORD, activity.id);
       if (!pending || (pending.value as { done?: boolean } | undefined)?.done === true || !activity.parentId) return;
-      const channel = await this.client.channels.fetch(message.channel);
+      const channel = await this.client.channels.fetch(discordChannelId(message.channel));
       if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Channel cannot receive confirmations");
       await postConfirmation(channel, { name: activity.name, arguments: activity.arguments ?? {}, operationId: activity.id, parentOperationId: activity.parentId }, message.author);
     } catch (error) { logError("code_confirmation_post_failed", error, { stage: "confirmation", server: message.server, channel: message.channel, messageId: message.id }, true); }
@@ -448,7 +449,8 @@ export class DiscordServer implements ChatGateway {
   messageCreate(message: DiscordMessage): void { void this.receive(message).catch(error => logError("Discord event failed. Check channel permissions.", error)); }
   messageUpdate(updated: DiscordMessage | PartialMessage): void {
     void (async () => {
-      if (!updated.guildId || !this.bot.accepts(updated.guildId, updated.channelId)) return;
+      const channel = updated.guildId ? updated.channelId : directMessageChannel(updated.channelId);
+      if (!this.bot.accepts(updated.guildId ?? this.guildId, channel)) return;
       const message = updated.partial ? await updated.fetch() : updated;
       const normalized = this.normalize(message);
       await this.store.revise(normalized);
@@ -456,7 +458,8 @@ export class DiscordServer implements ChatGateway {
     })().catch(error => logError("Could not update edited message context.", error));
   }
   messageDelete(message: { guildId: string | null; channelId: string; id: string }): void {
-    if (message.guildId && this.bot.accepts(message.guildId, message.channelId)) void this.store.remove(message.guildId, message.channelId, message.id).then(() => publishMessageDelete(message.guildId!, message.channelId, message.id)).catch(error => logError("discord_message_delete_failed", error, { messageId: message.id }));
+    const server = message.guildId ?? this.guildId, channel = message.guildId ? message.channelId : directMessageChannel(message.channelId);
+    if (this.bot.accepts(server, channel)) void this.store.remove(server, channel, message.id).then(() => publishMessageDelete(server, channel, message.id)).catch(error => logError("discord_message_delete_failed", error, { messageId: message.id }));
   }
   private async purgeAndIndex(): Promise<void> {
     const children = this.store.taskThreads(this.guildId).filter(task => this.channels.includes(task.parent)).map(task => task.thread);
@@ -690,18 +693,19 @@ export class DiscordServer implements ChatGateway {
       ? message.embeds.filter(embed => !embed.data?.type || embed.data.type === "rich").map(embed => [embed.title, embed.description, ...embed.fields.map(field => `${field.name}: ${field.value}`)].filter(Boolean).join("\n")).filter(Boolean).join("\n").slice(0, 12000)
       : "";
     const media = attachments.map(item => `[Attachment ${item.name}, type ${'contentType' in item ? item.contentType : 'unknown'}: ${stableAttachmentUrl(item.url)}; content not inspected]`).join("\n");
-    const normalized: Message = { attachments, id: message.id, server: message.guildId!, channel: message.channelId, author: message.author.id, authorName: message.member?.displayName ?? message.author.globalName ?? message.author.username, authorAliases: [message.author.username, ...(message.author.globalName ? [message.author.globalName] : [])], isBot: message.author.bot || Boolean(message.webhookId), authorIdentity: { discord_handle: message.author.username, discord_name: message.author.globalName ?? message.author.username, server_nickname: message.member?.displayName ?? message.author.username, server_name: message.guild?.name ?? "" }, text: [text, embedText, media].filter(Boolean).join("\n"), timestamp: message.createdTimestamp, revisionTimestamp: message.editedTimestamp ?? message.createdTimestamp,
+    const normalized: Message = { attachments, id: message.id, server: message.guildId ?? this.guildId, channel: message.guildId ? message.channelId : directMessageChannel(message.channelId), author: message.author.id, authorName: message.member?.displayName ?? message.author.globalName ?? message.author.username, authorAliases: [message.author.username, ...(message.author.globalName ? [message.author.globalName] : [])], isBot: message.author.bot || Boolean(message.webhookId), authorIdentity: { discord_handle: message.author.username, discord_name: message.author.globalName ?? message.author.username, server_nickname: message.member?.displayName ?? message.author.username, server_name: message.guild?.name ?? "" }, text: [text, embedText, media].filter(Boolean).join("\n"), timestamp: message.createdTimestamp, revisionTimestamp: message.editedTimestamp ?? message.createdTimestamp,
       ...(message.reference?.messageId ? { replyTo: message.reference.messageId } : {}) };
     const ownProgress = message.author.id === this.client.user?.id && (message.embeds.some(embed => embed.footer?.text === toolProgressFooter) || legacyToolProgress(normalized));
     return ownProgress ? { ...normalized, transient: true } : normalized;
   }
   private async receive(message: DiscordMessage): Promise<void> {
-    if (!message.guildId || !this.bot.accepts(message.guildId, message.channelId)) return;
+    const channel = message.guildId ? message.channelId : directMessageChannel(message.channelId);
+    if (!this.bot.accepts(message.guildId ?? this.guildId, channel)) return;
     if (message.author.id === this.client.user?.id) return this.receiveOwn(message);
     const live = this.normalize(message);
     // Not awaited: a member lookup must not delay the reply.
     if (!live.transient) void publishMessage(this.store, live, undefined, this.members).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
-    const timingScope = { server: message.guildId, channel: message.channelId, id: message.id };
+    const timingScope = { server: live.server, channel: live.channel, id: message.id };
     requestTimings.begin(timingScope); requestTimings.start(timingScope, "references");
     await requestTimings.withScope(timingScope, () => this.receiveScoped(message, timingScope));
   }
@@ -733,7 +737,7 @@ export class DiscordServer implements ChatGateway {
         referenced = reference;
       } catch { break; } // Missing references grant no access.
     }
-    const base: Incoming = { ...this.normalize(message), botAuthor: message.author.bot || Boolean(message.webhookId), mentionsBot: this.client.user ? message.mentions.users.has(this.client.user.id) : false, repliesToBot };
+    const base: Incoming = { ...this.normalize(message), botAuthor: message.author.bot || Boolean(message.webhookId), mentionsBot: this.client.user ? message.mentions.users.has(this.client.user.id) : false, repliesToBot, ...(!message.guildId ? { addressed: true } : {}) };
     // Only the exact ID that Slopbot's web post returned counts as the user. The event waits up to 10 s for that post.
     const web = message.webhookId && message.guildId ? await requestTimings.wait("web reply origin", () => this.webReplies.origin({ server: message.guildId!, channel: message.channelId, id: message.id, webhookId: message.webhookId! }).catch(error => {
       logError("web_reply_origin_failed", error, { stage: "web reply origin", server: message.guildId!, channel: message.channelId, messageId: message.id }, true);
@@ -746,14 +750,14 @@ export class DiscordServer implements ChatGateway {
   async react(message: Message, emoji: string): Promise<void> {
     if (isPrivateChannel(message.channel)) return this.chatGateway.react();
     if (!this.bot.accepts(message.server, message.channel)) return;
-    const channel = await requestTimings.wait("reaction channel fetch", () => this.client.channels.fetch(message.channel));
+    const channel = await requestTimings.wait("reaction channel fetch", () => this.client.channels.fetch(discordChannelId(message.channel)));
     if (!channel || !channel.isTextBased() || !("messages" in channel)) return;
     const target = await requestTimings.wait("reaction message fetch", () => channel.messages.fetch(message.id));
     if (target.guildId !== message.server || target.author.id === this.client.user?.id) return;
     await requestTimings.wait("Discord reaction", () => target.react(emoji));
   }
   async reply(message: Message, text: string, deliveryId?: string, activity: readonly ToolActivity[] = [], ui?: UiDocument): Promise<readonly Message[]> {
-    if (isPrivateChannel(message.channel)) return this.chatGateway.reply(message, text, deliveryId, activity, ui);
+    if (isPrivateChannel(message.channel) && !isDirectMessageChannel(message.channel)) return this.chatGateway.reply(message, text, deliveryId, activity, ui);
     requestTimings.begin(message, true);
     requestTimings.start(message, "delivery");
     let delivered = false;
@@ -767,7 +771,7 @@ export class DiscordServer implements ChatGateway {
       void this.voice?.speak(message.channel, VOICE_SKIP).catch(error => logError("discord_voice_speak_failed", error, { server: message.server, channel: message.channel }));
       return outputs;
     }
-    const channel = await requestTimings.wait("Discord channel fetch", () => this.client.channels.fetch(message.channel));
+    const channel = await requestTimings.wait("Discord channel fetch", () => this.client.channels.fetch(discordChannelId(message.channel)));
     if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Channel cannot receive replies");
     let part = 0;
     // Freeze the footer in the existing delivery journal so retries keep identical content.
@@ -830,7 +834,7 @@ export class DiscordServer implements ChatGateway {
   }
   async createTaskThread(message: Message, name: string): Promise<string> {
     if (isPrivateChannel(message.channel)) return this.chatGateway.createTaskThread();
-    const channel = await this.client.channels.fetch(message.channel);
+    const channel = await this.client.channels.fetch(discordChannelId(message.channel));
     if (channel?.type === ChannelType.GuildVoice) {
       // A voice request opens its task thread in the text channel where the join was asked.
       const parentId = this.voice?.taskParent(message.channel);
@@ -858,8 +862,8 @@ export class DiscordServer implements ChatGateway {
     return (await source.startThread({ name, autoArchiveDuration: ThreadAutoArchiveDuration.OneDay })).id;
   }
   typing(channelId: string): () => void {
-    if (isPrivateChannel(channelId)) return this.chatGateway.typing();
-    const pulse = async () => { const channel = await this.client.channels.fetch(channelId); if (channel?.isTextBased() && "sendTyping" in channel) await channel.sendTyping(); };
+    if (isPrivateChannel(channelId) && !isDirectMessageChannel(channelId)) return this.chatGateway.typing();
+    const pulse = async () => { const channel = await this.client.channels.fetch(discordChannelId(channelId)); if (channel?.isTextBased() && "sendTyping" in channel) await channel.sendTyping(); };
     const send = () => { void pulse().catch(error => logError("discord_typing_failed", error, { channel: channelId }, true)); }; send();
     const timer = setInterval(send, 8000); timer.unref(); return () => clearInterval(timer);
   }
@@ -1006,7 +1010,7 @@ export class DiscordAdapter {
 
   constructor(private readonly config: Config, private readonly store: RuntimeStore, private readonly llm: LLM, client?: Client, private readonly degraded?: DegradedRouting) {
     this.usage = createUsageMeter(config, store);
-    this.client = client ?? new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates], partials: [Partials.Message, Partials.Channel] });
+    this.client = client ?? new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates], partials: [Partials.Message, Partials.Channel] });
     this.members = new MemberDirectory(discordMemberSource(this.client));
     this.team = new TeamAdmins(discordTeamSource(this.client));
     this.access = new ChannelAccess(discordChannelAccessSource(this.client));
@@ -1032,12 +1036,12 @@ export class DiscordAdapter {
     this.client.on(Events.GuildMemberRemove, forget); this.client.on(Events.GuildMemberUpdate, forget);
     this.client.on(Events.GuildCreate, guild => { forget(); if (this.botUser) void this.open(guild.id).catch(error => logError("server_start_failed", error, { server: guild.id })); });
     this.client.on(Events.GuildDelete, guild => { forget(); void this.close(guild.id).catch(error => logError("server_stop_failed", error, { server: guild.id })); });
-    this.client.on(Events.InteractionCreate, interaction => { if (interaction.guildId) void this.route(interaction.guildId, server => server.interaction(interaction)); });
+    this.client.on(Events.InteractionCreate, interaction => { if (interaction.guildId) void this.route(interaction.guildId, server => server.interaction(interaction)); else if (interaction.channelId && (interaction.isButton() || interaction.isStringSelectMenu())) void this.routeDirectMessage(interaction.user.id, interaction.channelId, server => server.interaction(interaction)); });
     this.client.on(Events.Error, error => logError("discord_client_failed", error));
-    this.client.on(Events.MessageCreate, message => { if (message.guildId) void this.route(message.guildId, server => server.messageCreate(message)); });
-    this.client.on(Events.MessageUpdate, (_old, updated) => { if (updated.guildId) void this.route(updated.guildId, server => server.messageUpdate(updated)); });
-    this.client.on(Events.MessageDelete, message => { if (message.guildId) void this.route(message.guildId, server => server.messageDelete(message)); });
-    this.client.on(Events.MessageBulkDelete, messages => { for (const message of messages.values()) if (message.guildId) void this.route(message.guildId, server => server.messageDelete(message)); });
+    this.client.on(Events.MessageCreate, message => { if (message.guildId) void this.route(message.guildId, server => server.messageCreate(message)); else if (!message.author.bot) void this.routeDirectMessage(message.author.id, message.channelId, server => server.messageCreate(message)); });
+    this.client.on(Events.MessageUpdate, (_old, updated) => { if (updated.guildId) void this.route(updated.guildId, server => server.messageUpdate(updated)); else for (const id of this.servers.keys()) void this.route(id, server => server.messageUpdate(updated)); });
+    this.client.on(Events.MessageDelete, message => { if (message.guildId) void this.route(message.guildId, server => server.messageDelete(message)); else for (const id of this.servers.keys()) void this.route(id, server => server.messageDelete(message)); });
+    this.client.on(Events.MessageBulkDelete, messages => { for (const message of messages.values()) if (message.guildId) void this.route(message.guildId, server => server.messageDelete(message)); else for (const id of this.servers.keys()) void this.route(id, server => server.messageDelete(message)); });
   }
   /** True when the operator allows Slopbot in this server. An empty list allows all servers. */
   private allowed(guildId: string): boolean { return !this.config.guildIds.length || this.config.guildIds.includes(guildId); }
@@ -1069,6 +1073,24 @@ export class DiscordAdapter {
   }
   /** Set by discord-main when the website runs. Given to each server for the "Continue in Slopbot web" command. */
   webChat: DiscordServer["webChat"];
+  private async routeDirectMessage(user: string, channel: string, handle: (server: DiscordServer) => void): Promise<void> {
+    try {
+      const key = `dm_server:${channel}`;
+      const saved = this.store.setting(GLOBAL_SETTINGS_SCOPE, key);
+      const candidates = [...this.servers.keys()].sort();
+      if (typeof saved === "string") candidates.sort((a, b) => Number(b === saved) - Number(a === saved));
+      for (const id of candidates) {
+        const guild = this.client.guilds.cache.get(id);
+        const member = await guild?.members.fetch({ user, force: true }).catch(() => undefined);
+        if (!member) continue;
+        const server = await this.servers.get(id)!;
+        await this.store.setSetting(GLOBAL_SETTINGS_SCOPE, key, id);
+        server.openChat(directMessageChannel(channel));
+        handle(server);
+        return;
+      }
+    } catch (error) { logError("discord_dm_failed", error, { channel }); }
+  }
   /** What the private chat service needs from Discord: membership, the server's handle, limits and access. */
   chatHost(): ChatHost {
     return {

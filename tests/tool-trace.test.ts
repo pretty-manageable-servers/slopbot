@@ -144,3 +144,20 @@ test('changes beyond the displayed excerpt still produce argument and outcome di
   assert.match(page, /- outcome:/);
   assert.match(page, /\+ outcome:/);
 });
+
+
+test('DM tool traces use private scope and keep requester and channel checks', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const scope = { server: 's', channel: 'web:dm:123' };
+  await store.putRecord('s', TOOL_TRACE_KIND, 'dm-trace', { ...sampleTrace(), channel: scope.channel } as unknown as Json, 0);
+  const first = click('sloptrace:dm-trace', 'u', '123');
+  Object.assign(first.interaction, { guildId: null });
+  let authorized = '';
+  await handleToolTrace(first.interaction, store, async message => { authorized = message.channel; }, scope);
+  assert.equal(authorized, scope.channel);
+  assert.match(first.last().content, /Tool run 1\/3/);
+  const wrong = click('sloptrace:dm-trace', 'other', '123');
+  Object.assign(wrong.interaction, { guildId: null });
+  await handleToolTrace(wrong.interaction, store, allow, scope);
+  assert.match(wrong.last().content, /belong to the requester/);
+});

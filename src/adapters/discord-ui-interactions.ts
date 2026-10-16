@@ -11,11 +11,12 @@ import { discordUi } from "./discord-ui.js";
 export async function handleDiscordUi(
   interaction: ButtonInteraction | StringSelectMenuInteraction,
   runtime: UiRuntime,
+  scope?: { server: string; channel: string },
 ): Promise<void> {
-  if (!interaction.guildId || !interaction.channelId) return;
+  if ((!scope && !interaction.guildId) || !interaction.channelId) return;
   const message: Message = {
-    server: interaction.guildId,
-    channel: interaction.channelId,
+    server: scope?.server ?? interaction.guildId!,
+    channel: scope?.channel ?? interaction.channelId,
     author: interaction.user.id,
     id: `interaction:${interaction.id}`,
     text: "UI action",

@@ -8,12 +8,12 @@ import type { ProfileStore } from "./profiles.js";
 import { globalProfiles } from './global-profiles.js';
 import type { ToolExecutor } from "./tools.js";
 import { expandReplySubject, shouldRecall, personResponses, suggestRequestTool } from "./request-routing.js";
-import { isPrivateChannel } from "./private-chat.js";
+import { isPrivateChannel, isDirectMessageChannel } from "./private-chat.js";
 import { VOICE_RULE } from "./voice-rules.js";
 import { renderTranscript, requestLine } from "./transcript.js";
 import { slopbotId, type ConversationEventStore } from "./run-events.js";
 
-const privateChatRule = "This is a private web chat. It has no task threads. Do writes directly in this chat. Never call task_start. This replaces the task thread rule in the tool instructions for this chat.";
+const privateChatRule = "This is a private conversation. It has no task threads. Do writes directly in this chat. Never call task_start. This replaces the task thread rule in the tool instructions for this chat.";
 const webMathRule = "The web view renders LaTeX math: use $…$ inline and $$…$$ for display.";
 
 interface ContextOptions {
@@ -35,7 +35,7 @@ export class ContextBuilder {
     const sourceVersion = await this.options.store.contextVersion(message.server, message.channel);
     let request: PromptItem = { role: "user", content: requestLine(message), author: message.author, sourceIds: [message.id], ...(message.modelImages?.length ? { images: message.modelImages } : {}) };
     // A private chat has no task threads, so the thread rule in the tool instructions does not apply to it. Only this request says so.
-    const privateChat = isPrivateChannel(message.channel) ? { private_web_chat: true, private_chat_rule: privateChatRule } : {};
+    const privateChat = isPrivateChannel(message.channel) ? { ...(isDirectMessageChannel(message.channel) ? { private_direct_message: true } : { private_web_chat: true }), private_chat_rule: privateChatRule } : {};
     const voice = message.source === "voice" ? { voice_channel: true, voice_rule: VOICE_RULE } : {};
     const web = message.source === "web" ? { web_math_rule: webMathRule } : {};
     // Files that the worker copied to the sandbox before this run. The model reads them with read or shell.

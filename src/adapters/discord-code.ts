@@ -78,9 +78,9 @@ export async function saveConfirmation(store: RecordStore, server: string, opera
 }
 
 /** Routes a slopconfirm button. Only the requester may click. Yes runs the saved call once; Cancel only ends the record. */
-export async function handleConfirm(interaction: ButtonInteraction, store: CodeStore, tools: CodeRunner): Promise<void> {
+export async function handleConfirm(interaction: ButtonInteraction, store: CodeStore, tools: CodeRunner, scope?: { server: string; channel: string }): Promise<void> {
   const match = CONFIRM_ID.exec(interaction.customId);
-  const server = interaction.guildId;
+  const server = scope?.server ?? interaction.guildId;
   await interaction.deferUpdate();
   const notice = (content: string) => interaction.followUp({ content, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
   if (!match || !server) { await notice("This confirmation is no longer pending."); return; }
@@ -88,7 +88,7 @@ export async function handleConfirm(interaction: ButtonInteraction, store: CodeS
   const record = await store.record(server, CONFIRM_RECORD, operationId);
   const pending = pendingOf(record?.value);
   if (!record || !pending) { await notice("This confirmation is no longer pending."); return; }
-  if (pending.channel !== interaction.channelId) { await notice("This confirmation belongs to another channel."); return; }
+  if (pending.channel !== (scope?.channel ?? interaction.channelId)) { await notice("This confirmation belongs to another channel."); return; }
   if (interaction.user.id !== pending.author) { await notice("Only the requester can confirm this action."); return; }
   // The record is marked done before the call runs, so a second click cannot run it again.
   // A Cancel is marked, so the program does not ask the same call again.

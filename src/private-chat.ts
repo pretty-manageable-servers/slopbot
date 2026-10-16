@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-/** A private chat is a conversation with this channel prefix. Discord IDs are digits, so they never match. */
+/** Private conversations use this prefix so storage excludes them from server history. */
 export const PRIVATE_CHANNEL_PREFIX = "web:";
 /** Longest message a user can send to a private chat. */
 export const PRIVATE_CHAT_MAX_CHARS = 8000;
@@ -23,3 +23,8 @@ export function newPrivateChatId(): string {
 export function privateChatTitle(text: string): string {
   return [...text.replace(/\s+/g, " ").trim()].slice(0, PRIVATE_CHAT_TITLE_CHARS).join("");
 }
+
+/** DMs share the private storage namespace, with their Discord channel ID preserved for delivery. */
+export function directMessageChannel(id: string): string { return `${PRIVATE_CHANNEL_PREFIX}dm:${id}`; }
+export function isDirectMessageChannel(channel: string): boolean { return channel.startsWith(`${PRIVATE_CHANNEL_PREFIX}dm:`); }
+export function discordChannelId(channel: string): string { return isDirectMessageChannel(channel) ? channel.slice(`${PRIVATE_CHANNEL_PREFIX}dm:`.length) : channel; }

@@ -195,3 +195,20 @@ test('confirm_save_conflict_keeps_pending', async () => {
   await saveConfirmation(store as unknown as RecordStore, 's', 'op', next);
   assert.deepEqual(store.records.get(key), { value: next, revision: 1 });
 });
+
+
+test('a DM confirmation uses its private scope and rejects another DM channel', async () => {
+  const store = fakeStore();
+  const scope = { server: 'server', channel: 'web:dm:123' };
+  store.records.set('server:tool-confirm:dm-op', { value: { ...pendingRecord, channel: scope.channel }, revision: 1 });
+  let ran = 0;
+  const tools = { invokeResult: async () => { ran++; return { text: 'done' }; } };
+  const wrong = fakeInteraction('slopconfirm:dm-op:yes', 'requester', '456');
+  Object.assign(wrong.interaction, { guildId: null });
+  await handleConfirm(wrong.interaction, store as unknown as CodeStore, tools, { ...scope, channel: 'web:dm:456' });
+  assert.equal(ran, 0);
+  const right = fakeInteraction('slopconfirm:dm-op:yes', 'requester', '123');
+  Object.assign(right.interaction, { guildId: null });
+  await handleConfirm(right.interaction, store as unknown as CodeStore, tools, scope);
+  assert.equal(ran, 1);
+});
