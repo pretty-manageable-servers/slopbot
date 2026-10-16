@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { parseMessage, type Effort, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
 import type { AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow, TokenTotals, UserTokenTotalRow, TokenTotalsSummary, KnownUserPage } from "../ports.js";
 import type { KeyedProvider, ProviderKeyRow, ProviderKeyUsage } from "../web-providers.js";
-import { cosine, searchTerms, type Embeddings, type Evidence, type MemoryRecord } from "../memory.js";
+import { cosine, searchTerms, newMemory, patchMemory, memoryMetadata, memoryFromRow, memorySearchText, rankMemories, type MemoryOptions, type MemoryPatch, type MemoryQuery, type Embeddings, type Evidence, type MemoryRecord } from "../memory.js";
 import { attribution, type Attribution } from "../usage-meter.js";
 import { ToolError } from "../tools.js";
 import type { ProfileField, UserProfile } from "../profiles.js";
@@ -949,7 +949,7 @@ export class PostgresStore {
       AND m.status='active' AND m.channel NOT LIKE 'web:%' AND m.channel IN (${channels.map(() => "?").join(",")}) AND NOT EXISTS
       (SELECT 1 FROM memory_embeddings e WHERE e.server=m.server AND e.memory_id=m.id AND e.model=?)`)
       .all(server, ...channels, this.embeddings.model);
-    for (const row of rows) this.queueIndex({ server, channel: String(row.channel), author: String(row.author), id: String(row.id), text: String(row.content) }, false);
+    for (const row of rows) this.queueIndex({ server, channel: String(row.channel), author: String(row.author), id: String(row.id), text: memorySearchText(memoryFromRow(row)) }, false);
     return rows.length;
   }
 
@@ -1003,8 +1003,8 @@ export class PostgresStore {
     }
     private async saveIndexedEmbedding(message: Message, result: { vector: readonly number[]; tokens: number | null }): Promise<void> {
         await this.recordEmbeddingUsage(message, "memory_index", result.tokens);
-        const current = await this.db.prepare("SELECT content FROM memories WHERE server=? AND id=? AND status='active'").get(message.server, message.id);
-        if (!current || String(current.content) !== message.text) return;
+        const current = await this.db.prepare("SELECT * FROM memories WHERE server=? AND id=? AND status='active'").get(message.server, message.id);
+        if (!current || memorySearchText(memoryFromRow(current)) !== message.text) return;
         await this.db.prepare("INSERT OR REPLACE INTO memory_embeddings VALUES(?,?,?,?)")
             .run(message.server, message.id, this.embeddings!.model, JSON.stringify(result.vector));
     }
@@ -1039,55 +1039,84 @@ export class PostgresStore {
       ON CONFLICT(server,channel,model,purpose) DO UPDATE SET requests=requests+1,tokens=tokens+excluded.tokens,unknown_tokens=unknown_tokens+excluded.unknown_tokens`)
             .run(message.server, message.channel, this.embeddings!.model, purpose, tokens ?? 0, tokens === null ? 1 : 0);
     }
-    async remember(message: Message, content: string): Promise<MemoryRecord> {
-        if (!content.trim() || content.length > 2000)
-            throw new Error("Memory must contain 1–2000 characters");
-        if (!(await this.db.prepare("SELECT 1 FROM messages WHERE server=? AND channel=? AND id=?")
-            .get(message.server, message.channel, message.id)))
-            throw new Error("Memory source is unavailable");
-        const memory: MemoryRecord = {
-            id: randomUUID(), server: message.server, channel: message.channel, author: message.author,
-            content: content.trim(), sourceIds: [message.id], status: "active",
-        };
-        (await this.db.exec("BEGIN IMMEDIATE"));
-        try {
-            (await this.db.prepare("INSERT INTO memories VALUES(?,?,?,?,?,?,?)")
-                .run(memory.id, memory.server, memory.channel, memory.author, memory.content, memory.status, Date.now()));
-            (await this.db.prepare("INSERT INTO memory_sources VALUES(?,?,?)").run(memory.id, memory.server, message.id));
-            (await this.db.exec("COMMIT"));
-        }
-        catch (error) {
-            (await this.db.exec("ROLLBACK"));
-            throw error;
-        }
-        this.queueIndex({ ...message, id: memory.id, text: memory.content });
-    return memory;
+  async remember(message: Message, content: string, options: MemoryOptions = {}): Promise<MemoryRecord> {
+    const memory = newMemory(message, content, options);
+    for (const id of memory.sourceIds) {
+      if (!(await this.db.prepare("SELECT 1 FROM messages WHERE server=? AND channel=? AND id=?").get(message.server, message.channel, id))) throw new ToolError("Memory source is unavailable in this channel.");
     }
-    async memories(server: string, channel: string): Promise<readonly MemoryRecord[]> {
-        return (await Promise.all((await this.db.prepare(`SELECT * FROM memories m WHERE server=? AND channel=? AND status='active'
+    await this.db.exec("BEGIN IMMEDIATE");
+    try {
+      await this.db.prepare("INSERT INTO memories(id,server,channel,author,content,status,created_at,metadata) VALUES(?,?,?,?,?,?,?,?)")
+        .run(memory.id, memory.server, memory.channel, memory.author, memory.content, memory.status, memory.updatedAt, memoryMetadata(memory));
+      for (const id of memory.sourceIds) await this.db.prepare("INSERT INTO memory_sources VALUES(?,?,?)").run(memory.id, memory.server, id);
+      await this.db.exec("COMMIT");
+    } catch (error) { await this.db.exec("ROLLBACK"); throw error; }
+    this.queueIndex({ ...message, id: memory.id, text: memorySearchText(memory) });
+    return memory;
+  }
+
+  async memories(server: string, channel: string): Promise<readonly MemoryRecord[]> {
+    const rows = await this.db.prepare(`SELECT * FROM memories m WHERE server=? AND channel=? AND status='active'
       AND NOT EXISTS(SELECT 1 FROM memory_sources s WHERE s.memory_id=m.id AND NOT EXISTS
         (SELECT 1 FROM messages x WHERE x.server=s.server AND x.id=s.message_id))
-      ORDER BY created_at DESC, rowid DESC`).all(server, channel)).map(async (row) => ({
-            id: String(row.id), server, channel, author: String(row.author), content: String(row.content), status: "active",
-            sourceIds: (await this.db.prepare("SELECT message_id FROM memory_sources WHERE memory_id=?")
-                .all(String(row.id))).map(source => String(source.message_id)),
-        }))));
+      ORDER BY created_at DESC, rowid DESC`).all(server, channel);
+    const result: MemoryRecord[] = [];
+    for (const row of rows) {
+      const sources = await this.db.prepare("SELECT message_id FROM memory_sources WHERE memory_id=?").all(String(row.id));
+      result.push(memoryFromRow(row, sources.map(source => String(source.message_id))));
     }
-    async forget(server: string, channel: string, id: string, actor: string): Promise<boolean> {
-        const result = (await this.db.prepare("UPDATE memories SET status='forgotten' WHERE id=? AND server=? AND channel=? AND author=? AND status='active'")
-            .run(id, server, channel, actor));
-        if (result.changes) {
-            const sources = await this.db.prepare("SELECT message_id FROM memory_sources WHERE memory_id=?").all(id);
-            for (const row of sources) {
-                const source = String(row.message_id);
-                (await this.invalidateSource(server, source));
-                (await this.db.prepare("DELETE FROM messages WHERE server=? AND id=?").run(server, source));
-                (await this.db.prepare("INSERT OR IGNORE INTO message_tombstones VALUES(?,?)").run(server, source));
-            }
-            (await this.invalidate(server, channel, { reason: "memory_forgotten", ...(sources[0] ? { sourceId: String(sources[0].message_id) } : {}) }));
+    return result;
+  }
+
+  async searchMemories(message: Message, query: MemoryQuery = {}): Promise<readonly MemoryRecord[]> {
+    const notes = (await this.memories(message.server, message.channel)).filter(note => (!query.category || note.category === query.category) && (!query.tags?.length || query.tags.every(tag => note.tags.includes(tag))));
+    const scores = new Map<string, number>();
+    if (this.embeddings && notes.length && query.query?.trim()) {
+      try {
+        const rows = await this.db.prepare(`SELECT e.memory_id,e.vector FROM memory_embeddings e JOIN memories m ON m.server=e.server AND m.id=e.memory_id WHERE m.server=? AND m.channel=? AND m.status='active' AND e.model=?`).all(message.server, message.channel, this.embeddings.model);
+        const candidates = new Set(notes.map(note => note.id));
+        if (rows.some(row => candidates.has(String(row.memory_id)))) {
+          const vector = await this.embed({ ...message, text: query.query }, "memory_query", attribution(message));
+          for (const row of rows) if (candidates.has(String(row.memory_id))) scores.set(String(row.memory_id), cosine(vector, JSON.parse(String(row.vector))));
         }
-        return Boolean(result.changes);
+      } catch (error) { logError("memory_embedding_query_failed", error, { server: message.server, channel: message.channel }); }
     }
+    return rankMemories(notes, query, scores);
+  }
+
+  async updateMemory(message: Message, id: string, patch: MemoryPatch, expectedRevision: number, operationId?: string): Promise<MemoryRecord | undefined> {
+    const row = await this.db.prepare("SELECT * FROM memories WHERE id=? AND server=? AND channel=? AND author=? AND status='active'").get(id, message.server, message.channel, message.author);
+    if (!row) return undefined;
+    const current = (await this.memories(message.server, message.channel)).find(note => note.id === id);
+    if (!current) return undefined;
+    if (current.revision !== expectedRevision) throw new ToolError('Memory changed. Read it again and use its current revision.');
+    const memory = patchMemory(current, patch, operationId);
+    await this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = await this.db.prepare("UPDATE memories SET content=?,metadata=? WHERE id=? AND server=? AND channel=? AND author=? AND status='active' AND metadata=?")
+        .run(memory.content, memoryMetadata(memory), id, message.server, message.channel, message.author, String(row.metadata));
+      if (!result.changes) throw new ToolError('Memory changed. Read it again before retrying.');
+      await this.db.prepare("DELETE FROM memory_embeddings WHERE server=? AND memory_id=?").run(message.server, id);
+      await this.invalidate(message.server, message.channel, { reason: 'memory_updated', sourceId: id });
+      await this.db.exec("COMMIT");
+    } catch (error) { await this.db.exec("ROLLBACK"); throw error; }
+    this.queueIndex({ ...message, id, text: memorySearchText(memory) });
+    return memory;
+  }
+
+  async forget(server: string, channel: string, id: string, actor: string): Promise<boolean> {
+    await this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = await this.db.prepare("UPDATE memories SET status='forgotten' WHERE id=? AND server=? AND channel=? AND author=? AND status='active'").run(id, server, channel, actor);
+      if (result.changes) {
+        await this.db.prepare("DELETE FROM memory_embeddings WHERE server=? AND memory_id=?").run(server, id);
+        await this.invalidate(server, channel, { reason: 'memory_forgotten', sourceId: id });
+      }
+      await this.db.exec("COMMIT");
+      return Boolean(result.changes);
+    } catch (error) { await this.db.exec("ROLLBACK"); throw error; }
+  }
+
     async retrieve(message: Message, limit: number): Promise<readonly Evidence[]> {
         const evidence: Evidence[] = [];
         // Resolve people from scoped canonical authors, never from generated descriptions.
@@ -1125,23 +1154,8 @@ export class PostgresStore {
         }
         if (personQuery)
             return [{ kind: "retrieval", author: "system", sourceIds: [], content: targets.length > 1 ? "Person name is ambiguous. Ask which member the requester means before attributing messages." : "Could not resolve the requested person from known channel author names. Ask for their Discord mention. Do not attribute unrelated recent chat to them." }];
-        const terms = searchTerms(message.text);
-        const notes = await (await this.memories(message.server, message.channel));
-    const semanticScores = new Map<string, number>();
-    if (this.embeddings && notes.length && message.text.trim()) {
-      try {
-        const rows = await this.db.prepare(`SELECT e.memory_id,e.vector FROM memory_embeddings e JOIN memories m ON m.server=e.server AND m.id=e.memory_id WHERE m.server=? AND m.channel=? AND m.status='active' AND e.model=?`)
-          .all(message.server, message.channel, this.embeddings.model);
-        if (rows.length) {
-          const query = await this.embed(message, "memory_query", attribution(message));
-          for (const row of rows) semanticScores.set(String(row.memory_id), cosine(query, JSON.parse(String(row.vector))));
-        }
-      } catch (error) { logError("memory_embedding_query_failed", error, { server: message.server, channel: message.channel }); }
-    }
-    const score = (memory: MemoryRecord) => terms.filter(term => memory.content.toLowerCase().includes(term)).length + Math.max(0, semanticScores.get(memory.id) ?? 0);
-    const relevant = [...notes].sort((a, b) => score(b) - score(a)).slice(0, Math.min(limit, 4));
-        for (const memory of relevant)
-            evidence.push({ kind: "memory", content: memory.content, author: memory.author, sourceIds: memory.sourceIds });
+        const relevant = await this.searchMemories(message, { query: message.text, limit: Math.min(limit, 4), relatedOnly: false });
+    for (const memory of relevant) evidence.push({ kind: "memory", content: memory.content, author: memory.author, sourceIds: memory.sourceIds, memoryId: memory.id, category: memory.category, tags: memory.tags, details: memory.details });
     const recalled=await this.searchHistory({server:message.server,channel:message.channel,query:message.text,mode:'keyword',limit,excludeId:message.id,requester:message.isBot?undefined:message.author});
     const selected=new Map(recalled.messages.map(item=>[item.id,item]));
         for (const item of selected.values()) {

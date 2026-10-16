@@ -143,3 +143,6 @@ DO $$ BEGIN
   EXECUTE format('DROP TABLE IF EXISTS %I.embeddings', current_schema());
 END $$;
 DELETE FROM embedding_usage WHERE purpose IN ('index','query');
+
+-- Additive memory metadata preserves legacy source-bound facts and their vectors.
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS metadata TEXT NOT NULL DEFAULT '{}';

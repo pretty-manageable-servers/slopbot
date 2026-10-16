@@ -6,15 +6,15 @@ import { isPrivateChannel } from "./private-chat.js";
 import type { Config } from "./config.js";
 import { selfKnowledgeTool } from "./self-knowledge.js";
 import type { Json, Message } from "./domain.js";
-import type { Knowledge } from "./memory.js";
+import { MEMORY_CATEGORIES, newMemory, memoryIdForOperation, type Knowledge, type MemoryOptions, type MemoryPatch, type MemoryCategory } from "./memory.js";
 import type { ParticipationOptions } from "./participation.js";
 import { decisionThresholds, type ParticipationHistoryStore } from './participation-history.js';
 import type { HistoryImporter } from "./history.js";
 import type { QueueStore } from "./queue.js";
-import { ToolError, type ToolField, type ToolRegistry, type ToolDefinition } from "./tools.js";
+import { decodeToolResult, ToolError, type ToolContext, type ToolJournal, type ToolField, type ToolRegistry, type ToolDefinition } from "./tools.js";
 import type { Inbox } from "./inbox.js";
 
-export interface ServerToolStore extends Knowledge, QueueStore, ParticipationHistoryStore {
+export interface ServerToolStore extends Knowledge, QueueStore, ParticipationHistoryStore, Pick<ToolJournal, 'operation'> {
   taskThreads(server: string): { thread: string; parent: string }[];
   setting(server: string, key: string): unknown;
   setSetting(server: string, key: string, value: Json): void | Promise<void>;
@@ -249,23 +249,73 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
       if ((args.action === "window" || args.action === "more") && history.state(id).job) return "The previously requested import is still pending; it was not started twice.";
       return undefined;
     } });
-  add({ name: "memory_remember", description: "Save an attributed statement with its source message", fields: { text: { type: "string", description: "Statement to save", max: 2000, required: true } }, access: "member", effect: "write", retrySafe: false, execution: "inline",
-    async execute(context, args) { const note = await store.remember((await services.originMessage(context.message)), String(args.text)); return `Saved as your statement, not a group agreement. Memory ID: ${note.id}`; },
-    async reconcile(context, args) { const origin = await services.originMessage(context.message); const found = (await store.memories(context.message.server, origin.channel)).find(note => note.author === context.message.author && note.content === args.text && note.sourceIds.includes(origin.id)); return found ? `Saved memory ID: ${found.id}` : undefined; } });
-  add({ name: "memory", description: "List active source-linked memories in this channel and identify separate memory scopes in accessible task threads", fields: {}, access: "member", effect: "read", retrySafe: true,
-    async execute(context) {
+  const memoryFields: Record<string, ToolField> = {
+    category: { type: 'string', choices: MEMORY_CATEGORIES, description: 'Memory category; saving defaults to fact, updates retain the current category when omitted. Categories describe content, not whether it is confirmed true' },
+    tags: { type: 'json', max: 2000, description: 'Up to 20 tags, each at most 80 characters; [] clears tags on update', schema: { type: 'array', description: 'Up to 20 tags; [] clears tags on update. Search requires all supplied tags.', maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 80 } } },
+    details: { type: 'json', max: 8000, description: 'Category-specific object. Meme: media_url, media_type (image/gif/video), aliases (array), when_to_use, humor_notes (user explanation), interpretation (bot guess). Fact/preference/note: subject. Lesson: subject, when_to_use. Omit unknown details. On update replaces all details; {} clears them', schema: { type: 'object', description: 'Meme fields: media_url, media_type, aliases, when_to_use, humor_notes (user explanation), interpretation (bot guess). Fact/preference/note: subject. Lesson: subject, when_to_use. Omit unknowns. On update replaces all details; {} clears them.', additionalProperties: false, properties: {
+      subject: { type: 'string', maxLength: 2000 }, media_url: { type: 'string', maxLength: 2000, format: 'uri' }, media_type: { type: 'string', enum: ['image', 'gif', 'video'] }, aliases: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 200 } }, when_to_use: { type: 'string', maxLength: 2000 }, humor_notes: { type: 'string', maxLength: 2000 }, interpretation: { type: 'string', maxLength: 2000 },
+    } } },
+  };
+  const memoryOptions = (args: Record<string, Json>): MemoryOptions => ({
+    ...(args.category !== undefined ? { category: args.category as MemoryCategory } : {}),
+    ...(args.tags !== undefined ? { tags: args.tags as string[] } : {}),
+    ...(args.details !== undefined ? { details: args.details as Record<string, Json> } : {}),
+    ...(args.source_policy !== undefined ? { sourcePolicy: args.source_policy as 'source_bound' | 'independent' } : {}),
+    ...(args.source_ids !== undefined ? { sourceIds: args.source_ids as string[] } : {}),
+  });
+  const memoryResource = (message: Message, args: Record<string, Json>) => `memory:${message.server}:${message.channel}:${args.id ?? 'save'}`;
+  const authorizeMemory = async (context: ToolContext) => {
+    const previous = await store.operation(context.operationId);
+    if (previous?.status !== 'done' || !previous.result) return;
+    const data = decodeToolResult(previous.result).data as { id?: string; revision?: number; memories?: { id: string; revision: number }[] } | undefined;
+    const saved = data?.id ? [{ id: data.id, revision: data.revision }] : data?.memories ?? [];
+    if (!saved.length) return;
+    const origin = await services.originMessage(context.message), current = await store.memories(origin.server, origin.channel);
+    if (saved.some(item => !current.some(note => note.id === item.id && note.revision === item.revision))) throw new ToolError('Memory result changed or was forgotten. Search again with a new request.');
+  };
+  add({ name: "memory_remember", description: "Save an attributed memory in this channel. Categories share search and permissions. Facts default to source-bound; memes default to independent, requiring no saved source or media copy. A media_url is optional but needed to reuse media. Save when asked; keep humor explanations separate from bot interpretations.", fields: { text: { type: "string", description: "Searchable content to remember", max: 2000, required: true }, ...memoryFields,
+    source_policy: { type: 'string', choices: ['source_bound', 'independent'], description: 'source_bound: supporting messages must exist; their edits/deletion invalidate the entry. independent: persists until forgotten and stores no message source IDs. Does not change channel access' },
+    source_ids: { type: 'json', max: 4000, description: 'Optional source-bound message IDs in this same channel; defaults to the current request. Omit for independent memories', schema: { type: 'array', description: 'Source-bound message IDs in this same channel; defaults to current request. Omit for independent memories.', maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 160 } } },
+  }, access: "member", effect: "write", retrySafe: false, execution: "inline", resource: memoryResource, authorize: authorizeMemory,
+    validate(args) { newMemory({ id: 'validation', server, channel: 'validation', author: 'validation', text: '' }, String(args.text), memoryOptions(args)); return args; },
+    async execute(context, args) {
       const origin = await services.originMessage(context.message);
-      const notes = await store.memories(origin.server, origin.channel);
-      const scopes: string[] = [];
+      const note = await store.remember(origin, String(args.text), { ...memoryOptions(args), operationId: context.operationId });
+      return { text: `Saved as your ${note.category} memory, not a group agreement. Memory ID: ${note.id}; revision ${note.revision}; ${note.sourcePolicy}.`, data: JSON.parse(JSON.stringify(note)) as Json };
+    },
+    async reconcile(context) { const origin = await services.originMessage(context.message); const found = (await store.memories(origin.server, origin.channel)).find(note => note.id === memoryIdForOperation(context.operationId) && note.author === context.message.author); return found ? `Saved memory ID: ${found.id}; revision ${found.revision}.` : undefined; }
+  });
+  add({ name: "memory", description: "Search or browse active memories in this channel by category, tags, or situation. Returns structured details and revisions. Separate accessible task-thread scopes are listed; use memory there to read them.", fields: {
+    query: { type: 'string', max: 2000, description: 'Optional name, topic, or situation; omit to browse' }, category: memoryFields.category!, tags: memoryFields.tags!,
+    limit: { type: 'integer', min: 1, max: 50, description: 'Page size; default 20' }, offset: { type: 'integer', min: 0, max: 100000, description: 'Page offset; default 0' },
+  }, access: "member", effect: "read", retrySafe: true, authorize: authorizeMemory,
+    validate(args) { if (args.tags !== undefined) newMemory({ id: 'validation', server, channel: 'validation', author: 'validation', text: '' }, 'validation', { tags: args.tags as string[] }); return args; },
+    async execute(context, args) {
+      const origin = await services.originMessage(context.message);
+      const notes = await store.searchMemories(origin, { ...(typeof args.query === 'string' ? { query: args.query } : {}), ...(args.category ? { category: args.category as MemoryCategory } : {}), ...(args.tags ? { tags: args.tags as string[] } : {}), limit: Number.MAX_SAFE_INTEGER });
+      const offset = Number(args.offset ?? 0), limit = Number(args.limit ?? 20), page = notes.slice(offset, offset + limit), scopes: string[] = [];
       for (const task of store.taskThreads(origin.server).filter(task => task.parent === origin.channel).slice(-20)) {
         try { await services.validateChannel(context.message, task.thread); }
         catch (error) { if (error instanceof ToolError) continue; throw error; }
         const memories = await store.memories(origin.server, task.thread);
         if (memories.length) scopes.push(`${memories.length} saved memories in separate task-thread scope <#${task.thread}>. Use memory there to read or manage them.`);
       }
-      return [notes.length ? notes.slice(0, 20).map(note => `${note.id} | author ${note.author} | ${note.content}`).join("\n") : "No active saved memories in this channel.", ...scopes].join('\n');
-    } });
-  add({ name: "memory_forget", description: "Forget one of your saved statements", fields: { id: { type: "string", description: "Memory ID", required: true } }, access: "member", effect: "write", retrySafe: true, execution: "inline",
+      return { text: [page.length ? page.map(note => JSON.stringify(note)).join("\n") : "No active saved memories matching this search in this channel.", ...scopes].join('\n'), data: { memories: JSON.parse(JSON.stringify(page)) as Json, total: notes.length, next_offset: offset + limit < notes.length ? offset + limit : null } };
+    }
+  });
+  add({ name: 'memory_update', description: 'Correct one of your active memories using its current revision. Changes content, category, tags, or details. Details replace the entire object. Source policy and supporting messages remain unchanged. Changing category may require replacing details to match.', fields: {
+    id: { type: 'string', required: true, description: 'Memory ID' }, expected_revision: { type: 'integer', min: 1, required: true, description: 'Current revision from memory search; protects against overwriting another edit' }, text: { type: 'string', max: 2000, description: 'Replacement searchable content' }, ...memoryFields,
+  }, access: 'member', effect: 'write', retrySafe: false, execution: 'inline', resource: memoryResource, authorize: authorizeMemory,
+    validate(args) { if (!['text', 'category', 'tags', 'details'].some(key => args[key] !== undefined)) throw new ToolError('Supply at least one memory field to update.'); return args; },
+    async execute(context, args) {
+      const origin = await services.originMessage(context.message);
+      const patch: MemoryPatch = { ...(args.text !== undefined ? { content: String(args.text) } : {}), ...memoryOptions(args) };
+      const note = await store.updateMemory(origin, String(args.id), patch, Number(args.expected_revision), context.operationId);
+      return note ? { text: `Updated memory ${note.id}; revision ${note.revision}.`, data: JSON.parse(JSON.stringify(note)) as Json } : 'No active memory with that ID owned by you in this channel.';
+    },
+    async reconcile(context, args) { const origin = await services.originMessage(context.message); const note = (await store.memories(origin.server, origin.channel)).find(note => note.id === args.id && note.author === context.message.author && note.lastOperationId === context.operationId); return note ? `Updated memory ${note.id}; revision ${note.revision}.` : undefined; }
+  });
+  add({ name: "memory_forget", description: "Forget one of your saved memories without deleting chat history or other memories", fields: { id: { type: "string", description: "Memory ID", required: true } }, access: "member", effect: "write", retrySafe: true, execution: "inline", resource: memoryResource,
     async execute(context, args) { return await store.forget(context.message.server, (await services.originMessage(context.message)).channel, String(args.id), context.message.author) ? "Memory forgotten." : "No active memory with that ID owned by you in this channel."; } });
   add({ name: "task_start", surface: "top", scope: "discord", description: "Move sustained work or an action request into a dedicated task thread", fields: { goal: { type: "string", description: "Task goal", required: true } }, access: "member", effect: "write", retrySafe: false, resource: message => `task-thread:${message.server}:${message.id}`,
     async execute(context, args) { await context.assertActive(); const threadId = await services.startTask(context.message, String(args.goal)); return { text: `Task thread: <#${threadId}>`, handoff: { threadId } }; },

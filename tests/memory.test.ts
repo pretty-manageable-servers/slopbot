@@ -84,7 +84,8 @@ test("only the memory author can forget their note", async t => {
   assert.equal(await store.forget("s", "c", memory.id, "bob"), false);
   assert.equal(await store.forget("s", "c", memory.id, "alice"), true);
   assert.equal((await store.memories("s", "c")).length, 0);
-  assert.deepEqual(await store.retrieve(msg("2", "budget"), 8), []);
+  assert.ok(!(await store.retrieve(msg("2", "budget"), 8)).some(item => item.kind === 'memory'));
+  assert.equal((await store.canonicalMessage('s', '1'))?.text, 'budget');
 });
 
 test("backfilled messages are ordered by creation time, not insertion time", async t => {

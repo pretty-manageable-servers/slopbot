@@ -145,6 +145,18 @@ Setup requires an approved PMServers account, a dedicated bucket and bucket-scop
 
 `npm run storage:smoke` reads `.env.development`, uploads a uniquely named temporary binary object, verifies authenticated and signed public downloads, then deletes it. Unit tests cover all three scopes, every pair of copy destinations, per-user/server isolation, server creator/admin controls, private/public access and revocation, legacy metadata, cache authorization, uploads/overwrites/deletes, lists, sandbox round trips, binary preservation, bounded S3 reads, public URL signing and private DM delivery.
 
+## Structured memory
+
+`memory_remember` saves categorized content through the existing memories table. Categories are fact, meme, preference, lesson, and note. Each entry has tags, validated category-specific details, source policy, revision, update time, and creator attribution. An additive `metadata` text column stores these fields; existing rows default to source-bound facts at revision 1. Legacy fact embeddings remain compatible. SQLite adds the column when absent; PostgreSQL uses an idempotent schema upgrade. Neither upgrade deletes existing data.
+
+Meme details accept media_url, media_type, aliases, when_to_use, humor_notes, and interpretation. Other categories accept subject; lessons also accept when_to_use. Unknown fields and invalid types are rejected. Media links must use HTTPS without embedded credentials. The bot stores the URL without fetching or copying media. A missing media link is valid for a text-only joke. Links may expire. No object storage configuration is required.
+
+Source policy is independent of category and channel access. Memes default to independent; other categories default to source_bound. Independent entries have no memory_sources rows and require no originating message. Source-bound entries default to the current request, with optional supporting source_ids restricted to existing messages in the same server/channel. Source invalidation remains unchanged for source-bound entries. All retrieval, edits, and deletion stay within the original server/channel. Source policies and supporting messages are immutable on update.
+
+`memory` supports query/category/tags plus limit/offset. Search combines text matches and optional cosine similarity, including metadata in embeddings and recalled evidence. Category and tag filters apply before querying embeddings. `memory_update` is saver-only and uses expected_revision plus a metadata compare-and-swap to reject concurrent edits. Supplied tags/details replace previous values. Updates and forgetting invalidate active task context. Index jobs compare their searchable snapshot before committing vectors, preventing an old in-flight embedding from replacing an updated index. Forgetting deletes vectors and deactivates only that entry, leaving source messages and sibling memories intact.
+
+Save and update operation receipts reconcile uncertain commits. Cached memory results revalidate the current entry/revision before reuse, including independent entries with no source message dependency. The existing inline memory tools remain inline, including memory_update. All memory changes use the same permission and operation journal as other tools.
+
 ## Tool activity display
 
 Live Discord status shows a pulse header with a changing fun line, one line per tool type with a count, failed or blocked calls, and the current step. It never shows JSON arguments; the current step shows only a clipped search query. Delegated task seeds post directly in the task thread. Parallel program calls update a single status message.

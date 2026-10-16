@@ -14,6 +14,29 @@ const server = "12345678901234567", channel = "12345678901234568", other = "1234
 const config = loadConfig({ DISCORD_BOT_TOKEN: "test", DISCORD_GUILD_ID: server, DISCORD_CHANNEL_IDS: channel, LLM_MODE: "mock" });
 const message: Message = { id: "1", server, channel, author: "alice", text: "request", timestamp: Date.now() };
 
+test('memory tools save structured memes without sources, search, update and reject stale cached content', async t => {
+  const f = setup(); t.after(() => f.store.close());
+  const args = { text: 'Confused reaction', category: 'meme', tags: ['confusion'], details: { media_url: 'https://example.com/reaction.gif', media_type: 'gif', when_to_use: 'awkward silence' } };
+  const saved = await f.registry.invokeResult(message, 'memory_remember', args, 'save-meme', 'agent');
+  const note = saved.data as { id: string; revision: number; sourceIds: string[] };
+  assert.deepEqual(note.sourceIds, []);
+  await f.registry.invokeResult(message, 'memory_remember', args, 'save-meme', 'agent');
+  assert.equal((await f.store.memories(server, channel)).length, 1);
+  const found = await f.registry.invokeResult(message, 'memory', { category: 'meme', query: 'awkward', tags: ['confusion'], limit: 1 }, 'find-meme', 'agent');
+  assert.match(found.text, /awkward silence/);
+  assert.equal((found.data as { total: number }).total, 1);
+  await assert.rejects(f.registry.invokeResult(message, 'memory_remember', { text: 'invalid', category: 'fact', details: { media_type: 'gif' } }, 'invalid', 'agent'), /Unsupported fact detail/);
+  await assert.rejects(f.registry.invokeResult(message, 'memory_update', { id: note.id, expected_revision: 1 }, 'empty-patch', 'agent'), /at least one/);
+  const updated = await f.registry.invokeResult(message, 'memory_update', { id: note.id, expected_revision: 1, text: 'Celebration', tags: [], details: {} }, 'edit-meme', 'agent');
+  assert.equal((updated.data as { revision: number }).revision, 2);
+  await f.registry.invokeResult(message, 'memory_update', { id: note.id, expected_revision: 1, text: 'Celebration', tags: [], details: {} }, 'edit-meme', 'agent');
+  await assert.rejects(f.registry.invokeResult(message, 'memory_update', { id: note.id, expected_revision: 1, text: 'stale' }, 'stale-edit', 'agent'), /Memory changed/);
+  await assert.rejects(f.registry.invokeResult(message, 'memory', { category: 'meme', query: 'awkward', tags: ['confusion'], limit: 1 }, 'find-meme', 'agent'), /Memory result changed/);
+  await f.registry.invokeResult(message, 'memory_forget', { id: note.id }, 'forget-meme', 'agent');
+  await assert.rejects(f.registry.invokeResult(message, 'memory_remember', args, 'save-meme', 'agent'), /Memory result changed/);
+  assert.equal((await f.store.memories(server, channel)).length, 0);
+});
+
 test("timing footer setting persists and requires server management permission", async t => {
   const f = setup(); t.after(() => f.store.close());
   await f.registry.invoke(message, "timing", { enabled: true }, "timing-on", "command");

@@ -18,6 +18,7 @@ const special: Record<string, { emoji: string; group?: [string, string] }> = {
   shell: { emoji: "💻" },
   memory: { emoji: "🧠" },
   memory_remember: { emoji: "🧠" },
+  memory_update: { emoji: "🧠" },
   memory_forget: { emoji: "🧠" },
   reminder: { emoji: "⏰" },
   task_manage: { emoji: "📋" },

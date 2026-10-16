@@ -6,7 +6,7 @@ export const NATIVE_THREAD_POLICY = {
   bot_replies: 'inline', calibration: 'inline', channels: 'thread', context: 'inline', cooldown: 'inline',
   default_effort: 'inline', edit: 'inline', file_store: 'inline', fix_watch: 'thread',
   inbox_add: 'inline', inbox_done: 'inline', index: 'thread', issue_report: 'thread', issue_report_edit: 'thread',
-  memory_forget: 'inline', memory_remember: 'inline', monitoring: 'inline', mute_users: 'inline',
+  memory_forget: 'inline', memory_remember: 'inline', memory_update: 'inline', monitoring: 'inline', mute_users: 'inline',
   profile: 'inline', reactions: 'inline', reminder: 'inline', sandbox_manage: { actions: ['build_template'] },
   schedule: 'inline', shell: 'inline', task_manage: 'inline', task_retry: 'thread',
   task_start: 'inline', timing: 'inline', tool_display: 'inline', voice: 'inline', write: 'inline',
