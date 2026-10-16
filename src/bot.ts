@@ -403,6 +403,7 @@ export class Bot {
 
 export function splitReply(text: string, limit = 1900): string[] {
   const chunks: string[] = [];
+  const sentences = new Intl.Segmenter(undefined, { granularity: "sentence" });
   let chunk = "", fence = "";
   const flush = () => {
     chunks.push(chunk + (fence ? "\n```" : ""));
@@ -418,9 +419,20 @@ export function splitReply(text: string, limit = 1900): string[] {
       fence = nextFence;
       continue;
     }
-    for (const character of token) {
-      if (chunk.length + character.length + (fence ? 4 : 0) > limit) flush();
-      chunk += character;
+    // Keep prose sentences and code lines together whenever a whole unit fits.
+    const units = fence ? token.match(/[^\n]*\n|[^\n]+$/g) ?? [] : Array.from(sentences.segment(token), item => item.segment);
+    const append = (unit: string) => {
+      if (chunk.length + unit.length + (fence ? 4 : 0) > limit) flush();
+      chunk += unit;
+    };
+    for (const unit of units) {
+      const capacity = limit - fence.length - (fence ? 4 : 0);
+      if (unit.length <= capacity) { append(unit); continue; }
+      // An oversized sentence/line falls back to words, then Unicode characters.
+      for (const word of unit.match(/\S+\s*|\s+/g) ?? []) {
+        if (word.length <= capacity) { append(word); continue; }
+        for (const character of word) append(character);
+      }
     }
   }
   if (chunk) chunks.push(chunk + (fence ? "\n```" : ""));

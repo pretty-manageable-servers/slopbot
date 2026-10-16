@@ -44,7 +44,7 @@ test('Discord presentation guidance stays in the stable prompt prefix', async ()
   } finally {store.close();}
 });
 
-test('code runs show a progress line with child call counts and no child rows in the footer', async () => {
+test('code runs show grouped child rows and no child rows in the footer', async () => {
   const { toolFooter, toolProgress } = await import('../src/presentation/tool-activity.js');
   const activity = [
     { id: 'run', name: 'run_tools_code', status: 'completed' as const, code: 'text(1)' },
@@ -52,7 +52,7 @@ test('code runs show a progress line with child call counts and no child rows in
     { id: 'c2', name: 'web_search', status: 'completed' as const, parentId: 'run' },
     { id: 'c3', name: 'file_store', status: 'completed' as const, parentId: 'run' },
   ];
-  assert.match(toolProgress(activity, 'Blooming…'), /🧩 Running code: 3 tool calls \(web_search ×2, file_store ×1\)/);
+  assert.match(toolProgress(activity, 'Blooming…'), /Programmatic tools · Run 1 · completed\n```\n┌ ✓ web_search · completed\n│ ✓ web_search · completed\n│ ✓ file_store · completed\n└ 3 completed\n```/);
   assert.equal(toolFooter(activity, 'summary'), '\n\n-# 🧩 1 code run');
 });
 

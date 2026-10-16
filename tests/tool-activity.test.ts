@@ -228,3 +228,70 @@ test('footer total time spans first tool start to last tool end', () => {
   ];
   assert.equal(toolFooter(calls, 'summary'), '\n\n-# 🔎 2 web searches · 📜 1 history search · 42s');
 });
+
+test('programmatic progress renders actual child states and durations in a closed plain code block', () => {
+  const calls: ToolActivity[] = [
+    {id:'run', name:'run_tools_code', status:'running', code:'secret code'},
+    {id:'1', parentId:'run', name:'web_search', status:'completed', durationMs:1200},
+    {id:'2', parentId:'run', name:'history_search', status:'completed', durationMs:400},
+    {id:'3', parentId:'run', name:'history_read', status:'running', arguments:{query:'secret query'}},
+  ];
+  assert.equal(toolProgress(calls, 'Blooming…'), '<a:slopbot_pulse:1559390627152531586> Blooming…\nProgrammatic tools · Run 1 · running\n```\n┌ ✓ web_search · 1.2s\n│ ✓ history_search · 0.4s\n│ ◌ history_read · running\n└ 2 completed · 1 running\n```');
+});
+
+test('code-only execution and completed, failed, blocked and reused children have honest states', () => {
+  const run: ToolActivity = {id:'run', name:'run_tools_code', status:'running'};
+  assert.match(toolProgress([run], 'Blooming…'), /┌ ◌ executing code\n└ 0 tool calls/);
+  assert.match(toolProgress([{...run, status:'completed'}], 'Blooming…'), /Run 1 · completed\n```\n┌ ✓ completed/);
+  const calls: ToolActivity[] = [run,
+    {id:'1', parentId:'run', name:'read', status:'failed', durationMs:200},
+    {id:'2', parentId:'run', name:'write', status:'rejected', durationMs:300},
+    {id:'3', parentId:'run', name:'web_search', status:'completed', reused:true, durationMs:10},
+  ];
+  const text = toolProgress(calls, 'Blooming…');
+  assert.match(text, /× read · 0.2s · failed/);
+  assert.match(text, /! write · 0.3s · blocked/);
+  assert.match(text, /✓ web_search · 0.0s · saved result/);
+  assert.match(text, /└ 1 failed · 1 blocked · 1 completed/);
+});
+
+test('many code runs preserve complete fences, accurate totals and active calls within Discord limits', () => {
+  const calls: ToolActivity[] = [];
+  for (let run = 0; run < 8; run++) {
+    calls.push({id:`run${run}`, name:'run_tools_code', status:run === 7 ? 'running' : 'completed'});
+    for (let child = 0; child < 64; child++) calls.push({
+      id:`${run}-${child}`, parentId:`run${run}`, name:child >= 60 ? `active_${child}` : 'tool_' + 'x'.repeat(100),
+      status:child >= 60 ? 'running' : 'completed', durationMs:1200,
+    });
+  }
+  const text = toolProgress(calls, 'Blooming…');
+  assert.ok(text.length <= 2000);
+  assert.equal((text.match(/```/g) ?? []).length, 6);
+  assert.ok(text.endsWith('```'));
+  assert.match(text, /5 earlier code runs in tool trace/);
+  assert.match(text, /Run 8 · running/);
+  assert.match(text, /more calls in tool trace/);
+  assert.match(text, /└ 60 completed · 4 running/);
+  for (let child = 60; child < 64; child++) assert.match(text, new RegExp(`◌ active_${child} · running`));
+});
+
+test('programmatic child updates edit the same message and stay under their own code run', async () => {
+  const progress = new DiscordToolProgress(() => 0);
+  const messages: string[] = [];
+  let sent = 0;
+  const send = async (text: string) => {
+    sent++; messages.push(text);
+    return {async edit(content: string) {messages.push(content);}, async delete() {}};
+  };
+  await progress.update('request', {id:'run', name:'run_tools_code', status:'running'}, send);
+  await progress.update('request', {id:'child', parentId:'run', name:'web_search', status:'running'}, send);
+  await progress.update('request', {id:'child', parentId:'run', name:'web_search', status:'completed', durationMs:1200}, send);
+  await progress.update('request', {id:'run', name:'run_tools_code', status:'completed'}, send);
+  await progress.update('request', {id:'run2', name:'run_tools_code', status:'running'}, send);
+  assert.equal(sent, 1);
+  assert.match(messages[1]!, /┌ ◌ web_search · running\n└ 1 running/);
+  assert.match(messages[2]!, /┌ ✓ web_search · 1.2s\n└ 1 completed/);
+  assert.match(messages[4]!, /Run 1 · completed/);
+  assert.match(messages[4]!, /Run 2 · running\n```\n┌ ◌ executing code/);
+  assert.equal((messages[4]!.match(/web_search/g) ?? []).length, 1);
+});

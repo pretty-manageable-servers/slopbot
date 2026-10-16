@@ -147,6 +147,31 @@ test("reply splitting keeps surrogate pairs intact and stays under Discord's lim
   assert.ok(chunks.every(chunk => chunk.length <= 1900));
 });
 
+test("reply splitting moves a whole sentence to the next message", () => {
+  const first = "This sentence fits. ", second = "The next sentence stays whole.";
+  assert.deepEqual(splitReply(first + second, 35), [first, second]);
+});
+
+test("reply splitting preserves paragraph whitespace and quoted sentences", () => {
+  const first = 'She said, "Keep this together."\n\n';
+  const second = "The next paragraph stays whole.";
+  assert.deepEqual(splitReply(first + second, 40), [first, second]);
+});
+
+test("oversized sentences split at words without losing text", () => {
+  const text = "These words form a sentence longer than one message can hold.";
+  const chunks = splitReply(text, 25);
+  assert.equal(chunks.join(""), text);
+  assert.ok(chunks.every(chunk => chunk.length <= 25));
+  assert.ok(chunks.slice(0, -1).every(chunk => /\s$/.test(chunk)));
+});
+
+test("code lines stay together across reply pages", () => {
+  const text = "```js\nconst first = 1;\nconst second = 2;\n```";
+  const chunks = splitReply(text, 35);
+  assert.deepEqual(chunks, ["```js\nconst first = 1;\n\n```", "```js\nconst second = 2;\n```"]);
+});
+
 test("embed-only updates do not invalidate task history", async t => {
   const f = setup(); t.after(() => f.store.close());
   const request = incoming("1", "!task goal", { mentionsBot: true });
