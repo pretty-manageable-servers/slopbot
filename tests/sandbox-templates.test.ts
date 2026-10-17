@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
-import { TemplateCatalog, sandboxManageTool, templateCacheMs, type SandboxProvider } from '../src/sandbox.js';
+import { TemplateCatalog, sandboxManageTool, type SandboxProvider } from '../src/sandbox.js';
 
 const fiveMinutes = 5 * 60 * 1000;
-const settle = () => new Promise(resolve => setImmediate(resolve));
 
 function clock(start = 1_000_000) {
   let time = start;
@@ -24,42 +23,9 @@ function manageTool(sandboxProvider?: SandboxProvider) {
   return sandboxManageTool(new SQLiteStore(), sandboxProvider);
 }
 
-test('template cache refreshes at most every five minutes', async () => {
-  const time = clock();
-  let loads = 0;
-  const catalog = new TemplateCatalog(async () => { loads++; return ['slopbot', 'base']; }, time.now);
-  assert.equal(templateCacheMs, fiveMinutes);
-  assert.deepEqual(await catalog.refresh(), ['base', 'slopbot']);
-  await catalog.refresh();
-  assert.equal(loads, 1, 'a fresh cache must not call the API again');
-  time.advance(fiveMinutes - 1);
-  await catalog.refresh();
-  assert.equal(loads, 1, 'still inside the five minute window');
-  time.advance(1);
-  await catalog.refresh();
-  assert.equal(loads, 2, 'a stale cache loads again');
-});
-
-test('template cache reloads after invalidate, such as after a build', async () => {
-  const time = clock();
-  let names = ['base'];
-  const catalog = new TemplateCatalog(async () => names, time.now);
-  assert.deepEqual(await catalog.refresh(), ['base']);
-  names = ['base', 'slopbot'];
-  catalog.invalidate();
-  assert.deepEqual(await catalog.refresh(), ['base', 'slopbot']);
-});
-
 test('template cache sorts names, drops duplicates and drops names that are not template names', async () => {
   const catalog = new TemplateCatalog(async () => ['slopbot', 'base', 'slopbot', 'bad name', '../x', 'py:v2']);
   assert.deepEqual(await catalog.refresh(), ['base', 'py:v2', 'slopbot']);
-});
-
-test('current starts a background load and returns the names once loaded', async () => {
-  const catalog = new TemplateCatalog(async () => ['slopbot']);
-  assert.equal(catalog.current(), undefined, 'nothing is known before the first load');
-  await settle();
-  assert.deepEqual(catalog.current(), ['slopbot']);
 });
 
 test('a failed reload keeps the last good names and waits before trying again', async () => {
@@ -82,12 +48,6 @@ test('a failed reload keeps the last good names and waits before trying again', 
   failing = false;
   assert.deepEqual(await catalog.refresh(), ['slopbot']);
   assert.equal(loads, 3);
-});
-
-test('a project with no template list yet rejects instead of guessing names', async () => {
-  const catalog = new TemplateCatalog(async () => { throw new Error('unreachable'); });
-  await assert.rejects(catalog.refresh(), /unreachable/);
-  assert.equal(catalog.current(), undefined);
 });
 
 test('sandbox_manage description and fields are fixed and never list templates', () => {

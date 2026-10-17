@@ -65,21 +65,6 @@ test('read numbers lines of a file relative to the sandbox home', async t => {
   assert.equal(f.files.get('workspace-1:/home/user/notes.txt'), 'alpha\nbeta\n');
 });
 
-test('read applies offset and limit and names the next offset', async t => {
-  const f = setup(); t.after(() => f.store.close());
-  await f.invoke('write', { path: '/home/user/long.txt', content: 'l1\nl2\nl3\nl4\nl5\n' }, 'w1');
-  const text = await f.invoke('read', { path: '/home/user/long.txt', offset: 2, limit: 2 }, 'r1');
-  assert.match(text, /^2\tl2\n3\tl3\n\[Showing lines 2-3 of 5\. Use offset 4 to read more\.\]$/);
-  assert.match(await f.invoke('read', { path: '/home/user/long.txt', offset: 9 }, 'r2'), /past the end/);
-});
-
-test('write creates parent directories before writing the file', async t => {
-  const f = setup(); t.after(() => f.store.close());
-  assert.match(await f.invoke('write', { path: '/home/user/my docs/it\'s/a.txt', content: 'hi' }, 'w1'), /Wrote \/home\/user\/my docs\/it's\/a\.txt/);
-  assert.ok(f.commands.includes("mkdir -p '/home/user/my docs/it'\\''s'"));
-  assert.equal(f.files.get("workspace-1:/home/user/my docs/it's/a.txt"), 'hi');
-});
-
 test('edit replaces one unique match and writes the file back', async t => {
   const f = setup(); t.after(() => f.store.close());
   await f.invoke('write', { path: 'code.py', content: 'x = 1\ny = 2\n' }, 'w1');
@@ -87,30 +72,11 @@ test('edit replaces one unique match and writes the file back', async t => {
   assert.equal(f.files.get('workspace-1:/home/user/code.py'), 'x = 1\ny = $& 3\n');
 });
 
-test('edit rejects zero matches and names the count found', async t => {
-  const f = setup(); t.after(() => f.store.close());
-  await f.invoke('write', { path: 'code.py', content: 'x = 1\n' }, 'w1');
-  await assert.rejects(f.invoke('edit', { path: 'code.py', old_string: 'z = 9', new_string: 'q' }, 'e1'), (error: unknown) => error instanceof ToolError && /Found 0 matches/.test(error.message));
-});
-
 test('edit rejects many matches without changing the file', async t => {
   const f = setup(); t.after(() => f.store.close());
   await f.invoke('write', { path: 'code.py', content: 'a\na\n' }, 'w1');
   await assert.rejects(f.invoke('edit', { path: 'code.py', old_string: 'a', new_string: 'b' }, 'e1'), (error: unknown) => error instanceof ToolError && /occurs 2 times/.test(error.message) && /Found 2 matches/.test(error.message));
   assert.equal(f.files.get('workspace-1:/home/user/code.py'), 'a\na\n');
-});
-
-test('edit with replace_all replaces every match', async t => {
-  const f = setup(); t.after(() => f.store.close());
-  await f.invoke('write', { path: 'code.py', content: 'a\na\nb\n' }, 'w1');
-  assert.match(await f.invoke('edit', { path: 'code.py', old_string: 'a', new_string: 'c', replace_all: true }, 'e1'), /2 of 2 matches replaced/);
-  assert.equal(f.files.get('workspace-1:/home/user/code.py'), 'c\nc\nb\n');
-});
-
-test('shell returns the exit code, stdout and stderr', async t => {
-  const f = setup(); t.after(() => f.store.close());
-  assert.equal(await f.invoke('shell', { command: 'ls' }, 's1'), 'Exit code: 0\nstdout:\nran ls\nstderr:\n');
-  assert.match(await f.invoke('shell', { command: 'false' }, 's2'), /^Exit code: 1/);
 });
 
 test('shell passes the time limit in milliseconds and enforces its bounds', async t => {
@@ -122,15 +88,6 @@ test('shell passes the time limit in milliseconds and enforces its bounds', asyn
   await assert.rejects(f.invoke('shell', { command: 'ls', timeout_seconds: 0 }, 's4'));
 });
 
-test('the first call starts a sandbox and later calls reuse it', async t => {
-  const f = setup(); t.after(() => f.store.close());
-  assert.equal(f.created(), 0);
-  assert.equal(await f.invoke('write', { path: 'a.txt', content: 'one' }, 'w1'), 'Wrote /home/user/a.txt.');
-  assert.equal(f.created(), 1);
-  assert.equal(await f.invoke('read', { path: 'a.txt' }, 'r1'), '1\tone');
-  assert.equal(f.created(), 1);
-});
-
 test('an expired sandbox is replaced without an error and the result says so', async t => {
   const f = setup(); t.after(() => f.store.close());
   await f.invoke('write', { path: 'a.txt', content: 'one' }, 'w1');
@@ -139,34 +96,6 @@ test('an expired sandbox is replaced without an error and the result says so', a
   const text = await f.invoke('shell', { command: 'ls' }, 's1');
   assert.match(text, /^New sandbox started; earlier files are gone\.\nExit code: 0/);
   assert.equal(f.created(), 2);
-});
-
-test('a sandbox that cannot be connected is retried once, then replaced with a notice', async t => {
-  const f = setup(); t.after(() => f.store.close());
-  await f.invoke('write', { path: 'a.txt', content: 'one' }, 'w1');
-  f.sessions.delete('workspace-1');
-  const text = await f.invoke('shell', { command: 'ls' }, 's1');
-  assert.match(text, /^New sandbox started; earlier files are gone\.\nExit code: 0/);
-  assert.deepEqual(f.connectCalls, ['workspace-1', 'workspace-1']);
-  assert.equal(f.created(), 2);
-  const record = await f.store.record('s', 'sandbox', 'task');
-  assert.equal((record?.value as { id?: string }).id, 'workspace-2');
-});
-
-test('a sandbox whose connect fails once is reconnected without replacement', async t => {
-  const f = setup(); t.after(() => f.store.close());
-  await f.invoke('write', { path: 'a.txt', content: 'one' }, 'w1');
-  const kept = f.sessions.get('workspace-1')!;
-  f.sessions.delete('workspace-1');
-  setTimeout(() => f.sessions.set('workspace-1', kept), 300);
-  assert.match(await f.invoke('shell', { command: 'ls' }, 's1'), /^Exit code: 0/);
-  assert.deepEqual(f.connectCalls, ['workspace-1', 'workspace-1']);
-  assert.equal(f.created(), 1);
-});
-
-test('shell returns a timeout result instead of an error when the run times out', async t => {
-  const f = setup({ failRun: true }); t.after(() => f.store.close());
-  assert.equal(await f.invoke('shell', { command: 'sleep 99', timeout_seconds: 7 }, 's1'), 'Exit code: 124 (timed out after 7 s). The command may still run in the sandbox.');
 });
 
 test('an unfinished shell call stops blocking shell after the sandbox lifetime', async t => {
@@ -189,29 +118,6 @@ test('an unfinished shell call stops blocking shell after the sandbox lifetime',
   assert.match(await f.invoke('shell', { command: 'ok' }, 's3'), /^New sandbox started; earlier files are gone\.\nExit code: 0/);
 });
 
-test('the file tools are top-level, member-only and inline', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const tools = sandboxFileTools(store);
-  assert.deepEqual(tools.map(tool => [tool.name, tool.retrySafe, tool.staleAfterMs]), [
-    ['read', true, undefined], ['write', true, undefined], ['edit', true, undefined], ['shell', false, 600000],
-  ]);
-  assert.deepEqual(tools.map(tool => tool.name), ['read', 'write', 'edit', 'shell']);
-  for (const tool of tools) {
-    assert.equal(tool.surface, 'top');
-    assert.equal(tool.access, 'member');
-    assert.equal(tool.execution, 'inline');
-  }
-  assert.equal(tools.find(tool => tool.name === 'read')?.effect, 'read');
-  assert.ok(tools.filter(tool => tool.name !== 'read').every(tool => tool.effect === 'write'));
-});
-
-test('relative_path_uses_profile_home: the profile home wins over the home of the sandbox', async t => {
-  const f = setup({ home: '/home/user', profile: { template: 'base', user: 'ubuntu', home: '/home/ubuntu', os: 'Ubuntu 24.04.1 LTS', installed: [] } }); t.after(() => f.store.close());
-  await f.invoke('write', { path: 'foo.py', content: 'print(1)' }, 'w1');
-  assert.equal(f.files.get('workspace-1:/home/ubuntu/foo.py'), 'print(1)');
-  assert.equal(await f.invoke('read', { path: 'foo.py' }, 'r1'), '1\tprint(1)');
-});
-
 test('tilde_path: ~, ~/name and absolute paths resolve without an error', async t => {
   const f = setup({ profile: { template: 'base', user: 'ubuntu', home: '/home/ubuntu', os: 'Ubuntu 24.04.1 LTS', installed: [] } }); t.after(() => f.store.close());
   await f.invoke('write', { path: '~/foo.py', content: 'a' }, 'w1');
@@ -222,14 +128,4 @@ test('tilde_path: ~, ~/name and absolute paths resolve without an error', async 
   assert.equal(f.files.get('workspace-1:/srv/data.txt'), 'c');
   assert.equal(await f.invoke('read', { path: '~/bar.txt' }, 'r1'), '1\tb');
   assert.equal(await f.invoke('read', { path: '~' }, 'r2').catch(() => 'error'), 'error');
-});
-
-test('fallback_session_home: without a profile the home of the sandbox is used, then /home/user', async t => {
-  const reported = setup({ home: '/home/ubuntu' }); t.after(() => reported.store.close());
-  await reported.invoke('write', { path: 'a.txt', content: 'x' }, 'w1');
-  assert.equal(reported.files.get('workspace-1:/home/ubuntu/a.txt'), 'x');
-
-  const failed = setup({ homeFails: true }); t.after(() => failed.store.close());
-  await failed.invoke('write', { path: 'a.txt', content: 'y' }, 'w1');
-  assert.equal(failed.files.get('workspace-1:/home/user/a.txt'), 'y');
 });

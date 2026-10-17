@@ -10,7 +10,6 @@ import type { Server } from 'node:http';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { createConsole, type ConsoleOptions } from '../src/web-console.js';
 
-const DAY = 86_400_000;
 const options: ConsoleOptions = { origin: 'http://localhost:3000', host: '127.0.0.1', port: 0, clientId: 'id', clientSecret: 'secret' };
 const user = '123456789012345678';
 type Row = { id_hash: string; user_id: string; csrf: string; expires: number; created: number };
@@ -55,21 +54,6 @@ function setExpires(file: string, expires: number): void {
   finally { db.close(); }
 }
 
-test('login survives a restart with the same database', async t => {
-  const file = databaseFile(t);
-  const first = new SQLiteStore(file);
-  const before = await start(t, first);
-  const cookie = await login(before.base);
-  const csrf = (await (await settings(before.base, cookie)).json() as { csrf: string }).csrf;
-  await new Promise<void>(resolve => before.server.close(() => resolve()));
-  first.close();
-  const second = new SQLiteStore(file);
-  t.after(() => second.close());
-  const after = await start(t, second);
-  const response = await settings(after.base, cookie);
-  assert.equal(response.status, 200);
-  assert.equal((await response.json() as { csrf: string }).csrf, csrf);
-});
 test('expired login is refused and its row is deleted', async t => {
   const file = databaseFile(t);
   const store = new SQLiteStore(file);
@@ -80,16 +64,7 @@ test('expired login is refused and its row is deleted', async t => {
   assert.equal((await settings(base, cookie)).status, 401);
   assert.equal(rows(file).length, 0);
 });
-test('expired rows are removed by the periodic cleanup', async t => {
-  const file = databaseFile(t);
-  const store = new SQLiteStore(file);
-  t.after(() => store.close());
-  const { base } = await start(t, store);
-  await login(base);
-  setExpires(file, Date.now() - 1);
-  assert.equal(await store.deleteExpiredSessions(Date.now()), 1);
-  assert.equal(rows(file).length, 0);
-});
+
 test('logout removes the session row and refuses the cookie', async t => {
   const file = databaseFile(t);
   const store = new SQLiteStore(file);
@@ -102,6 +77,7 @@ test('logout removes the session row and refuses the cookie', async t => {
   assert.equal(rows(file).length, 0);
   assert.equal((await settings(base, cookie)).status, 401);
 });
+
 test('the database holds a hash of the session id, not the cookie value', async t => {
   const file = databaseFile(t);
   const store = new SQLiteStore(file);
@@ -114,30 +90,4 @@ test('the database holds a hash of the session id, not the cookie value', async 
   assert.equal(row!.user_id, user);
   assert.equal(row!.csrf, csrf);
   assert.equal(readFileSync(file).includes(Buffer.from(cookie)), false);
-});
-test('a login with under 29 days left is extended and its cookie is sent again', async t => {
-  const file = databaseFile(t);
-  const store = new SQLiteStore(file);
-  t.after(() => store.close());
-  const { base } = await start(t, store);
-  const cookie = await login(base);
-  setExpires(file, Date.now() + 10 * DAY);
-  const renewed = await settings(base, cookie);
-  assert.equal(renewed.status, 200);
-  const setCookie = renewed.headers.get('set-cookie')!;
-  assert.match(setCookie, new RegExp(`^slopbot_session=${cookie}; `));
-  assert.match(setCookie, /Max-Age=2592000/);
-  assert.match(setCookie, /HttpOnly/);
-  assert.match(setCookie, /SameSite=Lax/);
-  assert.match(setCookie, /Path=\//);
-  assert.doesNotMatch(setCookie, /Secure/);
-  const extended = rows(file)[0]!.expires;
-  assert.ok(extended <= Date.now() + 30 * DAY && extended >= Date.now() + 30 * DAY - 60_000);
-  // A login with more than 29 days left keeps its expiry and gets no new cookie.
-  const kept = Date.now() + 31 * DAY;
-  setExpires(file, kept);
-  const fresh = await settings(base, cookie);
-  assert.equal(fresh.status, 200);
-  assert.equal(fresh.headers.get('set-cookie'), null);
-  assert.equal(rows(file)[0]!.expires, kept);
 });

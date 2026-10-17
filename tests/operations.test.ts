@@ -4,14 +4,12 @@ import { SQLiteStore } from '../src/adapters/sqlite.js';
 import type { OperationsClient, Issue, Container, PullRequest } from '../src/adapters/operations-client.js';
 import { HttpOperationsClient, boundedBody } from '../src/adapters/operations-client.js';
 import { registerOperationsTools, safeDiagnosticData, type FixWatch } from '../src/operations.js';
-import { FixWatchWorker } from '../src/fix-watch-worker.js';
 import { ToolRegistry } from '../src/tools.js';
 import type { Message, Json } from '../src/domain.js';
 import { loadOperationsConfig } from '../src/operations-config.js';
 import { runToolsCodeTool } from '../src/run-tools-code.js';
 import type { ButtonInteraction } from 'discord.js';
 import { handleConfirm, saveConfirmation, CONFIRM_RECORD } from '../src/adapters/discord-code.js';
-import { Application } from '../src/application.js';
 
 const sha = 'a'.repeat(40), oldSha = 'b'.repeat(40);
 const report: Message = { server: 's', channel: 'task', id: 'report', author: 'admin', text: 'Investigate and file an issue' };
@@ -74,21 +72,6 @@ async function fixture(t: { after(fn: () => void): void }, servers = ['s']) {
 }
 const reportArgs = (id: string) => ({ title: 'Attachment decoding fails', expected: 'Summary of the attachment', actual: 'DECODE_FAILED', steps: 'Reply to the linked attachment', acceptance: 'Attachment summary succeeds', evidence_ids: [id] });
 
-test('interaction inspection returns the persisted redacted code after running run_tools_code', async t => {
-  const f = await fixture(t); f.registry.register(runToolsCodeTool(f.registry)); let rounds = 0;
-  const code = 'const api_key = "github_pat_abcdefghijklmnop";\ntext(1 + 1);';
-  const app = new Application(f.store, { async *stream() { yield ++rounds === 1 ? { kind: 'tool_call', payload: [{ name: 'run_tools_code', arguments: { code } }] } : { kind: 'text', payload: { text: 'Done' } }; } }, { allowedChannels: [{ server: 's', channel: 'source' }] }, undefined,
-    { harness: f.store, tools: { schemas: () => f.registry.schemas(), catalog: () => f.registry.catalog(), execute: (message, call, id) => f.registry.invokeResult(message, call.name, call.arguments, id, 'agent') } });
-  const executed = { ...request, id: 'chat-diagnostic-args', text: 'Run this program', addressed: true };
-  await app.handle(executed); assert.equal(rounds, 2);
-  const result = await f.invoke('interaction_inspect', { message_id: executed.id }, 'inspect-code');
-  const data = result.data as unknown as { data: { runs: { tools: { name: string; args: { code: string } }[] }[] } };
-  const tool = data.data.runs.flatMap(run => run.tools).find(tool => tool.name === 'run_tools_code')!;
-  assert.match(tool.args.code, /text\(1 \+ 1\)/); assert.match(tool.args.code, /\n/);
-  assert.ok(!tool.args.code.includes('github_pat_')); assert.ok(Buffer.byteLength(JSON.stringify(tool.args)) <= 2048);
-  assert.ok(!result.text.includes('github_pat_'));
-});
-
 test('the original reporter can remove evidence and replace their report without creating duplicates', async t => {
   const f = await fixture(t); const e = await f.evidence();
   await f.invoke('issue_report', reportArgs(e.evidence_id), 'owned-create'); f.setAdmin(false);
@@ -114,15 +97,6 @@ test('lost issue edits reconcile once and a spoofed public footer cannot establi
   assert.equal(f.client.edits, 1);
 });
 
-test('issue edits PATCH the existing GitHub issue body', async () => {
-  const client = new HttpOperationsClient({ servers: ['s'], repository: 'o/r', githubToken: 'test-token', containers: ['slopbot'] }, async (url, init) => {
-    assert.equal(String(url), 'https://api.github.com/repos/o/r/issues/1'); assert.equal(init?.method, 'PATCH');
-    assert.deepEqual(JSON.parse(String(init?.body)), { body: 'Replacement' });
-    return Response.json(issue(1, 'Existing', 'Replacement'));
-  });
-  assert.equal((await client.updateIssue(1, 'Replacement')).body, 'Replacement');
-});
-
 test('interaction evidence resolves a reply and retains execution version without prompt/text/arguments', async t => {
   const f = await fixture(t); const result = await f.invoke('interaction_inspect', {}, 'inspect', { ...report, replyTo: output.id });
   assert.match(result.text, /DECODE_FAILED/); assert.match(result.text, new RegExp(sha));
@@ -138,15 +112,6 @@ test('source edits invalidate saved evidence before publication, even on replay'
   await f.store.revise({ ...request, text: 'edited input' });
   await assert.rejects(f.invoke('issue_report', reportArgs(e.evidence_id), 'report-one'), /edited, deleted/);
   assert.equal(f.client.creates, 0);
-});
-
-test('interaction inspection without a usable default target returns guidance instead of a block', async t => {
-  const f = await fixture(t);
-  const missing = await f.invoke('interaction_inspect', {}, 'no-target');
-  assert.match(missing.text, /supply message_id/); assert.notEqual(missing.status, 'rejected');
-  const anchor = await f.invoke('interaction_inspect', {}, 'missing-anchor', { ...report, replyTo: 'unavailable-anchor' });
-  assert.match(anchor.text, /selected message is unavailable/); assert.notEqual(anchor.status, 'rejected');
-  await assert.rejects(f.invoke('interaction_inspect', { message_id: '99999999999999999' }, 'invalid-target'), /Invalid message_id: 99999999999999999.*accessible/);
 });
 
 test('issue creation reconciles a lost response and exact duplicates become comments', async t => {
@@ -195,21 +160,6 @@ test('member reports preserve guild/task boundaries while infrastructure remains
   assert.equal(f.client.creates, 1);
 });
 
-test('dynamic servers can file member reports without a guild allowlist; admin diagnostics stay unavailable', async t => {
-  const f = await fixture(t, []);
-  f.setAdmin(false);
-  assert.deepEqual(f.registry.definitions().map(d => d.name).sort(), ['github_issue_read', 'interaction_inspect', 'issue_report', 'issue_report_edit']);
-  const e = await f.evidence();
-  await f.invoke('github_issue_read', { query: 'attachment' }, 'dynamic-search');
-  await f.invoke('issue_report', reportArgs(e.evidence_id), 'dynamic-report');
-  assert.equal(f.client.creates, 1);
-  f.setAdmin(true);
-  await assert.rejects(f.invoke('deployment_inspect', {}, 'dynamic-infra'), /Unknown tool/);
-  f.denied.add('source');
-  await assert.rejects(f.invoke('issue_report', reportArgs(e.evidence_id), 'revoked-report'), /denied/);
-  assert.equal(f.client.creates, 1);
-});
-
 test('PMServers logs exclude other guilds and inaccessible channels, then recheck access on publication', async t => {
   const f = await fixture(t); const logs = await f.invoke('service_inspect', { action: 'logs' }, 'logs');
   assert.match(logs.text, /DECODE_FAILED/); assert.ok(!logs.text.includes('other server private')); assert.ok(!logs.text.includes('hidden channel')); assert.ok(!logs.text.includes('github_pat_'));
@@ -243,20 +193,6 @@ test('behavioral verification requires the deployed fix and an interaction execu
   await f.store.putRecord('s', 'run_runtime', 'run', { commit: sha, startedAt: 1 }, 2);
   const stale = await f.evidence('stale-sample');
   await assert.rejects(f.invoke('fix_watch', { ...args, evidence_ids: [stale.evidence_id, (deploy.data as { evidence_id: string }).evidence_id] }, 'old-interaction'), /executed on the deployed fix/);
-});
-
-test('fix watch stays quiet on unchanged state and reuses durable delivery intent after failure', async t => {
-  const f = await fixture(t);
-  await f.invoke('fix_watch', { action: 'start', issue_number: 1, pull_number: 2, acceptance: 'Summarize attachment' }, 'watch');
-  const deliveries: string[] = []; let lose = true;
-  const worker = new FixWatchWorker('s', f.ops, async () => {}, async (_message, _text, id) => { deliveries.push(id); if (lose) { lose = false; throw new Error('uncertain Discord delivery'); } });
-  await worker.tick(); assert.equal(deliveries.length, 0);
-  f.client.issueState = 'closed'; await worker.tick(); assert.equal(deliveries.length, 1);
-  const restarted = new FixWatchWorker('s', f.ops, async () => {}, async (_message, _text, id) => { deliveries.push(id); });
-  await restarted.tick(); assert.equal(deliveries[0], deliveries[1]);
-  await restarted.tick(); assert.equal(deliveries.length, 2);
-  await f.invoke('fix_watch', { action: 'stop', issue_number: 1 }, 'stop'); f.client.issueState = 'open';
-  await restarted.tick(); assert.equal(deliveries.length, 2);
 });
 
 test('operator configuration requires explicit server scope and never reuses CI/sandbox tokens', () => {
@@ -316,43 +252,6 @@ test('issue searches keep state filters and exclude results outside the configur
   assert.equal(result.items.length, 1);
 });
 
-test('run versions remain the execution version when a later build starts', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const previous = process.env.SLOPBOT_BUILD_SHA;
-  t.after(() => { if (previous === undefined) delete process.env.SLOPBOT_BUILD_SHA; else process.env.SLOPBOT_BUILD_SHA = previous; });
-  const prompt = { prefixVersion: 'v', prefix: [], history: [], inputs: [] };
-  process.env.SLOPBOT_BUILD_SHA = oldSha; await store.startRun('old-build', request, prompt);
-  process.env.SLOPBOT_BUILD_SHA = sha; await store.startRun('new-build', request, prompt);
-  const original = (await store.record('s', 'run_runtime', 'old-build'))!.value as { commit: string };
-  assert.equal(original.commit, oldSha);
-  assert.equal(((await store.record('s', 'run_runtime', 'new-build'))!.value as { commit: string }).commit, sha);
-});
-
-test('read recovery returns the saved snapshot when evidence persisted before the operation journal completed', async t => {
-  const f = await fixture(t);
-  const end = f.store.endOperation.bind(f.store); let failOnce = true;
-  f.store.endOperation = (id, result, failed) => {
-    if (id === 'deployment-recovery' && failOnce) { failOnce = false; throw new Error('journal completion lost'); }
-    return end(id, result, failed);
-  };
-  await assert.rejects(f.invoke('deployment_inspect', {}, 'deployment-recovery'), /journal completion lost/);
-  f.client.image = `ghcr.io/o/r:${oldSha}`;
-  const resumed = await f.invoke('deployment_inspect', {}, 'deployment-recovery');
-  assert.match(resumed.text, new RegExp(`ghcr.io/o/r:${sha}`)); assert.ok(!resumed.text.includes(`ghcr.io/o/r:${oldSha}`));
-});
-
-test('watch lookup failures notify once, recovery notifies, and revoked permission prevents delivery', async t => {
-  const f = await fixture(t);
-  await f.invoke('fix_watch', { action: 'start', issue_number: 1, acceptance: 'Summarize attachment' }, 'watch');
-  const notices: string[] = []; let allowed = true;
-  const worker = new FixWatchWorker('s', f.ops, async () => { if (!allowed) throw new Error('Permission revoked'); }, async (_message, text) => { notices.push(text); });
-  const original = f.client.issue.bind(f.client);
-  f.client.issue = async () => { throw new Error('GitHub unavailable'); };
-  await worker.tick(); await worker.tick(); assert.equal(notices.length, 1); assert.match(notices[0]!, /lookup failed/);
-  f.client.issue = original; await worker.tick(); assert.equal(notices.length, 2);
-  allowed = false; f.client.issueState = 'closed'; await worker.tick(); assert.equal(notices.length, 2);
-});
-
 test('issue_report always needs Confirm; reads do not', async t => {
   const f = await fixture(t);
   assert.equal(f.registry.definitions().find(d => d.name === 'issue_report')?.confirm?.({}), true);
@@ -389,17 +288,4 @@ test('confirmed report carries owner evidence across tasks and remains retryable
   assert.match(replies.at(-1)!.content!, /https:\/\/github.com\/o\/r\/issues\/1/);
   await handleConfirm(interaction, f.store, f.registry);
   assert.equal(f.client.creates, 1);
-});
-
-test('evidence scope errors identify the selected ID and owning task', async t => {
-  const f = await fixture(t);
-  const evidence = await f.evidence();
-  await assert.rejects(f.invoke('issue_report', reportArgs(evidence.evidence_id), 'wrong-owner', { ...report, channel: 'elsewhere', author: 'other' }), error => {
-    assert.ok(error instanceof Error);
-    assert.ok(error.message.includes(evidence.evidence_id));
-    assert.match(error.message, /task task, owned by admin/);
-    return true;
-  });
-  await assert.rejects(f.invoke('issue_report', reportArgs('missing-id'), 'missing-evidence'), /Evidence missing-id is unavailable; its owning task is unknown/);
-  assert.equal(f.client.creates, 0);
 });

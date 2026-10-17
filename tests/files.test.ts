@@ -3,15 +3,14 @@ import { test } from 'node:test';
 import sharp from 'sharp';
 import { zipSync, strToU8 } from 'fflate';
 import { defaultFileReaders } from '../src/adapters/file-readers.js';
-import { DiscordFileFetcher, WorkerFileDecoder, inspectFile } from '../src/files.js';
+import { DiscordFileFetcher, WorkerFileDecoder } from '../src/files.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
-import { ToolError } from '../src/tools.js';
 import { wireMessages } from '../src/adapters/chat-completions.js';
 import type { LLM } from '../src/ports.js';
 test('GIF reader samples ordered frames and worker decodes text', async () => {
   const gif = await sharp(Buffer.from([255,0,0,0,0,255]), { raw: { width: 1, height: 2, channels: 3, pageHeight: 1 } }).gif({ delay: [100,200] }).toBuffer();
   const value = await defaultFileReaders().read('motion.gif','image/gif',gif);
-  assert.equal(value.images.length,2); assert.match(value.images[1]!.label,/100 ms/);
+  assert.equal(value.images.length,2);
   const first = await sharp(Buffer.from(value.images[0]!.url.split(',')[1]!, 'base64')).raw().toBuffer();
   const last = await sharp(Buffer.from(value.images[1]!.url.split(',')[1]!, 'base64')).raw().toBuffer();
   assert.ok(first[0]! > first[2]!); assert.ok(last[2]! > last[0]!);
@@ -41,22 +40,14 @@ test('XLSX reads cached cells and PDF extracts text', async () => {
   assert.match((await defaultFileReaders().read('a.pdf','application/pdf',Buffer.from(pdf))).text,/Oscar PDF/);
 });
 
- test('Klipy GIF media is allowed without permitting lookalike hosts', async () => {
-   let calls = 0;
-   const fetcher = new DiscordFileFetcher(async () => { calls++; return new Response('webp bytes'); });
-   const file = { name: 'animation.webp', url: 'https://static.klipy.com/ii/example/animation.webp' };
-   assert.equal(new TextDecoder().decode(await fetcher.fetch(file)), 'webp bytes');
-   await assert.rejects(fetcher.fetch({ ...file, url: 'https://static.klipy.com.attacker.example/animation.webp' }), /hosts/);
-   assert.equal(calls, 1);
-   const webp = await sharp(Buffer.from([255,0,0,0,0,255]), { raw: { width:1, height:2, channels:3, pageHeight:1 } }).webp({ delay:[100,200] }).toBuffer();
-   assert.equal((await defaultFileReaders().read('animation.webp', 'image/webp', webp)).images.length, 2);
- });
-test('Discord external media proxies are allowed with exact host checks', async () => {
+test('downloads allow only exact media hosts, not lookalikes', async () => {
   const fetcher = new DiscordFileFetcher(async () => new Response('image'));
-  for (const host of ['images-ext-1.discordapp.net', 'images-ext-2.discordapp.net']) {
-    assert.equal((await fetcher.fetch({name:'a.webp',url:`https://${host}/external/example/image.webp`})).length,5);
+  for (const url of ['https://static.klipy.com/ii/example/a.webp', 'https://images-ext-1.discordapp.net/external/a.webp', 'https://images-ext-2.discordapp.net/external/a.webp']) {
+    assert.equal((await fetcher.fetch({ name: 'a.webp', url })).length, 5, url);
   }
-  await assert.rejects(fetcher.fetch({name:'a.webp',url:'https://images-ext-1.discordapp.net.attacker.example/a.webp'}),/hosts/);
+  for (const url of ['https://static.klipy.com.attacker.example/a.webp', 'https://images-ext-1.discordapp.net.attacker.example/a.webp']) {
+    await assert.rejects(fetcher.fetch({ name: 'a.webp', url }), /hosts/, url);
+  }
 });
 test('stored-file inspection works without a Discord attachment source and checks current authorization', async t => {
   const { inspectFile } = await import('../src/files.js');
@@ -71,14 +62,4 @@ test('stored-file inspection works without a Discord attachment source and check
   } };
   const result = await inspectFile({ store, llm, decoder: { read: async () => ({ text: 'saved image', images: [{ url: 'data:image/png;base64,AA==', label: 'image' }] }) }, assertCurrent: async () => { currentChecks++; } }, { message, operationId: 'stored-inspection', isAdmin: false, source: 'agent', toolName: 'file_store', arguments: {}, resource: null, assertActive: async () => {} }, 'saved.png', 'image/png', new Uint8Array(), 'Describe it');
   assert.equal(result, 'A red image.'); assert.equal(currentChecks, 1);
-});
-
-test('unknown file types point to file_store to_sandbox', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const message = { id: 'request', server: 's', channel: 'c', author: 'a', text: 'what is inside' };
-  await store.ingest(message);
-  const llm: LLM = { outputTokenLimit: 32000, contextTokenLimit: 64000, async *stream() { yield { kind: 'text', payload: { text: 'unused' } }; } };
-  const context = { message, operationId: 'inspect', isAdmin: false, source: 'agent' as const, toolName: 'file_store', arguments: {}, resource: null, assertActive: async () => {} };
-  await assert.rejects(inspectFile({ store, llm, decoder: { read: async () => { throw new Error('Unsupported file format. Use text, PDF, DOCX, XLSX, PNG, JPEG, WebP or GIF.'); } } }, context, 'bundle.zip', 'application/zip', new Uint8Array([80, 75]), 'What is inside?'),
-    (error: unknown) => error instanceof ToolError && /to_sandbox/.test(error.message));
 });

@@ -18,16 +18,22 @@ const refs = new Map([["m3", "100000000000000001"], ["m5", "100000000000000005"]
 const users = new Set(["123456789012345678"]);
 const linkOf = (channel: string, id: string) => `https://discord.com/channels/s/${channel}/${id}`;
 
-test("ref becomes discord link", () => {
-  assert.equal(linkRefs("See m3 for details.", refs, place, users), `See [↗](${linkOf("c", "100000000000000001")}) for details.`);
-  assert.equal(linkRefs("Also #m5.", refs, place, users), `Also [↗](${linkOf("c", "100000000000000005")}).`);
-});
-
-test("bracket ref becomes link", () => {
+test("linkRefs table: refs and user IDs become links, everything else stays", () => {
   const link = `[↗](${linkOf("c", "100000000000000001")})`;
-  assert.equal(linkRefs("Quote [m3] here.", refs, place, users), `Quote ${link} here.`);
-  assert.equal(linkRefs("Quote (m3) here.", refs, place, users), `Quote ${link} here.`);
-  assert.equal(linkRefs("Quote [#m3] here.", refs, place, users), `Quote ${link} here.`);
+  const cases: [string, string, string][] = [
+    ["plain ref", "See m3 for details.", `See ${link} for details.`],
+    ["hash ref", "Also #m5.", `Also [↗](${linkOf("c", "100000000000000005")}).`],
+    ["bracket ref", "Quote [m3] here.", `Quote ${link} here.`],
+    ["paren ref", "Quote (m3) here.", `Quote ${link} here.`],
+    ["bracket hash ref", "Quote [#m3] here.", `Quote ${link} here.`],
+    ["unknown ref", "See m9 and s4.", "See m9 and s4."],
+    ["word containing a ref", "gm3x and m3u8 are words.", "gm3x and m3u8 are words."],
+    ["known user ID", "Thanks 123456789012345678.", "Thanks <@123456789012345678>."],
+    ["existing mention", "Thanks <@123456789012345678>.", "Thanks <@123456789012345678>."],
+    ["unknown user ID", "Thanks 223456789012345678.", "Thanks 223456789012345678."],
+    ["code stays", "Code:\n```\nm3 and 123456789012345678\n```\nInline `m3` too, but m3 is a ref.", `Code:\n\`\`\`\nm3 and 123456789012345678\n\`\`\`\nInline \`m3\` too, but ${link} is a ref.`],
+  ];
+  for (const [name, input, expected] of cases) assert.equal(linkRefs(input, refs, place, users), expected, name);
 });
 
 test("fake discord link loses url", () => {
@@ -36,26 +42,6 @@ test("fake discord link loses url", () => {
   assert.ok(!text.includes("discord.com"));
   // A real message ID keeps a link, pointed at this channel.
   assert.equal(linkRefs("[the post](https://discord.com/channels/x/y/100000000000000001)", refs, place, users), `[the post](${linkOf("c", "100000000000000001")})`);
-});
-
-test("user id becomes mention", () => {
-  assert.equal(linkRefs("Thanks 123456789012345678.", refs, place, users), "Thanks <@123456789012345678>.");
-  // Already a mention, or not a known user: unchanged.
-  assert.equal(linkRefs("Thanks <@123456789012345678>.", refs, place, users), "Thanks <@123456789012345678>.");
-  assert.equal(linkRefs("Thanks 223456789012345678.", refs, place, users), "Thanks 223456789012345678.");
-});
-
-test("unknown ref unchanged", () => {
-  assert.equal(linkRefs("See m9 and s4.", refs, place, users), "See m9 and s4.");
-});
-
-test("code block unchanged", () => {
-  const text = "Code:\n```\nm3 and 123456789012345678\n```\nInline `m3` too, but m3 is a ref.";
-  assert.equal(linkRefs(text, refs, place, users), `Code:\n\`\`\`\nm3 and 123456789012345678\n\`\`\`\nInline \`m3\` too, but [↗](${linkOf("c", "100000000000000001")}) is a ref.`);
-});
-
-test("word with m3 unchanged", () => {
-  assert.equal(linkRefs("gm3x and m3u8 are words.", refs, place, users), "gm3x and m3u8 are words.");
 });
 
 test("task s ref links to source channel", async () => {

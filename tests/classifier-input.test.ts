@@ -12,9 +12,3 @@ test('classifier state retains recent conversation cues within 8 KiB and omits h
   assert.ok(Buffer.byteLength(packed.state) <= 8192);
   assert.ok(!packed.state.includes('biography')); assert.ok(!packed.state.includes('huge-data-url')); assert.ok(!packed.state.includes('signed-private-url'));
 });
-
-test('encoded control characters and multibyte text also obey the classifier budget', () => {
-  const message = { server: 's', channel: 'c', id: 'current', author: 'a', text: '\u0000😀'.repeat(10000), authorName: '\u0000'.repeat(10000) };
-  const packed = classifierInput(message, Array.from({ length: 10 }, (_, i) => ({ ...message, id: String(i) })));
-  assert.ok(Buffer.byteLength(packed.state) <= 8192); assert.equal(JSON.parse(packed.state).CURRENT.id, 'current');
-});

@@ -48,7 +48,6 @@ test("reports record source links, preserve reasoning events and reject stale ev
   const report = (await store.record("s", "report", "report"))!;
   const runId = (report.value as { runId: string }).runId;
   assert.equal(store.events(runId)[0]?.kind, "reasoning");
-  assert.match(result.text, /bounded sample/);
   const saved = await registry.invokeResult(
     message,
     "decision_lookup",

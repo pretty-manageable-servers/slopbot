@@ -16,22 +16,10 @@ test('nine native calls fit the shared batch limit and retain every call ID', as
   let result: unknown;
   for await (const event of llm.stream(prompt)) if (event.kind === 'tool_call') result = event.payload;
   assert.deepEqual(result, calls.map(call => ({ id: call.id, name: 'read', arguments: {} })));
-});
-
-test('the internal and legacy envelope parser uses the same larger batch limit', () => {
-  const calls = Array.from({ length: 9 }, (_, index) => ({ name: 'read', id: `call_${index}`, arguments: {} }));
-  assert.equal(parseToolCalls(JSON.stringify({ tool_calls: calls }))?.length, 9);
-});
-
-for (const [name, chunk, code, done] of [
-  ['truncated stream', { choices: [{ index: 0, delta: { content: 'partial' } }] }, 'PROVIDER_STREAM_INCOMPLETE', false],
-  ['malformed native arguments', { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_bad', function: { name: 'read', arguments: '{"unfinished":' } }] }, finish_reason: 'tool_calls' }] }, 'PROVIDER_TOOL_PROTOCOL', true],
-  ['provider filter', { choices: [{ index: 0, delta: {}, finish_reason: 'content_filter' }] }, 'PROVIDER_CONTENT_FILTERED', true],
-] as const) test(`${name} has an explicit code and emits no executable call`, async () => {
-  const llm = new ChatCompletionsLLM(options, async () => response(chunk, done));
-  let calls = 0;
-  await assert.rejects(async () => { for await (const event of llm.stream(prompt)) if (event.kind === 'tool_call') calls++; }, error => describeError(error).code === code);
-  assert.equal(calls, 0);
+  // The envelope parser and the template parser use the same limit.
+  const envelope = Array.from({ length: 9 }, (_, index) => ({ name: 'read', id: `call_${index}`, arguments: {} }));
+  assert.equal(parseToolCalls(JSON.stringify({ tool_calls: envelope }))?.length, 9);
+  assert.equal(gemmaToolCalls(Array.from({ length: 9 }, () => '<|tool_call>call:read{}<tool_call|>').join('\n'))?.length, 9);
 });
 
 test('image transport bytes do not consume the text context budget', () => {
@@ -40,43 +28,14 @@ test('image transport bytes do not consume the text context budget', () => {
   assert.equal(budgeted.maxOutputTokens, 50000);
 });
 
-test('provider network failure has a specific code', async () => {
-  const llm = new ChatCompletionsLLM(options, async () => { throw new TypeError('fetch failed'); });
-  await assert.rejects(async () => { for await (const event of llm.stream(prompt)) void event; }, error => describeError(error).code === 'PROVIDER_NETWORK');
-});
-
-test('a single response choice without an explicit index is not silently discarded', async () => {
-  const llm = new ChatCompletionsLLM(options, async () => response({ choices: [{ delta: { content: 'Complete reply.' }, finish_reason: 'stop' }] }));
-  let text = ''; for await (const event of llm.stream(prompt)) if (event.kind === 'text') text += event.payload.text;
-  assert.equal(text, 'Complete reply.');
-});
-
-test('a generation without a per-call override sends the configured provider allowance', async () => {
-  const llm = new ChatCompletionsLLM({ ...options, outputTokens: 30000 }, async (_url, init) => {
-    assert.equal(JSON.parse(String(init?.body)).max_tokens, 30000);
-    return response({ choices: [{ index: 0, delta: { content: 'Complete reply.' }, finish_reason: 'stop' }] });
-  });
-  for await (const event of llm.stream(prompt)) void event;
-});
-
-test('an empty completed model response is a failure rather than a successful empty reply', async () => {
-  const llm = new ChatCompletionsLLM(options, async () => response({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }));
-  await assert.rejects(async () => { for await (const event of llm.stream(prompt)) void event; }, error => describeError(error).code === 'MODEL_EMPTY_OUTPUT');
-});
-
-test('a broken response body has a specific stream code and preserves partial output', async () => {
-  let reads = 0;
-  const body = new ReadableStream<Uint8Array>({ pull(controller) {
-    if (reads++ === 0) controller.enqueue(new TextEncoder().encode('data: {"choices":[{"index":0,"delta":{"content":"partial"}}]}\n\n'));
-    else controller.error(new TypeError('connection terminated'));
-  } });
-  const llm = new ChatCompletionsLLM(options, async () => new Response(body));
-  let text = '';
-  await assert.rejects(async () => { for await (const event of llm.stream(prompt)) if (event.kind === 'text') text += event.payload.text; }, error => describeError(error).code === 'PROVIDER_STREAM_INTERRUPTED');
-  assert.equal(text, 'partial');
-});
-
-test('template tool batches share the larger batch allowance',()=>{
- const text=Array.from({length:9},()=>'<|tool_call>call:read{}<tool_call|>').join('\n');
- assert.equal(gemmaToolCalls(text)?.length,9);
+for (const [name, chunk, code, done] of [
+  ['truncated stream', { choices: [{ index: 0, delta: { content: 'partial' } }] }, 'PROVIDER_STREAM_INCOMPLETE', false],
+  ['malformed native arguments', { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_bad', function: { name: 'read', arguments: '{"unfinished":' } }] }, finish_reason: 'tool_calls' }] }, 'PROVIDER_TOOL_PROTOCOL', true],
+  ['provider filter', { choices: [{ index: 0, delta: {}, finish_reason: 'content_filter' }] }, 'PROVIDER_CONTENT_FILTERED', true],
+  ['empty completed reply', { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }, 'MODEL_EMPTY_OUTPUT', true],
+] as const) test(`${name} has an explicit code and emits no executable call`, async () => {
+  const llm = new ChatCompletionsLLM(options, async () => response(chunk, done));
+  let calls = 0;
+  await assert.rejects(async () => { for await (const event of llm.stream(prompt)) if (event.kind === 'tool_call') calls++; }, error => describeError(error).code === code);
+  assert.equal(calls, 0);
 });

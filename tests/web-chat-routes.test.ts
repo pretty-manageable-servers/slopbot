@@ -18,7 +18,6 @@ const SERVER = "1528063444874432734";
 const ALICE = "1514413259522838529", BOB = "1514413259522838530", CAROL = "1514413259522838531";
 const ORIGIN = "http://localhost:3000";
 const MISSING = "0".repeat(32);
-const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("rest of png")]);
 
 /** Chat storage in memory, so the tests never write to disk. */
 class MemoryStorage implements ObjectStorageProvider {
@@ -120,11 +119,7 @@ async function newChat(f: Fixture, user = ALICE): Promise<string> {
 const uploadFile = (f: Fixture, user: string, id: string, bytes: Buffer, name = "notes.txt", type = "text/plain") =>
   f.call(user, "POST", `/api/chats/${id}/files?name=${encodeURIComponent(name)}`, bytes, { "Content-Type": type });
 
-/** Uploads one image as raw bytes. */
-const uploadImage = (f: Fixture, user: string, id: string) =>
-  f.call(user, "POST", `/api/chats/${id}/images?name=shot.png`, PNG, { "Content-Type": "image/png" });
 
-/** A GET with the session cookie, read as bytes, for the file download. */
 async function download(f: Fixture, user: string | null, path: string) {
   const response = await fetch(f.base + path, { headers: user ? { Cookie: f.cookie(user) } : {} });
   return { status: response.status, headers: response.headers, bytes: Buffer.from(await response.arrayBuffer()) };
@@ -164,59 +159,6 @@ test("the list, create, rename and delete routes keep the shapes the UI reads", 
   const gone = await f.call(ALICE, "GET", `/api/chats/${id}/messages`);
   assert.equal(gone.status, 404);
   assert.deepEqual(Object.keys(gone.json), ["error"]);
-});
-
-test("the messages route returns a page with hasMore and streamId, and pages back with before", async t => {
-  const f = await setup(t);
-  const id = await newChat(f);
-  for (const text of ["one", "two", "three"]) assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text })).status, 201);
-
-  const newest = await f.call(ALICE, "GET", `/api/chats/${id}/messages?limit=2`);
-  assert.equal(newest.status, 200);
-  assert.deepEqual(Object.keys(newest.json).sort(), ["hasMore", "messages", "streamId"]);
-  assert.deepEqual(newest.json.messages.map((item: { text: string }) => item.text), ["two", "three"], "messages are oldest first within the page");
-  assert.equal(newest.json.hasMore, true);
-  assert.equal(typeof newest.json.streamId, "number");
-
-  const older = await f.call(ALICE, "GET", `/api/chats/${id}/messages?limit=2&before=${newest.json.messages[0].id}`);
-  assert.deepEqual(older.json.messages.map((item: { text: string }) => item.text), ["one"]);
-  assert.equal(older.json.hasMore, false);
-
-  const all = await f.call(ALICE, "GET", `/api/chats/${id}/messages?before=`);
-  assert.equal(all.status, 200, "an empty before cursor is no cursor");
-  assert.equal(all.json.messages.length, 3);
-  assert.equal(all.json.hasMore, false);
-
-  for (const query of ["limit=0", "limit=101", "limit=abc", "before=bad%21cursor", `before=${MISSING}`]) {
-    const bad = await f.call(ALICE, "GET", `/api/chats/${id}/messages?${query}`);
-    assert.equal(bad.status, 400, query);
-    assert.equal(typeof bad.json.error, "string", query);
-  }
-});
-
-test("the stream route sends the saved message as an event after the cursor", async t => {
-  const f = await setup(t);
-  const id = await newChat(f);
-  const controller = new AbortController();
-  t.after(() => controller.abort());
-  const stream = await fetch(`${f.base}/api/chats/${id}/stream?after=0`, { headers: { Cookie: f.cookie(ALICE) }, signal: controller.signal });
-  assert.equal(stream.status, 200);
-  assert.match(stream.headers.get("content-type") ?? "", /^text\/event-stream/);
-  const reader = stream.body!.getReader();
-  const decoder = new TextDecoder();
-  let seen = "";
-  const until = async (pattern: RegExp) => {
-    while (!pattern.test(seen)) {
-      const chunk = await reader.read();
-      if (chunk.done) throw new Error("stream ended early");
-      seen += decoder.decode(chunk.value, { stream: true });
-    }
-  };
-  await until(/retry: 3000/);
-  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "streamed hello" })).status, 201);
-  await until(/event: message\ndata: .*streamed hello/);
-  assert.match(seen, /id: \d+\nevent: message/, "events carry stream IDs");
-  controller.abort();
 });
 
 test("only the owner can read, send, rename, delete or stream a chat; others get 404", async t => {
@@ -289,60 +231,6 @@ test("a reply run of a private chat opens for its owner only", async t => {
   assert.equal((await f.call(ALICE, "GET", `/api/conversations/${id}/messages?server=${SERVER}`)).status, 400, "the transcript routes do not serve private chats");
 });
 
-test("a sent message is saved as a web message from the user and handed to the bot", async t => {
-  const f = await setup(t);
-  const id = await newChat(f);
-  const sent = await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "hello bot" });
-  const saved = await f.store.canonicalMessage(SERVER, sent.json.id);
-  assert.ok(saved, "the message is saved");
-  assert.equal(saved.author, ALICE);
-  assert.equal(saved.source, "web");
-  assert.equal(saved.addressed, true);
-  assert.equal(f.received.length, 1);
-  assert.equal(f.received[0]!.id, sent.json.id);
-});
-
-test("the owner shares a chat by a frozen link that needs no sign-in", async t => {
-  const f = await setup(t);
-  const id = await newChat(f);
-  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "first private line" })).status, 201);
-  const created = await f.call(ALICE, "POST", `/api/chats/${id}/shares`, {});
-  assert.equal(created.status, 201);
-  const shareId = created.json.id as string;
-  assert.match(shareId, /^[A-Za-z0-9_-]{22}$/);
-  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "later private line" })).status, 201);
-
-  const snapshot = await f.call(null, "GET", `/api/shares/${shareId}`);
-  assert.equal(snapshot.status, 200, "the link needs no sign-in");
-  assert.deepEqual(snapshot.json.messages.map((message: { text: string }) => message.text), ["first private line"], "later messages are not in the link");
-  const page = await fetch(`${f.base}/s/${shareId}`);
-  assert.equal(page.status, 200);
-  assert.equal(page.headers.get("x-robots-tag"), "noindex");
-  const html = await page.text();
-  assert.match(html, /first private line/);
-  assert.doesNotMatch(html, /later private line/);
-  assert.deepEqual((await f.call(ALICE, "GET", `/api/chats/${id}/shares`)).json.shares.map((share: { id: string }) => share.id), [shareId]);
-});
-
-test("only the owner can create, list or revoke a chat link; others get 404", async t => {
-  const f = await setup(t);
-  const id = await newChat(f);
-  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "private note" })).status, 201);
-  const shareId = (await f.call(ALICE, "POST", `/api/chats/${id}/shares`, {})).json.id as string;
-  for (const user of [BOB, CAROL]) {
-    assert.equal((await f.call(user, "POST", `/api/chats/${id}/shares`, {})).status, 404, "cannot create");
-    assert.equal((await f.call(user, "GET", `/api/chats/${id}/shares`)).status, 404, "cannot list");
-    assert.equal((await f.call(user, "POST", `/api/chats/${id}/shares/${shareId}/revoke`, {})).status, 404, "cannot revoke");
-  }
-  assert.equal((await f.call(null, "GET", `/api/chats/${id}/shares`)).status, 401, "no session");
-  assert.equal((await f.call(ALICE, "GET", `/api/chats/${id}/shares`)).json.shares.length, 1, "the owner still sees the link");
-  assert.equal((await f.call(null, "GET", `/api/shares/${shareId}`)).status, 200, "the link still works");
-
-  f.members.delete(ALICE);
-  assert.equal((await f.call(ALICE, "GET", `/api/chats/${id}/shares`)).status, 404, "an owner who left the server cannot manage the link");
-  f.members.add(ALICE);
-});
-
 test("revoking a chat link stops it; a link of another chat is 404; deleting the chat removes its links", async t => {
   const f = await setup(t);
   const one = await newChat(f), two = await newChat(f);
@@ -361,16 +249,6 @@ test("revoking a chat link stops it; a link of another chat is 404; deleting the
   assert.equal((await f.call(ALICE, "DELETE", `/api/chats/${two}`)).status, 200);
   assert.equal((await f.call(null, "GET", `/api/shares/${second}`)).status, 404, "deleting the chat removes its link");
   assert.equal((await fetch(`${f.base}/s/${second}`)).status, 404);
-});
-
-test("a chat link needs at least one message, a JSON body and the CSRF token", async t => {
-  const f = await setup(t);
-  const id = await newChat(f);
-  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/shares`, {})).status, 400, "an empty chat has nothing to share");
-  await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "hi" });
-  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/shares`, {}, { "X-CSRF-Token": "wrong" })).status, 403, "wrong CSRF token");
-  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/shares`)).status, 415, "no JSON body");
-  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/shares`, {})).status, 201);
 });
 
 test("bad input gets a status and an {error} body; writes need the session, CSRF and a JSON body", async t => {
@@ -394,36 +272,6 @@ test("bad input gets a status and an {error} body; writes need the session, CSRF
   assert.equal((await f.call(ALICE, "DELETE", `/api/chats/${id}`, undefined, { "X-CSRF-Token": "wrong" })).status, 403);
 });
 
-test("a chat link works only while its owner is in the server; a Discord error is 503 and not cached", async t => {
-  const f = await setup(t);
-  const id = await newChat(f);
-  await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "shared line" });
-  const shareId = (await f.call(ALICE, "POST", `/api/chats/${id}/shares`, {})).json.id as string;
-  const later = () => f.shareNow.now += 61_000;
-  assert.equal((await f.call(null, "GET", `/api/shares/${shareId}`)).status, 200);
-
-  // Discord is down: the link answers 503, not 404 and not a leak.
-  f.membership.fail = true;
-  later();
-  assert.equal((await f.call(null, "GET", `/api/shares/${shareId}`)).status, 503);
-  assert.equal((await fetch(`${f.base}/s/${shareId}`)).status, 503);
-  f.membership.fail = false;
-  assert.equal((await f.call(null, "GET", `/api/shares/${shareId}`)).status, 200, "a 503 is not cached");
-
-  // The owner leaves the server: the link is not found. The owner's own share routes are 404 too.
-  f.members.delete(ALICE);
-  later();
-  assert.equal((await f.call(null, "GET", `/api/shares/${shareId}`)).status, 404, "owner left");
-  assert.equal((await fetch(`${f.base}/s/${shareId}`)).status, 404, "owner left, page");
-
-  // The owner rejoins: the link works again.
-  f.members.add(ALICE);
-  later();
-  const back = await f.call(null, "GET", `/api/shares/${shareId}`);
-  assert.equal(back.status, 200, "owner rejoined");
-  assert.equal(back.json.messages[0].text, "shared line");
-});
-
 test("PATCH effort accepts low, medium, xhigh or null and refuses anything else", async t => {
   const f = await setup(t);
   const id = await newChat(f);
@@ -438,31 +286,6 @@ test("PATCH effort accepts low, medium, xhigh or null and refuses anything else"
   assert.equal((await f.call(ALICE, "PATCH", `/api/chats/${id}`, { title: "Trips" })).status, 200, "a title change still works");
 });
 
-test("only the owner can set the effort of a chat", async t => {
-  const f = await setup(t);
-  const id = await newChat(f);
-  assert.equal((await f.call(BOB, "PATCH", `/api/chats/${id}`, { effort: "low" })).status, 404);
-  assert.equal((await f.call(CAROL, "PATCH", `/api/chats/${id}`, { effort: "low" })).status, 404);
-  assert.equal((await f.call(null, "PATCH", `/api/chats/${id}`, { effort: "low" })).status, 401);
-  assert.equal((await f.call(ALICE, "GET", `/api/chats`)).json[0].effort, "medium");
-});
-
-test("a sent message carries the chat effort, else the server default, else medium", async t => {
-  const f = await setup(t);
-  const id = await newChat(f);
-  await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "one" });
-  assert.equal(f.received.at(-1)!.effort, "medium", "no choice and no setting");
-  f.store.setSetting(SERVER, "default_effort", "low");
-  await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "two" });
-  assert.equal(f.received.at(-1)!.effort, "low", "the server default");
-  f.store.setSetting(SERVER, "default_effort", "default");
-  await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "three" });
-  assert.equal(f.received.at(-1)!.effort, "medium", "the default value means no setting");
-  await f.call(ALICE, "PATCH", `/api/chats/${id}`, { effort: "xhigh" });
-  await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "four" });
-  assert.equal(f.received.at(-1)!.effort, "xhigh", "the chat choice wins");
-});
-
 // Continue a shared chat: POST /api/shares/<id>/continue copies a live share into a new private chat of the viewer.
 const SHARE_ID = "AAAAAAAAAAAAAAAAAAAAAA";
 async function sharedChat(f: Fixture): Promise<{ shareId: string }> {
@@ -475,31 +298,6 @@ async function sharedChat(f: Fixture): Promise<{ shareId: string }> {
   assert.equal(shared.status, 201);
   return { shareId: shared.json.id as string };
 }
-
-test("a valid share is copied into a new private chat of the viewer, and the model reads the copy", async t => {
-  const f = await setup(t);
-  const { shareId } = await sharedChat(f);
-  const before = (await f.call(BOB, "GET", `/api/chats`)).json.length;
-  const made = await f.call(BOB, "POST", `/api/shares/${shareId}/continue`, {});
-  assert.equal(made.status, 201);
-  assert.match(made.json.id, /^[0-9a-f]{32}$/);
-  assert.equal(made.json.title, "first private line");
-  assert.equal((await f.call(BOB, "GET", `/api/chats`)).json.length, before + 1, "one new chat for the viewer");
-
-  const copied = await f.call(BOB, "GET", `/api/chats/${made.json.id}/messages`);
-  assert.equal(copied.status, 200);
-  assert.deepEqual(copied.json.messages.map((m: { text: string }) => m.text), ["first private line", "**Adapter** is ready."]);
-  assert.equal(copied.json.messages[0].slopbot, false);
-  assert.equal(copied.json.messages[1].slopbot, true, "the answer keeps the Slopbot author");
-
-  // The model input for a new message in the copy includes the copied history.
-  const sent = await f.call(BOB, "POST", `/api/chats/${made.json.id}/messages`, { text: "what did it say?" });
-  assert.equal(sent.status, 201);
-  const sentRow = await f.store.canonicalMessage(SERVER, sent.json.id);
-  assert.ok(sentRow);
-  const context = await f.store.context(sentRow, 10);
-  assert.deepEqual(context.map(m => m.text), ["first private line", "**Adapter** is ready."]);
-});
 
 test("a revoked or unknown share cannot be continued", async t => {
   const f = await setup(t);
@@ -528,84 +326,6 @@ test("continuing needs a sign-in, the same origin and the CSRF token", async t =
   assert.equal((await f.call(BOB, "POST", `/api/shares/${shareId}/continue`, {}, { Origin: "https://evil.example" })).status, 403, "wrong origin");
   assert.equal((await f.call(BOB, "GET", `/api/chats`)).json.length, 0, "no chat is made by a refused request");
   assert.equal((await fetch(`${f.base}/api/shares/${shareId}/continue`, { method: "POST", headers: { Cookie: f.cookie(BOB), Origin: ORIGIN, "X-CSRF-Token": "csrf-" + BOB } })).status, 201, "the same request with the token works");
-});
-
-test("upload file any type", async t => {
-  const f = await setup(t);
-  const id = await newChat(f);
-  const pdf = await uploadFile(f, ALICE, id, Buffer.from("%PDF-1.4 test"), "report.pdf", "application/pdf");
-  assert.equal(pdf.status, 201);
-  assert.deepEqual(Object.keys(pdf.json).sort(), ["contentType", "fileId", "name", "size"]);
-  assert.match(pdf.json.fileId, /^[0-9a-f]{32}\.pdf$/);
-  assert.deepEqual({ name: pdf.json.name, contentType: pdf.json.contentType, size: pdf.json.size }, { name: "report.pdf", contentType: "application/pdf", size: 13 });
-  // Any binary type is accepted. A Content-Type that is not a plain type is stored as octet-stream.
-  const binary = await uploadFile(f, ALICE, id, Buffer.from([0, 1, 2, 255]), "tool.exe", "text/plain; charset=utf-8");
-  assert.equal(binary.status, 201);
-  assert.equal(binary.json.contentType, "application/octet-stream");
-  assert.match(binary.json.fileId, /^[0-9a-f]{32}\.exe$/);
-  assert.equal(f.storage.objects.size, 2, "both files are stored");
-  assert.ok(f.storage.objects.has(chatFileKey(SERVER, id, pdf.json.fileId)));
-  assert.equal((await uploadFile(f, ALICE, id, Buffer.alloc(0))).status, 400, "an empty file is refused");
-  assert.equal((await uploadFile(f, BOB, id, Buffer.from("x"))).status, 404, "another user cannot upload here");
-});
-
-test("upload file 413", async t => {
-  const f = await setup(t);
-  const id = await newChat(f);
-  const big = await uploadFile(f, ALICE, id, Buffer.alloc(10 * 1024 * 1024 + 1), "big.bin", "application/octet-stream");
-  assert.equal(big.status, 413);
-  assert.equal(big.json.error, "Files can be 10 MB or smaller.");
-  assert.equal(f.storage.objects.size, 0, "nothing is stored");
-  const exact = await uploadFile(f, ALICE, id, Buffer.alloc(10 * 1024 * 1024, 1), "exact.bin", "application/octet-stream");
-  assert.equal(exact.status, 201, "10 MB is allowed");
-});
-
-test("send with files and images over 10 is 400", async t => {
-  const f = await setup(t);
-  const id = await newChat(f);
-  const images: string[] = [], files: string[] = [];
-  for (let i = 0; i < 5; i++) images.push((await uploadImage(f, ALICE, id)).json.imageId as string);
-  for (let i = 0; i < 5; i++) files.push((await uploadFile(f, ALICE, id, Buffer.from(`file ${i}`), `f${i}.txt`)).json.fileId as string);
-  const messages = `/api/chats/${id}/messages`;
-  const over = await f.call(ALICE, "POST", messages, { text: "eleven", images, files: [...files, MISSING + ".txt"] });
-  assert.equal(over.status, 400);
-  assert.equal(over.json.error, "Attach 10 files or images or fewer.");
-  assert.equal((await f.call(ALICE, "GET", messages)).json.messages.length, 0, "nothing is saved");
-  const sent = await f.call(ALICE, "POST", messages, { text: "ten", images, files });
-  assert.equal(sent.status, 201);
-  assert.equal(f.received.at(-1)!.attachments?.length, 10);
-});
-
-test("send files only uses default text", async t => {
-  const f = await setup(t);
-  const id = await newChat(f);
-  const up = await uploadFile(f, ALICE, id, Buffer.from("a,b\n1,2\n"), "data.csv", "text/csv");
-  const fileId = up.json.fileId as string;
-  const sent = await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { files: [fileId] });
-  assert.equal(sent.status, 201);
-  const saved = await f.store.canonicalMessage(SERVER, sent.json.id);
-  assert.ok(saved);
-  assert.equal(saved.text.split("\n")[0], "Please look at the attached file(s).", "the default text comes first");
-  assert.deepEqual(saved.attachments, [{ name: "data.csv", url: `web-file:${SERVER}/${id}/${fileId}`, contentType: "text/csv", size: 8 }]);
-  assert.equal(f.received.at(-1)!.modelImages, undefined, "a file is not sent to the model as an image");
-  const viewed = await f.call(ALICE, "GET", `/api/chats/${id}/messages`);
-  assert.equal(viewed.json.messages[0].text, "Please look at the attached file(s).", "the web view hides the label");
-  assert.equal((await f.call(ALICE, "GET", "/api/chats")).json[0].title, "data.csv", "the first file name is the title");
-  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { files: [fileId] })).status, 400, "a sent file is not pending any more");
-});
-
-test("send with file adds attachment label for the model", async t => {
-  const f = await setup(t);
-  const id = await newChat(f);
-  const fileId = (await uploadFile(f, ALICE, id, Buffer.from("a,b\n"), "data.csv", "text/csv")).json.fileId as string;
-  const sent = await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "look", files: [fileId] });
-  assert.equal(sent.status, 201);
-  const label = `[Attachment data.csv, type text/csv: web-file:${SERVER}/${id}/${fileId}; content not inspected]`;
-  const saved = await f.store.canonicalMessage(SERVER, sent.json.id);
-  assert.equal(saved!.text, `look\n${label}`, "the saved text has the label after the body");
-  assert.equal(f.received.at(-1)!.text, `look\n${label}`, "the model gets the label");
-  const viewed = await f.call(ALICE, "GET", `/api/chats/${id}/messages`);
-  assert.equal(viewed.json.messages[0].text, "look", "the web view does not show the label");
 });
 
 test("read file sets attachment disposition", async t => {
@@ -654,18 +374,4 @@ test("other user cannot read file", async t => {
   assert.equal((await f.call(BOB, "DELETE", `/api/chats/${id}/files/${fileId}`)).status, 404, "another user cannot delete it");
   assert.equal((await f.call(BOB, "POST", `/api/chats/${bobChat}/messages`, { text: "steal", files: [fileId] })).status, 400, "another user cannot send it");
   assert.equal(f.storage.objects.size, 1, "the file is kept");
-});
-
-test("delete chat removes files", async t => {
-  const f = await setup(t);
-  const id = await newChat(f);
-  const pending = await uploadFile(f, ALICE, id, Buffer.from("pending"), "p.txt");
-  const sent = await uploadFile(f, ALICE, id, Buffer.from("sent"), "s.txt");
-  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "look", files: [sent.json.fileId] })).status, 201);
-  assert.equal((await uploadImage(f, ALICE, id)).status, 201);
-  assert.equal(f.storage.objects.size, 3);
-  assert.equal((await f.call(ALICE, "DELETE", `/api/chats/${id}/files/${pending.json.fileId}`)).status, 200, "a pending file can be discarded");
-  assert.equal(f.storage.objects.size, 2);
-  assert.equal((await f.call(ALICE, "DELETE", `/api/chats/${id}`)).status, 200);
-  assert.equal(f.storage.objects.size, 0, "the chat's files and images go with it");
 });

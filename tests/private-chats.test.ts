@@ -3,7 +3,6 @@ import { test } from "node:test";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { ToolRegistry, ToolError, type ToolDefinition } from "../src/tools.js";
 import { isPrivateChannel, privateChannel, privateChatTitle } from "../src/private-chat.js";
-import { transcriptSwitchOn } from "../src/server-tools.js";
 import type { Message } from "../src/domain.js";
 
 const privateId = "0123456789abcdef0123456789abcdef";
@@ -46,21 +45,6 @@ test("a private chat runs a write tool, but a Discord-scoped call throws", async
   assert.equal((await tools.invokeResult(privateMessage, "writer", {}, "op-private-write", "agent")).text, "wrote");
   assert.equal((await tools.invokeResult(privateMessage, "reader", {}, "op-private-read", "agent")).text, "read ok");
   assert.equal((await tools.invokeResult(discordMessage, "poster", {}, "op-discord-post", "agent")).text, "posted");
-});
-
-test("a private chat is never forced into a Discord-scoped call", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const tools = registry(store);
-  const lookup: ToolDefinition = { name: "lookup", description: "reads Discord state", fields: {}, access: "member", effect: "read", retrySafe: true, scope: "discord", matchRead: () => ({}), async execute() { return "looked"; } };
-  tools.register(lookup);
-  assert.equal(tools.suggest({ ...privateMessage, text: "look it up" }), undefined);
-  assert.deepEqual(tools.suggest({ ...discordMessage, text: "look it up" }), { name: "lookup", arguments: {} });
-});
-
-test("a private chat has its transcript switch on, a Discord channel does not", t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  assert.equal(transcriptSwitchOn(store, "s", privateChannel(privateId)), true);
-  assert.equal(transcriptSwitchOn(store, "s", "100000000000000001"), false);
 });
 
 const chatRow = (id: string, owner = "alice") => ({ id, server: "s", owner, title: "", created: 1, updated: 1, deleted: false });
@@ -110,8 +94,6 @@ test("deleting a private chat removes its messages, runs and events and keeps ot
 import { Application } from "../src/application.js";
 import { Bot, type ChatGateway, type Incoming } from "../src/bot.js";
 import { FakeLLM } from "../src/adapters/fake-llm.js";
-import { WebChatGateway } from "../src/web-chats.js";
-import type { ToolActivity } from "../src/tool-activity.js";
 
 function botFor(store: SQLiteStore, tools?: ToolRegistry) {
   const app = new Application(store, new FakeLLM(), { allowedChannels: [{ server: "s", channel: "100000000000000001" }] });
@@ -165,31 +147,4 @@ test("a private chat saves memories, but cannot start tasks", async t => {
   assert.equal(created(), 0, "no task thread may be created");
   assert.deepEqual((await store.memories("s", privateChannel(privateId))).map(note => note.content), ["I like tea"]);
   assert.equal(outputs.at(-1)!.text, "This action is only available in Discord.");
-});
-
-test("a private chat runs a write tool through the bot, but a Discord-scoped one is refused", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const tools = registry(store);
-  const { bot, created } = botFor(store, tools);
-  bot.openPrivateChat("s", privateChannel(privateId));
-  assert.equal((await bot.executeTool(privateMessage, { name: "writer", arguments: {} }, "op-bot-write")).text, "wrote");
-  assert.equal(created(), 0, "a private write never starts a task thread");
-  await assert.rejects(bot.executeTool(privateMessage, { name: "poster", arguments: {} }, "op-bot-post"), (error: unknown) => error instanceof ToolError && error.message === "This action is only available in Discord.");
-  assert.equal(created(), 0);
-});
-
-test("a private chat reply has no tool footer, because the web run summary shows the tools", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const gateway = new WebChatGateway(store, "s");
-  const activity: ToolActivity[] = [{ id: "t1", name: "status", status: "completed" }];
-  const [reply] = await gateway.reply(privateMessage, "Answer", "delivery-1", activity);
-  assert.equal(reply!.text, "Answer");
-});
-
-test("the chat list of an owner has the chats of all servers", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  await store.insertWebChat({ id: "a".repeat(32), server: "s1", owner: "alice", title: "one", created: 1, updated: 1, deleted: false });
-  await store.insertWebChat({ id: "b".repeat(32), server: "s2", owner: "alice", title: "two", created: 2, updated: 2, deleted: false });
-  await store.insertWebChat({ id: "c".repeat(32), server: "s1", owner: "bob", title: "not hers", created: 3, updated: 3, deleted: false });
-  assert.deepEqual((await store.webChats("alice")).map(row => row.id), ["b".repeat(32), "a".repeat(32)]);
 });

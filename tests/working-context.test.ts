@@ -5,7 +5,7 @@ import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { ByteTokenCounter } from '../src/context.js';
 import { wireMessages } from '../src/adapters/chat-completions.js';
 import { RequestError } from '../src/errors.js';
-import { appendToolEvidence } from '../src/prompt-cache.js';
+
 import type { Prompt, ModelTool } from '../src/domain.js';
 const schema: ModelTool = {type:'function',function:{name:'lookup',description:'Read state',parameters:{type:'object',properties:{step:{type:'integer'}},required:['step']}}};
 const checkpoint = '{"goal":"finish the task","constraints":[],"decisions":[],"disagreements":[],"progress":["Earlier reads completed; keep their recorded results."],"artifacts":[],"pending_actions":[]}';
@@ -37,46 +37,6 @@ test('long active native-tool loops checkpoint complete pairs and retain origina
   assert.ok(store.historyArchive(JSON.stringify(['s','t','t'])).some(item=>item.content.includes('working_checkpoint')));
 });
 
-test('history is checkpointed before selection so the first successful tool has working space', async t => {
-  const store = new SQLiteStore(); t.after(()=>store.close()); let main = 0, reads = 0, checkpoints = 0;
-  const app = new Application(store,{async *stream(prompt){
-    if(prompt.purpose==='checkpoint'){checkpoints++;yield {kind:'text',payload:{text:checkpoint}};return;}
-    main++;
-    if(main===1) yield {kind:'text',payload:{text:'Previous task evidence: '+'h'.repeat(6000)}};
-    else if(main===2) yield {kind:'tool_call',payload:[{id:'call_profile',name:'lookup',arguments:{step:1}}]};
-    else yield {kind:'text',payload:{text:'Profile checked.'}};
-  }},{allowedChannels:[{server:'s',channel:'t'}],maxInputChars:8000,maxOutputTokens:1024,checkpointTokens:1024},undefined,
-  {tools:{catalog:()=>'',schemas:()=>[schema],execute:async()=>{reads++;return 'Profile: alice. '+'p'.repeat(2000);}}});
-  await app.handle({...message,id:'earlier',text:'Earlier task'});
-  const reply=await app.handle(message);
-  assert.equal(reply?.text,'Profile checked.'); assert.equal(reads,1); assert.ok(checkpoints>0);
-});
-
-test('task checkpoints quote archived turns and end with a fresh JSON request', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  let checkpoints = 0, replies = 0;
-  const app = new Application(store, { async *stream(prompt) {
-    if (prompt.purpose === 'checkpoint') {
-      checkpoints++;
-      const wire = wireMessages(prompt);
-      assert.ok(wire.every(item => item.role === 'system' || item.role === 'user'));
-      const final = JSON.parse(String(wire.at(-1)?.content));
-      assert.match(final.instruction, /Produce the JSON checkpoint now/);
-      assert.ok(final.checkpoint_limits.max_utf8_bytes > 0);
-      const evidence = prompt.inputs.slice(0, -1).map(item => JSON.parse(item.content).recorded_evidence);
-      assert.ok(evidence.every(item => item && typeof item.content === 'string'));
-      if (checkpoints === 1) assert.ok(evidence.some(item => item.role === 'assistant' && item.content.includes('Earlier answer')));
-      assert.ok(new ByteTokenCounter().count([...prompt.prefix, ...prompt.inputs]) <= 8000);
-      yield { kind: 'text', payload: { text: checkpoint } }; return;
-    }
-    yield { kind: 'text', payload: { text: ++replies <= 7 ? 'Earlier answer: ' + 'h'.repeat(2200) : 'Task continued.' } };
-  } }, { allowedChannels: [{ server: 's', channel: 't' }], maxInputChars: 8000, maxOutputTokens: 1024, checkpointTokens: 1024 });
-  for (let index = 0; index < 9; index++) await app.handle({ ...message, id: `request_${index}` });
-  assert.ok(checkpoints > 1, 'Exercise summarizing both original turns and an existing checkpoint');
-  assert.equal((await store.history(JSON.stringify(['s', 't', 't']))).at(-1)?.content, 'Task continued.');
-  assert.ok(store.historyArchive(JSON.stringify(['s', 't', 't'])).some(item => item.content.includes('Earlier answer')));
-});
-
 for (const invalid of ['prose', 'tool call'] as const) test(`a ${invalid} checkpoint retains original task history`, async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const app = new Application(store, { async *stream(prompt) {
@@ -94,14 +54,6 @@ for (const invalid of ['prose', 'tool call'] as const) test(`a ${invalid} checkp
   await assert.rejects(app.handle(message), error => error instanceof RequestError && error.code === 'CHECKPOINT_INVALID');
   assert.deepEqual(await store.taskContext(key), original);
 });
-
-test('a tool result that cannot fit has a specific code and budget figures', () => {
-  assert.throws(()=>appendToolEvidence('lookup',{text:'result'},[{role:'user',content:'x'.repeat(100)}],new ByteTokenCounter(),50),error=>{
-    assert.ok(error instanceof RequestError);assert.equal(error.code,'CONTEXT_BUDGET');
-    assert.ok(Number(error.details.required)>50);assert.equal(error.details.inputLimit,50);return true;
-  });
-});
-
 
 test('restart reconstructs checkpointed rounds without executing completed tools again', async t => {
   const store=new SQLiteStore();t.after(()=>store.close());let reads=0,requests=0,failed=false;

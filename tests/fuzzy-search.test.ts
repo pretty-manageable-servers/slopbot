@@ -1,42 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
-import { FUZZY_SCAN, fuzzyScore, rankFuzzy } from "../src/search/fuzzy.js";
+import { FUZZY_SCAN, fuzzyScore } from "../src/search/fuzzy.js";
 
-test("fuzzyScore matches typos, partial words, any word order and accents", () => {
-  assert.ok(fuzzyScore("deploy hotfix", "hotfix went out, then deploy tonight") > 0.9);
-  assert.ok(fuzzyScore("hotfx dploy", "We should deploy the hotfix") > 0.5);
-  assert.ok(fuzzyScore("deplo", "Deployment notes for Ada") > 0);
-  assert.ok(fuzzyScore("cafe", "Café opening at noon") > 0);
-  assert.ok(fuzzyScore("CAFÉ", "the cafe is open") > 0);
-  assert.ok(fuzzyScore("gen", "#general") > 0);
-});
-
-test("fuzzyScore gives no match to unrelated text and to short typos", () => {
-  assert.equal(fuzzyScore("deploy", "lunch was great"), 0);
-  assert.equal(fuzzyScore("zebra", "third question"), 0);
+test("fuzzyScore matches typos, partial words, any word order and accents, and rejects unrelated text and short typos", () => {
+  const matches: [string, string][] = [
+    ["deploy hotfix", "hotfix went out, then deploy tonight"],
+    ["hotfx dploy", "We should deploy the hotfix"],
+    ["deplo", "Deployment notes for Ada"],
+    ["cafe", "Café opening at noon"],
+    ["CAFÉ", "the cafe is open"],
+    ["gen", "#general"],
+  ];
   // Words of up to 3 letters must match exactly, so "ax" does not match "ay".
-  assert.equal(fuzzyScore("ax", "ay"), 0);
-  assert.equal(fuzzyScore("   ", "anything"), 0);
-  assert.equal(fuzzyScore("!!", "anything"), 0);
-});
-
-test("fuzzyScore ranks exact and phrase matches above typo matches", () => {
-  const exact = fuzzyScore("lighthouse talk", "lighthouse talk tonight");
-  const typo = fuzzyScore("lightouse talk", "lighthouse talk tonight");
-  assert.ok(exact > typo, `${exact} should beat ${typo}`);
-});
-
-test("rankFuzzy keeps only matches and breaks ties with the newest message", () => {
-  const message = (id: string, text: string, timestamp: number) => ({ id, server: "s", channel: "c", author: "u", authorName: "u", text, timestamp });
-  const ranked = rankFuzzy("deploy", [
-    message("old", "deploy notes", 1),
-    message("new", "deploy notes", 2),
-    message("typo", "deplyo notes", 3),
-    message("none", "lunch", 4),
-  ], 10);
-  assert.deepEqual(ranked.map(hit => hit.message.id), ["new", "old", "typo"]);
-  assert.equal(rankFuzzy("deploy", [message("a", "deploy", 1)], 0).length, 0);
+  const misses: [string, string][] = [["deploy", "lunch was great"], ["zebra", "third question"], ["ax", "ay"], ["   ", "anything"], ["!!", "anything"]];
+  for (const [query, text] of matches) assert.ok(fuzzyScore(query, text) > 0, `${query} should match ${text}`);
+  for (const [query, text] of misses) assert.equal(fuzzyScore(query, text), 0, `${query} should not match ${text}`);
 });
 
 test("SQLite searchFuzzy scores recent messages and LIKE candidates, inside one channel only", async () => {

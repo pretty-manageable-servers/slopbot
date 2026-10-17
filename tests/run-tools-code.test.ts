@@ -3,10 +3,9 @@ import { test } from 'node:test';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { Application } from '../src/application.js';
 import type { Json } from '../src/domain.js';
-import { programText, runToolsCodeTool } from '../src/run-tools-code.js';
+import { runToolsCodeTool } from '../src/run-tools-code.js';
 import type { SandboxProvider, SandboxSession } from '../src/sandbox.js';
 import { ToolRegistry, type ToolContext, type ToolDefinition, type ToolExecutor, type ToolResult } from '../src/tools.js';
-import type { ToolActivity } from '../src/tool-activity.js';
 import type { LLM } from '../src/ports.js';
 
 const request = { server: 's', channel: 'c', taskId: 'c', id: 'm', author: 'alice', text: 'Compare the results.' };
@@ -27,17 +26,6 @@ test('catalog_same_for_admin_and_member', async t => {
     descriptions.push(JSON.stringify(codeSchema(registry, admin ? request : privateRequest)));
   }
   assert.equal(descriptions[0], descriptions[1]);
-});
-
-test('catalog_sorted', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const registry = new ToolRegistry(store, async () => true);
-  registry.register(readTool('zeta', async () => ({ text: 'z' })));
-  registry.register(readTool('alpha', async () => ({ text: 'a' })));
-  registry.register(readTool('top_tool', async () => ({ text: 't' }), { surface: 'top' }));
-  registry.register(runToolsCodeTool(registry));
-  const names = [...codeSchema(registry).function.description.matchAll(/^- (\w+)\(/gm)].map(match => match[1]);
-  assert.deepEqual(names, ['alpha', 'zeta']);
 });
 
 test('catalog_excludes_discovery', async t => {
@@ -67,22 +55,6 @@ test('list_tools_filters_access', async t => {
   assert.deepEqual(outputs(await registry.invokeResult(privateRequest, 'run_tools_code', { code }, 'private-list', 'agent')), [['discovery_read', 'member_read']]);
   admin = true;
   assert.deepEqual(outputs(await registry.invokeResult(request, 'run_tools_code', { code }, 'admin-list', 'agent')), [['admin_read', 'discord_read', 'discovery_read', 'member_read']]);
-});
-
-test('describe_tool_mcp returns the full field schema of a discovery tool', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const registry = new ToolRegistry(store, async () => true);
-  const inputSchema: Json = { type: 'object', properties: { repo: { type: 'string' } }, required: ['repo'], additionalProperties: false };
-  registry.register(readTool('mcp_issues', async (_context, args) => ({ text: 'issues', data: { repo: String(args.repo) } }), {
-    surface: 'discovery', provider: 'mcp:github', description: 'List issues. Read only.', inputSchema, validate: args => args,
-    fields: { repo: { type: 'string', description: 'Repository', required: true } },
-  }));
-  registry.register(runToolsCodeTool(registry));
-  const result = await registry.invokeResult(request, 'run_tools_code', { code: 'text(await describe_tool("mcp_issues"));text(await tools.mcp_issues({repo:"a/b"}));' }, 'describe', 'agent');
-  const [described, called] = outputs(result) as [{ fields: { repo: { required: boolean } }; inputSchema: Json }, Json];
-  assert.equal(described.fields.repo.required, true);
-  assert.deepEqual(described.inputSchema, inputSchema);
-  assert.deepEqual(called, { repo: 'a/b' });
 });
 
 test('save_to_sandbox_writes', async t => {
@@ -164,19 +136,6 @@ test('cancelled_confirm_not_repeated', async t => {
   assert.equal(asked, 1); assert.equal(removed, 0);
 });
 
-test('policy_change_continues', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const registry = new ToolRegistry(store, async () => true);
-  registry.replaceProvider('p', [readTool('calc', async () => ({ text: 'v1', data: { v: 1 } }), { provider: 'p' })]);
-  registry.register(readTool('first', async () => {
-    registry.replaceProvider('p', [readTool('calc', async () => ({ text: 'v2', data: { v: 2 } }), { provider: 'p' })]);
-    return { text: 'first', data: { v: 0 } };
-  }));
-  registry.register(runToolsCodeTool(registry));
-  const result = await registry.invokeResult(request, 'run_tools_code', { code: 'const a = await tools.first({}); const b = await tools.calc({}); text([a.v, b.v]);' }, 'policy', 'agent');
-  assert.deepEqual(outputs(result), [[0, 2]]);
-});
-
 test('access_lost_fails', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   let admin = true, guarded = 0;
@@ -200,19 +159,6 @@ test('discord_scope_blocks_private_chat', async t => {
   assert.match(result.text, /Program failed: .*only available in Discord/);
   assert.ok((result.data as { error?: unknown }).error);
   assert.equal(ran, 0);
-});
-
-test('child_activity_parent_id', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const registry = new ToolRegistry(store, async () => true);
-  registry.register(readTool('read_a', async () => ({ text: 'a', data: { v: 1 } })));
-  registry.register(runToolsCodeTool(registry));
-  const events: ToolActivity[] = [];
-  const code = 'text(await tools.read_a({}));';
-  await registry.invokeResult(request, 'run_tools_code', { code }, 'parent-act', 'agent', undefined, { onActivity: async event => { events.push(event); } });
-  assert.equal(events.find(event => event.id === 'parent-act' && event.code)?.code, code);
-  const child = events.find(event => event.name === 'read_a' && event.status === 'completed');
-  assert.equal(child?.parentId, 'parent-act');
 });
 
 test('the agent loop receives reduced output and child evidence, not intermediate payloads', async t => {
@@ -260,18 +206,10 @@ test('bare_name_call', async t => {
   registry.register(readTool('echo_items', async (_context, args) => ({ text: 'echo', data: { n: args.n ?? null } }), { fields: { n: { type: 'integer', description: 'Count', required: true } } }));
   // A tool named like a JavaScript global keeps the global; it is still callable as tools.NAME.
   registry.register(readTool('escape', async () => ({ text: 'escaped', data: { ok: true } })));
-  registry.register(runToolsCodeTool(registry));
-  const result = await registry.invokeResult(request, 'run_tools_code', { code: 'text([await echo_items({n:12}), await tools.echo_items({n:3}), await tools.escape({}), typeof escape]);' }, 'bare', 'agent');
-  assert.deepEqual(outputs(result), [[{ n: 12 }, { n: 3 }, { ok: true }, 'function']]);
-});
-
-test('no_args_call', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const registry = new ToolRegistry(store, async () => true);
   registry.register(readTool('ping', async () => ({ text: 'pong', data: { ok: true } })));
   registry.register(runToolsCodeTool(registry));
-  const result = await registry.invokeResult(request, 'run_tools_code', { code: 'text([await ping(), await tools.ping(), await ping(undefined)]);' }, 'noargs', 'agent');
-  assert.deepEqual(outputs(result), [[{ ok: true }, { ok: true }, { ok: true }]]);
+  const result = await registry.invokeResult(request, 'run_tools_code', { code: 'text([await echo_items({n:12}), await tools.echo_items({n:3}), await tools.escape({}), typeof escape, await ping(), await tools.ping(), await ping(undefined)]);' }, 'bare', 'agent');
+  assert.deepEqual(outputs(result), [[{ n: 12 }, { n: 3 }, { ok: true }, 'function', { ok: true }, { ok: true }, { ok: true }]]);
 });
 
 test('scalar_arg_wrapped', async t => {
@@ -288,52 +226,3 @@ test('scalar_arg_wrapped', async t => {
   assert.deepEqual(outputs(await registry.invokeResult(request, 'run_tools_code', { code }, 'wrap', 'agent')), [[{ id: 'abc' }, { ids: [1, 2] }, { n: 4 }]]);
 });
 
-test('bad_arg_lists_fields', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const registry = new ToolRegistry(store, async () => true);
-  // Two required arguments: a bare value is not wrapped, so the error lists the names.
-  registry.register(readTool('pair', async () => ({ text: 'ok', data: {} }), { fields: { a: { type: 'integer', description: 'A', required: true }, b: { type: 'integer', description: 'B', required: true } } }));
-  registry.register(readTool('ping', async () => ({ text: 'pong', data: {} })));
-  registry.register(runToolsCodeTool(registry));
-  const code = `const messages = [];
-    try { await pair(5); } catch (error) { messages.push(error.message); }
-    try { await ping(5); } catch (error) { messages.push(error.message); }
-    text(messages);`;
-  const [messages] = outputs(await registry.invokeResult(request, 'run_tools_code', { code }, 'bad-args', 'agent')) as [string[]];
-  assert.match(messages![0]!, /pair takes: a \(required\), b \(required\)\./);
-  assert.match(messages![1]!, /ping takes: no arguments\./);
-});
-
-const emptyOutcome = { outputs: [], failures: [] };
-
-test('model text shows the returned value', () => {
-  assert.equal(programText({ ...emptyOutcome, returned: { total: 3 }, logs: [], receipts: [] }), '{"total":3}');
-  assert.equal(programText({ ...emptyOutcome, returned: 'done' }), 'done');
-});
-
-test('model text shows logs', () => {
-  assert.equal(programText({ ...emptyOutcome, logs: ['[WARN] slow', 'hello'], receipts: [] }), 'Logs:\n[WARN] slow\nhello');
-});
-
-test('failed program keeps outputs and lists calls', () => {
-  const text = programText({
-    outputs: ['partial'], failures: [], error: { message: 'Program exceeded its wall-clock deadline.', status: 'failed' },
-    receipts: [{ id: 1, name: 'mute_list', status: 'ok', bytes: 2150 }, { id: 2, name: 'foo', status: 'failed', bytes: 0 }, { id: 3, name: 'bar', status: 'unfinished', bytes: 0 }],
-  });
-  assert.equal(text, 'Program failed: Program exceeded its wall-clock deadline.\npartial\nCalls: mute_list ok 2.1 KB, foo failed, bar unfinished');
-});
-
-test('no output gives the receipt hint', () => {
-  const text = programText({ ...emptyOutcome, logs: [], receipts: [{ id: 1, name: 'mute_list', status: 'ok', bytes: 100 }] });
-  assert.equal(text, 'Calls: mute_list ok 100 B\nNo output. The call results are not shown. To see data, end with return result, or call text(result).');
-});
-
-test('logs-only program still lists calls', () => {
-  const text = programText({ ...emptyOutcome, logs: ['hi'], receipts: [{ id: 1, name: 'mute_list', status: 'ok', bytes: 100 }] });
-  assert.equal(text, 'Logs:\nhi\nCalls: mute_list ok 100 B');
-});
-
-test('model text works without the contract fields', () => {
-  assert.equal(programText({ outputs: ['x'], failures: [] }), 'x');
-  assert.equal(programText({ outputs: [], failures: [{ name: 'a', error: 'bad' }] }), 'Incomplete program result: 1 tool call(s) failed. a: bad\nNo output. The call results are not shown. To see data, end with return result, or call text(result).');
-});

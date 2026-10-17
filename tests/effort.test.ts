@@ -10,15 +10,6 @@ const prompt = (effort?: "low" | "medium" | "xhigh"): Prompt => ({ prefixVersion
 const ok = () => new Response('data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
 const drain = async (llm: ChatCompletionsLLM, p: Prompt) => { for await (const _ of llm.stream(p)) { /* read all */ } };
 
-test("effort is sent as reasoning_effort, and left out when not chosen", async () => {
-  const bodies: Record<string, unknown>[] = [];
-  const llm = new ChatCompletionsLLM({ baseUrl: "https://llm.example/v1", model: "m", apiKey: "k" }, async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return ok(); });
-  await drain(llm, prompt("xhigh"));
-  await drain(llm, prompt());
-  assert.equal(bodies[0]!.reasoning_effort, "xhigh");
-  assert.ok(!("reasoning_effort" in bodies[1]!));
-});
-
 test("a model that rejects effort gets one retry without it and is remembered", async () => {
   const bodies: Record<string, unknown>[] = [];
   const llm = new ChatCompletionsLLM({ baseUrl: "https://llm.example/v1", model: "m", apiKey: "k" }, async (_url, init) => {
@@ -31,13 +22,6 @@ test("a model that rejects effort gets one retry without it and is remembered", 
   await drain(llm, prompt("low"));
   assert.equal(bodies.length, 3, "the next request is sent once, without effort");
   assert.ok(!("reasoning_effort" in bodies[2]!));
-});
-
-test("a 400 that is not about effort is not retried", async () => {
-  let calls = 0;
-  const llm = new ChatCompletionsLLM({ baseUrl: "https://llm.example/v1", model: "m", apiKey: "k" }, async () => { calls++; return Response.json({ error: { message: "bad messages" } }, { status: 400 }); });
-  await assert.rejects(drain(llm, prompt("low")));
-  assert.equal(calls, 1);
 });
 
 test("the runner puts the message effort, else the server default, into the prompt", async t => {

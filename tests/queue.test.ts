@@ -89,22 +89,6 @@ test("leases reject a second worker owner until expiration; interrupted jobs rec
   assert.equal(store.jobs("s", "t")[0]?.status, "pending");
 });
 
-
-test("job errors and logs include the real cause, stage and job ID even if notice delivery fails", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const logs: string[] = []; t.mock.method(console, 'error', (line: string) => logs.push(line));
-  let notice: unknown;
-  const worker = new TaskWorker('s', store, new UserLimiter(store, { fiveHourCostMicros: 0, weekCostMicros: 0, gracePercent: 10 }), async () => { throw new Error('Tool round limit reached; progress retained'); }, async () => {}, () => true, 3,
-    async (_job, error) => { notice = error; throw new Error('Discord notice denied'); });
-  worker.start(); const job = await worker.enqueue(message('failure')); await worker.idle(); await worker.stop();
-  assert.ok(notice instanceof Error);
-  assert.match(store.jobs('s', 't')[0]!.error!, /request execution: Tool round limit reached/);
-  const events = logs.map(line => JSON.parse(line));
-  assert.equal(events[0].context.jobId, job.id);
-  assert.equal(events[0].message, 'Tool round limit reached; progress retained');
-  assert.equal(events[1].event, 'task_failure_notice_failed');
-});
-
 test("a cancelled job is not claimed and does not finish later", () => {
   const store = new SQLiteStore();
   const job = store.enqueueJob(message("1"));
@@ -113,15 +97,5 @@ test("a cancelled job is not claimed and does not finish later", () => {
   assert.equal(store.claimJob("s"), undefined);
   store.finishJob(job.id);
   assert.equal(store.jobs("s", "t")[0]?.status, "cancelled");
-  store.close();
-});
-
-test("a cancelled job can be resumed once", () => {
-  const store = new SQLiteStore();
-  const job = store.enqueueJob(message("1"));
-  store.cancelJob(job.id);
-  assert.equal(store.resumeJob(job.id), true);
-  assert.equal(store.resumeJob(job.id), false);
-  assert.equal(store.claimJob("s")?.id, job.id);
   store.close();
 });

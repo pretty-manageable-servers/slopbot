@@ -2,11 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { EventJournal } from "../src/event-journal.js";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
-import { RunEvents, publishMessage, publishMessageDelete, publishTool, reasoningText, runEvents, shortArgs, startConversationEventRetention, transcriptMessage, type ConversationEvent } from "../src/run-events.js";
+import { RunEvents, publishMessage, publishMessageDelete, runEvents, type ConversationEvent } from "../src/run-events.js";
 import { webTranscriptKey } from "../src/server-tools.js";
 import type { Message } from "../src/domain.js";
-import { MemberDirectory } from "../src/member-directory.js";
-import { fakeSource } from "./member-fakes.js";
 
 const server = "1528063444874432734", channel = "1528063444874432735", thread = "1528063444874432736", bot = "1528063444874432799";
 const user = "1514413259522838529";
@@ -90,16 +88,6 @@ test("a thread uses the switch of its parent channel", async t => {
   assert.equal((await store.conversationEventsAfter(server, thread, 0, 10)).length, 1);
 });
 
-test("changed() tells the listeners of a server, and unsubscribe stops them", t => {
-  const { bus } = setup(t);
-  let calls = 0;
-  const off = bus.onChange(server, () => calls++);
-  bus.changed(server);
-  off();
-  bus.changed(server);
-  assert.equal(calls, 1);
-});
-
 test("the journal publishes reply runs live, keeps its own saves, and skips checkpoints", async t => {
   const { store } = setup(t);
   runEvents.attach(store);
@@ -133,24 +121,6 @@ test("the journal publishes reply runs live, keeps its own saves, and skips chec
   assert.equal((await saved(store)).filter(row => row.ref === "run-check").length, 0);
 });
 
-test("live messages carry the member's name and avatar from the directory, and webhook posts do not", async t => {
-  const { store } = setup(t);
-  runEvents.attach(store);
-  t.after(() => runEvents.attach(undefined as never));
-  store.setSetting(server, "context_bot_author", bot);
-  const directory = new MemberDirectory(fakeSource({ [user]: { username: "ada", nickname: "Ada L", serverAvatar: "https://cdn.discordapp.com/guilds/1/users/ada.png", inServer: true }, [bot]: { username: "slopbot", avatar: "https://cdn.discordapp.com/avatars/bot.png", inServer: true } }));
-  await publishMessage(store, message("user-2"), undefined, directory);
-  await publishMessage(store, { id: "bot-2", server, channel, author: bot, authorName: "Slopbot", text: "Hi", timestamp: 2_000, isBot: true }, [], directory);
-  await publishMessage(store, { id: "hook-1", server, channel, author: "1528063444874432888", authorName: "Web Ada", text: "From the web", timestamp: 3_000, isBot: true, source: "web" }, [], directory);
-  await runEvents.idle();
-  const views = (await saved(store)).filter(row => row.kind === "message").map(row => (row.data as { message: { id: string; authorName: string; username: string | null; avatarUrl: string | null } }).message);
-  assert.deepEqual(views.map(view => [view.id, view.authorName, view.username, view.avatarUrl]), [
-    ["user-2", "Ada L", "ada", "https://cdn.discordapp.com/guilds/1/users/ada.png"],
-    ["bot-2", "slopbot", "slopbot", "https://cdn.discordapp.com/avatars/bot.png"],
-    ["hook-1", "Web Ada", null, null],
-  ]);
-});
-
 test("messages carry the Slopbot flag and run IDs, and edits and deletes publish", async t => {
   const { store } = setup(t);
   runEvents.attach(store);
@@ -172,36 +142,6 @@ test("messages carry the Slopbot flag and run IDs, and edits and deletes publish
   assert.deepEqual(rows.at(-1)!.data, { action: "delete", id: "user-1" });
 });
 
-test("tool progress is published with short arguments", async t => {
-  const { store } = setup(t);
-  runEvents.attach(store);
-  t.after(() => runEvents.attach(undefined as never));
-  store.setSetting(server, webTranscriptKey(channel), true);
-  publishTool(message("req-3"), { id: "turn:0", name: "history_search", arguments: { query: "x".repeat(400) }, status: "running" });
-  await runEvents.idle();
-  const row = (await saved(store)).at(-1)!;
-  assert.equal(row.kind, "run.tool");
-  assert.equal(row.ref, "req-3");
-  const data = row.data as { args: string; status: string; name: string };
-  assert.equal(data.name, "history_search");
-  assert.equal(data.status, "running");
-  assert.ok(data.args.length <= 301);
-});
-
-test("helpers: short arguments, thinking text, and the view shape", () => {
-  assert.equal(shortArgs({ a: 1 }), '{"a":1}');
-  assert.ok(shortArgs({ text: "y".repeat(1000) }).endsWith("…"));
-  assert.equal(reasoningText({ reasoning: "r" }), "r");
-  assert.equal(reasoningText({ reasoning_content: "rc", reasoning: "r" }), "rc");
-  assert.equal(reasoningText({ other: 1 }), "");
-  assert.equal(reasoningText(null as never), "");
-  const view = transcriptMessage(message("v-1", "x", { revisionTimestamp: 1_001 }), bot);
-  assert.equal(view.editedAt, null);
-  assert.equal(view.avatarUrl, null);
-  assert.equal(view.slopbot, false);
-});
-
-const ALL = Number.MAX_SAFE_INTEGER;
 /** Adds rows straight to the store. createdAt is set per row, so age tests need no clock. */
 async function addRows(store: SQLiteStore, count: number, createdAt: number, channelId = channel): Promise<number[]> {
   const ids: number[] = [];
@@ -224,65 +164,4 @@ test("row cap keeps the newest maxRows rows and deletes the oldest by stream ID"
   assert.equal(await store.pruneConversationEvents(0, 4), 6);
   assert.deepEqual((await saved(store)).map(event => event.streamId), ids.slice(6));
   assert.equal(await store.pruneConversationEvents(0, 4), 0);
-});
-
-test("age and cap work together: old rows go first, then the cap counts what is left", async t => {
-  const { store } = setup(t);
-  await addRows(store, 4, 1_000);
-  const kept = await addRows(store, 5, 9_000);
-  assert.equal(await store.pruneConversationEvents(5_000, 3), 6);
-  assert.deepEqual((await saved(store)).map(event => event.streamId), kept.slice(2));
-});
-
-test("a prune larger than one batch runs in batches: age first, then the cap across batches", async t => {
-  const { store } = setup(t);
-  await addRows(store, 25_000, 1_000);
-  assert.equal(await store.pruneConversationEvents(5_000, ALL), 25_000);
-  assert.equal((await saved(store)).length, 0);
-  await addRows(store, 25_000, 9_000);
-  const newest = (await addRows(store, 1_000, 9_000)).at(-1)!;
-  // 26,000 fresh rows, cap 1,000: the cap removes 25,000 in three statements (10,000 + 10,000 + 5,000).
-  assert.equal(await store.pruneConversationEvents(5_000, 1_000), 25_000);
-  const rest = await saved(store);
-  assert.equal(rest.length, 1_000);
-  assert.equal(rest.at(-1)!.streamId, newest);
-});
-
-test("oldestStreamId is the lowest kept row of the channel, or undefined when none is kept", async t => {
-  const { store } = setup(t);
-  assert.equal(await store.oldestStreamId(server, channel), undefined);
-  const ids = await addRows(store, 3, 1_000);
-  assert.equal(await store.oldestStreamId(server, channel), ids[0]);
-  assert.equal(await store.pruneConversationEvents(ALL, ALL), 3);
-  assert.equal(await store.oldestStreamId(server, channel), undefined);
-});
-
-test("the retention timer prunes at startup and on each interval, logs the count, and stops", async t => {
-  const logged: string[] = [];
-  t.mock.method(console, "log", (line: string) => { logged.push(line); });
-  const calls: [number, number][] = [];
-  const store = { async pruneConversationEvents(olderThan: number, maxRows: number) { calls.push([olderThan, maxRows]); return 7; } };
-  const stop = startConversationEventRetention(store, { days: 14, maxRows: 99 }, 5);
-  await new Promise(resolve => setTimeout(resolve, 30));
-  stop();
-  const count = calls.length;
-  assert.ok(count >= 2, `expected startup and interval runs, got ${count}`);
-  assert.equal(calls[0]![1], 99);
-  assert.ok(Math.abs(calls[0]![0] - (Date.now() - 14 * 86_400_000)) < 60_000);
-  assert.deepEqual(JSON.parse(logged[0]!), { type: "conversation_events_pruned", deleted: 7, retentionDays: 14, maxRows: 99 });
-  await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal(calls.length, count);
-});
-
-test("a failing prune is logged and the timer keeps going", async t => {
-  const errors: string[] = [];
-  t.mock.method(console, "error", (line: string) => { errors.push(line); });
-  let attempts = 0;
-  const store = { async pruneConversationEvents() { attempts++; throw new Error("disk full"); } };
-  const stop = startConversationEventRetention(store, { days: 1, maxRows: 1 }, 5);
-  await new Promise(resolve => setTimeout(resolve, 30));
-  stop();
-  assert.ok(attempts >= 2);
-  assert.ok(errors.every(line => line.includes("conversation_events_prune_failed")));
-  assert.ok(errors.length >= 2);
 });

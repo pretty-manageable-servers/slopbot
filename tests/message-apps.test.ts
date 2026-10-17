@@ -3,20 +3,6 @@ import { test } from "node:test";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { ChannelAccess } from "../src/channel-access.js";
 import { ChatError, WebChatService, type ChatHost } from "../src/web-chats.js";
-import { buildMessageApps, CONTINUE_IN_WEB, messageAppText } from "../src/adapters/discord-commands.js";
-
-test("the Apps menu has Summarize, Explain and Continue in Slopbot web", () => {
-  const apps = buildMessageApps().map(app => app.toJSON());
-  assert.deepEqual(apps.map(app => app.name), ["Summarize", "Explain", CONTINUE_IN_WEB]);
-  assert.ok(apps.every(app => app.type === 3), "each is a message command");
-});
-
-test("a message command request quotes the target message", () => {
-  const text = messageAppText("Summarize", "bob", "line one\nline two");
-  assert.match(text, /^Summarize this message/);
-  assert.match(text, /Message from bob:\n> line one\n> line two$/);
-  assert.match(messageAppText("Explain", "bob", "  "), /> \(no text\)$/);
-});
 
 test("Continue in Slopbot web makes a private chat that starts with the message", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());

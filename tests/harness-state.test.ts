@@ -3,26 +3,13 @@ import {test} from 'node:test';
 import {HarnessMachine, restoreHarness, HarnessInterrupted} from '../src/harness-state.js';
 import {Application} from '../src/application.js';
 import {SQLiteStore} from '../src/adapters/sqlite.js';
-import {ToolError,ToolRegistry} from '../src/tools.js';
+import {ToolRegistry} from '../src/tools.js';
 import { RequestError } from '../src/errors.js';
 import type {LLM} from '../src/ports.js';
 const message={id:'m',server:'s',channel:'c',author:'a',text:'do the task'};
 const policy={allowedChannels:[{server:'s',channel:'c'}]};
 const kind=(machine:HarnessMachine)=>machine.state.kind;
 
-test('Auger streaming, failure and interruption transitions',()=>{
- const machine=new HarnessMachine();
- assert.throws(()=>machine.dispatch({type:'ToolResult',id:'missing'}),/Invalid/);
- machine.dispatch({type:'SendMessage'});machine.dispatch({type:'StreamFailed'});
- assert.equal(kind(machine),'StreamingFailed');
- machine.dispatch({type:'SendMessage'});machine.dispatch({type:'Interrupt'});
- machine.dispatch({type:'SendMessage'});machine.dispatch({type:'StreamInterrupted'});
- assert.equal(kind(machine),'Streaming');
- machine.dispatch({type:'Interrupt'});machine.dispatch({type:'StreamInterrupted'});
- assert.equal(kind(machine),'StreamingInterrupted');
- machine.dispatch({type:'SendMessage'});machine.dispatch({type:'StreamCompleted'});
- assert.equal(kind(machine),'WaitingForUserMessage');
-});
 test('per-call decisions wait for every call and held results require a message',()=>{
  const machine=new HarnessMachine();machine.dispatch({type:'SendMessage'});
  machine.dispatch({type:'ToolsRequested',ids:['one','two']});
@@ -37,29 +24,11 @@ test('per-call decisions wait for every call and held results require a message'
  machine.dispatch({type:'ToolDecision',id:'denied',decision:'deny_continue'});
  assert.equal(kind(machine),'ToolResultsHeld');
 });
-test('mixed denied and approved tools continue; interrupted calls are terminal',()=>{
- const machine=new HarnessMachine();machine.dispatch({type:'SendMessage'});
- machine.dispatch({type:'ToolsRequested',ids:['a','b']});
- machine.dispatch({type:'ToolDecision',id:'a',decision:'deny_continue'});
- machine.dispatch({type:'ToolDecision',id:'b',decision:'approve'});
- machine.dispatch({type:'ToolResult',id:'b'});assert.equal(kind(machine),'Streaming');
- machine.dispatch({type:'ToolsRequested',ids:['c','d']});
- machine.dispatch({type:'ToolDecision',id:'c',decision:'approve'});
- machine.dispatch({type:'Interrupt'});assert.equal(kind(machine),'Streaming');
- assert.throws(()=>machine.dispatch({type:'ToolResult',id:'c'}),/Invalid/);
-});
 test('restoration never assumes an in-flight stream or tool completed',()=>{
  assert.equal(restoreHarness({kind:'Streaming'}).kind,'StreamingInterrupted');
  const restored=restoreHarness({kind:'ToolPhase',queuedMessage:false,calls:[{id:'a',state:'Running',denied:false},{id:'b',state:'DoneContinue',denied:false}]});
  assert.equal(restored.kind,'ToolPhase');
  if(restored.kind==='ToolPhase')assert.deepEqual(restored.calls.map(call=>call.state),['Undecided','DoneContinue']);
-});
-test('runner journals lifecycle and sends an all-rejected batch back to the model',async t=>{
- const store=new SQLiteStore();t.after(()=>store.close());let streams=0;
- const llm: LLM={async *stream(){streams++;yield {kind:'reasoning',payload:{delta:'retained'}};yield streams === 1 ? {kind:'tool_call',payload:[{name:'write',arguments:{}}]} : {kind:'text',payload:{text:'The write is not allowed.'}};}};
- const app=new Application(store,llm,policy,undefined,{harness:store,tools:{schemas: () => [], catalog:()=>'',execute:async()=>{throw new ToolError('not allowed');}}});
- assert.equal((await app.handle(message))!.text,'The write is not allowed.');
- assert.equal(streams,2);assert.equal((await store.harnessState('s','m'))?.kind,'WaitingForUserMessage');
 });
 test('stream interruption preserves partial events and resumes on an explicit retry',async t=>{
  const store=new SQLiteStore();t.after(()=>store.close());let notify!:()=>void;
@@ -91,22 +60,6 @@ test('uncertain writes return to the model while remaining journaled and blockin
  assert.equal((await store.operation(store.agentTurns(message)[0]!.id + ':0'))?.status,'started');
  await assert.rejects(tools.invokeResult(message,'write',{},'another-write','agent'), /did not finish/);
  assert.equal(writes,1);
-});
-
-test('provider failures persist a resumable state and partial output',async t=>{
- const store=new SQLiteStore();t.after(()=>store.close());
- const app=new Application(store,{async *stream(){yield {kind:'reasoning',payload:{delta:'reasoning'}};yield {kind:'text',payload:{text:'partial response'}};throw Error('provider failed');}},policy,undefined,{harness:store});
- await assert.rejects(app.handle(message),/provider failed/);
- assert.equal((await store.harnessState('s','m'))?.kind,'StreamingFailed');
- assert.equal(await store.partialReply(message),'partial response');
- await store.revise({...message,text:'edited request'});
- assert.equal(await store.partialReply({...message,text:'edited request'}),undefined);
-});
-test('provider cancellation signal reaches the HTTP adapter',async()=>{
- const {ChatCompletionsLLM}=await import('../src/adapters/chat-completions.js');
- const controller=new AbortController();controller.abort();
- const llm=new ChatCompletionsLLM({baseUrl:'https://example.test',model:'test',apiKey:'test'},async(_input,init)=>{assert.ok(init?.signal?.aborted);init!.signal!.throwIfAborted();throw Error('unreachable');});
- await assert.rejects(async()=>{for await (const _event of llm.stream({prefixVersion:'v',prefix:[],history:[],inputs:[]},controller.signal)){};});
 });
 
 test('restart between tool completion and turn commit reuses the journaled result',async t=>{

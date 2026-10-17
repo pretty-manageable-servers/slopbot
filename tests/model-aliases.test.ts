@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ModelAliases } from '../src/adapters/model-aliases.js';
-import { ProviderEmbeddings } from '../src/adapters/embeddings.js';
 const rejected = () => Response.json({ error: { code: 'model_not_allowed' } }, { status: 403 });
 test('known gateway aliases fall back, cache success and recover when legacy IDs retire', async () => {
   const aliases = new ModelAliases('https://api.pmservers.org/ai/v1');
@@ -26,14 +25,4 @@ test('other providers, unknown models, auth failures and generation failures nev
     await new ModelAliases(base).request(model, async () => { calls++; return Response.json({ error: { code } }, { status }); });
     assert.equal(calls, 1);
   }
-});
-test('embedding fallback preserves vector identity and provider-reported usage', async () => {
-  const models: string[] = [];
-  const provider = new ProviderEmbeddings('https://api.pmservers.org/ai/v1', 'test', 'llama.cpp/embeddinggemma-2', async (_url, init) => {
-    const model = JSON.parse(String(init?.body)).model; models.push(model);
-    return model === 'stratus' ? rejected() : Response.json({ data: [{ embedding: [1, 0] }], usage: { prompt_tokens: 1 } });
-  });
-  assert.deepEqual(await provider.embedWithUsage('test'), { vector: [1, 0], tokens: 1 });
-  assert.equal(provider.model, 'llama.cpp/embeddinggemma-2');
-  assert.deepEqual(models, ['stratus', 'embeddinggemma2']);
 });

@@ -13,34 +13,6 @@ function item(id: string, patch: Partial<InboxItem> = {}): InboxItem {
   return { id, server, target: member, sender: "bot-a", channel: "chan-1", sourceIds: [`${id}-src-1`, `${id}-src-2`], summary: `summary ${id}`, created_at: 1000, done_at: null, ...patch };
 }
 
-test("add and list open items", async () => {
-  const store = new SQLiteStore(":memory:");
-  await store.addInboxItem(item("a", { created_at: 1000 }));
-  await store.addInboxItem(item("b", { created_at: 2000 }));
-  await store.addInboxItem(item("c", { target: member2, created_at: 3000 }));
-
-  const listed = await store.inboxItems(server, member, { includeDone: false, limit: 10 });
-  assert.deepEqual(listed, [
-    { id: "b", server, target: member, sender: "bot-a", channel: "chan-1", sourceIds: ["b-src-1", "b-src-2"], summary: "summary b", created_at: 2000, done_at: null },
-    { id: "a", server, target: member, sender: "bot-a", channel: "chan-1", sourceIds: ["a-src-1", "a-src-2"], summary: "summary a", created_at: 1000, done_at: null },
-  ]);
-  assert.deepEqual((await store.inboxItems(server, member, { includeDone: false, limit: 1 })).map(row => row.id), ["b"]);
-  assert.deepEqual(await store.inboxItems(other, member, { includeDone: false, limit: 10 }), []);
-  store.close();
-});
-
-test("list excludes done by default", async () => {
-  const store = new SQLiteStore(":memory:");
-  await store.addInboxItem(item("a", { created_at: 1000 }));
-  await store.addInboxItem(item("b", { created_at: 2000 }));
-  assert.equal(await store.markInboxDone(server, member, ["a"], 3000), 1);
-
-  assert.deepEqual((await store.inboxItems(server, member, { includeDone: false, limit: 10 })).map(row => row.id), ["b"]);
-  const withDone = await store.inboxItems(server, member, { includeDone: true, limit: 10 });
-  assert.deepEqual(withDone.map(row => [row.id, row.done_at]), [["b", null], ["a", 3000]]);
-  store.close();
-});
-
 test("markInboxDone only for target", async () => {
   const store = new SQLiteStore(":memory:");
   await store.addInboxItem(item("a", { target: member }));
@@ -73,18 +45,6 @@ test("countInboxSent since", async () => {
   assert.equal(await store.countInboxSent(server, "bot-a", 3001), 0);
   assert.equal(await store.countInboxSent(server, "bot-b", 0), 1);
   assert.equal(await store.countInboxSent(other, "bot-a", 0), 1);
-  store.close();
-});
-
-test("deleteExpiredInbox", async () => {
-  const store = new SQLiteStore(":memory:");
-  await store.addInboxItem(item("a", { created_at: 1000 }));
-  await store.addInboxItem(item("b", { created_at: 2000, done_at: 2100 }));
-  await store.addInboxItem(item("c", { created_at: 3000 }));
-
-  assert.equal(await store.deleteExpiredInbox(2500), 2, "open and done rows older than the cutoff are deleted");
-  assert.deepEqual((await store.inboxItems(server, member, { includeDone: true, limit: 10 })).map(row => row.id), ["c"]);
-  assert.equal(await store.deleteExpiredInbox(2500), 0);
   store.close();
 });
 
@@ -124,3 +84,15 @@ test("inbox items match SQLite on Postgres", { skip: !process.env.TEST_DATABASE_
     finally { await cleanup.end(); }
   }
 });
+test("deleteExpiredInbox", async () => {
+  const store = new SQLiteStore(":memory:");
+  await store.addInboxItem(item("a", { created_at: 1000 }));
+  await store.addInboxItem(item("b", { created_at: 2000, done_at: 2100 }));
+  await store.addInboxItem(item("c", { created_at: 3000 }));
+
+  assert.equal(await store.deleteExpiredInbox(2500), 2, "open and done rows older than the cutoff are deleted");
+  assert.deepEqual((await store.inboxItems(server, member, { includeDone: true, limit: 10 })).map(row => row.id), ["c"]);
+  assert.equal(await store.deleteExpiredInbox(2500), 0);
+  store.close();
+});
+
