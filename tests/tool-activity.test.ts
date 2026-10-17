@@ -88,7 +88,7 @@ test('progress edits one message per request and removes it after delivery', asy
   await progress.update('request', {id:'1',name:'web_search',status:'completed'},send);
   await progress.update('other', {id:'2',name:'index',status:'running'},send);
   assert.equal(sent.length,2);
-  assert.deepEqual(edited,['<a:slopbot_pulse:1559390627152531586> Watering the petals…\n🔎 Web search × 1\n-# now: 🔎 web_search']);
+  assert.deepEqual(edited,['<a:slopbot_pulse:1559390627152531586> Baking…\n🔎 Web search × 1\n-# now: 🔎 web_search']);
   await progress.finish('request');
   assert.equal(deleted,1);
   await progress.update('other', {id:'2',name:'index',status:'completed'},send);

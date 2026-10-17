@@ -3,10 +3,17 @@ export const slopbotEmoji = {
   bloom: "<a:slopbot_bloom:1559390625214898340>",
 };
 export const funLines = [
-  "Blooming…", "Pollinating…", "Watering the petals…", "Planting ideas…", "Unfurling…",
-  "Photosynthesizing…", "Growing roots…", "Catching sunlight…", "Sprouting…", "Gathering nectar…",
-  "Turning toward light…", "Spreading seeds…", "Opening up…", "Drinking rain…", "Feeling the breeze…",
-  "Making pollen…", "Tending the garden…", "Stretching stems…", "Rooting around…", "Growing taller…",
+  "Accomplishing…", "Actualizing…", "Baking…", "Brewing…", "Calculating…",
+  "Cerebrating…", "Churning…", "Clauding…", "Coalescing…", "Cogitating…",
+  "Computing…", "Conjuring…", "Considering…", "Cooking…", "Crafting…",
+  "Creating…", "Crunching…", "Deliberating…", "Determining…", "Doing…",
+  "Finagling…", "Forging…", "Forming…", "Generating…", "Hatching…",
+  "Herding…", "Honking…", "Hustling…", "Ideating…", "Inferring…",
+  "Manifesting…", "Marinating…", "Moseying…", "Mulling…", "Mustering…",
+  "Musing…", "Noodling…", "Percolating…", "Pondering…", "Processing…",
+  "Puttering…", "Reticulating…", "Ruminating…", "Schlepping…", "Shucking…",
+  "Simmering…", "Smooshing…", "Spinning…", "Stewing…", "Synthesizing…",
+  "Thinking…", "Transmuting…", "Vibing…", "Working…",
 ];
 const special: Record<string, { emoji: string; group?: [string, string] }> = {
   web_search: { emoji: "🔎", group: ["web search", "web searches"] },
