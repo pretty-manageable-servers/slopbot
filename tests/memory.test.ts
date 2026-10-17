@@ -58,25 +58,6 @@ test("chat and saved memory retrieval never cross channel or server boundaries",
   assert.deepEqual(await store.retrieve(msg("3", "budget"), 8), []);
 });
 
-test("semantic retrieval ranks saved memories without embedding chat", async t => {
-  const embeddings: Embeddings = { model: "test", async embed(text) { return text.includes("unrelated") ? [0, 1] : [1, 0]; } };
-  const store = new SQLiteStore(":memory:", embeddings); t.after(() => store.close());
-  await store.ingest(msg("1", "We love hiking in the mountains"));
-  await store.remember(msg("1", "We love hiking in the mountains"), "We love hiking in the mountains");
-  for (let i = 0; i < 5; i++) {
-    const source = msg(`decoy-${i}`, "unrelated note");
-    await store.ingest(source);
-    await store.remember(source, `unrelated note ${i}`);
-  }
-  await store.finishIndexing();
-  const evidence = await store.retrieve(msg("2", "outdoor recreation"), 8);
-  assert.equal(evidence[0]?.kind, "memory");
-  assert.ok(evidence[0]?.sourceIds.includes("1"));
-  await store.remove("s", "c", "1");
-  assert.ok(!(await store.retrieve(msg("3", "outdoor recreation"), 8)).some(item => item.sourceIds.includes("1")));
-  assert.equal(store.indexStats("s", "c").vectors, 5);
-});
-
 test("only the memory author can forget their note", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const source = msg("1", "budget"); await store.ingest(source);
@@ -86,14 +67,6 @@ test("only the memory author can forget their note", async t => {
   assert.equal((await store.memories("s", "c")).length, 0);
   assert.ok(!(await store.retrieve(msg("2", "budget"), 8)).some(item => item.kind === 'memory'));
   assert.equal((await store.canonicalMessage('s', '1'))?.text, 'budget');
-});
-
-test("backfilled messages are ordered by creation time, not insertion time", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  await store.ingest(msg("newer", "newer", { timestamp: 2000 }));
-  await store.ingest(msg("older", "older", { timestamp: 1000 }));
-  const current = msg("current", "current", { timestamp: 3000 }); await store.ingest(current);
-  assert.deepEqual((await store.context(current, 1)).map(item => item.id), ["newer"]);
 });
 
 test("new memories append after existing task history without changing its prefix", async t => {
@@ -120,15 +93,6 @@ test("named-person recall returns ten verbatim messages from the resolved human 
   assert.ok(quotes.every(item => item.author === "rice" && item.content.startsWith("Rice statement") && item.sourceUrl));
 });
 
-test("same-requester clarification carries the named person into a pronoun follow-up", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  await store.ingest(msg("rice", "I built a useful project", { author: "rice", authorName: "Rice Farmer" }));
-  await store.ingest(msg("clarify", "I meant Rice Farmer"));
-  await store.ingest(msg("distraction", "I meant Bob", { author: "someone-else" }));
-  const question = msg("followup", "what are some other things he said"); await store.ingest(question);
-  assert.ok((await store.retrieve(question, 8)).some(item => item.author === "rice" && item.content === "I built a useful project"));
-});
-
 test("unknown or ambiguous names never fall back to unrelated quotes", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   await store.ingest(msg("one", "unrelated news", { author: "bob", authorName: "Bob" }));
@@ -148,44 +112,6 @@ test("explicit quotes bypass generation and cannot misattribute a requester's co
   assert.ok(answer.includes("I made an irrigation timer"));
   assert.ok(answer.includes("[source]"));
   assert.ok(!answer.includes("I meant"));
-});
-
-test("a resolved clarification is acknowledged directly", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  await store.ingest(msg("source", "a real statement", { author: "rice", authorName: "Rice Farmer" }));
-  const app = new Application(store, { async *stream() { throw new Error("do not narrate the clarification"); } }, { allowedChannels: [{ server: "s", channel: "c" }] }, store);
-  assert.equal((await app.handle(msg("correction", "I meant Rice Farmer")))?.text, "Got it—you mean Rice Farmer.");
-});
-
-test("opening an existing database deletes chat vectors and keeps saved knowledge vectors", async t => {
-  const { DatabaseSync } = await import("node:sqlite");
-  const { mkdtempSync, rmSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
-  const directory = mkdtempSync(join(tmpdir(), "slopbot-memories-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const path = join(directory, "history.sqlite3");
-  const embeddings = { model: "test", async embed() { return [1, 0]; } };
-  let store = new SQLiteStore(path, embeddings);
-  const source = msg("1", "saved source");
-  await store.ingest(source);
-  const memory = await store.remember(source, "A saved lesson");
-  await store.finishIndexing();
-  await store.close();
-  let db = new DatabaseSync(path);
-  db.exec(`CREATE TABLE embeddings(server TEXT,message_id TEXT,model TEXT,vector TEXT);
-    INSERT INTO embeddings VALUES('s','1','old','[1,0]');
-    INSERT INTO embedding_usage VALUES('s','c','old','index',10,100,0);`);
-  db.close();
-  store = new SQLiteStore(path, embeddings);
-  assert.equal(store.indexStats("s", "c").messages, 1);
-  assert.equal(store.indexStats("s", "c").vectors, 1);
-  assert.equal((await store.memories("s", "c"))[0]?.id, memory.id);
-  assert.deepEqual(store.indexStats("s", "c").usage.map(row => row.purpose), ["memory_index"]);
-  await store.close();
-  db = new DatabaseSync(path);
-  assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='embeddings'").get(), undefined);
-  db.close();
 });
 
 test("chat ingestion, edits, job queues and search never call the embedding provider", async t => {

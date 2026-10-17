@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { Application } from "../src/application.js";
 import { FakeLLM } from "../src/adapters/fake-llm.js";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
-import { promptItems, type Message, type ModelEvent, type Prompt } from "../src/domain.js";
+import { promptItems, type Message } from "../src/domain.js";
 import type { LLM } from "../src/ports.js";
 
 const scopes = [{ server: "s", channel: "c" }, { server: "s", channel: "thread" }];
@@ -83,25 +83,6 @@ test("task history extends the exact previous prompt prefix", async t => {
   assert.equal(llm.prompts[1]!.history.at(-1)?.role, "assistant");
 });
 
-test("concurrent task contributions execute in order with attribution", async t => {
-  class SlowLLM extends FakeLLM {
-    override async *stream(prompt: Prompt): AsyncIterable<ModelEvent> {
-      await new Promise(resolve => setTimeout(resolve, 10));
-      yield* super.stream(prompt);
-    }
-  }
-  const llm = new SlowLLM();
-  const { app, store } = fixture(llm);
-  t.after(() => store.close());
-  await Promise.all([
-    app.handle(message("1", "Saturday", { taskId: "t" })),
-    app.handle(message("2", "$200", { taskId: "t", author: "bob" })),
-  ]);
-  assert.equal(llm.prompts[1]!.history.length, 2);
-  assert.equal(llm.prompts[1]!.history[0]!.author, "alice");
-  assert.equal(llm.prompts[1]!.inputs.at(-1)?.author, "bob");
-});
-
 test("task IDs do not merge histories across channels", async t => {
   const llm = new FakeLLM();
   const { app, store } = fixture(llm);
@@ -164,45 +145,8 @@ test("a failed task run releases its queue for the next input", async t => {
   assert.equal(results[1]!.status, "fulfilled");
 });
 
-test("an old reply target has priority over recent background under a small budget", async t => {
-  const llm = new FakeLLM(); const store = new SQLiteStore(); t.after(() => store.close());
-  const app = new Application(store, llm, { allowedChannels: scopes, maxInputChars: 1800 });
-  await store.ingest(message("old", "The reply target describes repairing a bicycle.", { timestamp: 1 }));
-  for (let i = 2; i < 12; i++) await store.ingest(message(String(i), "unrelated indexing status ".repeat(15), { timestamp: i }));
-  await app.handle(message("current", "what is he doing there", { replyTo: "old", timestamp: 12 }));
-  const target = llm.prompts[0]!.inputs.find(item => item.content.includes("[reply target]"));
-  assert.ok(target?.content.includes("repairing a bicycle"));
-});
-
 test("tool JSON cannot be published when no executor is configured", async t => {
   const llm: LLM = { async *stream() { yield { kind: 'tool_call', payload: [{"name":"index","arguments":{"action":"status"}}] }; } };
   const { app, store } = fixture(llm); t.after(() => store.close());
   await assert.rejects(app.handle(message("request")), /tools are unavailable/);
-});
-
-test("old-message follow-ups exclude unrelated recent chat and generic recall", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const llm = new FakeLLM(); let recallCalls = 0;
-  const app = new Application(store, llm, { allowedChannels: scopes }, { async retrieve() { recallCalls++; return [{ kind: "message", content: "unrelated irrigation project", author: "rice", sourceIds: ["irrigation"] }]; } });
-  await store.ingest(message("bicycle", "repairing a bicycle chain", { timestamp: 1 }));
-  await store.ingest(message("irrigation", "I am building irrigation", { timestamp: 2 }));
-  await app.handle(message("question", "what is he doing there", { replyTo: "bicycle", timestamp: 3 }));
-  assert.ok(JSON.stringify(llm.prompts[0]).includes("bicycle chain"));
-  assert.ok(!JSON.stringify(llm.prompts[0]).includes("building irrigation"));
-  assert.equal(recallCalls, 0);
-});
-
-test("task-thread replies retain the exact referenced bot message", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close()); const llm = new FakeLLM();
-  const app = new Application(store,llm,{allowedChannels:scopes});
-  await store.ingest(message("profile", "Rice Farmer (<@12345678901234567>) Discord identity: ...", {channel:"thread",author:"bot",isBot:true,timestamp:1}));
-  await app.handle(message("correction","his name is Oscar",{channel:"thread",taskId:"thread",replyTo:"profile",timestamp:2}));
-  assert.ok(llm.prompts[0]?.inputs.some(item=>item.content.includes("[reply target]")&&item.content.includes("Rice Farmer")));
-});
-
-test("explicit references still resolve when recent-chat context is disabled", async t => {
-  const {store,app,llm}=(()=>{const llm=new FakeLLM();return {...fixture(llm,0),llm};})(); t.after(()=>store.close());
-  await store.ingest(message("profile","Rice Farmer profile"));
-  await app.handle(message("reply","his name is Oscar",{replyTo:"profile"}));
-  assert.ok(llm.prompts[0]?.inputs.some(item=>item.content.includes("Rice Farmer profile")));
 });

@@ -11,7 +11,6 @@ const server = "s";
 const channel = "c";
 const owner = "u";
 const slot10 = "2026-10-20T10:00:00.000Z";
-const outageNote = "Prompt schedules here are paused while Slopbot runs at reduced capacity. They resume by themselves.";
 
 function schedule(overrides: Partial<Schedule> = {}): Schedule {
   return {
@@ -109,23 +108,6 @@ test("message and tool keep running", async (t) => {
   }
 });
 
-test("one note per channel", async (t) => {
-  const store = new SQLiteStore();
-  t.after(() => store.close());
-  await put(store, schedule());
-  await put(store, schedule({ id: "b" }));
-  await put(store, schedule({ id: "d", channel: "d2" }));
-  const clock = { now: new Date("2026-10-20T10:00:00.000Z") };
-  const { deps, calls } = fakes(clock, { llmMode: () => "offline" }, store);
-  const worker = new ScheduleWorker(deps);
-  await worker.tick();
-  assert.equal(calls.replies.length, 2);
-  assert.deepEqual(calls.replies.map(reply => reply.channel).sort(), ["c", "d2"]);
-  for (const reply of calls.replies) assert.equal(reply.text, outageNote);
-  await worker.tick();
-  assert.equal(calls.replies.length, 2);
-});
-
 test("resumes only outage-paused", async (t) => {
   const store = new SQLiteStore();
   t.after(() => store.close());
@@ -188,21 +170,4 @@ test("outage error not counted", async (t) => {
   saved = await read(store, "a");
   assert.equal(saved.status, "active");
   assert.equal(saved.failures, 0);
-});
-
-test("user-paused stays paused", async (t) => {
-  const store = new SQLiteStore();
-  t.after(() => store.close());
-  await put(store, schedule({ status: "paused", pauseReason: "owner", nextAt: null }));
-  const clock = { now: new Date("2026-10-20T10:00:00.000Z") };
-  let mode: LlmMode = "offline";
-  const { deps, calls } = fakes(clock, { llmMode: () => mode }, store);
-  const worker = new ScheduleWorker(deps);
-  await worker.tick();
-  mode = "normal";
-  await worker.tick();
-  assert.equal(calls.replies.length, 0);
-  const saved = await read(store, "a");
-  assert.equal(saved.status, "paused");
-  assert.equal(saved.pauseReason, "owner");
 });

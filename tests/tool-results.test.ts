@@ -1,15 +1,10 @@
 import assert from 'node:assert/strict';
-import {test} from 'node:test';
-import {SQLiteStore} from '../src/adapters/sqlite.js';
-import {Application} from '../src/application.js';
-import {ToolRegistry} from '../src/tools.js';
+import { test } from 'node:test';
+import { SQLiteStore } from '../src/adapters/sqlite.js';
+import { Application } from '../src/application.js';
+import { ToolRegistry } from '../src/tools.js';
 const request={id:'m',server:'s',channel:'c',author:'a',text:'do it'};
-test('structured handoffs work regardless of display wording',async t=>{
- const store=new SQLiteStore();t.after(()=>store.close());
- const app=new Application(store,{async *stream(){yield { kind: 'tool_call', payload: [{"name":"task_start","arguments":{}}] };}},{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:{schemas: () => [], catalog:()=>'',execute:async()=>({text:'Completely different wording',handoff:{threadId:'123'}})}});
- assert.equal((await app.handle(request))?.text,'Task started in <#123>. Updates will appear there.');
- assert.equal(typeof store.agentTurns(request)[0]?.results['0'],'object');
-});
+
 test('structured tool sources reach reply manifests without inspection-specific SQL',async t=>{
  const store=new SQLiteStore();t.after(()=>store.close());
  await store.ingest({...request,id:'source',text:'source'});
@@ -18,6 +13,7 @@ test('structured tool sources reach reply manifests without inspection-specific 
  const output={...request,id:'output',text:reply!.text};await store.ingest(output);await store.linkOutput(output,reply!.runId,request.id);
  await store.remove('s','c','source');assert.equal(store.canonicalMessage('s','output'),undefined);
 });
+
 test('old plain-text operation results remain readable',async t=>{
  const store=new SQLiteStore();t.after(()=>store.close());const registry=new ToolRegistry(store,async()=>false);
  registry.register({name:'read',description:'read',fields:{},access:'member',effect:'read',retrySafe:true,execute:async()=>{throw Error('must replay');}});

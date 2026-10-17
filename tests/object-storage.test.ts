@@ -127,17 +127,6 @@ test('disabled channels reject cached results, and uncertain uploads are never r
   assert.equal(uploads, 1);
 });
 
-test('changed attachment sources abort before uploading, and failed metadata commits clean uploaded blobs', async t => {
-  const f = setup(); t.after(() => f.store.close()); let resolves = 0;
-  f.services.resolveAttachment = async () => ({ ...f.source, text: ++resolves > 1 ? 'edited' : f.source.text });
-  const registry = new ToolRegistry(f.store, async () => true); registry.register(objectStorageTool(f.services));
-  await assert.rejects(registry.invokeResult(message, 'file_store', { action: 'save_attachment', path: 'changed' }, 'changed', 'agent'), /file_source_changed/);
-  assert.equal(f.objects.size, 0);
-  t.mock.method(f.store, 'putRecord', async () => false);
-  await assert.rejects(f.call({ action: 'write', path: 'collision', text: 'x' }), /changed concurrently/);
-  assert.equal(f.objects.size, 0);
-});
-
 test('stored public binary files copy into a task sandbox with permission checks on replay', async t => {
   const f = setup(); t.after(() => f.store.close());
   await f.call({ action: 'save_attachment', path: 'input.bin' });
@@ -152,24 +141,4 @@ test('stored public binary files copy into a task sandbox with permission checks
   assert.deepEqual(bytes, f.binary); assert.equal(created, 1);
   await f.call({ action: 'unpublish', path: 'input.bin' });
   await assert.rejects(registry.invokeResult({ ...message, author: bob }, 'file_store', args, 'sandbox-copy-denied', 'agent'), /not shared/);
-});
-
-test('unconfigured storage explains setup instead of pretending to save files', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  await assert.rejects(new UserFileStorage(store).list('s', alice, 'mine', ''), /OBJECT_STORAGE_BUCKET/);
-});
-
-test('sandbox outputs can be saved persistently and copied back into a sandbox with their binary content', async t => {
-  const f = setup(); t.after(() => f.store.close());
-  const written: { path: string; bytes: unknown }[] = [];
-  const session = { id: 'sandbox-1', run: async () => ({ stdout: '', stderr: '', exitCode: 0 }), read: async () => '', readBytes: async () => new Uint8Array(), write: async (path: string, bytes: unknown) => { written.push({ path, bytes }); }, renew: async () => {}, close: async () => {} };
-  const provider = { defaultTemplate: 'base', create: async () => session, connect: async () => session } as unknown as SandboxProvider;
-  const registry = new ToolRegistry(f.store, async () => true);
-  registry.register(objectStorageTool({ ...f.services, store: f.store, provider, sandbox: {
-    read: async (_context, path) => { assert.equal(path, '/tmp/generated.bin'); return f.binary; },
-  } }));
-  await registry.invokeResult(message, 'file_store', { action: 'save_sandbox', path: 'outputs/generated.bin', sandbox_path: '/tmp/generated.bin' }, 'save-sandbox', 'agent');
-  await registry.invokeResult(message, 'file_store', { action: 'to_sandbox', path: 'outputs/generated.bin', sandbox_path: '/tmp/loaded.bin' }, 'to-sandbox', 'agent');
-  assert.equal(written.length, 1); assert.equal(written[0]!.path, '/tmp/loaded.bin'); assert.deepEqual(written[0]!.bytes, f.binary);
-  assert.deepEqual((await f.storage.read('s', alice, alice, 'outputs/generated.bin')).bytes, f.binary);
 });

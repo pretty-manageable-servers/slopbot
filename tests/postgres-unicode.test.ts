@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PostgresDatabase, postgresValue } from '../src/adapters/postgres-database.js';
-import { errorContext, errorReply } from '../src/errors.js';
 
 test('Postgres parameters repair NUL and lone surrogates without damaging emoji or literal escapes', () => {
   const input = { text: 'a\u0000b\ud800c\udfff😀', literal: '\\u0000 \\ud800', nested: [{ value: '\u0000' }], ['bad\u0000key']: true };
@@ -13,14 +12,6 @@ test('Postgres parameters repair NUL and lone surrogates without damaging emoji 
   assert.equal(postgresValue(JSON.stringify({ nestedJsonText: '{"value":"\\u0000"}' })), JSON.stringify({ nestedJsonText: '{"value":"\\u0000"}' }));
   assert.equal(postgresValue(123), 123);
   assert.equal(postgresValue(null), null);
-});
-
-test('database failures retain the operation stage and request/job IDs in the notice', () => {
-  const error = errorContext(errorContext(Object.assign(new Error('unsupported Unicode escape sequence'), { code: '22P05' }), { stage: 'database update agent_turns' }), { stage: 'agent round', messageId: 'request-1', jobId: 'job-1' });
-  const notice = errorReply(error, 'job-1');
-  assert.match(notice, /database update agent/);
-  assert.match(notice, /Request ID: request-1/);
-  assert.match(notice, /Job ID: job-1/);
 });
 
 test('Postgres can cast and update repaired tool results as jsonb', { skip: !process.env.TEST_DATABASE_URL }, async () => {

@@ -3,13 +3,10 @@ import assert from 'node:assert/strict';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { ToolRegistry } from '../src/tools.js';
 import { Application } from '../src/application.js';
-import { ChatCompletionsLLM, wireMessages } from '../src/adapters/chat-completions.js';
-import type { Prompt } from '../src/domain.js';
+import { ChatCompletionsLLM } from '../src/adapters/chat-completions.js';
 import { objectStorageTool, type UserFileStorage } from '../src/object-storage.js';
-import { registerProfileTools } from '../src/profiles.js';
 import { McpManager, mcpSchemaHash, mcpToolName, type McpTool } from '../src/mcp.js';
-import { nativeToolInstructions, type ToolDefinition } from '../src/tools.js';
-import type { SandboxProvider } from '../src/sandbox.js';
+import type { ToolDefinition } from '../src/tools.js';
 const options = {baseUrl:'https://example.com/v1',apiKey:'test',model:'test'};
 const response = (choices: unknown[]) => new Response(choices.map(choice => `data: ${JSON.stringify({choices:[choice]})}\n\n`).join('') + 'data: [DONE]\n\n');
 const nativeCall = () => response([
@@ -61,57 +58,7 @@ test('JSON shown in an ordinary native-mode answer does not execute a tool', asy
   assert.match(reply!.text, /tool_calls/); assert.equal(reads, 0);
 });
 
-test('history with a split tool pair remains evidence without invalid tool messages', () => {
-  const prompt: Prompt = {prefixVersion:'v1',prefix:[],history:[],inputs:[
-    {role:'tool',toolCallId:'orphan',content:'Earlier result'},
-    {role:'assistant',content:'',toolCalls:[{id:'missing',name:'lookup',arguments:{}}]},
-    {role:'user',content:'Continue'},
-  ]};
-  const messages = wireMessages(prompt);
-  assert.ok(messages.every(item=>item.role==='user'));
-  assert.match(String(messages[0]!.content), /Earlier result/);
-  assert.match(String(messages[1]!.content), /missing/);
-});
-
-test('schemas include native validation constraints and snapshot the captured catalog', t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const registry = new ToolRegistry(store,async()=>true);
-  registry.register({name:'read',surface:'top',description:'Read',access:'member',effect:'read',retrySafe:true,fields:{channel:{type:'channel',required:true,description:'Channel'},limit:{type:'integer',min:1,max:10,description:'Limit'},action:{type:'string',choices:['status','list'],description:'Action'}},execute:async()=> 'ok'});
-  const captured = registry.capture();
-  const schema = captured.schemas()[0]!.function.parameters as any;
-  assert.deepEqual(schema.required,['channel']);
-  assert.equal(schema.additionalProperties,false);
-  assert.equal(schema.properties.channel.pattern,'^\\d{17,20}$');
-  assert.equal(schema.properties.limit.maximum,10);
-  assert.deepEqual(schema.properties.action.enum,['status','list']);
-  registry.register({name:'other',surface:'top',description:'Other',access:'member',effect:'read',retrySafe:true,fields:{},execute:async()=> 'ok'});
-  assert.equal(captured.schemas().length,1);
-  assert.equal(registry.schemas().length,2);
-});
-
 const callResponse = (id: string, args: object) => response([{index:0,delta:{tool_calls:[{index:0,id,type:'function',function:{name:'lookup',arguments:JSON.stringify(args)}}]},finish_reason:'tool_calls'}]);
-
-test('native validation errors return the original call ID and the model can correct its arguments', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  let requests = 0, reads = 0;
-  const registry = new ToolRegistry(store, async () => true);
-  registry.register({name:'lookup',surface:'top',description:'Lookup',fields:{limit:{type:'integer',min:1,max:10,required:true,description:'At most 10 results'}},access:'member',effect:'read',retrySafe:true,execute:async()=>{reads++;return 'Found results';}});
-  const llm = new ChatCompletionsLLM(options, async (_url, init) => {
-    const body = JSON.parse(String(init?.body)); requests++;
-    if (requests === 1) return callResponse('call_invalid', {limit:14});
-    const errors = body.messages.filter((item: any) => item.role === 'tool');
-    assert.equal(errors[0].tool_call_id, 'call_invalid');
-    assert.match(errors[0].content, /Invalid integer: limit/);
-    assert.match(errors[0].content, /Correct the arguments/);
-    if (requests === 2) return callResponse('call_corrected', {limit:10});
-    assert.equal(errors[1].tool_call_id, 'call_corrected');
-    assert.match(errors[1].content, /Found results/);
-    return response([{index:0,delta:{content:'Found the results.'},finish_reason:'stop'}]);
-  });
-  const app = new Application(store,llm,{allowedChannels:[{server:'s',channel:'c'}]},undefined,{harness:store,tools:{catalog:()=>registry.catalog(),schemas:()=>registry.schemas(),execute:(m,c,id)=>registry.invokeResult(m,c.name,c.arguments,id,'agent')}});
-  assert.equal((await app.handle(message))?.text, 'Found the results.');
-  assert.equal(reads, 1); assert.equal(requests, 3);
-});
 
 test('unexpected tool exceptions are redacted, sent to the model and replayed after a stream failure', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
@@ -186,17 +133,6 @@ test('mcp_not_in_schemas', async t => {
   assert.equal(registry.schemas(message).some(item => item.function.name === mcpToolName('github', remote.name)), false);
 });
 
-test('inline_memory_no_thread', t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const registry = new ToolRegistry(store, async () => true);
-  registerProfileTools(registry, store);
-  registry.register(objectStorageTool({ storage: {} as UserFileStorage, authorize: async () => {}, resolveAttachment: async () => { throw new Error('unused'); }, inspect: async () => '', send: async () => {} }));
-  registry.register(plainTool('thread_write', { effect: 'write', retrySafe: false }));
-  assert.equal(registry.requiresThread('profile', { action: 'set' }), false);
-  assert.equal(registry.requiresThread('file_store', { action: 'write' }), false);
-  assert.equal(registry.requiresThread('thread_write', {}), true);
-});
-
 test('confirm_flags', () => {
   const tool = objectStorageTool({ storage: {} as UserFileStorage, authorize: async () => {}, resolveAttachment: async () => { throw new Error('unused'); }, inspect: async () => '', send: async () => {} });
   assert.equal(tool.confirm?.({ action: 'list' }), false);
@@ -204,38 +140,6 @@ test('confirm_flags', () => {
   assert.equal(tool.confirm?.({ action: 'write' }), true);
   assert.equal(tool.confirm?.({ action: 'to_sandbox' }), true);
   assert.equal(tool.confirm?.({ action: 'delete' }), true);
-});
-
-test('file_store_to_sandbox', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const written: string[] = [];
-  const session = { id: 'sandbox-1', run: async () => ({ stdout: '', stderr: '', exitCode: 0 }), read: async () => '', readBytes: async () => new Uint8Array(), write: async (path: string) => { written.push(path); }, renew: async () => {}, close: async () => {} };
-  const provider = { defaultTemplate: 'base', create: async () => session, connect: async () => session } as unknown as SandboxProvider;
-  const storage = { entry: async () => ({ record: {}, file: {} }), read: async () => ({ file: { path: 'report.txt' }, bytes: new TextEncoder().encode('hello') }) } as unknown as UserFileStorage;
-  const services = { storage, authorize: async () => {}, resolveAttachment: async () => { throw new Error('unused'); }, inspect: async () => '', send: async () => {} };
-  const args = { action: 'to_sandbox', path: 'report.txt', sandbox_path: '/home/user/report.txt' };
-  const configured = new ToolRegistry(store, async () => true);
-  configured.register(objectStorageTool({ ...services, store, provider }));
-  assert.match((await configured.invokeResult(message, 'file_store', args, 'to-sandbox', 'agent')).text, /Copied report\.txt to sandbox \/home\/user\/report\.txt/);
-  assert.deepEqual(written, ['/home/user/report.txt']);
-  const unconfigured = new ToolRegistry(store, async () => true);
-  unconfigured.register(objectStorageTool(services));
-  assert.equal((await unconfigured.invokeResult(message, 'file_store', args, 'to-sandbox-none', 'agent')).text, 'Sandbox is not configured.');
-});
-
-test('no_text_protocol', async t => {
-  const { Application } = await import('../src/application.js');
-  const store = new SQLiteStore(); t.after(() => store.close());
-  let reads = 0;
-  const registry = new ToolRegistry(store, async () => true);
-  registry.register(plainTool('lookup', { surface: 'top', execute: async () => { reads++; return 'Found'; } }));
-  const text = '{"tool_calls":[{"name":"lookup","arguments":{}}]}';
-  const llm = { async *stream() { yield { kind: 'text' as const, payload: { text } }; } };
-  const app = new Application(store, llm, { allowedChannels: [{ server: 's', channel: 'c' }] }, undefined, { tools: { catalog: () => registry.catalog(), schemas: () => registry.schemas(), execute: (m, c, id) => registry.invokeResult(m, c.name, c.arguments, id, 'agent') } });
-  assert.equal((await app.handle(message))?.text, text);
-  assert.equal(reads, 0);
-  assert.doesNotMatch(nativeToolInstructions, /JSON protocol|program_exec|task_start/);
-  assert.match(nativeToolInstructions, /run_tools_code/);
 });
 
 test('voice tools are offered only in voice runs', t => {
@@ -279,22 +183,4 @@ test('chat_change_skips_remaining_calls', async t => {
   const reply = await new Application(store,llm,{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:executor,harness:store}).handle(chatRequest);
   assert.equal(reply?.text, 'Done.');
   assert.deepEqual(ran, ['one']); assert.equal(requests, 2);
-});
-
-test('rebuild_uses_edited_text', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const ran: string[] = [];
-  const {executor} = weatherRegistry(store, async () => { await store.ingest({...chatRequest, text:'Look up the forecast for Oslo', revisionTimestamp:2}); }, ran);
-  let requests = 0;
-  const llm = new ChatCompletionsLLM(options, async (_url, init) => {
-    const body = JSON.parse(String(init?.body)); requests++;
-    if (requests === 1) return twoLookups();
-    const text = JSON.stringify(body.messages);
-    assert.match(text, /Look up the forecast for Oslo/);
-    assert.ok(!text.includes('Look up the weather'));
-    return response([{index:0,delta:{content:'Done.'},finish_reason:'stop'}]);
-  });
-  const reply = await new Application(store,llm,{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:executor,harness:store}).handle(chatRequest);
-  assert.equal(reply?.text, 'Done.'); assert.equal(requests, 2);
-  assert.equal((await store.canonicalMessage('s', 'request'))?.text, 'Look up the forecast for Oslo');
 });

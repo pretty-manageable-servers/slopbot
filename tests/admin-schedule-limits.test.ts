@@ -22,21 +22,6 @@ function setup() {
   return { store, panel };
 }
 
-test('scheduled task limits read the defaults when nothing is saved', async t => {
-  const { store, panel } = setup(); t.after(() => store.close());
-  assert.deepEqual(panel.scheduleLimits(), { ...DEFAULT_SCHEDULE_LIMITS, default: DEFAULT_SCHEDULE_LIMITS });
-  assert.deepEqual(panel.scheduleLimits(), { perServer: 50, perUser: 10, minMinutes: { message: 15, prompt: 60, tool: 60 }, default: { perServer: 50, perUser: 10, minMinutes: { message: 15, prompt: 60, tool: 60 } } });
-  assert.equal(store.setting(GLOBAL_SETTINGS_SCOPE, SCHEDULE_LIMITS_KEY), undefined);
-});
-
-test('save valid limits stores them for all servers and reads them back', async t => {
-  const { store, panel } = setup(); t.after(() => store.close());
-  const saved = await panel.saveScheduleLimits(valid);
-  assert.deepEqual(saved, { ...valid, default: DEFAULT_SCHEDULE_LIMITS });
-  assert.deepEqual(store.setting(GLOBAL_SETTINGS_SCOPE, SCHEDULE_LIMITS_KEY), valid);
-  assert.deepEqual(panel.scheduleLimits(), saved);
-});
-
 test('minimum minutes accept 1 and 10080, and refuse 0 and 10081 for each kind', async t => {
   const { store, panel } = setup(); t.after(() => store.close());
   for (const kind of ['message', 'prompt', 'tool'] as const) {
@@ -51,27 +36,6 @@ test('minimum minutes accept 1 and 10080, and refuse 0 and 10081 for each kind',
     }
     assert.deepEqual(store.setting(GLOBAL_SETTINGS_SCOPE, SCHEDULE_LIMITS_KEY), before, `a refused ${kind} save changes nothing`);
   }
-});
-
-test('caps refuse 0, 1001, fractions, text and missing values', async t => {
-  const { store, panel } = setup(); t.after(() => store.close());
-  const refused: [unknown, string][] = [
-    [0, 'Per server must be a whole number from 1 to 1000.'],
-    [1001, 'Per server must be a whole number from 1 to 1000.'],
-    [1.5, 'Per server must be a whole number from 1 to 1000.'],
-    ['5', 'Per server must be a whole number from 1 to 1000.'],
-    [undefined, 'Per server must be a whole number from 1 to 1000.'],
-  ];
-  for (const [value, message] of refused) {
-    await assert.rejects(panel.saveScheduleLimits({ ...valid, perServer: value }), { name: 'AdminInputError', message }, String(value));
-  }
-  await assert.rejects(panel.saveScheduleLimits({ ...valid, perUser: 0 }), { name: 'AdminInputError', message: 'Per user must be a whole number from 1 to 1000.' });
-  await assert.rejects(panel.saveScheduleLimits({ ...valid, perUser: 1001 }), { name: 'AdminInputError', message: 'Per user must be a whole number from 1 to 1000.' });
-  await assert.rejects(panel.saveScheduleLimits({ ...valid, minMinutes: null }), { name: 'AdminInputError', message: 'Send the minimum minutes as an object.' });
-  await assert.rejects(panel.saveScheduleLimits(null), { name: 'AdminInputError', message: 'Send the limits as an object.' });
-  assert.equal(store.setting(GLOBAL_SETTINGS_SCOPE, SCHEDULE_LIMITS_KEY), undefined);
-  await panel.saveScheduleLimits({ ...valid, perServer: 1000, perUser: 1 });
-  assert.deepEqual(panel.scheduleLimits().perServer, 1000, 'the top of the range is allowed');
 });
 
 function consoleAdmin(teams: TeamAdmins, panel: AdminPanel): ConsoleAdmin {

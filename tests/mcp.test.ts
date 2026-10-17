@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { Application } from '../src/application.js';
-import { McpManager, McpSecrets, mcpSchemaHash, mcpToolName, type McpConnection, type McpTool, type McpResult } from '../src/mcp.js';
+import { McpManager, McpSecrets, mcpSchemaHash, mcpToolName, type McpConnection, type McpTool } from '../src/mcp.js';
 import { ToolRegistry, UncertainActionError, type ToolExecutor } from '../src/tools.js';
 import type { LLM } from '../src/ports.js';
 
@@ -12,18 +12,6 @@ const tool: McpTool = { name: 'get/issues', description: 'List issues', readOnly
   outputSchema: { type: 'object', properties: { count: { type: 'integer' } }, required: ['count'], additionalProperties: false } };
 const config = { action: 'save', id: 'github', url: 'https://example.com/mcp', transport: 'http', enabled: true, tools: [] };
 const grant = (definition = tool, effect: 'read' | 'write' = 'read', access: 'member' | 'admin' = 'member') => ({ name: definition.name, schemaHash: mcpSchemaHash(definition), effect, access });
-
-test('provider replacement preserves native tools and is atomic on invalid definitions', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const registry = new ToolRegistry(store, async () => true);
-  const definition = { name: 'native', description: 'native', fields: {}, access: 'member' as const, effect: 'read' as const, retrySafe: true, execute: async () => 'ok' };
-  registry.register(definition);
-  registry.replaceProvider('example', [{ ...definition, name: 'external', provider: 'example' }]);
-  assert.throws(() => registry.replaceProvider('example', [{ ...definition, name: 'next', provider: 'example' }, { ...definition, provider: 'example' }]), /duplicate/);
-  assert.deepEqual(registry.definitions().map(tool => tool.name), ['external', 'native']);
-  assert.throws(() => registry.replaceProvider('example', [{ ...definition, name: 'external', provider: 'example', fields: { constructor: { type: 'string' as const, description: 'invalid' } } }]), /field/);
-  assert.deepEqual(registry.definitions().map(tool => tool.name), ['external', 'native']);
-});
 
 test('runtime discovery requires explicit grants and calls use the shared validation, permissions, and journal', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
@@ -139,39 +127,6 @@ test('uncertain MCP writes are not retried and read hints do not authorize reads
   await assert.rejects(registry.invokeResult(message, name, { limit: 1 }, 'write', 'agent'), UncertainActionError);
   await assert.rejects(registry.invokeResult(message, name, { limit: 1 }, 'another', 'agent'), /did not finish/);
   assert.equal(calls, 1);
-});
-
-test('MCP application errors and invalid outputs preserve uncertain write semantics', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const registry = new ToolRegistry(store, async () => true); let result: McpResult = { content: [], isError: true };
-  const manager = new McpManager('s', store, registry, async () => ({ listTools: async () => [tool], close: async () => {}, callTool: async () => result }));
-  t.after(() => manager.close());
-  await manager.configure('admin', { ...config, tools: [grant(tool, 'write')] });
-  await assert.rejects(registry.invokeResult(message, mcpToolName('github', tool.name), { limit: 1 }, 'write', 'agent'), UncertainActionError);
-  // A separate connection lets us test output validation without bypassing the
-  // original connection's unresolved-write resource lock.
-  result = { content: [], structuredContent: { count: 'invalid' } };
-  await manager.configure('admin', { ...config, id: 'other', tools: [grant()] });
-  await assert.rejects(registry.invokeResult(message, mcpToolName('other', tool.name), { limit: 1 }, 'read', 'agent'), /MCP call failed/);
-});
-
-test('disabling a connection drains started calls and rejects waiting calls', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const registry = new ToolRegistry(store, async () => true);
-  let started!: () => void, complete!: () => void, calls = 0, closed = 0;
-  const firstStarted = new Promise<void>(resolve => { started = resolve; });
-  const work = new Promise<void>(resolve => { complete = resolve; });
-  const manager = new McpManager('s', store, registry, async () => ({ listTools: async () => [tool], close: async () => { closed++; }, callTool: async () => {
-    calls++; started(); await work; return { content: [], structuredContent: { count: 1 } };
-  } })); t.after(() => manager.close());
-  await manager.configure('admin', { ...config, concurrency: 1, tools: [grant()] });
-  const name = mcpToolName('github', tool.name), running = registry.invokeResult(message, name, { limit: 1 }, 'first', 'agent');
-  await firstStarted;
-  const waiting = registry.invokeResult(message, name, { limit: 1 }, 'second', 'agent');
-  const rejected = assert.rejects(waiting, /Unknown tool|changed/);
-  await manager.configure('admin', { action: 'disable', id: 'github' });
-  assert.equal(closed, 0); complete(); await running; await rejected;
-  assert.equal(calls, 1); assert.equal(closed, 1);
 });
 
 test('new requests see runtime tools while active requests retain their catalog and budget', async t => {

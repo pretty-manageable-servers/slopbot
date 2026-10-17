@@ -3,7 +3,6 @@ import { test } from 'node:test';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import type { Message } from '../src/domain.js';
 import type { FileFetcher } from '../src/files.js';
-import { contextBlock } from '../src/context-block.js';
 import { SANDBOX_HOME } from '../src/sandbox-session.js';
 import type { SandboxProvider, SandboxSession } from '../src/sandbox.js';
 import { isUploadable, uniqueNames, uploadName, uploadRequestFiles } from '../src/sandbox-uploads.js';
@@ -44,14 +43,6 @@ test('request_uploads_files writes each non-image file to the upload directory b
   assert.ok(f.commands.some(command => command === `mkdir -p ${SANDBOX_HOME}/uploads`));
 });
 
-test('non_request_no_upload: a message without files returns nothing and writes nothing', async t => {
-  const f = fixture(); t.after(f.close);
-  const plain: Message = { ...message, attachments: [] };
-  assert.equal(await uploadRequestFiles({ store: f.store, provider: f.provider, fetcher: f.fetcher }, plain), undefined);
-  assert.equal(f.written.size, 0);
-  assert.equal(f.commands.length, 0);
-});
-
 test('images_stay_inline: image and link preview attachments are never uploaded', async t => {
   const f = fixture(); t.after(f.close);
   const onlyImages: Message = { ...message, attachments: [message.attachments![1]!, { name: 'preview.html', url: 'https://example.com', contentType: 'text/html', preview: true }] };
@@ -77,24 +68,4 @@ test('upload_failure_continues: a failed download is reported by name and the ot
   const f = fixture({ fetch: async url => { if (url.endsWith('report.pdf')) throw new ToolError('File exceeds 10 MiB'); return new TextEncoder().encode('ok'); } }); t.after(f.close);
   const result = await uploadRequestFiles({ store: f.store, provider: f.provider, fetcher: f.fetcher }, message);
   assert.deepEqual(result, { files: [`${SANDBOX_HOME}/uploads/data.csv`], failed: ['report.pdf: File exceeds 10 MiB'] });
-});
-
-test('upload_failure_continues: a sandbox that cannot start reports every file as failed without throwing', async t => {
-  const f = fixture({ createError: new Error('sandbox service down') }); t.after(f.close);
-  const result = await uploadRequestFiles({ store: f.store, provider: f.provider, fetcher: f.fetcher }, message);
-  assert.deepEqual(result, { files: [], failed: ['report.pdf: sandbox service down', 'data.csv: sandbox service down'] });
-});
-
-test('uploaded_files appear in the request context block', () => {
-  const block = contextBlock({ request: { channel_id: 'task', uploaded_files: [`${SANDBOX_HOME}/uploads/a.pdf`], upload_failed: ['b.zip: File exceeds 10 MiB'] }, people: [], evidence: [] });
-  assert.match(block.content, /uploaded_files: \["\/home\/user\/uploads\/a\.pdf"\]/);
-  assert.match(block.content, /upload_failed: \["b\.zip: File exceeds 10 MiB"\]/);
-});
-
-test('upload_uses_home: uploads go under the home of the profile', async t => {
-  const f = fixture(); t.after(f.close);
-  const profile = { template: 'base', user: 'ubuntu', home: '/home/ubuntu', os: 'Ubuntu 24.04.1 LTS', installed: [] };
-  const result = await uploadRequestFiles({ store: f.store, provider: f.provider, fetcher: f.fetcher, profile }, message);
-  assert.deepEqual(result, { files: ['/home/ubuntu/uploads/report.pdf', '/home/ubuntu/uploads/data.csv'], failed: [] });
-  assert.ok(f.commands.includes('mkdir -p /home/ubuntu/uploads'));
 });

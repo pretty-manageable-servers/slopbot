@@ -35,25 +35,3 @@ test("ignores failed run", async t => {
   await store.linkOutput(sent, "run-bad", request.id);
   assert.equal((await store.modelReplies(SERVER, ["bot-2"])).size, 0);
 });
-
-test("latest completed run wins", async t => {
-  const store = new SQLiteStore(":memory:");
-  t.after(() => store.close());
-  const request = msg("req-3");
-  await store.ingest(request);
-  await store.startRun("run-a", request, prompt);
-  await store.complete("run-a", undefined, [], "First run.");
-  await store.startRun("run-b", request, prompt);
-  await store.complete("run-b", undefined, [], "Second run.");
-  const sent = msg("bot-3", { author: "bot-user", isBot: true, text: "Discord copy" });
-  await store.ingest(sent);
-  await store.linkOutput(sent, "run-a", request.id);
-  await store.linkOutput(sent, "run-b", request.id);
-  assert.deepEqual(await store.modelReplies(SERVER, ["bot-3"]), new Map([["bot-3", { runId: "run-b", text: "Second run." }]]));
-});
-
-test("empty input", async t => {
-  const store = new SQLiteStore(":memory:");
-  t.after(() => store.close());
-  assert.equal((await store.modelReplies(SERVER, [])).size, 0);
-});

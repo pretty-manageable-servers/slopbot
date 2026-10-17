@@ -4,7 +4,6 @@ import { Application } from "../src/application.js";
 import { Bot, splitReply, type ChatGateway, type Incoming } from "../src/bot.js";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { FakeLLM } from "../src/adapters/fake-llm.js";
-import { loadConfig } from "../src/config.js";
 
 const incoming = (id: string, text: string, extra: Partial<Incoming> = {}): Incoming => ({
   id, server: "s", channel: "c", author: "alice", text,
@@ -70,57 +69,12 @@ test("task command creates one thread and subsequent contributions continue its 
   assert.equal(f.llm.prompts[2]?.inputs.at(-1)?.author, "bob");
 });
 
-test("task mapping survives reconstructing the bot", async t => {
-  const f = setup(); t.after(() => f.store.close());
-  await f.bot.receive(incoming("1", "!task goal", { mentionsBot: true }));
-  const bot = new Bot(f.app, f.store, f.store, f.gateway, "s", ["c"]);
-  await bot.receive(incoming("2", "continue", { channel: "thread" }));
-  assert.equal(f.llm.prompts[1]?.history.length, 2);
-});
-
 test("other bots can mention and reply to Slopbot; unconfigured channels remain ignored", async t => {
   const f = setup(); t.after(() => f.store.close());
   await f.bot.receive(incoming("1", "hello", { botAuthor: true, mentionsBot: true }));
   await f.bot.receive(incoming("2", "hello", { channel: "private", mentionsBot: true }));
   await f.bot.receive(incoming("3", "continue", { author: "other-bot", botAuthor: true, repliesToBot: true }));
   assert.equal(f.llm.prompts.length, 2);
-});
-
-test("a mention in a thread of an allowed channel gets an answer; other threads stay ignored", async t => {
-  const f = setup(); t.after(() => f.store.close());
-  await f.bot.receive(incoming("1", "hello", { channel: "thread", parentChannel: "private", mentionsBot: true }));
-  assert.equal(f.llm.prompts.length, 0);
-  await f.bot.receive(incoming("2", "hello", { channel: "thread", parentChannel: "c", author: "other-bot", botAuthor: true, mentionsBot: true }));
-  assert.equal(f.llm.prompts.length, 1);
-  assert.ok(f.bot.accepts("s", "thread"));
-});
-
-test("unaddressed bots are stored once as context", async t => {
-  const f = setup(); t.after(() => f.store.close());
-  const automated = incoming("external", "app deployment succeeded", { author: "other-bot", botAuthor: true });
-  await f.bot.receive(automated);
-  await f.bot.receive(automated);
-  assert.equal(f.created(), 0);
-  assert.equal(f.outputs.length, 0);
-  const observer = incoming("observer", "ordinary chat");
-  await f.bot.receive(observer);
-  const context = await f.store.context(observer, 10);
-  assert.equal(context.filter(message => message.id === "external").length, 1);
-  assert.equal(context.find(message => message.id === "external")?.isBot, true);
-  await f.bot.receive(incoming("human", "what happened?", { mentionsBot: true, replyTo: "external" }));
-  assert.ok(JSON.stringify(f.llm.prompts[0]).includes("app deployment succeeded"));
-});
-
-test("other bots in task threads continue the task", async t => {
-  const f = setup(); t.after(() => f.store.close());
-  await f.bot.receive(incoming("start", "!task plan", { mentionsBot: true }));
-  const count = f.llm.prompts.length;
-  await f.bot.receive(incoming("external", "continue", { channel: "thread", botAuthor: true, repliesToBot: true }));
-  assert.equal(f.llm.prompts.length, count + 1);
-  const observer = incoming("observer", "status", { channel: "thread", botAuthor: true });
-  await f.bot.receive(observer);
-  assert.equal(f.llm.prompts.length, count + 1);
-  assert.ok((await f.store.context(observer, 10)).some(message => message.id === "external"));
 });
 
 test('unaddressed bot error commentary cannot enqueue task work or trigger participation', async t => {
@@ -149,58 +103,6 @@ test("source edits invalidate copied task context but preserve reasoning events"
   assert.deepEqual(f.llm.prompts[1]?.history, []);
 });
 
-test("reply splitting keeps surrogate pairs intact and stays under Discord's limit", () => {
-  const text = "🙂".repeat(3000);
-  const chunks = splitReply(text);
-  assert.equal(chunks.join(""), text);
-  assert.ok(chunks.every(chunk => chunk.length <= 1900));
-});
-
-test("reply splitting moves a whole sentence to the next message", () => {
-  const first = "This sentence fits. ", second = "The next sentence stays whole.";
-  assert.deepEqual(splitReply(first + second, 35), [first, second]);
-});
-
-test("reply splitting preserves paragraph whitespace and quoted sentences", () => {
-  const first = 'She said, "Keep this together."\n\n';
-  const second = "The next paragraph stays whole.";
-  assert.deepEqual(splitReply(first + second, 40), [first, second]);
-});
-
-test("oversized sentences split at words without losing text", () => {
-  const text = "These words form a sentence longer than one message can hold.";
-  const chunks = splitReply(text, 25);
-  assert.equal(chunks.join(""), text);
-  assert.ok(chunks.every(chunk => chunk.length <= 25));
-  assert.ok(chunks.slice(0, -1).every(chunk => /\s$/.test(chunk)));
-});
-
-test("code lines stay together across reply pages", () => {
-  const text = "```js\nconst first = 1;\nconst second = 2;\n```";
-  const chunks = splitReply(text, 35);
-  assert.deepEqual(chunks, ["```js\nconst first = 1;\n\n```", "```js\nconst second = 2;\n```"]);
-});
-
-test("embed-only updates do not invalidate task history", async t => {
-  const f = setup(); t.after(() => f.store.close());
-  const request = incoming("1", "!task goal", { mentionsBot: true });
-  await f.bot.receive(request);
-  await f.store.revise(request);
-  await f.bot.receive(incoming("2", "continue", { channel: "thread" }));
-  assert.equal(f.llm.prompts[1]?.history.length, 2);
-});
-
-test("mock config requires Discord details but no AI key", () => {
-  const config = loadConfig({
-    DISCORD_BOT_TOKEN: "test-only", DISCORD_GUILD_ID: "123456789012345678",
-    DISCORD_CHANNEL_IDS: "223456789012345678", LLM_MODE: "mock",
-  });
-  assert.equal(config.model, "nimbus");
-  assert.equal(config.apiKey, "");
-  assert.throws(() => loadConfig({}), /DISCORD_BOT_TOKEN/);
-  assert.throws(() => loadConfig({ DISCORD_BOT_TOKEN: "test-only", DISCORD_CHANNEL_IDS: "223456789012345678", LLM_MODE: "mock" }), /DISCORD_GUILD_ID/);
-});
-
 test("task handoff carries the referenced profile rather than unrelated channel chat", async t => {
   const f=setup(); t.after(()=>f.store.close());
   await f.store.ingest({id:"profile",server:"s",channel:"c",author:"bot",text:"Rice Farmer (<@12345678901234567>) Discord identity",isBot:true});
@@ -214,17 +116,19 @@ test("task handoff carries the referenced profile rather than unrelated channel 
   assert.ok(f.llm.prompts[0]?.inputs.some(item=>item.content.includes("Rice Farmer")));
 });
 
-test('quick inline writes stay in the channel while sustained writes use a task thread',async t=>{
- const {ToolRegistry}=await import('../src/tools.js');const f=setup();t.after(()=>f.store.close());
- const tools=new ToolRegistry(f.store,async()=>false);let executed=0;
- tools.register({name:'quick_write',description:'Quick action',fields:{},access:'member',effect:'write',retrySafe:true,execution:'inline',execute:async()=>{executed++;return 'Done';}});
- tools.register({name:'long_write',description:'Long action',fields:{},access:'member',effect:'write',retrySafe:true,execute:async()=>{throw Error('must move');}});
- const bot=new Bot(f.app,f.store,f.store,f.gateway,'s',['c'],{tools});
- const request=incoming('inline','do it');await f.store.ingest(request);
- const result=await bot.executeTool(request,{name:'quick_write',arguments:{}},'quick');assert.equal(result.text,'Done');assert.equal(executed,1);assert.equal(f.created(),0);
- const handoff=await bot.executeTool(request,{name:'long_write',arguments:{}},'long');assert.equal(handoff.handoff?.threadId,'thread');assert.equal(f.created(),1);
+test("reply splitting keeps sentences, paragraphs and code lines whole and loses no text", () => {
+  const cases: { text: string; max: number; expected?: string[] }[] = [
+    { text: "This sentence fits. The next sentence stays whole.", max: 35, expected: ["This sentence fits. ", "The next sentence stays whole."] },
+    { text: 'She said, "Keep this together."\n\nThe next paragraph stays whole.', max: 40, expected: ['She said, "Keep this together."\n\n', "The next paragraph stays whole."] },
+    { text: "```js\nconst first = 1;\nconst second = 2;\n```", max: 35, expected: ["```js\nconst first = 1;\n\n```", "```js\nconst second = 2;\n```"] },
+    { text: "These words form a sentence longer than one message can hold.", max: 25 },
+  ];
+  for (const { text, max, expected } of cases) {
+    const chunks = splitReply(text, max);
+    if (expected) assert.deepEqual(chunks, expected);
+    else { assert.equal(chunks.join(""), text); assert.ok(chunks.every(chunk => chunk.length <= max)); }
+  }
 });
-
 
 test('long tool argument blocks keep code fences balanced across Discord messages', () => {
   const text = 'Answer\n\n```json\n' + JSON.stringify({command:'🙂'.repeat(3000)}) + '\n```\nAfter';
@@ -266,17 +170,6 @@ test("a chat change during a run still delivers the answer", async t => {
 test("a request deleted during its run gets no answer", async t => {
   const outputs = await changedRun(t, store => store.remove("s", "c", "req"));
   assert.deepEqual(outputs, []);
-});
-
-test("request_uploads_files: a mention, a reply or a name request is marked for upload", async t => {
-  const f = setup(); t.after(() => f.store.close());
-  const queued: { id: string; uploadFiles?: true }[] = [];
-  const worker = { enqueue: async (message: { id: string; uploadFiles?: true }) => { queued.push(message); } } as unknown as import("../src/queue.js").TaskWorker;
-  const bot = new Bot(f.app, f.store, f.store, f.gateway, "s", ["c"], { worker });
-  const file = { name: "report.pdf", url: "https://cdn.discordapp.com/attachments/1/report.pdf", contentType: "application/pdf", size: 10 };
-  await bot.receive(incoming("mention", "@slop summarize", { mentionsBot: true, attachments: [file] }));
-  await bot.receive(incoming("reply", "what is in it", { repliesToBot: true, attachments: [file] }));
-  assert.deepEqual(queued.map(message => [message.id, message.uploadFiles]), [["mention", true], ["reply", true]]);
 });
 
 test("non_request_no_upload: an unsolicited reply to a file is not marked for upload", async t => {

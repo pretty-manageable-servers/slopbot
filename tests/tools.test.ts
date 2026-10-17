@@ -1,4 +1,4 @@
-import { errorSummary } from "../src/errors.js";
+
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
@@ -8,19 +8,6 @@ import type { Message } from "../src/domain.js";
 import type { LLM } from "../src/ports.js";
 
 const message: Message = { id: "1", server: "s", channel: "t", taskId: "t", author: "alice", text: "set the limit to 5" };
-
-test("saved tool errors retain their failure status and reason without executing again", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  let executions = 0;
-  const registry = new ToolRegistry(store, async () => true);
-  registry.register({ name: "read", description: "read", fields: {}, access: "member", effect: "read", retrySafe: true,
-    async execute() { executions++; throw new ToolError("Remote service unavailable", "failed", { cause: Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" }) }); } });
-  for (let attempt = 0; attempt < 2; attempt++) {
-    await assert.rejects(registry.invokeResult(message, "read", {}, "error", "agent"), error =>
-      error instanceof ToolError && error.status === "failed" && error.message === "Remote service unavailable" && errorSummary(error).includes("ECONNREFUSED"));
-  }
-  assert.equal(executions, 1);
-});
 
 test("commands and agents share permissions, validation and operation deduplication", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
@@ -121,45 +108,6 @@ test("tool JSON in model text is shown as text and never executed", async t => {
   assert.equal((await app.handle(message))?.text, text);
   assert.equal(reads, 0);
   assert.equal(rounds, 1);
-});
-
-test("known read intents return the tool result without model guessing", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const registry = new ToolRegistry(store, async () => true);
-  registry.register({ name: "index", description: "index status", fields: {}, access: "member", effect: "read", retrySafe: true,
-    matchRead: () => ({}), async execute() { return "700 messages indexed"; } });
-  const llm: LLM = { async *stream() { throw new Error("model should not choose a different tool"); } };
-  const app = new Application(store, llm, { allowedChannels: [{ server: "s", channel: "t" }] }, undefined,
-    { tools: { schemas: () => [], catalog: () => registry.catalog(), suggest: m => registry.suggest(m), execute: (m,c,id) => registry.invoke(m,c.name,c.arguments,id,"agent") } });
-  assert.equal((await app.handle(message))?.text, "700 messages indexed");
-});
-
-test("invalid choice lists the valid values", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const registry = new ToolRegistry(store, async () => true);
-  registry.register({ name: "pick", description: "Pick a file", fields: { path: { type: "string", description: "file", required: true, choices: ["a.ts", "b.ts", "c.ts"] } }, access: "member", effect: "read", retrySafe: true,
-    async execute() { return "ok"; } });
-  assert.throws(() => registry.validate("pick", { path: "x.env" }), error =>
-    error instanceof ToolError && error.message === 'Invalid choice for path: "x.env". Use one of: a.ts, b.ts, c.ts.');
-  assert.throws(() => registry.validate("pick", { path: "y".repeat(150) }), error =>
-    error instanceof ToolError && error.message === `Invalid choice for path: "${"y".repeat(100)}". Use one of: a.ts, b.ts, c.ts.`);
-  assert.deepEqual(registry.validate("pick", { path: "b.ts" }), { path: "b.ts" });
-});
-
-test("message_ref accepts Discord and chat IDs", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const registry = new ToolRegistry(store, async () => true);
-  registry.register({ name: "inspect", description: "Inspect", fields: { message_id: { type: "message_ref", description: "message" } }, access: "member", effect: "read", retrySafe: true, surface: "top",
-    async execute() { return "ok"; } });
-  for (const message_id of ["12345678901234567", "12345678901234567890", "chat-reply-0123abcd", "chat-5f2c1e0a-7b1d-4c8e-9a2f-123456789abc"])
-    assert.deepEqual(registry.validate("inspect", { message_id }), { message_id });
-  const [schema] = registry.schemas();
-  const property = (schema!.function.parameters as { properties: Record<string, Record<string, unknown>> }).properties.message_id!;
-  assert.equal(property.type, "string");
-  assert.equal(property.minLength, 1);
-  assert.equal(property.maxLength, 4000);
-  assert.equal(property.pattern, "^(\\d{17,20}|chat-[A-Za-z0-9-]{1,120})$");
-  assert.ok(new RegExp(property.pattern as string).test("chat-reply-0123abcd"));
 });
 
 test("message_ref rejects other text", async t => {

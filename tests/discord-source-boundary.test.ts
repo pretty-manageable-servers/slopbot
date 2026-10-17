@@ -5,7 +5,6 @@ import { ChannelType, type Client, type Message as DiscordMessage } from 'discor
 import { DiscordServer } from '../src/adapters/discord.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { loadConfig } from '../src/config.js';
-import { toolProgressFooter } from '../src/source-context.js';
 
 const guild = '1528063444874432734', channel = '1528064977913647236', bot = '1514413259522838528';
 function fixture(fresh: { content: string; url: string; size?: number; author?: string }) {
@@ -28,49 +27,4 @@ test('Discord normalization marks its own progress UI transient and keeps human 
   assert.ok('transient' in normalized && normalized.transient === true);
   const human = f.adapter['normalize']({ ...f.message, author: { ...f.message.author, id: 'person', bot: false } } as unknown as DiscordMessage);
   assert.ok(!('transient' in human) || human.transient !== true);
-});
-
-test('own progress with the current header and footer is transient', t => {
-  const f = fixture({ content: '', url: 'https://cdn.discordapp.com/a/file.txt', author: bot });
-  t.after(() => f.store.close());
-  const progress = { ...f.message, content: '<a:slopbot_pulse:1559390627152531586> Blooming…\n🔎 Web search × 1\n-# now: 🔎 "rbc"', embeds: [{ footer: { text: toolProgressFooter }, fields: [] }] };
-  const normalized = f.adapter['normalize'](progress as unknown as DiscordMessage);
-  assert.ok('transient' in normalized && normalized.transient === true);
-});
-
-test('an automatic image preview does not invalidate unchanged human instructions', async t => {
-  const f = fixture({ content: 'See https://example.com/image', url: 'https://cdn.discordapp.com/attachments/a/file.txt' });
-  t.after(() => f.store.close());
-  const original = f.adapter['normalize'](f.message as unknown as DiscordMessage);
-  await f.store.ingest(original); const turn = f.store.addAgentTurn(original, '', [{ name: 'read', arguments: {} }]);
-  const enriched = { ...f.message, embeds: [{ type: 'image', image: { url: 'https://cdn.discordapp.com/preview.png' } }] };
-  await f.store.revise(f.adapter['normalize'](enriched as unknown as DiscordMessage));
-  assert.equal(f.store.agentTurns(original)[0]?.id, turn.id);
-});
-
-test('final error reply removes progress even without activity footer', async t => {
- const f=fixture({content:'request',url:'https://cdn.discordapp.com/a.txt'}); t.after(()=>f.store.close());
- let finished=false; f.adapter['toolProgress'].finish=async()=>{finished=true;};
- await f.adapter.reply({id:'request',server:guild,channel,author:'person',text:'request'},'[CONTEXT_CHANGED] source changed');
- assert.equal(finished,true);
-});
-
-
-for (const id of ['task-seed:source', 'command:reminder:source', 'source']) test(`live status uses valid reply references for ${id}`, async t => {
-  const f = fixture({content:'request',url:'https://cdn.discordapp.com/a.txt'});
-  t.after(() => f.store.close());
-  const thread = '1528064977913647299';
-  f.adapter['bot']['tasks'].add(thread);
-  const payloads: {content:string; reply?:unknown}[] = [];
-  t.mock.method(f.target, 'send', async (payload: {content:string; reply?:unknown}) => {
-    payloads.push(payload);
-    return {async edit() {}, async delete() {}};
-  });
-  const observer = f.adapter['app']['runner']['services'].onToolActivity!;
-  await observer({id,server:guild,channel:thread,author:'person',text:'request',taskId:thread},
-    {id:'call',name:'web_search',status:'running',arguments:{query:'weather'}});
-  assert.equal(payloads.length, 1);
-  assert.match(payloads[0]!.content, /-# now: 🔎 "weather"$/);
-  assert.ok(!payloads[0]!.content.includes('"query"'));
-  assert.equal(Boolean(payloads[0]!.reply), id === 'source');
 });

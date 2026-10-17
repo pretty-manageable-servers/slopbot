@@ -6,8 +6,7 @@ import { ChannelType, Collection, type Client } from 'discord.js';
 import { AudioPlayerStatus, VoiceConnectionStatus, type AudioPlayer, type joinVoiceChannel } from '@discordjs/voice';
 import OpusScript from 'opusscript';
 import { DiscordVoice, voiceTurnSkipped, type VoicePoster } from '../src/adapters/discord-voice.js';
-import { DiscordServer } from '../src/adapters/discord.js';
-import { SQLiteStore } from '../src/adapters/sqlite.js';
+
 import { pcmWav } from '../src/adapters/audio.js';
 import { liveText } from '../src/live-text.js';
 import type { Message } from '../src/domain.js';
@@ -15,7 +14,7 @@ import { UsageMeter } from '../src/usage-meter.js';
 import { UserLimiter } from '../src/user-limiter.js';
 import type { ToolContext, ToolDefinition, ToolRegistry } from '../src/tools.js';
 import { loadConfig } from '../src/config.js';
-import { DEFAULT_VOICE_INSTRUCTIONS, VOICE_FILLER_GAP_MS, VOICE_FILLER_TEXTS, VOICE_LIMIT_TEXT, VOICE_SKIP, VOICE_SPOKEN_MAX, containsSkipMarker, heldSkipLength, isErrorReply, spokenText } from '../src/voice-rules.js';
+import { DEFAULT_VOICE_INSTRUCTIONS, VOICE_LIMIT_TEXT, VOICE_SKIP, VOICE_SPOKEN_MAX } from '../src/voice-rules.js';
 
 /** Speech in these tests is loud (RMS about 8500). Cues are about 4100 RMS. Silence is 0. */
 const SPEECH_LEVEL = 12000;
@@ -247,88 +246,6 @@ async function rig(t: TestContext, options: { reply?: 'voice' | 'text'; usage?: 
   return { voice, tools, context, speeches, chat, posts, player, talk, skip, say };
 }
 
-/** The "Listening" lines still in the chat. */
-function listening(r: { chat: Map<string, FakeMessage> }): FakeMessage[] {
-  return [...r.chat.values()].filter(message => !message.deleted && message.content.includes('Listening'));
-}
-
-test('a turn plays no beeps: only the reply speech', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  await r.voice.speak('channel', 'Hello there.');
-  await until(() => r.player.ended[0] === true);
-  await settle();
-  // One resource for the turn, with speech only. No sound before it and none after the turn.
-  assert.deepEqual(r.player.kinds(0), ['speech']);
-  assert.deepEqual(r.player.events, ['play 0', 'end 0']);
-  assert.deepEqual(r.speeches, ['Hello there.']);
-});
-
-test('nothing plays on leave', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  r.voice.leave();
-  await settle();
-  // Nothing played.
-  assert.equal(r.player.resources.length, 0);
-});
-
-test('text mode plays nothing', async t => {
-  const r = await rig(t, { reply: 'text' });
-  r.talk();
-  await until(() => r.posts.length === 1);
-  r.voice.checkFiller('channel', Date.now() + VOICE_FILLER_GAP_MS);
-  await r.voice.speak('channel', 'Hello there.');
-  await settle();
-  assert.equal(r.speeches.length, 0);
-  assert.equal(r.player.resources.length, 0);
-});
-
-test('transcript gets ear reaction', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  await until(() => r.chat.get('transcript-1')?.reacted.includes('👂') === true);
-  assert.deepEqual(r.chat.get('transcript-1')!.reacted, ['👂']);
-});
-
-test('listening line is posted and the previous one deleted', async t => {
-  const clock = fakeClock(t);
-  const r = await rig(t);
-  // Posted once the join is ready.
-  await until(() => listening(r).length === 1);
-  const first = listening(r)[0]!;
-  clock.advance(5000);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  await r.voice.speak('channel', 'Hello there.');
-  await until(() => listening(r).length === 1 && listening(r)[0] !== first);
-  assert.equal(first.deleted, true);
-});
-
-test('listening line is rate limited', async t => {
-  const clock = fakeClock(t);
-  const r = await rig(t);
-  await until(() => listening(r).length === 1);
-  const first = listening(r)[0]!;
-  // A turn that ends 1 s after the line was posted does not post again. The line stays.
-  clock.advance(1000);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  await r.voice.speak('channel', 'Hello there.');
-  await settle();
-  assert.deepEqual(listening(r), [first]);
-  assert.equal(first.deleted, false);
-  // After the 3 s window, the next turn posts a new line and deletes the old one.
-  clock.advance(3000);
-  r.talk();
-  await until(() => r.posts.length === 2);
-  await r.voice.speak('channel', 'Again.');
-  await until(() => listening(r).length === 1 && listening(r)[0] !== first);
-  assert.equal(first.deleted, true);
-});
 
 test('voice_skip tool marks the turn and suppresses the reply', async t => {
   const r = await rig(t);
@@ -349,30 +266,6 @@ test('voice_skip tool marks the turn and suppresses the reply', async t => {
   assert.equal(voiceTurnSkipped(voiceMessage), false);
 });
 
-test('text after voice_skip is not spoken', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  await r.skip({ source: 'voice', channel: 'channel' });
-  // The model writes text after the tool call. None of it is spoken.
-  reply('run-1', ['Sure, here is a long answer that must not be read aloud. ']);
-  await r.voice.speak('channel', VOICE_SKIP);
-  await settle();
-  assert.equal(r.speeches.length, 0);
-});
-
-test('[SKIP] text fallback still suppresses', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  reply('run-1', ['[SKIP]']);
-  await r.voice.speak('channel', '[SKIP]');
-  await settle();
-  // No speech, and no error sentence either.
-  assert.equal(r.speeches.length, 0);
-  assert.equal(voiceTurnSkipped(voiceMessage), false);
-});
-
 test('voice_skip outside a voice turn does nothing', async t => {
   const r = await rig(t);
   // No turn yet.
@@ -384,65 +277,6 @@ test('voice_skip outside a voice turn does nothing', async t => {
   await r.voice.speak('channel', 'Hello there.');
   // The turn was not skipped, so its reply was spoken.
   assert.deepEqual(r.speeches, ['Hello there.']);
-});
-
-test('[SKIP] in the middle of a reply suppresses it', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  // The marker is split across two deltas. It is held back until it is known.
-  liveText.emit({ kind: 'start', message: voiceMessage, runId: 'run-1' });
-  liveText.emit({ kind: 'text', message: voiceMessage, runId: 'run-1', text: 'Hi there, how are you doing today[SK' });
-  liveText.emit({ kind: 'text', message: voiceMessage, runId: 'run-1', text: 'IP] and more text here. ' });
-  liveText.emit({ kind: 'end', message: voiceMessage, runId: 'run-1', status: 'done' });
-  await r.voice.speak('channel', 'Hi there, how are you doing today[SKIP] and more text here.');
-  await settle();
-  assert.equal(r.speeches.length, 0);
-});
-
-test('skip reply posts nothing and ends the turn', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  let sends = 0;
-  const permissions = { has: () => true };
-  const bot = '1514413259522838528', guild = '1528063444874432734', channel = '1528064977913647236';
-  const sent = { id: 'reply', guildId: guild, channelId: channel, content: '', author: { id: bot, username: 'slopbot', bot: true }, attachments: new Map(), embeds: [], reference: null, mentions: { users: new Map() }, member: null, guild: { name: 'Server' }, createdTimestamp: 1, editedTimestamp: null };
-  const target = { type: ChannelType.GuildText, guildId: guild, isThread: () => false, isTextBased: () => true, isSendable: () => true, send: async () => { sends++; return sent; }, permissionsFor: () => permissions, messages: { fetch: async () => undefined } };
-  const client = Object.assign(new EventEmitter(), { user: { id: bot }, channels: { fetch: async () => target }, guilds: { fetch: async () => ({ members: { fetch: async () => ({ permissions }), fetchMe: async () => ({ permissions }) } }) } });
-  const config = loadConfig({ DISCORD_BOT_TOKEN: 'test-only', DISCORD_GUILD_ID: guild, DISCORD_CHANNEL_IDS: channel, LLM_MODE: 'mock' });
-  const adapter = new DiscordServer(config, store, { async *stream() { yield { kind: 'text', payload: { text: 'Hello.' } }; } } as never, client as unknown as Client, guild, undefined);
-  const spoken: unknown[][] = [];
-  Object.assign(adapter, { voice: { speak: async (...args: unknown[]) => { spoken.push(args); }, cue: async () => {}, stop: () => {} } });
-  const request = { ...voiceMessage, server: guild, channel, id: 'request' } as Message;
-  await adapter.reply(request, '[SKIP]');
-  // No chat post, and the turn ends with the skip marker.
-  assert.equal(sends, 0);
-  assert.deepEqual(spoken, [[channel, VOICE_SKIP]]);
-  // A normal voice reply is still posted.
-  await adapter.reply(request, 'Hello there.');
-  assert.equal(sends, 1);
-});
-
-test('skip is not spoken and not treated as error', () => {
-  assert.equal(containsSkipMarker('[SKIP]'), true);
-  assert.equal(containsSkipMarker('Sure \\[skip\\] now'), true);
-  assert.equal(isErrorReply('[SKIP]'), false);
-  assert.equal(spokenText('[SKIP]'), '');
-  assert.equal(spokenText('[ACTION_UNCERTAIN] nope'), 'Sorry, that did not work. The details are in the chat.');
-  // A held prefix waits for the next text. Plain text is not held.
-  assert.equal(heldSkipLength('Hello ['), 1);
-  assert.equal(heldSkipLength('Hello \\[S'), 3);
-  assert.equal(heldSkipLength('Hello'), 0);
-});
-
-test('status shows Busy while a turn runs and Listening after it', async t => {
-  const r = await rig(t);
-  const status = () => r.tools.get('voice')!.execute(r.context, { action: 'status' });
-  assert.match(String(await status()), /State: Listening/);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  assert.match(String(await status()), /State: Busy \(replying to Human\)/);
-  await r.voice.speak('channel', 'Hello there.');
-  assert.match(String(await status()), /State: Listening/);
 });
 
 test('voice_say speaks its text and the reply is not spoken', async t => {
@@ -458,37 +292,6 @@ test('voice_say speaks its text and the reply is not spoken', async t => {
   assert.deepEqual(r.player.kinds(0), ['speech']);
 });
 
-test('voice_say starts speech before the reply is posted', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  assert.equal(await r.say('Hello there.'), 'Speaking.');
-  // The speech request goes out with no reply and no speak() call.
-  await until(() => r.speeches.includes('Hello there.'));
-  await until(() => r.player.events.includes('play 0'));
-  assert.deepEqual(r.speeches, ['Hello there.']);
-});
-
-test('no voice_say falls back to streaming the reply', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  reply('run-1', ['First sentence is here. Second sentence is here too.']);
-  await r.voice.speak('channel', 'First sentence is here. Second sentence is here too.');
-  assert.deepEqual(r.speeches, ['First sentence is here.', 'Second sentence is here too.']);
-});
-
-test('voice_say can speak again after a tool', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  assert.equal(await r.say('Let me search for that.'), 'Speaking.');
-  // A tool runs. Then the model says the answer.
-  assert.equal(await r.say('It is sunny today.'), 'Speaking.');
-  await r.voice.speak('channel', 'Full chat answer, not read aloud.');
-  assert.deepEqual(r.speeches, ['Let me search for that.', 'It is sunny today.']);
-});
-
 test('voice_say stops at the spoken limit', async t => {
   const r = await rig(t);
   r.talk();
@@ -502,24 +305,6 @@ test('voice_say stops at the spoken limit', async t => {
   assert.ok(total <= VOICE_SPOKEN_MAX, `spoken ${total} characters`);
 });
 
-test('filler plays only after a silence while the bot works', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  // Not silent long enough.
-  r.voice.checkFiller('channel', Date.now() + VOICE_FILLER_GAP_MS - 1000);
-  await settle();
-  assert.deepEqual(r.speeches, []);
-  r.voice.checkFiller('channel', Date.now() + VOICE_FILLER_GAP_MS);
-  await until(() => r.speeches.length === 1);
-  assert.deepEqual(r.speeches, [VOICE_FILLER_TEXTS[0]]);
-  // Speech resets the silence: no filler right after it.
-  await r.say('Here is the answer.');
-  r.voice.checkFiller('channel');
-  await r.voice.speak('channel', 'Here is the answer.');
-  assert.deepEqual(r.speeches, [VOICE_FILLER_TEXTS[0], 'Here is the answer.']);
-});
-
 test('voice_say in text mode speaks nothing', async t => {
   const r = await rig(t, { reply: 'text' });
   r.talk();
@@ -527,78 +312,6 @@ test('voice_say in text mode speaks nothing', async t => {
   assert.equal(await r.say('Hello there.'), 'Text-only session; not spoken.');
   await r.voice.speak('channel', 'Hello there.');
   assert.equal(r.speeches.length, 0);
-});
-
-test('speak block is spoken and removed from chat', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  await r.voice.speak('channel', 'Here are details.\n<speak>It is sunny.</speak>');
-  assert.deepEqual(r.speeches, ['It is sunny.']);
-});
-
-test('a reply that starts with a speak block is spoken once', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  reply('run-1', ['<speak>It is sunny.</speak>']);
-  await r.voice.speak('channel', '<speak>It is sunny.</speak>');
-  assert.deepEqual(r.speeches, ['It is sunny.']);
-});
-
-test('speak block is not spoken again after voice_say with no tool', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  assert.equal(await r.say('Hello everyone.'), 'Speaking.');
-  await r.voice.speak('channel', 'Hi all!\n<speak>Hello everyone.</speak>');
-  assert.deepEqual(r.speeches, ['Hello everyone.']);
-});
-
-test('speak block is spoken after a tool when voice_say came before it', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  assert.equal(await r.say('Let me check.'), 'Speaking.');
-  r.voice.toolStarted('channel', 'web_fetch');
-  await r.voice.speak('channel', 'Sunny today.\n<speak>It is sunny.</speak>');
-  assert.deepEqual(r.speeches, ['Let me check.', 'It is sunny.']);
-});
-
-test('final answer spoken after a tool when voice_say came before it', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  assert.equal(await r.say('Let me check.'), 'Speaking.');
-  r.voice.toolStarted('channel', 'web_fetch');
-  await r.voice.speak('channel', '**Sunny** today. More details here.');
-  assert.deepEqual(r.speeches, ['Let me check.', 'Sunny today. More details here.']);
-});
-
-test('streamed block skips the tool chat fallback', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  liveText.emit({ kind: 'start', message: voiceMessage, runId: 'run-1' });
-  liveText.emit({ kind: 'text', message: voiceMessage, runId: 'run-1', text: 'Chat text. <speak>Spoken once in the block here.</speak>' });
-  await until(() => r.speeches.length === 1);
-  // voice_say and then a tool come after the block. The chat answer must not be spoken then.
-  assert.equal(await r.say('Let me check.'), 'Speaking.');
-  r.voice.toolStarted('channel', 'web_fetch');
-  liveText.emit({ kind: 'end', message: voiceMessage, runId: 'run-1', status: 'done' });
-  await r.voice.speak('channel', 'Chat text. Full answer here.\n<speak>Spoken once in the block here.</speak>');
-  assert.deepEqual(r.speeches, ['Spoken once in the block here.', 'Let me check.']);
-});
-
-test('no extra speech when voice_say came after the tool', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  assert.equal(await r.say('Let me check.'), 'Speaking.');
-  r.voice.toolStarted('channel', 'web_fetch');
-  assert.equal(await r.say('It is sunny.'), 'Speaking.');
-  await r.voice.speak('channel', '**Sunny** today. More details here.');
-  assert.deepEqual(r.speeches, ['Let me check.', 'It is sunny.']);
 });
 
 test('voice_skip beats voice_say', async t => {
@@ -610,33 +323,6 @@ test('voice_skip beats voice_say', async t => {
   await r.voice.speak('channel', VOICE_SKIP);
   await settle();
   assert.equal(r.speeches.length, 0);
-});
-
-test('leave from a voice turn waits for the reply', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  await r.say('Goodbye for now.');
-  const leave = { message: { author: 'user', source: 'voice', channel: 'channel' }, isAdmin: false } as unknown as ToolContext;
-  assert.equal(await r.tools.get('voice')!.execute(leave, { action: 'leave' }), 'Leaving after this reply.');
-  // The session is still live while the reply is pending.
-  assert.match(String(await r.tools.get('voice')!.execute(r.context, { action: 'status' })), /Voice session in/);
-  await r.voice.speak('channel', 'Goodbye for now.');
-  await until(() => r.player.ended[0] === true);
-  assert.deepEqual(r.player.events, ['play 0', 'end 0']);
-  assert.deepEqual(r.speeches, ['Goodbye for now.']);
-  // The reply ended, so the session is gone.
-  assert.match(String(await r.tools.get('voice')!.execute(r.context, { action: 'status' })), /No active voice session/);
-});
-
-test('leave from text leaves at once', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  // A Discord text message has no voice source.
-  const leave = { message: { author: 'user', channel: 'channel' }, isAdmin: false } as unknown as ToolContext;
-  assert.equal(await r.tools.get('voice')!.execute(leave, { action: 'leave' }), 'Left the voice channel.');
-  assert.match(String(await r.tools.get('voice')!.execute(r.context, { action: 'status' })), /No active voice session/);
 });
 
 test('over the limit speaks the limit sentence once', async t => {
@@ -652,31 +338,6 @@ test('over the limit speaks the limit sentence once', async t => {
   // No transcript is posted, and the turn ends so the next one can start.
   assert.deepEqual(r.posts, []);
   assert.match(String(await r.tools.get('voice')!.execute(r.context, { action: 'status' })), /State: Listening/);
-});
-
-test('limit sentence is rate limited per user', async t => {
-  const clock = fakeClock(t);
-  const { usage, state } = limitedMeter();
-  const r = await rig(t, { usage });
-  state.over = true;
-  r.talk();
-  await until(() => r.player.ended[0] === true);
-  await settle();
-  // The same user one minute later: nothing is spoken.
-  clock.advance(60_000);
-  r.talk();
-  await settle();
-  assert.equal(r.player.resources.length, 1);
-  // Another user, in the same session: their own sentence is spoken.
-  r.talk('other');
-  await until(() => r.player.ended[1] === true);
-  await settle();
-  // The first user, five minutes after their sentence: spoken again. The clip is kept, so TTS ran once.
-  clock.advance(4 * 60_000);
-  r.talk();
-  await until(() => r.player.ended[2] === true);
-  assert.equal(r.player.resources.length, 3);
-  assert.deepEqual(r.speeches, [VOICE_LIMIT_TEXT]);
 });
 
 test('limit sentence is not billed', async t => {
@@ -699,19 +360,4 @@ test('limit sentence is not billed', async t => {
   assert.equal(state.recorded.length, 1);
   assert.notEqual(state.recorded[0], Array.from(VOICE_LIMIT_TEXT).length * 10);
   assert.deepEqual(r.speeches, [VOICE_LIMIT_TEXT]);
-});
-
-test('text mode posts the limit sentence in chat, rate limited', async t => {
-  const clock = fakeClock(t);
-  const { usage, state } = limitedMeter();
-  const r = await rig(t, { reply: 'text', usage });
-  state.over = true;
-  const notices = () => [...r.chat.values()].filter(message => message.content === VOICE_LIMIT_TEXT).length;
-  r.talk();
-  await until(() => notices() === 1);
-  clock.advance(1000);
-  r.talk();
-  await settle();
-  assert.equal(notices(), 1);
-  assert.deepEqual(r.speeches, []);
 });

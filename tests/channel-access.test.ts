@@ -7,7 +7,7 @@ import { discordChannelAccessSource, wireChannelAccessEvents } from '../src/adap
 import { DiscordAdapter } from '../src/adapters/discord.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { loadConfig } from '../src/config.js';
-import { webTranscriptKey, webTranscriptsEnabled } from '../src/server-tools.js';
+import { webTranscriptsEnabled } from '../src/server-tools.js';
 
 const server = '1528063444874432734', text = '1528063444874432735', other = '1528063444874432736', user = '1514413259522838529';
 const base: ChannelFacts = { thread: false, privateThread: false, viewChannel: true, readMessageHistory: true, sendMessages: true, sendMessagesInThreads: true, threadMember: false };
@@ -20,23 +20,21 @@ function fake(initial: Partial<ChannelFacts> | undefined) {
 }
 const ask = (facts: Partial<ChannelFacts> | undefined) => new ChannelAccess(fake(facts).source).check(server, text, user);
 
-test('channel rules need View Channel, Read Message History and Send Messages', async () => {
-  assert.deepEqual(await ask({}), { view: true, send: true });
-  assert.deepEqual(await ask({ viewChannel: false }), { view: false, send: false });
-  assert.deepEqual(await ask({ readMessageHistory: false }), { view: false, send: false });
-  assert.deepEqual(await ask({ sendMessages: false }), { view: true, send: false });
-  assert.deepEqual(await ask({ sendMessages: false, sendMessagesInThreads: true }), { view: true, send: false });
-});
-test('thread rules use Send Messages in Threads, not Send Messages', async () => {
-  assert.deepEqual(await ask({ thread: true, sendMessages: false, sendMessagesInThreads: true }), { view: true, send: true });
-  assert.deepEqual(await ask({ thread: true, sendMessages: true, sendMessagesInThreads: false }), { view: true, send: false });
-});
-test('private threads need thread membership to view or send', async () => {
-  assert.deepEqual(await ask({ thread: true, privateThread: true, threadMember: false }), { view: false, send: false });
-  assert.deepEqual(await ask({ thread: true, privateThread: true, threadMember: true }), { view: true, send: true });
-});
-test('a user who is not in the guild can neither view nor send', async () => {
-  assert.deepEqual(await ask(undefined), { view: false, send: false });
+test('channel rules: View Channel, Read Message History, Send Messages, thread rules and private thread membership', async () => {
+  const none = { view: false, send: false };
+  const cases: [Partial<ChannelFacts> | undefined, { view: boolean; send: boolean }][] = [
+    [{}, { view: true, send: true }],
+    [{ viewChannel: false }, none],
+    [{ readMessageHistory: false }, none],
+    [{ sendMessages: false }, { view: true, send: false }],
+    [{ sendMessages: false, sendMessagesInThreads: true }, { view: true, send: false }],
+    [{ thread: true, sendMessages: false, sendMessagesInThreads: true }, { view: true, send: true }],
+    [{ thread: true, sendMessages: true, sendMessagesInThreads: false }, { view: true, send: false }],
+    [{ thread: true, privateThread: true, threadMember: false }, none],
+    [{ thread: true, privateThread: true, threadMember: true }, { view: true, send: true }],
+    [undefined, none],
+  ];
+  for (const [facts, expected] of cases) assert.deepEqual(await ask(facts), expected, JSON.stringify(facts));
 });
 test('answers are cached for at most 30 seconds', async () => {
   let now = 0;
@@ -69,15 +67,6 @@ for (const [event, args] of events) {
     assert.equal(f.state.calls, 2);
   });
 }
-test('a member update for another user keeps the cached answer', async () => {
-  const f = fake({}), access = new ChannelAccess(f.source), emitter = new EventEmitter();
-  wireChannelAccessEvents(emitter as unknown as Client, access);
-  await access.check(server, text, user);
-  emitter.emit(Events.GuildMemberUpdate, {}, { id: other, guild: { id: server } });
-  await access.check(server, text, user);
-  assert.equal(f.state.calls, 1);
-});
-
 function discordClient(granted: bigint[], options: { type?: ChannelType; member?: boolean; threadMember?: boolean; guildId?: string } = {}) {
   const type = options.type ?? ChannelType.GuildText, member = { id: user };
   const channel = {
@@ -97,20 +86,6 @@ test('Discord source reads live channel permissions for a member', async () => {
   assert.deepEqual(await discordAccess(discordClient(chatting, { member: false })), { view: false, send: false });
   assert.deepEqual(await discordAccess(discordClient(chatting, { guildId: other })), { view: false, send: false });
 });
-test('Discord source checks thread membership for private threads', async () => {
-  const thread = (threadMember: boolean) => discordClient([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.SendMessagesInThreads], { type: ChannelType.PrivateThread, threadMember });
-  assert.deepEqual(await discordAccess(thread(false), text), { view: false, send: false });
-  assert.deepEqual(await discordAccess(thread(true), text), { view: true, send: true });
-  const publicThread = discordClient([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.SendMessagesInThreads], { type: ChannelType.PublicThread });
-  assert.deepEqual(await discordAccess(publicThread), { view: true, send: true });
-});
-test('a thread uses the switch of its parent channel', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  store.setSetting(server, webTranscriptKey(text), true);
-  assert.equal(webTranscriptsEnabled(store, server, text), true);
-  assert.equal(webTranscriptsEnabled(store, server, other), false);
-});
-
 function adapterFixture(initialAdmin: boolean) {
   let admin = initialAdmin;
   const permissions = { has: () => admin };

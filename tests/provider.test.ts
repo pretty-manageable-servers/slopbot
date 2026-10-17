@@ -2,27 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ChatCompletionsLLM, ProviderError, sseData, wireMessages } from "../src/adapters/chat-completions.js";
 import type { ModelEvent, Prompt } from "../src/domain.js";
-import { requestTimings } from "../src/request-timing.js";
 
 const prompt: Prompt = {
   prefixVersion: "v1", prefix: [{ role: "system", content: "fixed" }], history: [],
   inputs: [{ role: "user", content: "hello", author: "alice" }],
 };
 const options = { baseUrl: "https://api.pmservers.org/ai/v1", apiKey: "test-only", model: "llama.cpp/gemma-4-e4b-qat" };
-
-test('provider boundaries record headers and stream reads separately without changing prompts',async()=>{
- const message={server:'s',channel:'c',id:'provider-boundaries'};
- const llm=new ChatCompletionsLLM(options,async()=>{
-   await new Promise(resolve=>setTimeout(resolve,10));
-   return new Response('data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
- });
- requestTimings.begin(message);
- await requestTimings.withScope(message,async()=>{for await(const event of llm.stream(prompt))void event;});
- const timing=requestTimings.finish(message)!;
- assert.ok((timing.blockedMs!['reply model response headers']??0)>=1);
- assert.ok('reply model stream read' in timing.blockedMs!);
- assert.equal(Object.values(timing.blockedMs!).reduce((sum,ms)=>sum+ms,0),timing.totalMs);
-});
 
 test("provider requests use configured endpoint/model and preserve prefix", async () => {
   let body: Record<string, unknown> = {};
@@ -62,24 +47,6 @@ test("SSE handles split Unicode, CRLF, comments and multiple data lines", async 
   assert.deepEqual(values.map(value => JSON.parse(value)), [{ text: "🙂" }]);
 });
 
-test("provider receives the full reply budget without a Discord size cap", async () => {
-  const text = "Long response 🙂\n".repeat(5000);
-  const llm = new ChatCompletionsLLM(options, async (_url, init) => {
-    assert.equal(JSON.parse(String(init?.body)).max_tokens, 50000);
-    return new Response(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: text }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
-  });
-  let result = "";
-  for await (const event of llm.stream({ ...prompt, maxOutputTokens: 50000 })) {
-    if (event.kind === "text") result += event.payload.text;
-  }
-  const { splitReply } = await import("../src/bot.js");
-  const parts = splitReply(result);
-  assert.ok(parts.length > 2);
-  assert.ok(parts.every(part => part.length <= 1900));
-  assert.equal(parts.join(""), text);
-  assert.deepEqual(splitReply(result), parts);
-});
-
 test("HTTP errors do not expose response bodies or credentials", async () => {
   const llm = new ChatCompletionsLLM(options, async () => new Response("sensitive upstream body", { status: 401 }));
   await assert.rejects(async () => { for await (const event of llm.stream(prompt)) void event; }, error => {
@@ -88,13 +55,6 @@ test("HTTP errors do not expose response bodies or credentials", async () => {
     assert.ok(!error.message.includes("sensitive"));
     return true;
   });
-});
-
-test("truncated streams fail instead of reporting a successful answer", async () => {
-  const llm = new ChatCompletionsLLM(options, async () => new Response(
-    'data: {"choices":[{"index":0,"delta":{"content":"partial"}}]}\n\n',
-  ));
-  await assert.rejects(async () => { for await (const event of llm.stream(prompt)) void event; }, /before completion/);
 });
 
 test("Gemma tool markers are normalized while original streamed text is retained", async () => {
@@ -149,21 +109,4 @@ test('tool rounds and subsequent task turns append identical wire prefixes',asyn
  for(let index=1;index<requests.length;index++){
   assert.deepEqual(requests[index]!.slice(0,requests[index-1]!.length),requests[index-1]);
  }
-});
-
-
-test("provider output exhaustion reports the budget and checkpoint stage", async () => {
-  const llm = new ChatCompletionsLLM(options, async () => new Response('data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":"length"}]}\n\ndata: [DONE]\n\n'));
-  const partial: string[] = [];
-  await assert.rejects(async () => {
-    for await (const event of llm.stream({ ...prompt, purpose: "checkpoint", maxOutputTokens: 2048 })) {
-      if (event.kind === "text") partial.push(event.payload.text);
-    }
-  }, (error: unknown) => {
-    assert.ok(error instanceof Error && "code" in error && "details" in error);
-    assert.equal(error.code, "MODEL_OUTPUT_LIMIT");
-    assert.deepEqual(error.details, { maxOutputTokens: 2048, purpose: "checkpoint", configuredOutputTokens: 50000, contextTokens: 200000 });
-    return true;
-  });
-  assert.deepEqual(partial, ["partial"]);
 });

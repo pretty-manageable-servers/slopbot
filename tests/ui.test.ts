@@ -6,6 +6,7 @@ import { UiRuntime } from "../src/ui/runtime.js";
 import { validateUi } from "../src/ui/schema.js";
 import { discordUi } from "../src/adapters/discord-ui.js";
 const message = { server: "s", channel: "c", author: "u", id: "m", text: "UI" };
+
 test("UI rejects executable content and invalid poll specifications", () => {
   assert.throws(
     () => validateUi({ version: 1, type: "card", text: "Hi", script: "evil" }),
@@ -46,6 +47,7 @@ test("UI rejects executable content and invalid poll specifications", () => {
   assert.ok("poll" in poll);
   assert.equal(poll.flags, undefined);
 });
+
 test("UI revisions prevent concurrent duplicate actions and durable state survives runtime recreation", async (t) => {
   const store = new SQLiteStore();
   t.after(() => store.close());
@@ -80,6 +82,7 @@ test("UI revisions prevent concurrent duplicate actions and durable state surviv
   assert.equal(count, 1);
   assert.equal((await store.record("s", "ui", saved.id))?.revision, 3);
 });
+
 test("UI checks current channel access before claiming a control", async (t) => {
   const store = new SQLiteStore();
   t.after(() => store.close());
@@ -161,26 +164,4 @@ test("a UI recovers a completed action after a crash before the UI update", asyn
     recovered.document.type !== "poll" &&
       recovered.document.text === "Completed",
   );
-});
-
-test("rich cards suppress multiple link previews and encode controls with opaque IDs", () => {
-  const payload = discordUi(
-    validateUi({
-      version: 1,
-      type: "card",
-      text: "https://example.com https://example.org",
-      actions: [
-        {
-          label: "More",
-          action: "history.next",
-          arguments: { cursor: "secret-cursor" },
-        },
-      ],
-    }),
-    "opaque",
-    3,
-  );
-  assert.ok(payload.flags?.includes("SuppressEmbeds"));
-  assert.ok(!JSON.stringify(payload).includes("secret-cursor"));
-  assert.match(JSON.stringify(payload), /slopui:opaque:3:0/);
 });

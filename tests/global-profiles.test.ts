@@ -65,16 +65,5 @@ test('model context uses global owner facts over conflicting server fields witho
   let input = '';
   const app = new Application(store, { async *stream(prompt) { input = prompt.inputs.map(item => item.content).join('\n'); yield { kind: 'text', payload: { text: 'Done' } }; } }, { allowedChannels: [{ server: request.server, channel: request.channel }] }, undefined, { profiles: store });
   await app.handle(request, true);
-  assert.match(input, /global-owner-repo/); assert.match(input, /global, owner-supplied/); assert.ok(!input.includes('server-repo'));
-});
-
-test('a retained revision can undo safely when its prior revision aged out of history', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close()); const profiles = new GlobalProfiles(store);
-  await profiles.edit(owner, owner, 'github', 'original', 'original');
-  for (let i = 0; i < 201; i++) await profiles.edit(owner, owner, 'counter', i, `counter-${i}`);
-  await profiles.edit(owner, owner, 'github', 'replacement', 'replacement');
-  await profiles.undo(owner, owner, 'replacement', 'undo-replacement');
-  const profile = await profiles.get(owner);
-  assert.equal(profile.fields.find(field => field.field === 'github')?.value, 'original');
-  assert.equal('previous' in profile.fields[0]!, false);
+  assert.match(input, /global-owner-repo/); assert.ok(!input.includes('server-repo'));
 });

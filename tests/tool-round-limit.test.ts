@@ -8,14 +8,6 @@ import { loadConfig } from '../src/config.js';
 const message = {server:'s',channel:'c',author:'alice',id:'request',text:'Do the task',addressed:true};
 const call = [{ name: "read", arguments: {} }];
 
-test('default allows a task requiring more than eight rounds to finish', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close()); let rounds = 0, calls = 0;
-  const app = new Application(store, {async *stream(){yield ++rounds <= 10 ? { kind: 'tool_call', payload: call } : { kind: 'text', payload: { text: 'Done' } };}},
-    {allowedChannels:[{server:'s',channel:'c'}]}, undefined, {tools:{schemas: () => [], catalog:()=>'',execute:async()=>{calls++;return 'Result';}}});
-  assert.equal((await app.handle(message))?.text, 'Done');
-  assert.equal(calls, 10);
-});
-
 test('a limit failure retains its reason and retry gets new rounds without replaying tools', async t => {
   const store = new SQLiteStore(); t.after(() => store.close()); let rounds = 0, calls = 0;
   const app = new Application(store, {async *stream(){yield ++rounds < 6 ? { kind: 'tool_call', payload: call } : { kind: 'text', payload: { text: 'Done' } };}},

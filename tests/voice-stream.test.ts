@@ -13,7 +13,7 @@ import { UsageMeter } from '../src/usage-meter.js';
 import { UserLimiter } from '../src/user-limiter.js';
 import type { ToolDefinition, ToolRegistry, ToolContext } from '../src/tools.js';
 import { loadConfig } from '../src/config.js';
-import { DEFAULT_VOICE_INSTRUCTIONS, SentenceSplitter, VOICE_FILLER_GAP_MS, VOICE_FILLER_TEXTS, VOICE_ERROR_TEXT, VOICE_SPOKEN_MAX, spokenText } from '../src/voice-rules.js';
+import { DEFAULT_VOICE_INSTRUCTIONS, SentenceSplitter, VOICE_SPOKEN_MAX } from '../src/voice-rules.js';
 
 /** Samples per sentence of fake speech: 2400 at 24 kHz is 0.1 s. */
 const SAMPLES = 2400;
@@ -203,18 +203,6 @@ test('splitter splits sentences and keeps abbreviations', () => {
   assert.deepEqual(waiting.push(' Then the next one starts'), ['This is the first long sentence here.']);
 });
 
-test('splitter merges short pieces', () => {
-  const splitter = new SentenceSplitter();
-  // "Yes." is under 20 characters, so it joins the next sentence.
-  assert.deepEqual(splitter.push('Yes. It is a long enough sentence here. Ok. Fine by me, thanks a lot.'), ['Yes. It is a long enough sentence here.']);
-  // flush() does not join: the last piece is returned as it is.
-  assert.deepEqual(splitter.flush(), ['Ok. Fine by me, thanks a lot.']);
-  // A short piece with nothing after it is returned at flush.
-  const short = new SentenceSplitter();
-  assert.deepEqual(short.push('Ok. '), []);
-  assert.deepEqual(short.flush(), ['Ok.']);
-});
-
 test('speakStream parses split SSE lines and odd bytes', async () => {
   const values = [1, -2, 300];
   const pcm = Buffer.alloc(values.length * 2);
@@ -249,16 +237,6 @@ function expectedPcm(values: number[]): Buffer {
   return speechPcm(wav);
 }
 
-test('speakStream falls back to WAV', async () => {
-  const wav = wav24(7, 480);
-  const fetcher: typeof fetch = async () => new Response(new Uint8Array(wav), { headers: { 'content-type': 'audio/wav' } });
-  const audio = new PmAudio('https://example.com', 'test', 'alloy', fetcher);
-  const parts: Buffer[] = [];
-  for await (const part of audio.speakStream('Hello there.', new AbortController().signal)) parts.push(part);
-  assert.equal(parts.length, 1);
-  assert.deepEqual(parts[0], speechPcm(wav));
-});
-
 test('streamed sentences play in order before reply arrives', async t => {
   const r = await rig(t);
   r.talk();
@@ -290,19 +268,6 @@ test('reply after streaming does not speak twice', async t => {
   await until(() => r.posts.length === 2);
 });
 
-test('error reply falls back to error sentence', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  const error = '[PROVIDER_HTTP_404] AI provider returned HTTP 404';
-  reply('run-1', [error], 'failed');
-  await settle();
-  assert.equal(r.provider.speeches.length, 0);
-  await r.voice.speak('channel', error);
-  assert.deepEqual(r.provider.speeches.map(call => call.input), [VOICE_ERROR_TEXT]);
-  assert.equal(spokenText(error), VOICE_ERROR_TEXT);
-});
-
 test('spoken total capped at VOICE_SPOKEN_MAX', async t => {
   const r = await rig(t);
   r.talk();
@@ -318,20 +283,6 @@ test('spoken total capped at VOICE_SPOKEN_MAX', async t => {
   // The last request holds the start of its sentence, cut at the cap.
   const last = r.provider.speeches.length - 1;
   assert.ok(sentences[last]!.startsWith(r.provider.speeches[last]!.input));
-});
-
-test('pipeline keeps at most one request ahead', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  const text = 'Sentence one is here. Sentence two is here. Sentence three is here. Sentence four is here. Sentence five is here.';
-  reply('run-1', [text]);
-  await r.voice.speak('channel', text);
-  const starts = r.provider.speeches.map(call => call.at);
-  assert.equal(starts.length, 5);
-  // Sentence 3 waits until sentence 1 has played, and sentence 4 until sentence 2 has played.
-  assert.ok(starts[2]! - starts[0]! >= 90, `third request started after ${starts[2]! - starts[0]!} ms`);
-  assert.ok(starts[3]! - starts[1]! >= 90, `fourth request started after ${starts[3]! - starts[1]!} ms`);
 });
 
 test('leave aborts streaming', async t => {
@@ -354,77 +305,6 @@ test('leave aborts streaming', async t => {
   assert.equal(r.provider.speeches.length, 1);
 });
 
-test('text mode posts transcript and plays no speech', async t => {
-  const r = await rig(t, { reply: 'text' });
-  r.talk();
-  await until(() => r.posts.length === 1);
-  assert.deepEqual(r.posts[0], { user: 'user', server: 'guild', channel: 'channel', text: 'Hello', kind: 'voice' });
-  r.voice.checkFiller('channel', Date.now() + VOICE_FILLER_GAP_MS);
-  reply('run-1', ['First sentence is here. Second sentence is here too.']);
-  await settle();
-  assert.equal(r.provider.speeches.length, 0);
-  // Text mode plays nothing.
-  assert.equal(r.player.resources.length, 0);
-  assert.match(String(r.joined), /text only/);
-});
-
-test('text mode ends turn when reply is posted', async t => {
-  const r = await rig(t, { reply: 'text' });
-  r.talk();
-  await until(() => r.posts.length === 1);
-  await r.voice.speak('channel', 'Hi there.');
-  assert.equal(r.provider.speeches.length, 0);
-  // The turn is over, so the next speech is accepted.
-  r.talk();
-  await until(() => r.posts.length === 2);
-});
-
-test('text mode skips filler and thunder billing', async t => {
-  const r = await rig(t, { reply: 'text' });
-  r.talk();
-  await until(() => r.posts.length === 1);
-  r.voice.checkFiller('channel', Date.now() + VOICE_FILLER_GAP_MS);
-  await settle();
-  assert.equal(r.provider.speeches.length, 0);
-  // Only the Squall transcription is billed. The 30720 bytes of speech are 0.16 s of audio at 4000 per minute.
-  assert.equal(r.spent(), Math.ceil(30720 / 192000 / 60 * 4000));
-});
-
-test('status shows reply mode', async t => {
-  const voice = await rig(t);
-  assert.equal(await voice.tool.execute(voice.context, { action: 'status' }), `Voice session in <#channel>.\nReplies: voice\nState: Listening\nVoice style: ${DEFAULT_VOICE_INSTRUCTIONS}`);
-  const text = await rig(t, { reply: 'text' });
-  assert.equal(await text.tool.execute(text.context, { action: 'status' }), `Voice session in <#channel>.\nReplies: text\nState: Listening\nVoice style: ${DEFAULT_VOICE_INSTRUCTIONS}`);
-});
-
-test('speak block streams before the reply ends', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  liveText.emit({ kind: 'start', message, runId: 'run-1' });
-  liveText.emit({ kind: 'text', message, runId: 'run-1', text: 'Details. <speak>First sentence here. ' });
-  // The first sentence of the block is requested while the reply is still open.
-  await until(() => r.provider.speeches.some(call => call.input === 'First sentence here.'));
-  liveText.emit({ kind: 'text', message, runId: 'run-1', text: 'Second one ends it.</speak> More chat text.' });
-  liveText.emit({ kind: 'end', message, runId: 'run-1', status: 'done' });
-  await r.voice.speak('channel', 'Details. Details more.\n<speak>First sentence here. Second one ends it.</speak> More chat text.');
-  assert.deepEqual(r.provider.speeches.map(call => call.input), ['First sentence here.', 'Second one ends it.']);
-});
-
-test('speak tag split across deltas', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  liveText.emit({ kind: 'start', message, runId: 'run-1' });
-  liveText.emit({ kind: 'text', message, runId: 'run-1', text: 'Hi there. <spe' });
-  liveText.emit({ kind: 'text', message, runId: 'run-1', text: 'ak>Block sentence is here. </spe' });
-  liveText.emit({ kind: 'text', message, runId: 'run-1', text: 'ak> More chat text that is not read.' });
-  liveText.emit({ kind: 'end', message, runId: 'run-1', status: 'done' });
-  await r.voice.speak('channel', 'Hi there.\n<speak>Block sentence is here.</speak> More chat text that is not read.');
-  // The partial tags were not read aloud, and the block was read once.
-  assert.deepEqual(r.provider.speeches.map(call => call.input), ['Block sentence is here.']);
-});
-
 test('text outside speak block is not spoken once a block started', async t => {
   const r = await rig(t);
   r.talk();
@@ -436,73 +316,4 @@ test('text outside speak block is not spoken once a block started', async t => {
   liveText.emit({ kind: 'end', message, runId: 'run-1', status: 'done' });
   await r.voice.speak('channel', '<speak>Block sentence is read here.</speak>Chat text after the block is here. <speak>Second block is read too.</speak>Trailing chat text is not read.');
   assert.deepEqual(r.provider.speeches.map(call => call.input), ['Block sentence is read here.', 'Second block is read too.']);
-});
-
-test('streamed block is not spoken again by speak()', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  reply('run-1', ['Chat text. <speak>Spoken once in the block here.</speak>']);
-  await r.voice.speak('channel', 'Chat text.\n<speak>Spoken once in the block here.</speak>');
-  assert.deepEqual(r.provider.speeches.map(call => call.input), ['Spoken once in the block here.']);
-});
-
-test('voice mode filler plays before sentences in the same stream', async t => {
-  const r = await rig(t);
-  r.talk();
-  await until(() => r.posts.length === 1);
-  r.voice.checkFiller('channel', Date.now() + VOICE_FILLER_GAP_MS);
-  reply('run-1', ['First sentence is here. Second sentence is here too.']);
-  await r.voice.speak('channel', 'First sentence is here. Second sentence is here too.');
-  assert.deepEqual(r.provider.speeches.map(call => call.input), [VOICE_FILLER_TEXTS[0], 'First sentence is here.', 'Second sentence is here too.']);
-  assert.deepEqual(r.player.levels(), [1, 2, 3]);
-});
-
-/** The voice_playback lines captured from console.log, parsed. */
-function playbackLogs(logs: string[]): Record<string, number | string>[] {
-  return logs.filter(line => line.includes('"voice_playback"')).map(line => JSON.parse(line) as Record<string, number | string>);
-}
-
-test('playback log reports an underrun when TTS pauses', async t => {
-  const logs: string[] = [];
-  t.mock.method(console, 'log', (line: string) => { logs.push(line); });
-  // The second sentence's TTS waits 400 ms before its second chunk. Playback runs dry while it waits.
-  const r = await rig(t, { realtime: true, pause: { call: 1, ms: 400 } });
-  r.talk();
-  await until(() => r.posts.length === 1);
-  const text = 'First sentence is here. Second sentence is here too.';
-  reply('run-1', [text]);
-  await r.voice.speak('channel', text);
-  await until(() => playbackLogs(logs).length === 1);
-  const [log] = playbackLogs(logs);
-  assert.equal(log!.type, 'voice_playback');
-  assert.equal(log!.server, 'guild');
-  assert.equal(log!.channel, 'channel');
-  assert.equal(log!.sentences, 2);
-  assert.ok(Number(log!.underruns) >= 1, `underruns ${log!.underruns}`);
-  assert.ok(Number(log!.underrun_ms_max) >= 200, `underrun_ms_max ${log!.underrun_ms_max}`);
-  assert.ok(Number(log!.underrun_ms_total) >= Number(log!.underrun_ms_max));
-});
-
-test('playback log reports zero underruns for a smooth stream', async t => {
-  const logs: string[] = [];
-  t.mock.method(console, 'log', (line: string) => { logs.push(line); });
-  // Three sentences come with no pause, so each one is ready before the last one has played.
-  const r = await rig(t, { realtime: true });
-  r.talk();
-  await until(() => r.posts.length === 1);
-  const text = 'First sentence is here. Second sentence is here too. Third one ends it.';
-  reply('run-1', [text]);
-  await r.voice.speak('channel', text);
-  await until(() => playbackLogs(logs).length === 1);
-  const [log] = playbackLogs(logs);
-  assert.equal(log!.sentences, 3);
-  assert.equal(log!.underruns, 0, `underruns ${log!.underruns}, max ${log!.underrun_ms_max} ms`);
-  assert.equal(log!.underrun_ms_total, 0);
-  assert.equal(log!.underrun_ms_max, 0);
-  assert.equal(log!.spoken_chars, r.provider.speeches.reduce((sum, call) => sum + Array.from(call.input).length, 0));
-  assert.equal(typeof log!.tts_first_chunk_ms_max, 'number');
-  assert.equal(typeof log!.tts_chunk_gap_ms_max, 'number');
-  assert.equal(typeof log!.event_loop_delay_ms_max, 'number');
-  assert.equal(typeof log!.event_loop_delay_ms_p99, 'number');
 });

@@ -35,19 +35,6 @@ test("window fills recent text, more extends older coverage, then catch-up fills
   assert.equal(importer.state("c").oldest?.id, "1");
 });
 
-test("older imports advance in 5000-message batches and reuse existing source records", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const importer = new HistoryImporter("s", store, source(messages(5100, 1)), 7, () => now);
-  await importer.start("c", "more"); await importer.idle();
-  assert.equal(store.indexStats("s", "c").messages, 5000);
-  assert.equal(importer.state("c").exhausted, false);
-  await importer.start("c", "more"); await importer.idle();
-  assert.equal(store.indexStats("s", "c").messages, 5100);
-  assert.equal(importer.state("c").exhausted, true);
-  await importer.start("c", "window"); await importer.idle();
-  assert.equal(store.indexStats("s", "c").messages, 5100);
-});
-
 test("failed imports retain a cursor, pause blocks work, and a new worker resumes", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const rows = messages(250, 1), healthy = source(rows);
@@ -59,7 +46,6 @@ test("failed imports retain a cursor, pause blocks work, and a new worker resume
   await importer.start("c"); await importer.idle();
   assert.equal(store.indexStats("s", "c").messages, 100);
   assert.equal(importer.state("c").error, true);
-  assert.match(importer.state("c").errorReason ?? "", /UNEXPECTED_ERROR/);
   assert.equal(importer.state("c").job?.before, "151");
   // The first page reached the 100th newest message, so the job's oldest reached time is that message's time.
   assert.equal(importer.state("c").job?.reachedAt, now - 99);

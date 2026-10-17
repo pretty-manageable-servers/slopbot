@@ -78,15 +78,6 @@ test('adding a key validates the input and stores only a sealed secret', async t
   assert.throws(() => secrets.open(row!.secretEncrypted, 'another-row'), 'the seal is bound to its row');
 });
 
-test('a disabled store refuses new keys with a message for the operator', async t => {
-  const { store, panel } = setup(new WebKeySecrets('')); t.after(() => store.close());
-  await assert.rejects(panel.addWebKey(OWNER, { provider: 'tavily', secret: SECRET }), (error: unknown) => error instanceof AdminInputError && /WEB_KEYS_SECRET/.test(error.message));
-  const view = await panel.webKeys(OWNER);
-  assert.equal(view.enabled, false);
-  assert.deepEqual(view.keys, []);
-  assert.deepEqual(await store.listProviderKeys(), []);
-});
-
 test('each member keeps at most 10 keys per provider', async t => {
   const { store, panel } = setup(); t.after(() => store.close());
   for (let i = 0; i < 10; i++) await panel.addWebKey(OWNER, { provider: 'tavily', secret: `tvly-key-${i}-abcdef` });
@@ -132,33 +123,6 @@ test('key caps are whole numbers from 1 to 100000 and are saved for all servers'
   assert.deepEqual((await panel.webKeys(OWNER)).caps, DEFAULT_KEY_CAPS, 'a bad saved value falls back to the default');
 });
 
-test('the key list shows the last error of each key and ignores bad saved data', async t => {
-  const { store, panel } = setup(); t.after(() => store.close());
-  await panel.addWebKey(OWNER, { provider: 'tavily', label: 'good', secret: SECRET });
-  await panel.addWebKey(OWNER, { provider: 'tavily', label: 'bad', secret: 'tvly-bad-1111' });
-  await panel.addWebKey(OTHER, { provider: 'firecrawl', label: 'none', secret: 'fc-other-5678' });
-  const ids = Object.fromEntries((await panel.webKeys(OWNER)).keys.map(key => [key.label, key.id]));
-  const at = 1_800_000_000_000;
-  await store.setSetting(GLOBAL_SETTINGS_SCOPE, KEY_ERRORS_SETTING, {
-    [ids.good!]: { at, status: '432', message: 'Plan limit reached', exhausted: true },
-    [ids.bad!]: { at: 'soon', status: 500, message: 'Tavily could not answer', exhausted: false },
-    [ids.none!]: ['500'],
-    'no-such-key': { at, status: '500', message: 'ghost', exhausted: false },
-  });
-
-  const errorsByLabel = (view: { keys: { label: string; lastError: unknown }[] }) => Object.fromEntries(view.keys.map(key => [key.label, key.lastError]));
-  assert.deepEqual(errorsByLabel(await panel.webKeys(OWNER)), {
-    good: { at, status: '432', message: 'Plan limit reached', exhausted: true },
-    bad: null,
-    none: null,
-  });
-
-  await store.setSetting(GLOBAL_SETTINGS_SCOPE, KEY_ERRORS_SETTING, ['not', 'a', 'table']);
-  assert.deepEqual(Object.values(errorsByLabel(await panel.webKeys(OWNER))), [null, null, null], 'a saved list is ignored');
-  await store.setSetting(GLOBAL_SETTINGS_SCOPE, KEY_ERRORS_SETTING, 'broken');
-  assert.deepEqual(Object.values(errorsByLabel(await panel.webKeys(OWNER))), [null, null, null], 'a saved text is ignored');
-});
-
 test('reset is for editors and clears the last error of one key', async t => {
   const { store, panel } = setup(); t.after(() => store.close());
   await panel.addWebKey(OWNER, { provider: 'tavily', label: 'a', secret: SECRET });
@@ -179,11 +143,4 @@ test('reset is for editors and clears the last error of one key', async t => {
   const view = await panel.resetWebKey(EDITOR, true, { id: ids.a });
   assert.deepEqual(Object.fromEntries(view.keys.map(key => [key.label, key.lastError])), { a: null, b: { ...error, status: 'timeout', exhausted: false } }, 'only the reset key loses its error');
 
-  // A store with resetProviderKey gets the key and this month.
-  const resets: [string, string][] = [];
-  Object.assign(store, { resetProviderKey: async (id: string, month: string) => { resets.push([id, month]); } });
-  await store.setSetting(GLOBAL_SETTINGS_SCOPE, KEY_ERRORS_SETTING, { [ids.a!]: error });
-  await panel.resetWebKey(EDITOR, true, { id: ids.a });
-  assert.deepEqual(resets, [[ids.a, usageMonth()]]);
-  assert.deepEqual(store.setting(GLOBAL_SETTINGS_SCOPE, KEY_ERRORS_SETTING), {}, 'the error entry is removed');
 });

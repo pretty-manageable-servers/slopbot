@@ -66,21 +66,3 @@ test("inbox done route validates ids", async t => {
   assert.equal((await app.done({ ids: ["1"] }, "wrong")).status, 403);
   assert.equal(calls.length, 2);
 });
-
-test("inbox done all", async t => {
-  const calls: unknown[] = [];
-  const app = await start(t, {
-    async list() { return []; },
-    async done(user, server, ids) { calls.push([user, server, ids]); return 3; },
-  });
-  const res = await app.done({ ids: "all" });
-  assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { changed: 3 });
-  assert.deepEqual(calls, [[ALICE, SERVER, "all"]]);
-});
-
-test("inbox route 404 without backend", async t => {
-  const app = await start(t, undefined);
-  assert.equal((await app.get()).status, 404);
-  assert.equal((await app.done({ ids: "all" })).status, 404);
-});

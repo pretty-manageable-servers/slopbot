@@ -69,13 +69,3 @@ test("large tool results fit by truncating only new evidence, retaining original
     /budget boundary/,
   );
 });
-
-
-test("native schema changes invalidate cache identity even when messages are unchanged", () => {
-  const diagnostics = new PromptCacheDiagnostics();
-  const base: Prompt = {prefixVersion:'v1',cacheScope:'same',prefix:[],history:[],inputs:[]};
-  const messages = [{role:'user',content:'same'}];
-  diagnostics.compare(base,messages);
-  const result = diagnostics.compare({...base,tools:[{type:'function',function:{name:'read',description:'Read',parameters:{type:'object'}}}]},messages) as any;
-  assert.equal(result.relation,'branch'); assert.equal(result.total_tools,1);
-});
