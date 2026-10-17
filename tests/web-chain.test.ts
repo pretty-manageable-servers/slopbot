@@ -5,7 +5,7 @@ import { FallbackFetch, FallbackSearch, StoreKeyPool } from '../src/web-chain.js
 import { ToolError } from '../src/tools.js';
 import { UserLimitError } from '../src/user-limiter.js';
 import { GLOBAL_SETTINGS_SCOPE } from '../src/usage-cost.js';
-import { DEFAULT_KEY_CAPS, KEY_CAPS_SETTING, ProviderFailed, usageMonth, type KeyedFetch, type KeyedProvider, type KeyedSearch, type PageText, type ProviderKey, type ProviderKeyPool, type ProviderKeyRow, type ProviderKeyStore, type ProviderKeyUsage, type WebCharge, type WebFetch, type WebProvider } from '../src/web-providers.js';
+import { DEFAULT_KEY_CAPS, KEY_ERRORS_SETTING, type KeyError, KEY_CAPS_SETTING, ProviderFailed, usageMonth, type KeyedFetch, type KeyedProvider, type KeyedSearch, type PageText, type ProviderKey, type ProviderKeyPool, type ProviderKeyRow, type ProviderKeyStore, type ProviderKeyUsage, type WebCharge, type WebFetch, type WebProvider } from '../src/web-providers.js';
 import type { SearchHit, WebSearch, WebUser } from '../src/web-search.js';
 
 const who: WebUser = {server: 's', user: 'u'};
@@ -271,3 +271,16 @@ test('each provider step logs one web_provider_step line with no secret, query o
     assert.equal(text.includes(leak), false, leak);
   }
 });
+test('StoreKeyPool saves key errors in the global setting and clears them', async () => {
+  const store = new FakeKeyStore({});
+  const pool = new StoreKeyPool(store, () => 'secret');
+  const error: KeyError = {at: 5, status: '401', message: 'bad key', exhausted: true};
+  await pool.recordError('k1', error);
+  assert.deepEqual(store.values[KEY_ERRORS_SETTING], {k1: error});
+  await pool.clearError('k1');
+  assert.deepEqual(store.values[KEY_ERRORS_SETTING], {});
+  assert.equal(store.settingWrites.length, 2);
+  await pool.clearError('k1');
+  assert.equal(store.settingWrites.length, 2, 'clearError writes nothing when the key has no saved error');
+});
+

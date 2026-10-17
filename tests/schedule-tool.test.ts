@@ -184,3 +184,52 @@ test("concurrent registries use one atomic request receipt", async () => {
   assert.equal(referenceOf(results[0]!.text), referenceOf(results[1]!.text));
   assert.equal((await env.store.records("s", SCHEDULE_KIND)).length, 1);
 });
+test("renew expired", async () => {
+  const env = setup();
+  const id = await createWeekly(env, "u");
+  // The worker marks a schedule expired after 30 days. Set that state directly here.
+  const record = await env.saved(id);
+  const expired = { ...(record.value as unknown as Schedule), status: "expired", nextAt: null } as unknown as Json;
+  await env.store.putRecord("s", SCHEDULE_KIND, id, expired, record.revision);
+  env.clock.t = base + 31 * DAY;
+  await env.call({ action: "renew", id });
+  const schedule = await env.value(id);
+  assert.equal(schedule.status, "active");
+  assert.equal(schedule.expiresAt, new Date(env.clock.t + 30 * DAY).toISOString());
+  assert.equal(schedule.renewedAt, new Date(env.clock.t).toISOString());
+  assert.ok(schedule.nextAt && Date.parse(schedule.nextAt) > env.clock.t);
+});
+
+test("renew refused for one-time schedule", async () => {
+  const env = setup();
+  const result = await env.call({ action: "create", name: "Once", when: { kind: "once", at: "2026-10-20T09:00:00Z" }, run: { kind: "message", text: "Hi" } });
+  await assert.rejects(env.call({ action: "renew", id: referenceOf(result.text) }), /Only recurring schedules expire/);
+});
+
+test("resume resets failures", async () => {
+  const env = setup();
+  const id = await createWeekly(env, "u");
+  const record = await env.saved(id);
+  const paused = { ...(record.value as unknown as Schedule), status: "paused", pauseReason: "failures", failures: 3, nextAt: null } as unknown as Json;
+  await env.store.putRecord("s", SCHEDULE_KIND, id, paused, record.revision);
+  await env.call({ action: "resume", id });
+  const schedule = await env.value(id);
+  assert.equal(schedule.status, "active");
+  assert.equal(schedule.failures, 0);
+  assert.equal(schedule.pauseReason, undefined);
+  assert.equal(schedule.nextAt, "2026-10-19T08:00:00.000Z");
+});
+
+test("pause then resume", async () => {
+  const env = setup();
+  const id = await createWeekly(env, "u");
+  await env.call({ action: "pause", id });
+  const paused = await env.value(id);
+  assert.equal(paused.status, "paused");
+  assert.equal(paused.pauseReason, "owner");
+  assert.equal(paused.nextAt, null);
+  await assert.rejects(env.call({ action: "pause", id }), /Only an active schedule can be paused/);
+  await env.call({ action: "resume", id });
+  assert.equal((await env.value(id)).status, "active");
+});
+

@@ -184,3 +184,11 @@ test("non_request_no_upload: an unsolicited reply to a file is not marked for up
   assert.equal(queued.length, 1);
   assert.equal(queued[0]!.uploadFiles, undefined);
 });
+test("task mapping survives reconstructing the bot", async t => {
+  const f = setup(); t.after(() => f.store.close());
+  await f.bot.receive(incoming("1", "!task goal", { mentionsBot: true }));
+  const bot = new Bot(f.app, f.store, f.store, f.gateway, "s", ["c"]);
+  await bot.receive(incoming("2", "continue", { channel: "thread" }));
+  assert.equal(f.llm.prompts[1]?.history.length, 2);
+});
+

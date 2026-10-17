@@ -130,3 +130,34 @@ test("chat ingestion, edits, job queues and search never call the embedding prov
   assert.equal(calls, 0);
   assert.equal(store.indexStats("s", "c").vectors, 0);
 });
+test("opening an existing database deletes chat vectors and keeps saved knowledge vectors", async t => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const directory = mkdtempSync(join(tmpdir(), "slopbot-memories-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, "history.sqlite3");
+  const embeddings = { model: "test", async embed() { return [1, 0]; } };
+  let store = new SQLiteStore(path, embeddings);
+  const source = msg("1", "saved source");
+  await store.ingest(source);
+  const memory = await store.remember(source, "A saved lesson");
+  await store.finishIndexing();
+  await store.close();
+  let db = new DatabaseSync(path);
+  db.exec(`CREATE TABLE embeddings(server TEXT,message_id TEXT,model TEXT,vector TEXT);
+    INSERT INTO embeddings VALUES('s','1','old','[1,0]');
+    INSERT INTO embedding_usage VALUES('s','c','old','index',10,100,0);`);
+  db.close();
+  store = new SQLiteStore(path, embeddings);
+  assert.equal(store.indexStats("s", "c").messages, 1);
+  assert.equal(store.indexStats("s", "c").vectors, 1);
+  assert.equal((await store.memories("s", "c"))[0]?.id, memory.id);
+  assert.deepEqual(store.indexStats("s", "c").usage.map(row => row.purpose), ["memory_index"]);
+  await store.close();
+  db = new DatabaseSync(path);
+  assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='embeddings'").get(), undefined);
+  db.close();
+});
+

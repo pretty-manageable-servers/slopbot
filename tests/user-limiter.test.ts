@@ -12,7 +12,13 @@ import { TaskWorker } from "../src/queue.js";
 import { USER_LIMIT_OVERRIDES_SETTING, UserLimiter, UserLimitError } from "../src/user-limiter.js";
 import { DEFAULT_FALLBACK_PRICE, usageCostMicros } from "../src/usage-cost.js";
 
-import { attribution, UsageMeter } from "../src/usage-meter.js";
+import { attribution, DECISION_OUTPUT_TOKENS, streamMetered, UsageMeter } from "../src/usage-meter.js";
+import { ProviderEmbeddings } from "../src/adapters/embeddings.js";
+import { DecisionClassifier } from "../src/adapters/decisions.js";
+import { ByteTokenCounter } from "../src/context.js";
+import { inspectFile } from "../src/files.js";
+const payer = { server: "s", user: "alice" };
+const prompt: Prompt = { prefixVersion: "test", prefix: [], history: [], inputs: [] };
 
 const HOUR = 3600000, WEEK = 7 * 24 * HOUR;
 const DOLLAR = 1000000;
@@ -218,3 +224,75 @@ test("one limit covers a user in all servers, and old rows for each server merge
   assert.equal(await shared.useReset("alice", "5h"), true);
   assert.equal((await shared.check("alice", now)).allowed, true);
 });
+test("JEV decisions are charged to the message author at the JEV model price", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
+  // The JEV price is output only, so only the answer size is charged. Any other price would give a different total.
+  const meter = new UsageMeter(limits, () => ({ vane: { input: 0, cached_input: 0, output: DOLLAR }, nimbus: { input: 100 * DOLLAR, cached_input: 100 * DOLLAR, output: 100 * DOLLAR } }), DEFAULT_FALLBACK_PRICE);
+  const classifier = new DecisionClassifier({ baseUrl: "https://example.test", apiKey: "test", model: "vane", usage: meter }, store,
+    async () => Response.json({ answers: { addressed: { probabilities: { yes: 0.1 } }, respond: { probabilities: { yes: 0.1 } } } }));
+  await classifier.classify(message("jev"), []);
+  assert.equal(await spentBy(limits), DECISION_OUTPUT_TOKENS);
+  store.close();
+});
+
+test("file inspection is charged to the member who asked, at the model price", async t => {
+  const store = new SQLiteStore(), limits = limiter(store, 0, 0); t.after(() => store.close());
+  const meter = new UsageMeter(limits, () => ({ nimbus: { input: DOLLAR, cached_input: DOLLAR, output: 2 * DOLLAR } }), DEFAULT_FALLBACK_PRICE);
+  const llm = { model: "nimbus", async *stream() {
+    yield { kind: "text" as const, payload: { text: "A file." } };
+    yield { kind: "usage" as const, payload: { prompt_tokens: 10, completion_tokens: 5 } };
+  } };
+  const inspect = message("inspect", { text: "What is this?" });
+  await store.ingest(inspect);
+  const text = await inspectFile({ store, llm, usage: meter, decoder: { read: async () => ({ text: "contents", images: [] }) } },
+    { message: inspect, operationId: "inspect-op", isAdmin: false, source: "agent", toolName: "file_store", arguments: {}, resource: null, assertActive: async () => {} },
+    "notes.txt", "text/plain", new Uint8Array(), "What is this?");
+  assert.equal(text, "A file.");
+  assert.equal(await spentBy(limits), 10 * 1 + 5 * 2);
+});
+
+test("embedding calls are priced as input, charged to the requester, and skipped without a payer", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
+  const meter = new UsageMeter(limits, () => ({ "embedding-test": { input: DOLLAR, cached_input: DOLLAR, output: 100 * DOLLAR } }), DEFAULT_FALLBACK_PRICE);
+  const reported = new ProviderEmbeddings("https://example.test", "test", "embedding-test", async () => Response.json({ data: [{ embedding: [1, 2] }], usage: { prompt_tokens: 7, total_tokens: 7 } }));
+  reported.attachUsage(meter);
+  await reported.embedWithUsage("hello", payer);
+  assert.equal(await spentBy(limits), 7);
+  // Without usage in the response, the sent text is estimated as input.
+  const unreported = () => new ProviderEmbeddings("https://example.test", "test", "embedding-test", async () => Response.json({ data: [{ embedding: [1, 2] }] }));
+  const estimate = new ByteTokenCounter().count([{ role: "user", content: "hello" }]);
+  const second = unreported();
+  second.attachUsage(meter);
+  await second.embedWithUsage("hello", payer);
+  assert.equal(await spentBy(limits), 7 + estimate);
+  // Without a payer, such as a bot message or a background job, nothing is charged.
+  const third = unreported();
+  third.attachUsage(meter);
+  await third.embedWithUsage("hello");
+  assert.equal(await spentBy(limits), 7 + estimate);
+  store.close();
+});
+
+test("an unpriced model is charged the fallback price, including a model that names no id", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
+  const fallback = { input: 2 * DOLLAR, cached_input: 2 * DOLLAR, output: 2 * DOLLAR };
+  const meter = new UsageMeter(limits, () => ({ nimbus: ONE_MICRO_PER_TOKEN }), fallback);
+  await meter.record(payer, "mystery", { prompt_tokens: 10 });
+  assert.equal(await spentBy(limits), 20);
+  // An LLM with no model id is priced under the unknown model id, which has no price, so the fallback applies.
+  const unnamed = { async *stream() { yield { kind: "usage" as const, payload: { prompt_tokens: 10 } }; } };
+  for await (const event of streamMetered(unnamed, prompt, { usage: meter, who: payer })) void event;
+  assert.equal(await spentBy(limits), 40);
+  store.close();
+});
+
+test("a model stream with no usage is charged the estimate: no input plus the full output budget", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
+  // Prices are per million tokens, so the 1000 estimated output tokens at 2 per token cost 2000 micro-dollars.
+  const meter = new UsageMeter(limits, () => ({}), { input: DOLLAR, cached_input: DOLLAR, output: 2 * DOLLAR });
+  const silent = { model: "nimbus", outputTokenLimit: 1000, async *stream() { yield { kind: "text" as const, payload: { text: "No usage" } }; } };
+  for await (const event of streamMetered(silent, prompt, { usage: meter, who: payer })) void event;
+  assert.equal(await spentBy(limits), 2000);
+  store.close();
+});
+

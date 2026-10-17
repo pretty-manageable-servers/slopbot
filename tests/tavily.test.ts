@@ -85,3 +85,8 @@ test('Tavily sets the status of each failure',async()=>{
   assert.equal(error.status,status);
  }
 });
+test('Tavily HTTP 401 marks the key as exhausted and says the key is invalid',async()=>{
+ const error=await failure(new TavilySearch(async()=>new Response('{}',{status:401})).search(key,'q',1));
+ assert.equal(error.keyExhausted,true);assert.match(error.message,/invalid/);
+});
+

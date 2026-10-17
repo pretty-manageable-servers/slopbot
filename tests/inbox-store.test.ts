@@ -84,3 +84,15 @@ test("inbox items match SQLite on Postgres", { skip: !process.env.TEST_DATABASE_
     finally { await cleanup.end(); }
   }
 });
+test("deleteExpiredInbox", async () => {
+  const store = new SQLiteStore(":memory:");
+  await store.addInboxItem(item("a", { created_at: 1000 }));
+  await store.addInboxItem(item("b", { created_at: 2000, done_at: 2100 }));
+  await store.addInboxItem(item("c", { created_at: 3000 }));
+
+  assert.equal(await store.deleteExpiredInbox(2500), 2, "open and done rows older than the cutoff are deleted");
+  assert.deepEqual((await store.inboxItems(server, member, { includeDone: true, limit: 10 })).map(row => row.id), ["c"]);
+  assert.equal(await store.deleteExpiredInbox(2500), 0);
+  store.close();
+});
+
