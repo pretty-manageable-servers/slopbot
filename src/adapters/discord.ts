@@ -198,7 +198,7 @@ export class DiscordServer implements ChatGateway {
       if (context.source !== "agent") return;
       const message = context.message, source = (await store.canonicalMessage(message.server, message.id));
       if (!source || source.text !== message.text || !this.bot.accepts(message.server, message.channel)) throw new ToolError("Source or channel changed before the action");
-      if (this.tools.effect(context.toolName, context.arguments) === "write" && context.toolName !== "task_retry") {
+      if (this.tools.effect(context.toolName, context.arguments) === "write" && context.toolName !== "task_retry" && !this.tools.ignoresBlocked(context.toolName)) {
         if ((await store.hasBlocked(message.server, message.channel))) throw new ToolError("This task has an uncertain action; reconcile it before new writes");
         if (message.taskId && (await store.hasPendingOther(message.server, message.channel, message.id))) throw new ToolError("New contributions are queued; review them before further actions");
       }
@@ -737,7 +737,7 @@ export class DiscordServer implements ChatGateway {
         referenced = reference;
       } catch { break; } // Missing references grant no access.
     }
-    const base: Incoming = { ...this.normalize(message), botAuthor: message.author.bot || Boolean(message.webhookId), mentionsBot: this.client.user ? message.mentions.users.has(this.client.user.id) : false, repliesToBot, ...(!message.guildId ? { addressed: true } : {}) };
+    const base: Incoming = { ...this.normalize(message), botAuthor: message.author.bot || Boolean(message.webhookId), mentionsBot: this.client.user ? message.mentions.users.has(this.client.user.id) : false, repliesToBot, ...(message.channel?.isThread() && message.channel.parentId ? { parentChannel: message.channel.parentId } : {}), ...(!message.guildId ? { addressed: true } : {}) };
     // Only the exact ID that Slopbot's web post returned counts as the user. The event waits up to 10 s for that post.
     const web = message.webhookId && message.guildId ? await requestTimings.wait("web reply origin", () => this.webReplies.origin({ server: message.guildId!, channel: message.channelId, id: message.id, webhookId: message.webhookId! }).catch(error => {
       logError("web_reply_origin_failed", error, { stage: "web reply origin", server: message.guildId!, channel: message.channelId, messageId: message.id }, true);

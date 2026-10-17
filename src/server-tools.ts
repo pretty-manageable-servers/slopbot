@@ -1,6 +1,6 @@
 import { MAX_MUTE_MINUTES, MUTED_USERS_KEY, mutedUsers, userId } from "./muted-users.js";
 import { CLASSIFIER_CONTEXT_LIMIT } from './classifier-input.js';
-import { BOT_REPLY_LIMIT_KEY, MAX_BOT_REPLIES, MAX_BOT_REPLY_MINUTES, botReplyLimit } from "./bot-reply-limit.js";
+import { BOT_REPLY_LIMIT_KEY, MAX_BOT_REPLIES, MAX_BOT_REPLY_MINUTES, MAX_TEMPORARY_MINUTES, botReplyLimits, describeBotReplyLimits, type BotReplyLimits } from "./bot-reply-limit.js";
 import { GLOBAL_SETTINGS_SCOPE } from "./usage-cost.js";
 import { isPrivateChannel } from "./private-chat.js";
 import type { Config } from "./config.js";
@@ -80,26 +80,33 @@ export function transcriptSwitchOn(store: Pick<ServerToolStore, "setting"> & { t
 export function registerServerTools(registry: ToolRegistry, services: ServerToolServices): void {
   const { config, store, participation, history, server } = services;
   const add = (tool: ToolDefinition) => registry.register(tool);
-  add({ name: "timing", scope: "discord", description: "Toggle request timing footers for this server; full delivery timings remain in logs", fields: { enabled: { type: "boolean", description: "Show timing at the end of replies", required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
+  add({ name: "timing", setting: true, scope: "discord", description: "Toggle request timing footers for this server; full delivery timings remain in logs", fields: { enabled: { type: "boolean", description: "Show timing at the end of replies", required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
     async execute(_context, args) { await store.setSetting(server, "timing_footer", args.enabled!); return `Timing footers ${args.enabled ? "enabled" : "disabled"}. Footer totals end before Discord delivery; logs include delivery.`; }
   });
-  add({ name: "default_effort", description: "Choose the default reasoning effort for this server: low, medium, xhigh, or default (the provider decides). Models without effort support ignore it.", fields: { level: { ...choice("Default reasoning effort", ["default", "low", "medium", "xhigh"]), required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
+  add({ name: "default_effort", setting: true, description: "Choose the default reasoning effort for this server: low, medium, xhigh, or default (the provider decides). Models without effort support ignore it.", fields: { level: { ...choice("Default reasoning effort", ["default", "low", "medium", "xhigh"]), required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
     async execute(_context, args) { await store.setSetting(server, "default_effort", args.level!); return `Default reasoning effort set to ${args.level}.`; }
   });
-  add({ name: "tool_display", scope: "discord", description: "Choose tool activity in completed replies: none, summary (one grey line with counts), or full (counts plus failed calls).", fields: { mode: { ...choice("Tool activity display", ["none", "summary", "full"]), required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
+  add({ name: "tool_display", setting: true, scope: "discord", description: "Choose tool activity in completed replies: none, summary (one grey line with counts), or full (counts plus failed calls).", fields: { mode: { ...choice("Tool activity display", ["none", "summary", "full"]), required: true } }, access: "admin", effect: "write", execution: "inline", retrySafe: true,
     async execute(_context, args) { await store.setSetting(server, "tool_display", args.mode!); return `Tool activity display set to ${args.mode}. Live progress remains enabled.`; }
   });
-  add({ name: "bot_replies", description: "Read or set how often Slopbot answers other bots in one channel (for all servers). replies=0 means never answer bots. Only the Slopbot team can set it. Use it when the team asks Slopbot to stop or limit replies to bots.", fields: { action: { ...choice("get or set", ["get", "set"]), required: true }, replies: integer("Most replies to bots in the window", MAX_BOT_REPLIES, false), minutes: integer("Window length in minutes", MAX_BOT_REPLY_MINUTES, false, 1) }, publicResult: () => true, access: "member", effect: "write", execution: "inline", retrySafe: true,
+  add({ name: "bot_replies", setting: true, description: "Read or set how often Slopbot answers other bots in one channel (for all servers). replies=0 means never answer bots. Only the Slopbot team can set it. With for_minutes, the new limit is temporary: after that time the normal limit comes back. action=end_temporary ends a temporary limit now. Use it when the team asks Slopbot to stop or limit replies to bots.", fields: { action: { ...choice("get, set or end_temporary", ["get", "set", "end_temporary"]), required: true }, replies: integer("Most replies to bots in the window", MAX_BOT_REPLIES, false), minutes: integer("Window length in minutes", MAX_BOT_REPLY_MINUTES, false, 1), for_minutes: integer("Make the limit temporary: how many minutes it lasts", MAX_TEMPORARY_MINUTES, false, 1) }, publicResult: () => true, access: "member", effect: "write", writes: args => args.action !== "get", execution: "inline", retrySafe: true,
     async execute(context, args) {
-      const current = botReplyLimit(store.setting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY));
-      if (args.action !== "set") return `Slopbot answers other bots at most ${current.replies} times in ${current.minutes} minutes per channel.`;
+      const current = botReplyLimits(store.setting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY));
+      if (args.action === "get") return describeBotReplyLimits(current);
       if (!await services.isTeamEditor(context.message.author)) throw new ToolError("Only the Slopbot team can change replies to bots.");
-      const next = botReplyLimit({ replies: args.replies ?? current.replies, minutes: args.minutes ?? current.minutes });
+      const base = { replies: current.replies, minutes: current.minutes };
+      const replies = args.replies as number | undefined, minutes = args.minutes as number | undefined, forMinutes = args.for_minutes as number | undefined;
+      let next: BotReplyLimits;
+      if (args.action === "end_temporary") next = base;
+      else if (forMinutes) {
+        const active = current.temporary ?? base;
+        next = { ...base, temporary: { replies: replies ?? active.replies, minutes: minutes ?? active.minutes, until: Date.now() + forMinutes * 60_000 } };
+      } else next = { replies: replies ?? base.replies, minutes: minutes ?? base.minutes, ...(current.temporary ? { temporary: current.temporary } : {}) };
       await store.setSetting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY, next as unknown as Json);
-      return next.replies === 0 ? "Slopbot now does not answer other bots." : `Slopbot now answers other bots at most ${next.replies} times in ${next.minutes} minutes per channel.`;
+      return describeBotReplyLimits(botReplyLimits(next));
     }
   });
-  add({ name: "mute_users", description: "Stop Slopbot from answering a user (a person or a bot) in this server for some minutes, end a mute, or list mutes. Only the Slopbot team can mute or unmute, and team members cannot be muted. Use it when the team asks Slopbot to ignore or not reply to someone.", fields: { action: { ...choice("mute, unmute or list", ["mute", "unmute", "list"]), required: true }, user: { type: "string", description: "Discord user ID or mention, for mute and unmute", max: 40 }, minutes: integer("Mute length in minutes, for mute", MAX_MUTE_MINUTES, false, 1) }, publicResult: () => true, access: "member", effect: "write", execution: "inline", retrySafe: true,
+  add({ name: "mute_users", setting: true, description: "Stop Slopbot from answering a user (a person or a bot) in this server for some minutes, end a mute, or list mutes. Only the Slopbot team can mute or unmute, and team members cannot be muted. Use it when the team asks Slopbot to ignore or not reply to someone.", fields: { action: { ...choice("mute, unmute or list", ["mute", "unmute", "list"]), required: true }, user: { type: "string", description: "Discord user ID or mention, for mute and unmute", max: 40 }, minutes: integer("Mute length in minutes, for mute", MAX_MUTE_MINUTES, false, 1) }, publicResult: () => true, access: "member", effect: "write", execution: "inline", retrySafe: true,
     async execute(context, args) {
       const mutes = mutedUsers(store.setting(server, MUTED_USERS_KEY));
       if (args.action === "list") {
@@ -146,7 +153,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
       else { await store.setSetting(server, "classifier_context", count); participation.options.contextMessages = count; }
       return `${target} receives up to ${count} preceding messages.`;
     } });
-  add({ name: "cooldown", scope: "discord", description: "Set unsolicited reply limits per channel", fields: { seconds: integer("Minimum interval in seconds", 3600), per_hour: integer("Maximum unsolicited replies per hour", 1000) }, access: "admin", effect: "write", retrySafe: true,
+  add({ name: "cooldown", setting: true, scope: "discord", description: "Set unsolicited reply limits per channel", fields: { seconds: integer("Minimum interval in seconds", 3600), per_hour: integer("Maximum unsolicited replies per hour", 1000) }, access: "admin", effect: "write", retrySafe: true,
     async execute(_context, args) {
       await store.setSetting(server, "cooldown_seconds", args.seconds!); await store.setSetting(server, "max_unsolicited_per_hour", args.per_hour!);
       participation.options.cooldownMs = Number(args.seconds) * 1000; participation.options.maxUnsolicitedPerHour = Number(args.per_hour);
@@ -158,7 +165,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
     unsolicited: integer('Reply score cutoff for unsolicited contributions, percent. Default 90', 100, false),
     funny: integer('Funny score cutoff for a reaction, percent. Default 90', 100, false),
   };
-  add({ name: 'calibration', scope: 'discord', description: 'Inspect or set participation score cutoffs for this server. Percentages from 0 to 100; changes apply immediately and persist.',
+  add({ name: 'calibration', setting: true, scope: 'discord', description: 'Inspect or set participation score cutoffs for this server. Percentages from 0 to 100; changes apply immediately and persist.',
     fields: { action: choice('Default: get. Use set to change supplied cutoffs', ['get', 'set']), ...thresholdFields }, access: 'admin', effect: 'write', retrySafe: true, writes: args => args.action === 'set',
     async execute(_context, args) {
       const supplied = Object.keys(thresholdFields).filter(key => args[key] !== undefined) as (keyof typeof thresholdFields)[];

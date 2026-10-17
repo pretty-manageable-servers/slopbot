@@ -24,6 +24,8 @@ export interface Incoming extends Message {
   readonly botAuthor: boolean;
   readonly mentionsBot: boolean;
   readonly repliesToBot: boolean;
+  /** The parent channel when the message is in a thread. */
+  readonly parentChannel?: string;
 }
 
 export interface ChatGateway {
@@ -41,6 +43,8 @@ export interface TaskRegistry {
 
 export class Bot {
   private readonly tasks = new Set<string>();
+  /** Threads of allowed channels where someone mentioned or replied to Slopbot. */
+  private readonly threads = new Set<string>();
   /** Voice channels with a live voice session. */
   private readonly voiceChannels = new Set<string>();
   /** Times of recent replies to other bots, per channel. Stops bot-to-bot loops. */
@@ -71,7 +75,7 @@ export class Bot {
   }
 
   accepts(server: string, channel: string): boolean {
-    return server === this.server && (this.channels.includes(channel) || this.tasks.has(channel) || this.privateChats.has(channel) || this.voiceChannels.has(channel));
+    return server === this.server && (this.channels.includes(channel) || this.tasks.has(channel) || this.threads.has(channel) || this.privateChats.has(channel) || this.voiceChannels.has(channel));
   }
 
   /** Lets the bot answer in the text chat of a voice channel while a voice session is live there. */
@@ -100,6 +104,11 @@ export class Bot {
 
   /** `ingested` is true when the caller already saved the message, so it is not saved twice. */
   async receive(message: Incoming, options: { ingested?: boolean; classificationAttempt?: number } = {}): Promise<void> {
+    // A thread has its own ID. Open it when a message in it mentions or replies to Slopbot and its parent channel is allowed.
+    if (message.server === this.server && message.parentChannel && this.channels.includes(message.parentChannel) && (message.mentionsBot || message.repliesToBot) && !this.threads.has(message.channel)) {
+      this.threads.add(message.channel);
+      this.app.allowChannel(this.server, message.channel);
+    }
     if (!this.accepts(message.server, message.channel)) return;
     if (message.botAuthor) message = { ...message, isBot: true };
     requestTimings.begin(message);
@@ -295,8 +304,8 @@ export class Bot {
   }
 
   setChannels(channels: readonly string[]): void {
-    for (const channel of [...this.channels, ...this.tasks]) this.app.disallowChannel(this.server, channel);
-    this.channels = [...channels]; this.tasks.clear();
+    for (const channel of [...this.channels, ...this.tasks, ...this.threads]) this.app.disallowChannel(this.server, channel);
+    this.channels = [...channels]; this.tasks.clear(); this.threads.clear();
     for (const channel of channels) this.app.allowChannel(this.server, channel);
     for (const task of this.registry.taskThreads(this.server)) if (channels.includes(task.parent)) {
       this.tasks.add(task.thread); this.app.allowChannel(this.server, task.thread);
@@ -349,7 +358,7 @@ export class Bot {
       const thread = await this.startTask(message, message.text);
       return { text: `Task started in <#${thread}>. Updates will appear there.`, handoff: { threadId: thread } };
     }
-    if (registry.effect(call.name, call.arguments) === "write" && call.name !== "task_retry" && (await this.options.queueStore?.hasBlocked(message.server, message.channel))) throw new ToolError("This task has an uncertain action. Reconcile that job before new writes.");
+    if (registry.effect(call.name, call.arguments) === "write" && call.name !== "task_retry" && !registry.ignoresBlocked(call.name) && (await this.options.queueStore?.hasBlocked(message.server, message.channel))) throw new ToolError("This task has an uncertain action. Reconcile that job before new writes.");
     if (registry.effect(call.name, call.arguments) === "write" && call.name !== "task_retry" && (await this.options.queueStore?.hasPendingOther(message.server, message.channel, message.id))) throw new ToolError("New contributions are queued. Pause actions so the next contribution can be reviewed before proceeding.");
     const result = await registry.invokeResult(message, call.name, call.arguments, operationId, "agent", expectedVersion, invocation);
     return result;

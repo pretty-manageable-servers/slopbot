@@ -285,7 +285,7 @@ async function run(button, task) {
   finally { button.disabled = false; button.removeAttribute('aria-busy'); button.textContent = label; }
 }
 const refresh = async () => applySettings(await settingsFor(state.server.id));
-const input = (label, name, value, max, min = 0) => `<label>${label}<input name="${name}" type="number" min="${min}" max="${max}" value="${esc(value)}" required></label>`;
+const input = (label, name, value, max, min = 0, required = true) => `<label>${label}<input name="${name}" type="number" min="${min}" max="${max}" value="${esc(value)}"${required ? ' required' : ''}></label>`;
 const checkbox = (label, name, value) => `<label class="checkbox-field"><input name="${name}" type="checkbox" ${value ? 'checked' : ''}>${label}</label>`;
 const card = (id, title, scope, body, button = 'Save changes') => `<form class="card" id="${id}"><h2>${title}</h2><p class="scope">${scope}</p>${body}<button class="primary">${button}</button></form>`;
 function bind(id, handler) { const form = $(id); if (!form) return; form.onsubmit = event => { event.preventDefault(); run(form.querySelector('button'), () => handler(new FormData(form))); }; }
@@ -563,7 +563,7 @@ function priceCardKey(event) {
 }
 // Replies to other bots: at most this many in this many minutes, per channel. Zero replies means Slopbot never answers bots.
 function adminBotReplies(limit, off) {
-  return `<form class="card" id="admin-bot-replies"><h2>Replies to other bots</h2><p class="scope">For all servers, counted for each channel. Default: ${limit.default.replies} in ${limit.default.minutes} minutes. Zero replies stops all replies to bots.</p><div class="row">${input('Replies','replies',limit.replies,1000)}${input('Minutes','minutes',limit.minutes,1440,1)}</div><button class="primary" id="admin-bot-replies-save"${off}>Save limit</button></form>`;
+  return `<form class="card" id="admin-bot-replies"><h2>Replies to other bots</h2><p class="scope">For all servers, counted for each channel. Default: ${limit.default.replies} in ${limit.default.minutes} minutes. Zero replies stops all replies to bots.</p><div class="row">${input('Replies','replies',limit.replies,1000)}${input('Minutes','minutes',limit.minutes,1440,1)}</div><h3>Temporary limit</h3><p class="scope">${limit.temporary ? `Now: ${limit.temporary.replies} in ${limit.temporary.minutes} minutes until ${new Date(limit.temporary.until).toLocaleString()}. Then the limit above comes back.` : 'None. A temporary limit replaces the limit above for some time, then the limit above comes back.'}</p><div class="row">${input('Replies','temp_replies',limit.temporary?.replies ?? '',1000,0,false)}${input('Minutes','temp_minutes',limit.temporary?.minutes ?? '',1440,1,false)}${input('Lasts (minutes)','temp_for','',10080,1,false)}</div><button class="primary" id="admin-bot-replies-save"${off}>Save limit</button>${limit.temporary ? ` <button type="button" id="admin-bot-replies-end"${off}>End temporary limit</button>` : ''}</form>`;
 }
 // Scheduled tasks: caps per server and per user, and the shortest interval for each run kind. Zero is not allowed.
 function adminScheduleLimits(limit, off) {
@@ -993,8 +993,12 @@ async function renderBotAdmin() {
       $('admin-bot-replies').onsubmit = event => {
         event.preventDefault();
         const form = event.currentTarget;
-        adminRun($('admin-bot-replies-save'), async () => { await request('/api/admin/bot-replies', { replies: Number(form.replies.value), minutes: Number(form.minutes.value) }); notice('Bot reply limit saved.'); });
+        adminRun($('admin-bot-replies-save'), async () => { const body = { replies: Number(form.replies.value), minutes: Number(form.minutes.value) };
+          if (form.temp_for.value) body.temporary = { replies: Number(form.temp_replies.value), minutes: Number(form.temp_minutes.value), for_minutes: Number(form.temp_for.value) };
+          await request('/api/admin/bot-replies', body); notice('Bot reply limit saved.'); renderBotAdmin(); });
       };
+      const endTemporary = $('admin-bot-replies-end');
+      if (endTemporary) endTemporary.onclick = () => adminRun(endTemporary, async () => { const form = $('admin-bot-replies'); await request('/api/admin/bot-replies', { replies: Number(form.replies.value), minutes: Number(form.minutes.value), temporary: null }); notice('Temporary limit ended.'); renderBotAdmin(); });
       $('admin-schedule-limits').onsubmit = event => {
         event.preventDefault();
         const form = event.currentTarget;

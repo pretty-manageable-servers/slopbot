@@ -72,6 +72,8 @@ export interface ToolDefinition {
   access: "member" | "admin";
   effect: "read" | "write";
   retrySafe: boolean;
+  /** A bot setting that does not touch task state. It runs even when the channel has a blocked job. */
+  setting?: boolean;
   /** External/custom tool default. Native routing is defined centrally in thread-policy.ts. */
   execution?: "inline" | "thread";
   /** The tool acts on Discord itself (posts or edits Discord messages, threads, reactions, or changes Discord server or channel settings), so it is not offered in private web chats. */
@@ -203,6 +205,8 @@ export class ToolRegistry {
   catalog(message?: Message): string { return catalogOf(this.definitions(), message); }
   schemas(message?: Message): readonly ModelTool[] { return schemasOf(this.definitions(), message); }
   effect(name: string, args: ToolArgs): "read" | "write" { const tool = this.tools.get(name); return tool?.writes ? tool.writes(args) ? "write" : "read" : tool?.effect ?? "read"; }
+  /** True when the tool may run while the channel has a blocked job. */
+  ignoresBlocked(name: string): boolean { return this.tools.get(name)?.setting === true; }
   scopeOf(name: string): "discord" | undefined { return this.tools.get(name)?.scope; }
   requiresThread(name: string, args: ToolArgs): boolean {
     const tool = this.tools.get(name);

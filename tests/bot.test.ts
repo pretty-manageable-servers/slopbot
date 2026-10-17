@@ -86,6 +86,15 @@ test("other bots can mention and reply to Slopbot; unconfigured channels remain 
   assert.equal(f.llm.prompts.length, 2);
 });
 
+test("a mention in a thread of an allowed channel gets an answer; other threads stay ignored", async t => {
+  const f = setup(); t.after(() => f.store.close());
+  await f.bot.receive(incoming("1", "hello", { channel: "thread", parentChannel: "private", mentionsBot: true }));
+  assert.equal(f.llm.prompts.length, 0);
+  await f.bot.receive(incoming("2", "hello", { channel: "thread", parentChannel: "c", author: "other-bot", botAuthor: true, mentionsBot: true }));
+  assert.equal(f.llm.prompts.length, 1);
+  assert.ok(f.bot.accepts("s", "thread"));
+});
+
 test("unaddressed bots are stored once as context", async t => {
   const f = setup(); t.after(() => f.store.close());
   const automated = incoming("external", "app deployment succeeded", { author: "other-bot", botAuthor: true });

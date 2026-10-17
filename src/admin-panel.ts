@@ -1,4 +1,4 @@
-import { BOT_REPLY_LIMIT_KEY, DEFAULT_BOT_REPLY_LIMIT, MAX_BOT_REPLIES, MAX_BOT_REPLY_MINUTES, botReplyLimit, type BotReplyLimit } from "./bot-reply-limit.js";
+import { BOT_REPLY_LIMIT_KEY, DEFAULT_BOT_REPLY_LIMIT, MAX_BOT_REPLIES, MAX_BOT_REPLY_MINUTES, MAX_TEMPORARY_MINUTES, botReplyLimits, type BotReplyLimit, type BotReplyLimits } from "./bot-reply-limit.js";
 import type { Config } from "./config.js";
 import type { Json } from "./domain.js";
 import { scheduleLimits } from "./schedules/schedule-time.js";
@@ -220,17 +220,28 @@ export class AdminPanel {
     return this.prices();
   }
 
-  /** How often Slopbot answers other bots in one channel, for all servers. */
-  botReplies(): BotReplyLimit & { default: BotReplyLimit } {
-    return { ...botReplyLimit(this.store.setting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY)), default: DEFAULT_BOT_REPLY_LIMIT };
+  /** How often Slopbot answers other bots in one channel, for all servers. A temporary limit replaces it until `until`. */
+  botReplies(): BotReplyLimits & { default: BotReplyLimit } {
+    return { ...botReplyLimits(this.store.setting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY)), default: DEFAULT_BOT_REPLY_LIMIT };
   }
 
-  async saveBotReplies(body: unknown): Promise<BotReplyLimit & { default: BotReplyLimit }> {
+  async saveBotReplies(body: unknown): Promise<BotReplyLimits & { default: BotReplyLimit }> {
     const input = object(body, "Send the limit as an object.");
     const replies = wholeNumber(input.replies, MAX_BOT_REPLIES, `Replies must be a whole number from 0 to ${MAX_BOT_REPLIES}.`);
     const minutes = wholeNumber(input.minutes, MAX_BOT_REPLY_MINUTES, `Minutes must be a whole number from 1 to ${MAX_BOT_REPLY_MINUTES}.`);
     if (minutes < 1) throw new AdminInputError(`Minutes must be a whole number from 1 to ${MAX_BOT_REPLY_MINUTES}.`);
-    await this.store.setSetting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY, { replies, minutes });
+    const current = botReplyLimits(this.store.setting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY));
+    let temporary = current.temporary;
+    if (input.temporary === null) temporary = undefined;
+    else if (input.temporary !== undefined) {
+      const raw = object(input.temporary, "Send the temporary limit as an object.");
+      const forMinutes = wholeNumber(raw.for_minutes, MAX_TEMPORARY_MINUTES, `Temporary minutes must be a whole number from 1 to ${MAX_TEMPORARY_MINUTES}.`);
+      const tempReplies = wholeNumber(raw.replies, MAX_BOT_REPLIES, `Temporary replies must be a whole number from 0 to ${MAX_BOT_REPLIES}.`);
+      const tempMinutes = wholeNumber(raw.minutes, MAX_BOT_REPLY_MINUTES, `Temporary window must be a whole number from 1 to ${MAX_BOT_REPLY_MINUTES}.`);
+      if (forMinutes < 1 || tempMinutes < 1) throw new AdminInputError("Temporary minutes must be 1 or more.");
+      temporary = { replies: tempReplies, minutes: tempMinutes, until: Date.now() + forMinutes * 60_000 };
+    }
+    await this.store.setSetting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY, { replies, minutes, ...(temporary ? { temporary } : {}) } as unknown as Json);
     return this.botReplies();
   }
 
