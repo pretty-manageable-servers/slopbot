@@ -29,13 +29,16 @@ export const FETCH_TEXT_LIMIT = 8_000;
  * keyExhausted: the key is out of credits (Tavily 432, Firecrawl 402); the pool marks it for this month.
  * Any other thrown error from a provider also counts as a failure.
  * status: the HTTP status as text (for example "401"), or "network", "timeout", "bad_response", "too_large", "empty". Never holds a secret.
+ * siteAnswer: set when the site itself answered for certain (an HTTP 4xx status, or a page that cannot be read). An outage has none.
  */
 export class ProviderFailed extends Error {
   override name = 'ProviderFailed';
   readonly status?: string | undefined;
-  constructor(readonly provider: WebProvider, message: string, readonly keyExhausted = false, options?: ErrorOptions & { status?: string }) {
+  readonly siteAnswer?: { httpStatus?: number } | undefined;
+  constructor(readonly provider: WebProvider, message: string, readonly keyExhausted = false, options?: ErrorOptions & { status?: string; siteAnswer?: { httpStatus?: number } }) {
     super(message, options);
     this.status = options?.status;
+    this.siteAnswer = options?.siteAnswer;
   }
 }
 
