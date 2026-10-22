@@ -62,7 +62,7 @@ function argumentError(tool: ToolDefinition): ToolError {
 
 /** Every tool a program may call: all tools except the top-level ones and run_tools_code. */
 function callableTools(registry: ToolRegistry): ToolDefinition[] {
-  return registry.definitions().filter(tool => tool.name !== RUN_TOOLS_CODE && tool.surface !== 'top');
+  return registry.definitions().filter(tool => tool.name !== RUN_TOOLS_CODE && tool.surface !== 'top' && !tool.commandOnly);
 }
 
 /** A field as a short type for the catalog: enums list their values, integers show their range, booleans are bool. */

@@ -5,6 +5,8 @@ import type { ChatGateway } from "./bot.js";
 import { parseEffort, type Effort, type Message } from "./domain.js";
 import type { ToolActivity } from "./tool-activity.js";
 import type { UiDocument } from "./ui/schema.js";
+import { prepareUi } from "./ui/runtime.js";
+import type { RecordStore } from "./records.js";
 import type { ChannelAccess } from "./channel-access.js";
 import type { MemberDirectory } from "./member-directory.js";
 import type { UserLimiter } from "./user-limiter.js";
@@ -43,6 +45,8 @@ export interface PrivateChatHandle {
   receiveChat(message: Message): Promise<void>;
   /** Stops the responses in a channel that this user may stop. Returns how many stopped. */
   stopResponses(channel: string, user: string, manager: boolean): Promise<string[]>;
+  /** Runs one button of a card saved with a reply. The user must be the card's owner. Errors are ToolErrors. */
+  act(channel: string, user: string, id: string, revision: number, index: number, interactionId: string): Promise<{ document: UiDocument; revision: number }>;
 }
 
 export interface ChatHost {
@@ -72,7 +76,7 @@ const MESSAGE_ID = /^[\w:.-]{1,64}$/;
 
 /** Replies that Slopbot posts in a private chat. They are saved and published, never sent to Discord. */
 export class WebChatGateway implements ChatGateway {
-  constructor(private readonly store: Pick<ChatStore, "setting" | "taskThreads" | "requestRunIds" | "replyRunIds">, private readonly server: string, private readonly files?: { queue: AttachQueue; storage: ObjectStorageProvider }) {}
+  constructor(private readonly store: Pick<ChatStore, "setting" | "taskThreads" | "requestRunIds" | "replyRunIds"> & Pick<RecordStore, "record" | "putRecord">, private readonly server: string, private readonly files?: { queue: AttachQueue; storage: ObjectStorageProvider }) {}
 
   /** Keeps one queued file in private storage and returns it as a chat attachment. Images show inline; other files are download links. */
   private async keep(chat: string, file: QueuedFile): Promise<Attachment> {
@@ -89,10 +93,10 @@ export class WebChatGateway implements ChatGateway {
   }
 
   /**
-   * Saves the reply text only. The web UI shows the tools in the run summary, so the Discord tool footer is not added.
-   * Live tool progress is published by the bot's tool observer. A UI document has no place in a saved Message, so it is not kept here.
+   * Saves the reply text. The web UI shows the tools in the run summary, so the Discord tool footer is not added.
+   * Live tool progress is published by the bot's tool observer. A card is saved as a UI record under the reply ID, so it survives a reload.
    */
-  async reply(message: Message, text: string, deliveryId?: string, _activity?: readonly ToolActivity[], _ui?: UiDocument): Promise<readonly Message[]> {
+  async reply(message: Message, text: string, deliveryId?: string, _activity?: readonly ToolActivity[], ui?: UiDocument): Promise<readonly Message[]> {
     const queued = this.files?.queue.take(runKey(message.server, message.id)) ?? { files: [], links: [] };
     const chat = message.channel.slice(PRIVATE_CHANNEL_PREFIX.length);
     const attachments = await Promise.all(queued.files.map(file => this.keep(chat, file)));
@@ -105,7 +109,8 @@ export class WebChatGateway implements ChatGateway {
       ...(attachments.length ? { attachments } : {}),
     };
     const runIds = await this.store.requestRunIds(this.server, message.id);
-    await publishMessage(this.store, output, runIds);
+    const saved = ui ? await prepareUi(this.store, message, ui, output.id) : undefined;
+    await publishMessage(this.store, output, runIds, undefined, saved && { id: saved.id, revision: saved.revision, document: saved.state.document });
     requestTimings.finish(message);
     return [output];
   }
@@ -454,6 +459,20 @@ export class WebChatService {
     return { stopped: (await handle.stopResponses(privateChannel(chat.id), user, false)).length };
   }
 
+  /** Runs one button of a card in the chat. The result replaces the card. A ToolError becomes a 400 with its message. */
+  async act(user: string, id: string, cardId: string, input: Record<string, unknown>): Promise<{ document: UiDocument; revision: number }> {
+    const chat = await this.owned(user, id);
+    const revision = Number(input.revision), index = Number(input.index);
+    if (!/^[0-9a-f]{24}$/.test(cardId) || !Number.isSafeInteger(revision) || !Number.isSafeInteger(index)) throw new ChatError(400, "Invalid control.");
+    const handle = await this.handle(chat.server);
+    try {
+      return await handle.act(privateChannel(chat.id), user, cardId, revision, index, randomUUID());
+    } catch (error) {
+      if (error instanceof ToolError) throw new ChatError(400, error.message);
+      throw error;
+    }
+  }
+
   private async owned(user: string, id: string): Promise<WebChatRow> {
     const chat = CHAT_ID.test(id) ? await this.store.webChat(id) : undefined;
     if (!chat || chat.deleted || chat.owner !== user) throw new ChatError(404, "Not found.");
@@ -534,6 +553,7 @@ export function createChatRoutes(service: WebChatService): ChatRoutes {
           if (req.method === "POST") return json(res, 201, await service.send(user, id, input.text, input.images, input.files));
         }
         if (parts.length === 3 && parts[2] === "stop" && req.method === "POST") return json(res, 200, await service.stop(user, id));
+        if (parts.length === 5 && parts[2] === "ui" && parts[4] === "act" && req.method === "POST") return json(res, 200, await service.act(user, id, parts[3] ?? "", input));
         if (parts.length === 3 && parts[2] === "stream" && req.method === "GET") return await service.openStream(req, res, user, id);
         if (parts[2] === "shares") {
           if (parts.length === 3 && req.method === "GET") return json(res, 200, await service.shareList(user, id));

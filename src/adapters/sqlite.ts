@@ -1,5 +1,4 @@
 import { readParticipationHistory, type ParticipationHistoryQuery } from '../participation-history.js';
-import { findIssueReportOrigin } from '../issue-report-origin.js';
 import { diagnosticArgs } from '../diagnostic-data.js';
 import { contextChangedError, legacyToolProgress, sourceFingerprint, type ContextChange } from "../source-context.js";
 import { logError } from "../errors.js";
@@ -865,7 +864,6 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   failJob(id: string, error: string, blocked: boolean): void {
     this.db.prepare("UPDATE jobs SET status=?,error=? WHERE id=? AND status<>'cancelled'").run(blocked ? "blocked" : "failed", error.slice(0, 1000), id);
   }
-  hasBlocked(server: string, channel: string): boolean { return Boolean(this.db.prepare("SELECT 1 FROM jobs WHERE server=? AND channel=? AND status='blocked' LIMIT 1").get(server, channel)); }
   hasPendingOther(server: string, channel: string, messageId: string): boolean { return Boolean(this.db.prepare("SELECT 1 FROM jobs WHERE server=? AND channel=? AND message_id<>? AND status='pending' LIMIT 1").get(server, channel, messageId)); }
   jobs(server: string, channel: string): Job[] {
     return this.db.prepare("SELECT * FROM jobs WHERE server=? AND channel=? ORDER BY sequence DESC LIMIT 20").all(server, channel).map(row => this.job(row));
@@ -883,9 +881,6 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   operation(id: string): ToolOperation | undefined {
     const row = this.db.prepare("SELECT * FROM tool_operations WHERE id=?").get(id);
     return row ? { id, name: String(row.name), args: JSON.parse(String(row.args)) as ToolArgs, resource: row.resource === null ? null : String(row.resource), status: row.status as ToolOperation["status"], result: row.result === null ? null : String(row.result), createdAt: Number(row.created_at) } : undefined;
-  }
-  issueReportOrigin(server: string, url: string, body: string) {
-    return findIssueReportOrigin(this.db.prepare("SELECT id,author,channel,result FROM tool_operations WHERE server=? AND name='issue_report' AND status='done' AND result LIKE ?").all(server, `%${url}%`) as { id: unknown; author: unknown; channel: unknown; result: unknown }[], url, body);
   }
   blockingOperation(resource: string, exceptId: string): BlockingOperation | undefined {
     const row = this.db.prepare("SELECT id,created_at FROM tool_operations WHERE resource=? AND id<>? AND status='started' LIMIT 1").get(resource, exceptId);

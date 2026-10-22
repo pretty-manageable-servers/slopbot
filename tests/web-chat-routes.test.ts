@@ -56,7 +56,7 @@ async function setup(t: TestContext): Promise<Fixture> {
   const limit: { current: UserLimit } = { current: { allowed: true } };
   const received: Message[] = [];
   const storage = new MemoryStorage();
-  const handle: PrivateChatHandle = { openChat() { /* no bot in these tests */ }, closeChat() { /* none */ }, async receiveChat(message) { received.push(message); }, async stopResponses() { return []; } };
+  const handle: PrivateChatHandle = { openChat() { /* no bot in these tests */ }, closeChat() { /* none */ }, async receiveChat(message) { received.push(message); }, async stopResponses() { return []; }, async act() { throw new Error('no cards in this test'); } };
   let clock = 1_000;
   const host: ChatHost = {
     async member(user, server) { return server === SERVER && members.has(user); },

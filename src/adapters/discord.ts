@@ -575,6 +575,11 @@ export class DiscordServer implements ChatGateway {
   private async stopAdmin(user: string, manager: boolean): Promise<boolean> {
     return manager || (this.team ? await this.team.canEdit(user).catch(() => false) : false);
   }
+  /** Runs a card button in a private chat for its owner. The card uses this server's UI runtime and tools, as a command. */
+  async act(channel: string, user: string, id: string, revision: number, index: number, interactionId: string): Promise<{ document: UiDocument; revision: number }> {
+    const message: Message = { server: this.guildId, channel, author: user, id: `chat-ui:${interactionId}`, text: "UI action", timestamp: Date.now() };
+    return this.uiRuntime.act(message, id, revision, index, interactionId);
+  }
   /** Stops responses in a channel. The web console calls it too. Returns the stopped job IDs. */
   async stopResponses(channel: string, user: string, manager: boolean): Promise<string[]> {
     return this.bot.stop(this.guildId, channel, user, await this.stopAdmin(user, manager));

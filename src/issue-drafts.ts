@@ -6,6 +6,7 @@ import type { RuntimeStore } from './runtime-store.js';
 import { authoredSourceText } from './source-context.js';
 import type { ToolArgs, ToolContext, ToolDefinition } from './tools.js';
 import type { UiDocument } from './ui/schema.js';
+import { isDirectMessageChannel, isPrivateChannel } from './private-chat.js';
 
 /** app_records kind. One draft per channel or thread. */
 export const ISSUE_DRAFT_KIND = 'issue_draft';
@@ -110,14 +111,14 @@ export async function openDraft(store: RuntimeStore, server: string, channel: st
   return draft;
 }
 
-/** The one embed-style card shown in Discord and private chats. Its File report button runs file_report. */
-export function draftCard(draft: IssueDraft, now = Date.now()): UiDocument {
+/** The one embed-style card shown in Discord and private chats. Its File report button runs file_report. Web chats have no slash commands, so their footer names the button. */
+export function draftCard(draft: IssueDraft, now = Date.now(), surface: 'discord' | 'web' = 'discord'): UiDocument {
   const messages = draft.cites.filter(cite => cite.kind === 'message').length, runs = draft.cites.length - messages;
   const days = Math.max(1, Math.ceil((draft.expiresAt - now) / (24 * 60 * 60 * 1000)));
   const text = [
     `**Expected:** ${draft.expected}`, `**Actual:** ${draft.actual}`, `**Steps:** ${draft.steps}`, `**Acceptance:** ${draft.acceptance}`,
     `**Evidence:** ${plural(messages, 'message', 'messages')}, ${plural(runs, 'tool run', 'tool runs')}`,
-    `-# Draft · /file-report · expires in ${days} ${days === 1 ? 'day' : 'days'}`,
+    `-# Draft · ${surface === 'web' ? 'File report button' : '/file-report'} · expires in ${days} ${days === 1 ? 'day' : 'days'}`,
   ].join('\n');
   return { version: 1, type: 'card', title: draft.title.slice(0, 150), text: text.slice(0, 3500), actions: [{ label: 'File report', action: 'issue.file', arguments: {} }] };
 }
@@ -168,12 +169,13 @@ export function issueDraftTools(services: IssueDraftServices): ToolDefinition[] 
       return {
         text: `Issue draft saved (${plural(messages, 'message', 'messages')}, ${plural(runs, 'tool run', 'tool runs')}). The draft card is shown to the requester. Keep your chat reply to one or two sentences; do not repeat the draft. The requester files it with /file-report or the File report button.`,
         data: { title: draft.title, cites: cites.length, expires_at: new Date(draft.expiresAt).toISOString() },
-        ui: draftCard(draft),
+        ui: draftCard(draft, Date.now(), isPrivateChannel(context.message.channel) && !isDirectMessageChannel(context.message.channel) ? 'web' : 'discord'),
       };
     },
   };
   const fileReport: ToolDefinition = {
     name: 'file_report', access: 'member', effect: 'write', retrySafe: false, publicResult: () => true,
+    commandOnly: 'Only a person can file a report: use /file-report or the File report button.',
     description: 'File the open issue draft of this channel as a GitHub issue, or as a comment on issue_number. Only the draft requester or a bot admin can file it. Cites edited or deleted since the draft are marked in the issue, and do not block filing.',
     fields: { issue_number: { type: 'integer', description: 'Existing issue to comment on instead of creating a new issue', min: 1, max: Number.MAX_SAFE_INTEGER } },
     resource: message => `issue-draft:${message.server}:${message.channel}`,
@@ -184,7 +186,7 @@ export function issueDraftTools(services: IssueDraftServices): ToolDefinition[] 
       const number = args.issue_number === undefined ? undefined : Number(args.issue_number);
       if (number && (await client.issue(number)).pull_request) throw new ToolError('Choose an issue, not a pull request');
       const marker = `<!-- slopbot-draft:${hash(context.operationId)} -->`;
-      const body = await issueBody(store, draft, `Reported by Discord user ${draft.requester} through /file-report. Investigation by Slopbot; code changes belong to coding agents.`, marker);
+      const body = await issueBody(store, draft, `Reported by Discord user ${draft.requester} through /file-report or the File report button. Investigation by Slopbot; code changes belong to coding agents.`, marker);
       await store.putRecord(context.message.server, ISSUE_DRAFT_INTENT_KIND, hash(context.operationId), { number: number ?? null }, 0);
       await context.assertActive();
       const issue = number ? await client.comment(number, body) : await client.createIssue(draft.title.slice(0, 200), body);

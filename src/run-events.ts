@@ -6,6 +6,7 @@ import type { MemberDirectory, MemberProfile } from "./member-directory.js";
 import { imageAttachments, remoteImageAttachments } from "./web-chat-images.js";
 import { fileAttachments, parseFileUrl, type ChatFileView } from "./web-chat-files.js";
 import { LEGACY_FILE_NOTE } from "./source-context.js";
+import type { UiDocument } from "./ui/schema.js";
 
 /** Kinds of events a web transcript stream sends. */
 export type ConversationKind = "message" | "run.start" | "run.delta" | "run.tool" | "run.end";
@@ -64,6 +65,9 @@ export function startConversationEventRetention(store: ConversationEventRetentio
 }
 
 /** The message shape the web transcript shows. Names and avatars come from the member directory at read time, never from the database. */
+/** A card saved with a private chat reply, such as an issue draft. Its action runs through the chat's action route. */
+export interface ChatCard { id: string; revision: number; document: UiDocument }
+
 export interface TranscriptMessage {
   id: string;
   channel: string;
@@ -81,6 +85,8 @@ export interface TranscriptMessage {
   remoteImages?: { src: string; name: string; size: number }[];
   /** Web chat files as saved placeholders. The page shows a chip. The bytes come from the chat's file route. */
   files?: ChatFileView[];
+  /** The card of a private chat reply. Its buttons run through the chat's action route. */
+  ui?: ChatCard;
   /** True for Slopbot's own messages, and for a person's message that a reply run used. Live messages start false. */
   used: boolean;
 }
@@ -120,7 +126,7 @@ export function withoutFileLabelText(text: string): string {
   return text.split("\n").filter(line => !FILE_LABEL_LINE.test(line)).join("\n");
 }
 
-export function transcriptMessage(stored: Message, slopbot: string | undefined, runIds: readonly string[] = [], profile?: MemberProfile, used = false): TranscriptMessage {
+export function transcriptMessage(stored: Message, slopbot: string | undefined, runIds: readonly string[] = [], profile?: MemberProfile, used = false, card?: ChatCard): TranscriptMessage {
   const message = withoutFileLabels(stored);
   const timestamp = message.timestamp ?? null;
   const edited = message.revisionTimestamp !== undefined && message.revisionTimestamp > (message.timestamp ?? 0);
@@ -143,6 +149,7 @@ export function transcriptMessage(stored: Message, slopbot: string | undefined, 
     ...(remoteImageAttachments(message.attachments).length ? { remoteImages: remoteImageAttachments(message.attachments) } : {}),
     ...(fileAttachments(message.attachments).length ? { files: fileAttachments(message.attachments) } : {}),
     used: isSlopbot || used,
+    ...(card ? { ui: card } : {}),
   };
 }
 
@@ -260,13 +267,13 @@ export const runEvents = new RunEvents();
  * Sends a Discord message as an upsert. For a Slopbot message the run IDs come from the store
  * unless the caller passes them (a reply that is being delivered now).
  */
-export async function publishMessage(store: Pick<ConversationEventStore, "setting" | "taskThreads"> & { replyRunIds(server: string, messageId: string): Promise<string[]> }, message: Message, runIds?: readonly string[], directory?: Pick<MemberDirectory, "profiles">): Promise<void> {
+export async function publishMessage(store: Pick<ConversationEventStore, "setting" | "taskThreads"> & { replyRunIds(server: string, messageId: string): Promise<string[]> }, message: Message, runIds?: readonly string[], directory?: Pick<MemberDirectory, "profiles">, card?: ChatCard): Promise<void> {
   const slopbot = slopbotId(store, message.server);
   const ids = runIds ?? (slopbot !== undefined && message.author === slopbot ? await store.replyRunIds(message.server, message.id) : []);
   // Only a conversation that is switched on is read, so a quiet channel costs no Discord lookups.
   const profile = directory && showsProfile(message, slopbot) && transcriptSwitchOn(store, message.server, message.channel)
     ? (await directory.profiles(message.server, [message.author])).get(message.author) : undefined;
-  const view = transcriptMessage(message, slopbot, ids, profile);
+  const view = transcriptMessage(message, slopbot, ids, profile, false, card);
   runEvents.publish(message.server, message.channel, "message", message.id, { action: "upsert", message: view as unknown as Json });
 }
 

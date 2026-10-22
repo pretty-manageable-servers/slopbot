@@ -1168,6 +1168,7 @@ function messageNode(m) {
   article.append(body);
   if (m.images?.length || m.remoteImages?.length) article.append(imageStrip(m));
   if (m.files?.length) article.append(fileChips(m));
+  if (m.ui) article.append(cardNode(m));
   return article;
 }
 
@@ -2289,6 +2290,43 @@ function fileChips(m) {
     strip.append(link);
   }
   return strip;
+}
+
+// The card of a private chat reply, such as an issue draft. Its buttons run through the chat's action route. The result
+// replaces the card in place, for example with the GitHub issue link.
+function cardNode(m) {
+  const chat = String(m.channel || '').replace(/^web:/, '');
+  const box = textNode('section', '', 'chat-card');
+  paintCard(box, m.ui, chat, m.id);
+  return box;
+}
+
+function paintCard(box, card, chat, messageId) {
+  box.replaceChildren();
+  const doc = card.document || {};
+  if (doc.title) box.append(textNode('strong', doc.title, 'chat-card-title'));
+  const body = textNode('div', '', 'chat-card-text');
+  renderText(body, doc.text);
+  box.append(body);
+  const actions = doc.type === 'card' && Array.isArray(doc.actions) ? doc.actions : [];
+  if (!actions.length) return;
+  const row = textNode('div', '', 'chat-card-actions');
+  actions.forEach((action, index) => {
+    const button = textNode('button', action.label, 'chat-card-button');
+    button.type = 'button';
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        const next = await sendJson('POST', `/api/chats/${enc(chat)}/ui/${enc(card.id)}/act`, { revision: card.revision, index });
+        paintCard(box, { id: card.id, revision: next.revision, document: next.document }, chat, messageId);
+      } catch (error) {
+        notice(error.message || 'That action did not run.');
+        button.disabled = false;
+      }
+    });
+    row.append(button);
+  });
+  box.append(row);
 }
 
 // Paste, drop and attach for the composer. Each file uploads at once; the message sends only the IDs.
