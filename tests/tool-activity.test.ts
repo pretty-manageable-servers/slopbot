@@ -28,7 +28,7 @@ test('full footer shows counts and only the blocked calls', () => {
     {id:'3',name:'index',status:'rejected'},
     {id:'4',name:'index',status:'completed',reused:true},
   ];
-  assert.equal(toolFooter(calls), '\n\n-# searched the web 2× · index · 1 blocked');
+  assert.equal(toolFooter(calls), '\n\n-# searched the web 2× · used index · 1 blocked');
   assert.match(toolProgress(calls, 'Blooming…'), /🔎 Web search × 2/);
 });
 
@@ -293,4 +293,47 @@ test('programmatic child updates edit the same message and stay under their own 
   assert.match(messages[4]!, /Run 1 · completed/);
   assert.match(messages[4]!, /Run 2 · running\n```\n┌ ◌ running/);
   assert.equal((messages[4]!.match(/web_search/g) ?? []).length, 1);
+});
+
+test('progress_failure_line_has_no_code_tag', () => {
+  const calls: ToolActivity[] = [
+    {id:'1',name:'shell',status:'rejected',reason:'[TOOL_BLOCKED] Sandbox template "slopbot" does not exist. Use action sandbox_manage to create it, then retry the command with the template name.'},
+  ];
+  const progress = toolProgress(calls, 'Blooming…');
+  assert.match(progress, /-# ❌ shell blocked: Sandbox template "slopbot" does not exist\.$/m);
+  assert.ok(!progress.includes('TOOL_BLOCKED'));
+  assert.ok(!progress.includes('\\['));
+  assert.ok(!progress.includes('Use action'));
+  const long: ToolActivity[] = [{id:'2',name:'read',status:'failed',reason:'[IO_ERROR] ' + 'word '.repeat(60)}];
+  const line = toolProgress(long, 'Blooming…').split('\n').find(text => text.startsWith('-# ❌')) ?? '';
+  assert.ok(!line.includes('IO_ERROR'));
+  assert.ok(line.length <= 'as -# ❌ read failed: '.length + 101);
+});
+
+test('footer_attach_file_plain_words', () => {
+  const one: ToolActivity[] = [{id:'1',name:'attach_file',status:'completed'}];
+  assert.equal(toolFooter(one, 'summary'), '\n\n-# attached 1 file');
+  const two: ToolActivity[] = [{id:'1',name:'attach_file',status:'completed'},{id:'2',name:'attach_file',status:'completed'}];
+  assert.equal(toolFooter(two, 'summary'), '\n\n-# attached 2 files');
+  const others: ToolActivity[] = [
+    {id:'3',name:'view_image',status:'completed'},
+    {id:'4',name:'issue_draft',status:'completed'},
+    {id:'5',name:'bot_info',status:'completed'},{id:'6',name:'bot_info',status:'completed'},{id:'7',name:'bot_info',status:'completed'},{id:'8',name:'bot_info',status:'completed'},{id:'9',name:'bot_info',status:'completed'},
+  ];
+  const footer = toolFooter(others, 'summary');
+  assert.match(footer, /viewed 1 image/);
+  assert.match(footer, /drafted an issue/);
+  assert.match(footer, /read bot info 5×/);
+  assert.ok(!footer.includes('attach file'));
+});
+
+test('footer_unknown_tool_fallback_plain', () => {
+  const calls: ToolActivity[] = [
+    {id:'1',name:'mystery_tool',status:'completed'},
+    {id:'2',name:'mystery_tool',status:'completed'},
+    {id:'3',name:'other_tool',status:'completed'},
+  ];
+  const footer = toolFooter(calls, 'summary');
+  assert.equal(footer, '\n\n-# used mystery tool 2 times · used other tool');
+  assert.ok(!footer.includes('×'));
 });

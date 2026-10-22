@@ -1,5 +1,5 @@
 import type { ToolActivity } from "../tool-activity.js";
-import { currentStep, plainWords, slopbotEmoji, toolEmoji, toolGroup } from "./tool-labels.js";
+import { currentStep, escapeMarkdown, plainWords, slopbotEmoji, toolEmoji, toolGroup } from "./tool-labels.js";
 
 const PROGRAM_TOOL = "run_tools_code";
 // Child calls of a code run are shown under the run, not in the summary counts.
@@ -10,9 +10,16 @@ const status = (item: ToolActivity) => {
   const text = item.status === "rejected" ? "blocked" : item.status;
   return item.reused ? `${text}, saved result` : text;
 };
-const reason = (item: ToolActivity, limit = 500) => item.reason
-  ? `: ${item.reason.replace(/\s+/g, " ").replace(/[\\`*_~<>|\[\]]/g, "\\$&").slice(0, limit).replace(/[\uD800-\uDBFF]$/, "")}`
-  : "";
+// Users never see error-code tags such as [TOOL_BLOCKED]. The model still gets the full text in its tool result.
+const LEADING_CODE_TAGS = /^(\[[A-Z0-9_]+\]\s*)+/;
+const FIRST_SENTENCE = /^.*?[.!?](?=\s|$)/;
+// Plain text for a user-facing failure line. sentence:true keeps only the first sentence.
+const reason = (item: ToolActivity, limit = 500, sentence = false) => {
+  const text = (item.reason ?? "").replace(/\s+/g, " ").replace(LEADING_CODE_TAGS, "").trim();
+  if (!text) return "";
+  const short = sentence ? (FIRST_SENTENCE.exec(text)?.[0] ?? text) : text;
+  return `: ${escapeMarkdown(clip(short, limit))}`;
+};
 export function toolFailureSummary(activity: readonly ToolActivity[]): string {
   return activity.filter(item => item.status === "rejected" || item.status === "failed")
     .map(item => `- ${label(item.name)}: ${status(item)}${reason(item)}`).join("\n");
@@ -86,7 +93,7 @@ export function toolProgress(activity: readonly ToolActivity[], funLine: string)
   const runs = visibleRuns.map((run, index) => programProgress(run, activity.filter(item => item.parentId === run.id), programRuns.length - visibleRuns.length + index + 1, Math.floor(1500 / visibleRuns.length)));
   if (programRuns.length > visibleRuns.length) runs.unshift(`-# ${programRuns.length - visibleRuns.length} earlier code runs in tool trace`);
   const groups = [...counts(topLevel(activity).filter(item => item.name !== PROGRAM_TOOL))].map(([name, count]) => `${toolEmoji(name)} ${title(toolGroup(name)[0])} × ${count}`);
-  const failures = topLevel(activity).filter(failed).slice(-3).map(item => `-# ❌ ${toolGroup(item.name)[0]} ${status(item)}${reason(item, 120)}`);
+  const failures = topLevel(activity).filter(failed).slice(-3).map(item => `-# ❌ ${toolGroup(item.name)[0]} ${status(item)}${reason(item, 100, true)}`);
   const last = activity[activity.length - 1];
   const now = last && !last.parentId && last.name !== PROGRAM_TOOL ? [`-# now: ${toolEmoji(last.name)} ${currentStep(last.name, last.arguments?.query)}`] : [];
   const blocks = runs.join("\n");
