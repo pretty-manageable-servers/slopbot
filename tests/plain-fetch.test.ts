@@ -120,6 +120,13 @@ test('non-2xx pages are ProviderFailed so the chain moves on', async () => {
   await assert.rejects(new PlainFetch({request: notFound.request, lookup: resolver({})}).fetch('https://example.test/'), isProviderFailed);
 });
 
+test('a 404 is the site answering for certain, and a 503 may be an outage so it is not', async () => {
+  const missing = scripted(page(ARTICLE, {status: 404}));
+  await assert.rejects(new PlainFetch({request: missing.request, lookup: resolver({})}).fetch('https://example.test/'), (error: unknown) => isProviderFailed(error) && (error as ProviderFailed).siteAnswer?.httpStatus === 404);
+  const outage = scripted(page(ARTICLE, {status: 503}));
+  await assert.rejects(new PlainFetch({request: outage.request, lookup: resolver({})}).fetch('https://example.test/'), (error: unknown) => isProviderFailed(error) && (error as ProviderFailed).siteAnswer === undefined);
+});
+
 const EXAMPLE = `<!doctype html><html><head><title>Example Domain</title><meta charset="utf-8"></head><body><div>
 <h1>Example Domain</h1><p>This domain is for use in illustrative examples in documents. You may use this domain in literature without prior coordination or asking for permission.</p>
 <p><a href="https://www.iana.org/domains/example">More information...</a></p></div></body></html>`;

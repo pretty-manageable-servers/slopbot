@@ -219,8 +219,43 @@ test('all search steps failing ends in a ToolError', async () => {
   await assert.rejects(search.search('q', 3), (error: unknown) => error instanceof ToolError && error.status === 'failed' && /unavailable/.test(error.message));
 });
 
-test('a search chain with nothing configured names SEARXNG_URL and the admin panel', async () => {
-  await assert.rejects(new FallbackSearch({}).search('q', 3), (error: unknown) => error instanceof ToolError && /SEARXNG_URL/.test(error.message) && /admin panel/.test(error.message));
+test('search_not_configured_says_not_set_up: a search chain with nothing configured says it is not set up, not try again later', async () => {
+  await assert.rejects(new FallbackSearch({}).search('q', 3), (error: unknown) => error instanceof ToolError && error.message === 'Web search is not set up on this server.' && !/try again/i.test(error.message));
+});
+
+test('all_providers_down_says_unavailable: network failures in every search step end in unavailable', async () => {
+  const search = new FallbackSearch({
+    searxng: new FakeWebSearch(() => { throw new ProviderFailed('searxng', 'network'); }),
+    tavily: new FakeKeyedSearch(() => { throw new ProviderFailed('tavily', 'timeout'); }),
+    pool: new FakePool([key('tavily', 't1')]),
+  });
+  await assert.rejects(search.search('q', 3), (error: unknown) => error instanceof ToolError && error.status === 'failed' && error.message === 'Web search is unavailable right now. Try again later.');
+});
+
+test('fetch_404_says_not_found: a 404 from the site is a plain answer, not an outage, and Firecrawl is not needed for it', async () => {
+  const plain = new FakePlainFetch(() => { throw new ProviderFailed('plain_fetch', 'Page returned HTTP 404.', false, {siteAnswer: {httpStatus: 404}}); });
+  const fetch = new FallbackFetch({plain});
+  await assert.rejects(fetch.fetch('https://page.example/gone', who), (error: unknown) => error instanceof ToolError && error.status === 'failed'
+    && error.message === 'The page returned HTTP 404 (not found): https://page.example/gone. Check the URL or search for the current page.');
+});
+
+test('fetch_site_answer_beats_provider_outage: a 404 from plain fetch is reported even when Firecrawl fails', async () => {
+  const plain = new FakePlainFetch(() => { throw new ProviderFailed('plain_fetch', 'Page returned HTTP 404.', false, {siteAnswer: {httpStatus: 404}}); });
+  const firecrawl = new FakeKeyedFetch(() => { throw new ProviderFailed('firecrawl_scrape', 'down'); });
+  const fetch = new FallbackFetch({plain, firecrawl, pool: new FakePool([key('firecrawl', 'f1')])});
+  await assert.rejects(fetch.fetch('https://page.example/', who), (error: unknown) => error instanceof ToolError && /HTTP 404 \(not found\)/.test(error.message));
+});
+
+test('an unreadable page is reported as a site answer, not an outage', async () => {
+  const plain = new FakePlainFetch(() => { throw new ProviderFailed('plain_fetch', 'Page type application/pdf is not supported.', false, {siteAnswer: {}}); });
+  await assert.rejects(new FallbackFetch({plain}).fetch('https://page.example/a.pdf', who), (error: unknown) => error instanceof ToolError && /cannot be read here/.test(error.message) && /application\/pdf/.test(error.message) && !/try again/i.test(error.message));
+});
+
+test('all_providers_down_says_unavailable: network failures in plain fetch and Firecrawl end in unavailable, not a site answer', async () => {
+  const plain = new FakePlainFetch(() => { throw new ProviderFailed('plain_fetch', 'Page could not be fetched.'); });
+  const firecrawl = new FakeKeyedFetch(() => { throw new ProviderFailed('firecrawl_scrape', 'timeout'); });
+  const fetch = new FallbackFetch({plain, firecrawl, pool: new FakePool([key('firecrawl', 'f1')])});
+  await assert.rejects(fetch.fetch('https://page.example/', who), (error: unknown) => error instanceof ToolError && error.message === 'Web fetch is unavailable right now. Try again later.');
 });
 
 test('charges go to the right providers with the default and saved costs', async () => {

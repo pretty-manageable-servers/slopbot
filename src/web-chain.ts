@@ -14,8 +14,17 @@ import { SEARCH_NOT_CONFIGURED, type SearchHit, type WebSearch, type WebUser } f
 /** Most keys one call tries. A key that runs out is replaced. Any other failure ends that step. */
 const KEY_ATTEMPTS = 3;
 const SEARCH_UNAVAILABLE = 'Web search is unavailable right now. Try again later.';
-const FETCH_NOT_CONFIGURED = 'Web fetch is not configured. Add a Firecrawl key in the admin panel.';
+const FETCH_NOT_CONFIGURED = 'Web fetch is not set up on this server.';
 const FETCH_UNAVAILABLE = 'Web fetch is unavailable right now. Try again later.';
+/** Reason words for the HTTP statuses a site answers with on purpose. Other 4xx statuses say "client error". */
+const HTTP_REASONS: Record<number, string> = { 401: 'unauthorized', 403: 'forbidden', 404: 'not found', 410: 'gone', 429: 'too many requests' };
+
+/** What the model is told when the site answered for certain. Not an outage, so it does not say "try again later". */
+function siteAnswerMessage(url: string, answer: ProviderFailed): string {
+  const httpStatus = answer.siteAnswer?.httpStatus;
+  if (httpStatus !== undefined) return `The page returned HTTP ${httpStatus} (${HTTP_REASONS[httpStatus] ?? 'client error'}): ${url}. Check the URL or search for the current page.`;
+  return `The page cannot be read here: ${url}. ${answer.message} Check the URL or search for another source.`;
+}
 
 /** A saved setting that is a plain object, or undefined. */
 function savedRecord(value: unknown): Record<string, unknown> | undefined {
@@ -242,6 +251,7 @@ export class FallbackFetch implements PageFetch {
     const { plain, firecrawl, pool, charge } = this.options;
     if (!plain && !(firecrawl && pool)) throw new ToolError(FETCH_NOT_CONFIGURED);
     const host = hostOf(url);
+    let answer: ProviderFailed | undefined;
     if (plain) {
       await admit(charge, who);
       await bill(charge, who, 'plain_fetch');
@@ -253,6 +263,7 @@ export class FallbackFetch implements PageFetch {
       } catch (error) {
         logStep({ provider: 'plain_fetch', outcome: 'failed', ...failureDetails(error), started, server: who?.server, host });
         if (!(error instanceof ProviderFailed)) throw error;
+        if (error.siteAnswer) answer = error;
       }
     }
     if (firecrawl && pool) {
@@ -260,6 +271,8 @@ export class FallbackFetch implements PageFetch {
       const page = await withKey(pool, charge, who, 'firecrawl', 'firecrawl_scrape', CALL_CREDITS.firecrawl_scrape, key => firecrawl.fetch(key, url), host);
       if (page) return page;
     }
+    // The site gave a definite answer, so that answer is the result. Only an outage of every provider is "unavailable".
+    if (answer) throw new ToolError(siteAnswerMessage(url, answer), 'failed');
     throw new ToolError(FETCH_UNAVAILABLE, 'failed');
   }
 }
