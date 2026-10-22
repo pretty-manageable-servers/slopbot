@@ -36,6 +36,8 @@ import { toolFooter, toolDisplayMode } from '../presentation/tool-activity.js';
 import type { ToolActivity } from '../tool-activity.js';
 import { discordPresentation, suppressLinkPreviews } from '../presentation/discord.js';
 import { registerHistoryTools } from '../search/history-search.js';
+import { registerViewImage } from '../view-image.js';
+import { DiscordImageSource } from './discord-image-source.js';
 import { registerWebSearch } from "../web-search.js";
 import { registerWebFetch } from "../web-fetch.js";
 import { FallbackFetch, FallbackSearch, LimiterWebCharge, StoreKeyPool } from "../web-chain.js";
@@ -254,6 +256,14 @@ export class DiscordServer implements ChatGateway {
       }, async (message, text, id) => { await this.reply(message, text, id); });
     }
     registerHistoryTools(this.tools,{store,authorize:authorizeFeature});
+    // Images of stored messages, for view_image and model image input. Discord links are re-fetched; web chat images use storage.
+    const imageSource = new DiscordImageSource({ attachments: async (channelId, messageId) => {
+      const channel = await this.client.channels.fetch(channelId);
+      if (!channel || !channel.isTextBased() || !("messages" in channel)) return undefined;
+      const message = await channel.messages.fetch(messageId);
+      return [...message.attachments.values()].map(item => ({ name: item.name ?? "", url: item.url, ...(item.contentType ? { contentType: item.contentType } : {}) }));
+    }, storage: objectStorageProvider ?? new LocalDiskStorage() });
+    registerViewImage(this.tools,{store,images:imageSource,authorize:authorizeFeature});
     registerReportTools(this.tools,{store,llm,authorize:authorizeFeature,usage});
     registerPollTool(this.tools);
     registerTaskTools(this.tools,{store,authorize:authorizeFeature});
@@ -359,7 +369,7 @@ export class DiscordServer implements ChatGateway {
         const sent = await channel.send({content,embeds:[{footer:{text:toolProgressFooter}}],...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? {reply:{messageReference:message.id,failIfNotExists:false}} : {}),allowedMentions:{parse:[],repliedUser:false}});
         return sent;
       });
-    }, presentation: discordPresentation, ...(sandboxPrompt ? { sandboxPrompt } : {}), profiles: store, harness: store, tools: {
+    }, presentation: discordPresentation, ...(sandboxPrompt ? { sandboxPrompt } : {}), profiles: store, harness: store, images: imageSource, tools: {
       catalog: message => this.tools.catalog(message), schemas: message => this.tools.schemas(message), suggest: message => this.tools.suggest(message),
       execute: (message, call, id, version, invocation) => this.bot.executeTool(message, call, id, version, invocation),
       snapshot: () => {

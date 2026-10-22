@@ -77,7 +77,7 @@ export function wireMessages(prompt: Prompt): WireMessage[] {
       const actual = new Set(results.map(result => result.toolCallId));
       if (results.length === expected.size && actual.size === expected.size && results.every(result => result.role === 'tool' && result.toolCallId && expected.has(result.toolCallId))) {
         messages.push({ role: 'assistant', content: item.content || null, tool_calls: item.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } })) });
-        for (const result of results) messages.push({ role: 'tool', tool_call_id: result.toolCallId!, content: result.content });
+        for (const result of results) messages.push({ role: 'tool', tool_call_id: result.toolCallId!, content: result.images?.length ? [{ type: 'text', text: result.content }, ...result.images.map(image => ({ type: 'image_url' as const, image_url: { url: image.url } }))] : result.content });
         index += results.length;
       } else {
         // Checkpoint/source invalidation may split an old pair. Keep the surviving

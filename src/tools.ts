@@ -30,7 +30,11 @@ export function displayToolResult(output: ToolOutput): string {
   return [result.text, ...links].join("\n");
 }
 const resultTag = "slopbot-tool-result-v1:";
-export function encodeToolResult(output: ToolOutput): string { return resultTag + JSON.stringify(toolResult(output)); }
+export function encodeToolResult(output: ToolOutput): string {
+  // Image links expire, so the action log keeps only how many images were shown.
+  const { images, ...result } = toolResult(output);
+  return resultTag + JSON.stringify(images?.length ? { ...result, images_shown: images.length } : result);
+}
 export function decodeToolResult(value: string): ToolResult {
   return value.startsWith(resultTag) ? JSON.parse(value.slice(resultTag.length)) as ToolResult : { text: value };
 }
