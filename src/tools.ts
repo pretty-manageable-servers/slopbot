@@ -84,6 +84,8 @@ export interface ToolDefinition {
   execution?: "inline" | "thread";
   /** The tool acts on Discord itself (posts or edits Discord messages, threads, reactions, or changes Discord server or channel settings), so it is not offered in private web chats. */
   scope?: "discord";
+  /** Only a person's command or button runs this tool. The model is not offered it, and an agent call is refused with this text. */
+  commandOnly?: string;
   publicResult?(args: ToolArgs): boolean;
   matchRead?(message: Message): ToolArgs | undefined;
   resource?(message: Message, args: ToolArgs): string;
@@ -263,6 +265,7 @@ export class ToolRegistry {
   }
   async invokeResult(message: Message, name: string, input: unknown, operationId: string, source: "command" | "agent", expectedVersion?: number, invocation?: ToolInvocation): Promise<ToolResult> {
     const args = this.validate(name, input), tool = this.tools.get(name)!;
+    if (tool.commandOnly && source === "agent") throw new ToolError(tool.commandOnly);
     // A private chat cannot act on Discord. Every other tool follows the same rules as in Discord.
     if (isPrivateChannel(message.channel) && tool.scope === "discord") throw new ToolError(discordOnlyMessage);
     if (this.effect(name, args) === "read") return this.perform(message, name, args, operationId, source, expectedVersion, invocation);
@@ -354,6 +357,7 @@ function sortedDefinitions(tools: ReadonlyMap<string, ToolDefinition>): readonly
 
 /** A private chat is offered every tool except Discord-scoped ones. Other channels are offered every tool. */
 function offeredIn(tool: ToolDefinition, message?: Message): boolean {
+  if (tool.commandOnly) return false;
   return !message || !isPrivateChannel(message.channel) || tool.scope !== "discord";
 }
 

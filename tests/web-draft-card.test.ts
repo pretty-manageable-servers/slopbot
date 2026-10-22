@@ -161,6 +161,8 @@ test("web_draft_card_file_report_action", async t => {
   assert.equal(card.document.title, "PNG uploads fail");
   assert.match(card.document.text, /\*\*Expected:\*\* The PNG is summarized/);
   assert.match(card.document.text, /\*\*Evidence:\*\* 2 messages, 0 tool runs/);
+  // Web chats have no slash commands, so the footer names the button.
+  assert.match(card.document.text, /-# Draft · File report button · expires in \d+ days?/);
   assert.equal(card.document.actions?.[0]?.label, "File report");
 
   // The button runs file_report as the web user, and the result shows the issue link in the same card.
