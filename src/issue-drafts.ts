@@ -184,7 +184,7 @@ export function issueDraftTools(services: IssueDraftServices): ToolDefinition[] 
       const number = args.issue_number === undefined ? undefined : Number(args.issue_number);
       if (number && (await client.issue(number)).pull_request) throw new ToolError('Choose an issue, not a pull request');
       const marker = `<!-- slopbot-draft:${hash(context.operationId)} -->`;
-      const body = await issueBody(store, draft, `Reported by Discord user ${draft.requester} through /file-report. Investigation by Slopbot; code changes belong to coding agents.`, marker);
+      const body = await issueBody(store, draft, `Reported by Discord user ${draft.requester} through /file-report or the File report button. Investigation by Slopbot; code changes belong to coding agents.`, marker);
       await store.putRecord(context.message.server, ISSUE_DRAFT_INTENT_KIND, hash(context.operationId), { number: number ?? null }, 0);
       await context.assertActive();
       const issue = number ? await client.comment(number, body) : await client.createIssue(draft.title.slice(0, 200), body);

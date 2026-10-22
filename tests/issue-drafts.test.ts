@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import type { OperationsClient, Issue } from '../src/adapters/operations-client.js';
@@ -108,4 +109,15 @@ test('file_report_comments_with_issue_number', async t => {
   assert.equal(f.client.comments[0]!.number, 7);
   assert.equal(f.client.creates.length, 0);
   assert.equal(await openDraft(f.store, 's', 'c1'), undefined, 'a filed draft is no longer open');
+});
+
+test('bot_guide_has_no_issue_report', () => {
+  // The guide ships to the model. It must describe the draft flow, not the removed issue_report tools.
+  const guide = readFileSync(new URL('../architecture/BOT_GUIDE.md', import.meta.url), 'utf8');
+  assert.doesNotMatch(guide, /issue_report\b/);
+  assert.doesNotMatch(guide, /issue_report_edit|evidence_id|still pending|chat changed many times|Source or channel changed/);
+  assert.match(guide, /issue_draft/);
+  assert.match(guide, /\/file-report/);
+  assert.match(guide, /This may have happened\. Check before you retry\./);
+  assert.match(guide, /10 minutes/);
 });

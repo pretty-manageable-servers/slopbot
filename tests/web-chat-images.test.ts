@@ -34,7 +34,7 @@ async function setup(t: TestContext) {
   const limit = { allowed: true } as { allowed: boolean };
   const host: ChatHost = {
     async member(user, server) { return server === SERVER && [ALICE, BOB].includes(user); },
-    async handle() { return { openChat() { /* none */ }, closeChat() { /* none */ }, async receiveChat(message) { received.push(message); }, async stopResponses() { return []; } }; },
+    async handle() { return { openChat() { /* none */ }, closeChat() { /* none */ }, async receiveChat(message) { received.push(message); }, async stopResponses() { return []; }, async act() { throw new Error('no cards in this test'); } }; },
     limiter: { async check() { return limit as never; } },
     access: new ChannelAccess({ async facts() { return undefined; } }),
     images: storage,

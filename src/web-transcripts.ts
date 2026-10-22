@@ -5,7 +5,9 @@ import type { ChannelAccess, ChannelAccessResult } from "./channel-access.js";
 import { parseToolCalls, toolResult, type ToolCall, type ToolOutput } from "./tools.js";
 import type { HistoryPage, HistoryQuery } from "./search/history-search.js";
 import type { FuzzyHit, FuzzyQuery } from "./search/fuzzy.js";
-import { reasoningText, runEvents, shortArgs, showsProfile, slopbotId, transcriptMessage, type ConversationEvent, type ConversationEventStore, type RunEvents, type TranscriptMessage } from "./run-events.js";
+import { reasoningText, runEvents, shortArgs, showsProfile, slopbotId, transcriptMessage, type ChatCard, type ConversationEvent, type ConversationEventStore, type RunEvents, type TranscriptMessage } from "./run-events.js";
+import { uiKey, type UiState } from "./ui/runtime.js";
+import type { RecordStore } from "./records.js";
 import type { MemberDirectory } from "./member-directory.js";
 import { transcriptSwitchOn } from "./server-tools.js";
 import { canCreateShare, type ShareRule } from "./shares.js";
@@ -16,7 +18,7 @@ export interface TranscriptRun { id: string; message: Message; purpose: string; 
 export interface ToolTurn { calls: ToolCall[]; results: Record<string, ToolOutput>; diagnosticArgs?: Json[] | null }
 
 /** Everything the web transcript routes read. Both SQLite and PostgreSQL stores implement it. */
-export interface TranscriptStore extends ConversationEventStore {
+export interface TranscriptStore extends ConversationEventStore, Pick<RecordStore, "record"> {
   canonicalMessage(server: string, id: string): Message | undefined | Promise<Message | undefined>;
   conversationActivity(server: string): Promise<{ channel: string; newest: number }[]>;
   conversationMessages(server: string, channel: string, before: { time: number; id: string } | undefined, limit: number): Promise<Message[]>;
@@ -282,7 +284,15 @@ export async function messageViews(store: TranscriptStore, members: Pick<MemberD
   for (const channel of new Set(people.map(message => message.channel))) {
     for (const id of await store.usedSourceIds(server, channel, people.filter(message => message.channel === channel).map(message => message.id))) used.add(id);
   }
-  return Promise.all(messages.map(async message => transcriptMessage(message, slopbot, message.author === slopbot ? await store.replyRunIds(server, message.id) : [], profiles.get(message.author), used.has(message.id))));
+  return Promise.all(messages.map(async message => transcriptMessage(message, slopbot, message.author === slopbot ? await store.replyRunIds(server, message.id) : [], profiles.get(message.author), used.has(message.id), await cardOf(store, server, message))));
+}
+
+/** The card saved with a private chat reply, under the reply's message ID. Read at view time, so a button's result shows after a reload. */
+async function cardOf(store: Pick<TranscriptStore, "record">, server: string, message: Message): Promise<ChatCard | undefined> {
+  if (!isPrivateChannel(message.channel)) return undefined;
+  const id = uiKey(message.id);
+  const record = await store.record(server, "ui", id);
+  return record ? { id, revision: record.revision, document: (record.value as unknown as UiState).document } : undefined;
 }
 
 export function createTranscripts(host: TranscriptHost): TranscriptRoutes {

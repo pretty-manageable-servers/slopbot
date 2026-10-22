@@ -20,7 +20,6 @@ export interface QueueStore {
   finishJob(id: string): void | Promise<void>;
   retryLater(id: string, at: number): void | Promise<void>;
   failJob(id: string, error: string, blocked: boolean): void | Promise<void>;
-  hasBlocked(server: string, channel: string): boolean | Promise<boolean>;
   hasPendingOther(server: string, channel: string, messageId: string): boolean | Promise<boolean>;
   jobs(server: string, channel: string): Job[] | Promise<Job[]>;
   retryJob(server: string, channel: string, id: string): boolean | Promise<boolean>;

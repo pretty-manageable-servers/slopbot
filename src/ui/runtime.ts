@@ -15,6 +15,32 @@ export interface UiState {
 }
 export const uiKey = (seed: string) =>
   createHash("sha256").update(seed).digest("hex").slice(0, 24);
+/** Saves a card for a reply, or returns the card saved under the same seed. Discord and private chat replies both use it. */
+export async function prepareUi(
+  store: Pick<RecordStore, "record" | "putRecord">,
+  message: Message,
+  document: UiDocument,
+  seed: string,
+): Promise<{ id: string; revision: number; state: UiState }> {
+  validateUi(document);
+  const id = uiKey(seed),
+    saved = await store.record(message.server, "ui", id);
+  if (saved)
+    return {
+      id,
+      revision: saved.revision,
+      state: saved.value as unknown as UiState,
+    };
+  const state: UiState = {
+    document,
+    channel: message.channel,
+    owner: message.author,
+    expires: Date.now() + 86400000,
+  };
+  await store.putRecord(message.server, "ui", id, state as unknown as Json, 0);
+  return { id, revision: 1, state };
+}
+
 export function actionArguments(action: UiAction): Record<string, Json> {
   return { ...action.arguments, ...uiActions[action.action]?.fixedArguments };
 }
@@ -71,29 +97,7 @@ export class UiRuntime {
     document: UiDocument,
     seed: string,
   ): Promise<{ id: string; revision: number; state: UiState }> {
-    validateUi(document);
-    const id = uiKey(seed),
-      saved = await this.store.record(message.server, "ui", id);
-    if (saved)
-      return {
-        id,
-        revision: saved.revision,
-        state: saved.value as unknown as UiState,
-      };
-    const state: UiState = {
-      document,
-      channel: message.channel,
-      owner: message.author,
-      expires: Date.now() + 86400000,
-    };
-    await this.store.putRecord(
-      message.server,
-      "ui",
-      id,
-      state as unknown as Json,
-      0,
-    );
-    return { id, revision: 1, state };
+    return prepareUi(this.store, message, document, seed);
   }
   async act(
     message: Message,
