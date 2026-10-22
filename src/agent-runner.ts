@@ -81,7 +81,7 @@ export class AgentRunner {
   private readonly renderer: ReplyRenderer;
 
   constructor(private readonly store: Store, private readonly llm: LLM, private readonly policy: Policy,
-    recall?: Recall, private readonly services: { profiles?: ProfileStore; tools?: ToolExecutor; counter?: TokenCounter; harness?: HarnessJournal; presentation?: PresentationPolicy; sandboxPrompt?: string; onToolActivity?: ToolActivityObserver; usage?: UsageMeter } = {}) {
+    recall?: Recall, private readonly services: { profiles?: ProfileStore; tools?: ToolExecutor; counter?: TokenCounter; harness?: HarnessJournal; presentation?: PresentationPolicy; sandboxPrompt?: string; onToolActivity?: ToolActivityObserver; usage?: UsageMeter; images?: import('./model-images.js').ImageSource } = {}) {
     if (policy.maxToolRounds !== undefined && (!Number.isSafeInteger(policy.maxToolRounds) || policy.maxToolRounds < 1 || policy.maxToolRounds > 1000)) throw new Error("maxToolRounds must be an integer from 1 to 1000");
     this.recentMessages = policy.recentMessages ?? 12;
     this.allowedChannels = new Set(policy.allowedChannels.map(scope => JSON.stringify([scope.server, scope.channel])));
@@ -90,7 +90,7 @@ export class AgentRunner {
     this.outputLimit = policy.maxOutputTokens ?? DEFAULT_OUTPUT_TOKENS;
     this.inputLimit = Math.min(policy.maxInputChars ?? 24000, (policy.maxContextTokens ?? DEFAULT_CONTEXT_TOKENS) - this.outputLimit);
     this.prefix = this.prefixFor(policy.instructions ?? DEFAULT_INSTRUCTIONS);
-    this.contextBuilder = new ContextBuilder({ store, ...(recall ? { recall } : {}), ...(services.profiles ? { profiles: services.profiles } : {}), ...(services.tools ? { tools: services.tools } : {}), counter: this.counter, inputLimit: this.inputLimit, outputLimit: this.outputLimit, prefix: this.prefix });
+    this.contextBuilder = new ContextBuilder({ store, ...(recall ? { recall } : {}), ...(services.profiles ? { profiles: services.profiles } : {}), ...(services.tools ? { tools: services.tools } : {}), ...(services.images ? { images: services.images } : {}), counter: this.counter, inputLimit: this.inputLimit, outputLimit: this.outputLimit, prefix: this.prefix });
     this.renderer = new ReplyRenderer(services.profiles);
     for (const value of [policy.recentMessages ?? 12, this.inputLimit, this.outputLimit]) {
       if (!Number.isSafeInteger(value) || value < 0) throw new TypeError("Context limits must be nonnegative integers");

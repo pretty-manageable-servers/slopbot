@@ -2,6 +2,7 @@ import { RequestError } from "./errors.js";
 import type { Json, Message, PromptItem } from "./domain.js";
 import { contextBlock, evidenceLine, personLine, type ContextPerson } from "./context-block.js";
 import type { Store } from "./ports.js";
+import type { ImageSource } from "./model-images.js";
 import type { Recall } from "./memory.js";
 import type { TokenCounter } from "./context.js";
 import type { ProfileStore } from "./profiles.js";
@@ -18,6 +19,8 @@ const webMathRule = "The web view renders LaTeX math: use $…$ inline and $$…
 
 interface ContextOptions {
   store: Store; recall?: Recall; profiles?: ProfileStore; tools?: ToolExecutor;
+  /** Fresh links for stored images. Without it, a run gets only the request's own web chat images. */
+  images?: ImageSource;
   counter: TokenCounter; inputLimit: number; outputLimit: number; prefix: readonly PromptItem[];
 }
 /** One person of the People section, with the fields of their profile. The requester is marked. */
