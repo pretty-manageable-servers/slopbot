@@ -7,7 +7,7 @@ import { displayToolResult, ToolError, toolFailed } from "../tools.js";
 import type { ToolActivity } from "../tool-activity.js";
 import { toolTraceRows } from "./discord-tool-trace.js";
 import { pruneToolTraces } from "../tool-trace.js";
-import { codeBlock, codeParts, PROGRAM_CODE_KEEP_MS } from "../code-display.js";
+import { codeBlock, PROGRAM_CODE_KEEP_MS } from "../code-display.js";
 
 const PROGRAM_TOOL = "run_tools_code";
 const CODE_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
@@ -38,21 +38,6 @@ export async function postConfirmation(channel: { send(options: MessageCreateOpt
     components: [row],
     allowedMentions: { users: [requester] },
   });
-}
-
-/** Routes a slopcode button: replies ephemerally with the program code. */
-export async function handleShowCode(interaction: ButtonInteraction, store: CodeStore): Promise<void> {
-  const operationId = interaction.customId.slice("slopcode:".length);
-  const operation = operationId ? await store.operation(operationId) : undefined;
-  const code = operation?.name === PROGRAM_TOOL && typeof operation.args.code === "string" ? operation.args.code : undefined;
-  if (code === undefined) {
-    await interaction.reply({ content: "This code is no longer kept.", flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
-    return;
-  }
-  // Long code goes in several messages. A file attachment fails: discord.js rejects the FormData of this undici build.
-  const [first, ...rest] = codeParts(code);
-  await interaction.reply({ content: codeBlock(first!), flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
-  for (const part of rest) await interaction.followUp({ content: codeBlock(part), flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
 }
 
 interface PendingConfirmation { name: string; arguments: ToolArgs; channel: string; author: string; requestId?: string; taskId?: string; replyTo?: string }

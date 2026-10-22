@@ -16,7 +16,8 @@ export interface ObjectStorageProvider {
   /** maxBytes defaults to MAX_STORED_FILE_BYTES. */
   get(key: string, maxBytes?: number): Promise<Uint8Array>;
   delete(key: string): Promise<void>;
-  link(key: string, name: string, seconds: number): Promise<string>;
+  /** inline: the browser shows the file instead of downloading it. Default: attachment. */
+  link(key: string, name: string, seconds: number, inline?: boolean): Promise<string>;
 }
 export type StorageScope = 'user' | 'server' | 'user_server';
 export const storageScopes: readonly StorageScope[] = ['user', 'server', 'user_server'];

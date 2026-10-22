@@ -410,40 +410,4 @@ export class Bot {
   }
 }
 
-export function splitReply(text: string, limit = 1900): string[] {
-  const chunks: string[] = [];
-  const sentences = new Intl.Segmenter(undefined, { granularity: "sentence" });
-  let chunk = "", fence = "";
-  const flush = () => {
-    chunks.push(chunk + (fence ? "\n```" : ""));
-    chunk = fence;
-  };
-  // Treat fence lines atomically so each Discord message can close and reopen them.
-  const tokens = text.split(/(^```[^\n]*\n|^```$)/gm).filter(Boolean);
-  for (const token of tokens) {
-    if (/^```[^\n]*(?:\n|$)$/.test(token) && token.length + 4 < limit) {
-      const nextFence = fence ? "" : token.endsWith("\n") ? token : token + "\n";
-      if (chunk.length + token.length + (nextFence ? 4 : 0) > limit) flush();
-      chunk += token;
-      fence = nextFence;
-      continue;
-    }
-    // Keep prose sentences and code lines together whenever a whole unit fits.
-    const units = fence ? token.match(/[^\n]*\n|[^\n]+$/g) ?? [] : Array.from(sentences.segment(token), item => item.segment);
-    const append = (unit: string) => {
-      if (chunk.length + unit.length + (fence ? 4 : 0) > limit) flush();
-      chunk += unit;
-    };
-    for (const unit of units) {
-      const capacity = limit - fence.length - (fence ? 4 : 0);
-      if (unit.length <= capacity) { append(unit); continue; }
-      // An oversized sentence/line falls back to words, then Unicode characters.
-      for (const word of unit.match(/\S+\s*|\s+/g) ?? []) {
-        if (word.length <= capacity) { append(word); continue; }
-        for (const character of word) append(character);
-      }
-    }
-  }
-  if (chunk) chunks.push(chunk + (fence ? "\n```" : ""));
-  return chunks;
-}
+export { splitReply } from "./presentation/reply-split.js";
