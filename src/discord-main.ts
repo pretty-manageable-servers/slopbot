@@ -49,6 +49,7 @@ async function main(): Promise<void> {
   if (degraded) panel.setLlmState(() => degraded.health.state());
   const admin: ConsoleAdmin = { role: user => discord.team.role(user), canEdit: user => discord.team.canEdit(user), servers: page => discord.adminServers(page), serverChannels: server => discord.adminServerChannels(server), serverInfo: server => discord.adminServerInfo(server),setTranscript: (server, channel, enabled) => discord.adminSetTranscript(server, channel, enabled), rotateWebhook: (server, channel) => discord.adminRotateWebhook(server, channel), panel };
   const chats = new WebChatService(store, discord.chatHost());
+  if (webOptions) discord.webOrigin = webOptions.origin;
   if (webOptions) discord.webChat = { continueMessage: async (user, server, source) => `${webOptions.origin}/chat/${encodeURIComponent((await chats.continueMessage(user, server, source)).id)}?server=${encodeURIComponent(server)}` };
   const conversations = createTranscripts({ store, access: discord.access, configured: server => configuredChannels(config, store, server), channelName: (server, channel) => discord.channelName(server, channel), shareRule: discord.shareRule, members: discord.members, ownsPrivateChat: (server, channel, user) => chats.owns(user, server, channel) });
   // Mock runs keep the console as before: no mode banner and no non-ZDR switch.

@@ -826,6 +826,7 @@ async function openConversation(id, kind = 'channel', replace = false, run = nul
   // Opening a channel shows its conversations under it.
   if (!chat && listed) setChannelOpen(id, true);
   const shown = conv.run;
+  const expandSteps = Boolean(shown) && new URLSearchParams(location.search).get('steps') === 'open';
   $('conv-status').hidden = false;
   setStatus('Connecting…');
   setHeading(chat ? chatTitle(listed || {}) : '');
@@ -859,6 +860,7 @@ async function openConversation(id, kind = 'channel', replace = false, run = nul
     conv.seen = page.streamId;
     const log = $('conv-log');
     log.scrollTop = log.scrollHeight;
+    if (expandSteps && !chat) openRunSteps(shown);
     syncJump();
     openStream(id);
   } catch (error) {
@@ -1305,7 +1307,7 @@ function runView(loader) {
 }
 
 function runBlock(runIds) {
-  return runView(async view => {
+  const wrap = runView(async view => {
     view.box.replaceChildren(busy('sm', 'Loading run…'));
     try {
       const runs = await Promise.all(runIds.map(id => request(`/api/runs/${enc(id)}`)));
@@ -1317,6 +1319,16 @@ function runBlock(runIds) {
       fail(error);
     }
   }).wrap;
+  wrap.dataset.runs = runIds.join(' ');
+  return wrap;
+}
+
+// A run link (steps=open) opens the run box of the reply that used that run, and scrolls to it.
+function openRunSteps(runId) {
+  const wrap = [...document.querySelectorAll('.chat-run[data-runs]')].find(el => el.dataset.runs.split(' ').includes(runId));
+  if (!wrap) return;
+  wrap.querySelector('.chat-run-sum').click();
+  wrap.closest('.chat-msg, article')?.scrollIntoView({ block: 'center' });
 }
 
 // All steps of all rounds form one flat list. A text or thinking step with only spaces gets no row.

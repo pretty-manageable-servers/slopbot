@@ -31,7 +31,7 @@ import {discordUi} from './discord-ui.js';
 import { DiscordToolProgress } from './discord-tool-progress.js';
 import { saveToolTrace } from '../tool-trace.js';
 import { handleToolTrace } from './discord-tool-trace.js';
-import { CONFIRM_RECORD, handleConfirm, postConfirmation, saveConfirmation, showCodeRows, startCodeMaintenance } from './discord-code.js';
+import { CONFIRM_RECORD, handleConfirm, postConfirmation, replyRunLink, saveConfirmation, showCodeRows, startCodeMaintenance } from './discord-code.js';
 import { toolFooter, toolDisplayMode } from '../presentation/tool-activity.js';
 import type { ToolActivity } from '../tool-activity.js';
 import { discordPresentation, suppressLinkPreviews } from '../presentation/discord.js';
@@ -571,6 +571,8 @@ export class DiscordServer implements ChatGateway {
   }
   /** Set by discord-main when the website runs. Makes a private web chat from a message and gives its link. */
   webChat: { continueMessage(user: string, server: string, source: Message): Promise<string> } | undefined;
+  /** The public web origin, set only when web is enabled. Tool runs buttons link there. */
+  webOrigin: string | undefined;
   /** True for Manage Server in this server or a Slopbot team editor. They stop and continue any response. */
   private async stopAdmin(user: string, manager: boolean): Promise<boolean> {
     return manager || (this.team ? await this.team.canEdit(user).catch(() => false) : false);
@@ -824,8 +826,11 @@ export class DiscordServer implements ChatGateway {
     if (files.length && !payloads.length) payloads.push({ content: tail.trim(), flags });
     // Freeze one trace for the whole reply before publishing its entry point.
     const displayMode = toolDisplayMode(this.store.setting(message.server, "tool_display"));
-    const traceId = payloads.length && displayMode !== "none" ? await saveToolTrace(this.store, message, activity) : undefined;
-    const codeRows = showCodeRows(activity, displayMode, traceId);
+    // With web on, the Tool runs button links to the run transcript. Without a run to link, the in-Discord trace stays.
+    const replyRuns = payloads.length && activity.length && displayMode !== "none" && this.webOrigin && !isPrivateChannel(message.channel) ? await this.store.requestRunIds(message.server, message.id) : [];
+    const link = replyRunLink(this.webOrigin, message.server, discordChannelId(message.channel), replyRuns);
+    const traceId = payloads.length && displayMode !== "none" && !link ? await saveToolTrace(this.store, message, activity) : undefined;
+    const codeRows = showCodeRows(activity, displayMode, traceId, link);
     const finalText = payloads.length - 1;
     if (payloads.length && codeRows.length) payloads[finalText] = { ...payloads[finalText]!, components: codeRows };
     fileBatches(files).forEach((batch, index) => {
@@ -1098,6 +1103,7 @@ export class DiscordAdapter {
     const opening = (async () => {
       const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage, this.access, this.members, this.team, this.sandboxProfile, this.degraded);
       server.webChat = this.webChat;
+      server.webOrigin = this.webOrigin;
       await server.start();
       await server.ready(this.botUser!);
       return server;
@@ -1119,6 +1125,8 @@ export class DiscordAdapter {
   }
   /** Set by discord-main when the website runs. Given to each server for the "Continue in Slopbot web" command. */
   webChat: DiscordServer["webChat"];
+  /** Set by discord-main when the website runs. Tool runs buttons link to it. */
+  webOrigin: string | undefined;
   private async routeDirectMessage(user: string, channel: string, handle: (server: DiscordServer) => void): Promise<void> {
     try {
       const key = `dm_server:${channel}`;

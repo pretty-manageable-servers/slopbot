@@ -152,6 +152,12 @@ const consoleCsp = "default-src 'self'; script-src 'self'; style-src 'self'; fon
 // The Next static export uses inline scripts. Only the landing HTML gets this relaxation.
 const landingCsp = consoleCsp.replace("script-src 'self'", "script-src 'self' 'unsafe-inline'");
 /** Console file for a /console path, or undefined. Only these names are served. */
+/** Where to go after sign in. Only a chat or channel address on this site is kept (a run link returns to its run). Anything else goes to the console. */
+export function signInReturn(value: string | null): string {
+  if (!value || value.length > 300 || !/^\/(team|chat)\/[^/?#]+(\/run\/[^/?#]+)?\/?(\?[A-Za-z0-9_=&%-]*)?$/.test(value)) return '/console';
+  return value;
+}
+
 const consoleFile = (path: string) => {
   if (path === '/console' || path === '/console/') return 'index.html';
   // Chat and channel addresses: /chat, /chat/<id>, /team, /team/<id> and /team/<id>/run/<runId>. The page reads the path.
@@ -177,7 +183,7 @@ async function teamAccess(admin: ConsoleAdmin, user: string, editor: boolean): P
 }
 export function createConsole(options: ConsoleOptions, backend: ConsoleBackend): Server {
   const sessions = backend.sessions;
-  const states = new Map<string, number>();
+  const states = new Map<string, { expires: number; next: string }>();
   const cookie = (name: string, value: string, age: number) => `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${options.origin.startsWith('https:') ? '; Secure' : ''}`;
   const cookies = (req: IncomingMessage) => Object.fromEntries((req.headers.cookie || '').split(';').map(part => part.trim().split('=')));
   const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
@@ -212,10 +218,10 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
       const url = new URL(req.url || '/', options.origin);
       const routePath = url.pathname;
       const now = Date.now();
-      for (const [key, value] of states) if (value < now) states.delete(key);
+      for (const [key, value] of states) if (value.expires < now) states.delete(key);
       if (req.method === 'GET' && routePath === '/auth/login') {
         if (states.size >= 1000) return send(res, 429, { error: 'Try again later.' });
-        const state = token(); states.set(state, now + 600_000);
+        const state = token(); states.set(state, { expires: now + 600_000, next: signInReturn(url.searchParams.get('next')) });
         const auth = new URL('https://discord.com/oauth2/authorize');
         auth.search = new URLSearchParams({ client_id: options.clientId, redirect_uri: `${options.origin}/auth/callback`, response_type: 'code', scope: 'identify', state }).toString();
         res.writeHead(302, { Location: auth.href, 'Set-Cookie': cookie('slopbot_state', state, 600) }); res.end(); return;
@@ -223,6 +229,7 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
       if (req.method === 'GET' && routePath === '/auth/callback') {
         const state = url.searchParams.get('state');
         if (!state || cookies(req).slopbot_state !== state || !states.has(state)) return send(res, 400, { error: 'Login expired. Sign in again.' });
+        const next = states.get(state)!.next;
         states.delete(state);
         const code = url.searchParams.get('code');
         if (!code) return send(res, 400, { error: 'Discord login was cancelled.' });
@@ -241,7 +248,7 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         await backend.snapshot(user.id);
         const id = token();
         await sessions.saveSession({ id_hash: sessionHash(id), user_id: user.id, csrf: token(), expires: now + SESSION_MS, created: now });
-        res.writeHead(302, { Location: '/console', 'Set-Cookie': [cookie('slopbot_session', id, SESSION_AGE), cookie('slopbot_state', '', 0)] }); res.end(); return;
+        res.writeHead(302, { Location: next, 'Set-Cookie': [cookie('slopbot_session', id, SESSION_AGE), cookie('slopbot_state', '', 0)] }); res.end(); return;
       }
       // Build version for the footer. Public: it needs no login and holds no secrets.
       if (req.method === 'GET' && routePath === '/api/version') return send(res, 200, consoleVersion());

@@ -5,7 +5,7 @@ import type { RecordStore } from "../records.js";
 import type { ConfirmationRequired, ToolArgs, ToolJournal, ToolRegistry } from "../tools.js";
 import { displayToolResult, ToolError, toolFailed } from "../tools.js";
 import type { ToolActivity } from "../tool-activity.js";
-import { toolTraceRows } from "./discord-tool-trace.js";
+import { runTranscriptUrl, toolRunLinkRows, toolTraceRows } from "./discord-tool-trace.js";
 import { pruneToolTraces } from "../tool-trace.js";
 import { codeBlock, PROGRAM_CODE_KEEP_MS } from "../code-display.js";
 
@@ -22,9 +22,17 @@ export type CodeStore = RecordStore & Pick<ToolJournal, "operation" | "pruneOper
 /** The tool runner that a confirmed call goes through. */
 export type CodeRunner = Pick<ToolRegistry, "invokeResult">;
 
-/** One entry point for all tool runs in a reply. Legacy slopcode buttons remain readable. */
-export function showCodeRows(activity: readonly ToolActivity[], mode: "none" | "summary" | "full", traceId = activity[0]?.id): ActionRowBuilder<ButtonBuilder>[] {
-  return mode !== "none" && activity.length && traceId ? toolTraceRows(traceId) : [];
+/** One entry point for all tool runs in a reply. With web on, a link goes to the run transcript. Otherwise the in-Discord trace button. Legacy slopcode buttons remain readable. */
+export function showCodeRows(activity: readonly ToolActivity[], mode: "none" | "summary" | "full", traceId = activity[0]?.id, link?: string): ActionRowBuilder<ButtonBuilder>[] {
+  if (mode === "none" || !activity.length) return [];
+  if (link) return toolRunLinkRows(link);
+  return traceId ? toolTraceRows(traceId) : [];
+}
+
+/** The transcript link for a reply, or undefined when web is off or the reply has no run to show. The last run of the reply is used. */
+export function replyRunLink(origin: string | undefined, server: string, channel: string, runIds: readonly string[]): string | undefined {
+  const runId = runIds.at(-1);
+  return origin && runId ? runTranscriptUrl(origin, server, channel, runId) : undefined;
 }
 
 /** The Confirm and Cancel row. Disabled buttons stay visible after the record is expired or handled. */

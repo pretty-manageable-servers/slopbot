@@ -265,7 +265,14 @@ function askConfirm({ title, body = '', confirmLabel = 'Confirm', danger = false
     (danger ? cancel : ok).focus();
   });
 }
-function showScreen(name) { if (name !== 'console') { setConversationDrawer(false); closeSettings(); } $('boot').hidden = name !== 'boot'; $('login').hidden = name !== 'login'; $('console').hidden = name !== 'console'; $('account').hidden = name !== 'console'; }
+function showScreen(name) { if (name !== 'console') { setConversationDrawer(false); closeSettings(); } $('boot').hidden = name !== 'boot'; $('login').hidden = name !== 'login'; $('console').hidden = name !== 'console'; $('account').hidden = name !== 'console'; if (name === 'login') returnAfterSignIn(); }
+// A chat or channel address keeps its place through sign in: the login link carries it, and the server sends the browser back there.
+function returnAfterSignIn() {
+  const link = document.querySelector('#login a.primary');
+  if (!link) return;
+  const here = location.pathname + location.search;
+  link.href = /^\/(chat|team)\//.test(location.pathname) ? '/auth/login?next=' + encodeURIComponent(here) : '/auth/login';
+}
 const loader = size => { const svg = $('loader').content.firstElementChild.cloneNode(true); if (size) svg.classList.add(size); return svg; };
 function busy(size, text) { const box = document.createElement('div'), label = document.createElement('p'); box.className = 'busy'; label.textContent = text; box.append(loader(size), label); return box; }
 async function request(path, body) {

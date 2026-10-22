@@ -4,6 +4,18 @@ import type { RecordStore } from '../records.js';
 import { uiKey } from '../ui/runtime.js';
 import { TOOL_TRACE_KIND, TOOL_TRACE_CURSOR_KIND, tracePage, type ToolTrace, type TraceCursor } from '../tool-trace.js';
 
+/** The web address of one run's transcript, with its tool steps open. Same path as web/app.js reads: /team/<channel>/run/<run>. */
+export function runTranscriptUrl(origin: string, server: string, channel: string, runId: string): string {
+  return `${origin}/team/${encodeURIComponent(channel)}/run/${encodeURIComponent(runId)}?server=${encodeURIComponent(server)}&steps=open`;
+}
+
+/** A link button to the web transcript. It has no custom ID, so Discord sends no interaction. */
+export function toolRunLinkRows(url: string): ActionRowBuilder<ButtonBuilder>[] {
+  return [new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setURL(url).setLabel('Tool runs').setStyle(ButtonStyle.Link),
+  )];
+}
+
 export function toolTraceRows(id: string): ActionRowBuilder<ButtonBuilder>[] {
   return [new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`sloptrace:${id}`).setLabel('Tool runs').setStyle(ButtonStyle.Secondary),
