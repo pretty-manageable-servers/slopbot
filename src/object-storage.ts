@@ -148,8 +148,6 @@ export function objectStorageTool(services: StorageServices): ToolDefinition {
     name: 'file_store',
     description: 'Persistent files scoped to a user across servers, a shared server directory, or a user within this server. Save Discord attachments, text or sandbox outputs; list, inspect, download, DM files back, copy shared files, publish/unpublish, delete, or load into the sandbox. Personal files are private by default; server files are shared by default. Personal files are owner-controlled. Server files can be changed by their creator or a server admin. Publishing global user files makes them discoverable across servers.',
     access: 'member', effect: 'write', retrySafe: false, execution: 'inline',
-    // Every action that is not a read changes stored files or a sandbox, so a PTC call to it needs Confirm.
-    confirm: args => !readActions.includes(String(args.action)),
     fields: {
       action: { type: 'string', required: true, choices: ['save_attachment', 'write', 'save_sandbox', 'to_sandbox', 'list', 'info', 'read', 'link', 'send', 'copy', 'publish', 'unpublish', 'delete'], description: 'File storage action. send DMs the file only to the requester.' },
       storage_scope: { type: 'string', choices: storageScopes, description: 'user: personal across servers; server: shared current-server directory; user_server: personal within current server, the default' },

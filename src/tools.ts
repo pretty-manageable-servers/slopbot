@@ -1,4 +1,4 @@
-import { ToolError, UncertainActionError, errorContext, errorSummary, redactErrorText, describeError } from "./errors.js";
+import { ToolError, UncertainActionError, errorContext, errorSummary, isBeforeRequest, redactErrorText, describeError } from "./errors.js";
 import {stableJson} from './prompt-cache.js';
 import { toolNeedsThread } from './thread-policy.js';
 import { requestTimings } from "./request-timing.js";
@@ -78,7 +78,7 @@ export interface ToolDefinition {
   access: "member" | "admin";
   effect: "read" | "write";
   retrySafe: boolean;
-  /** A bot setting that does not touch task state. It runs even when the channel has a blocked job. */
+  /** A bot setting that does not touch task state. */
   setting?: boolean;
   /** External/custom tool default. Native routing is defined centrally in thread-policy.ts. */
   execution?: "inline" | "thread";
@@ -87,7 +87,7 @@ export interface ToolDefinition {
   publicResult?(args: ToolArgs): boolean;
   matchRead?(message: Message): ToolArgs | undefined;
   resource?(message: Message, args: ToolArgs): string;
-  /** A started write on its resource older than this no longer blocks other writes; it is ended as failed with reason "abandoned". Only for work that cannot outlive this time (for example an orphan that expires on its own). */
+  /** A started write on its resource older than this no longer blocks writes on that resource; it is ended as failed with reason "abandoned". Default: UNCERTAIN_LOCK_MS. A tool sets it only when its orphan expires on its own sooner or later (sandbox lifetime). */
   staleAfterMs?: number;
   writes?(args: ToolArgs): boolean;
   validate?(args: ToolArgs): ToolArgs;
@@ -99,18 +99,23 @@ export interface ToolDefinition {
 }
 export interface ToolOperation {
   id: string; name: string; args: ToolArgs; resource: string | null; status: "started" | "done" | "failed"; result: string | null;
+  /** When the operation started, in ms. */
+  createdAt?: number;
 }
 export interface BlockingOperation { id: string; startedAt: number }
-/** The message for a write that waits on an earlier unfinished write. Private chats say "chat", not "task". */
-function blockedError(message: Message, name: string, blocking: BlockingOperation, staleAfterMs: number | undefined): ToolError {
-  const noun = isPrivateChannel(message.channel) ? "chat" : "task";
-  const started = utcTime(blocking.startedAt);
-  const error = new ToolError(staleAfterMs === undefined
-    ? `An earlier ${name} action in this ${noun} did not finish (started ${started}). Another ${name} action waits until it is reconciled.`
-    : `An earlier ${name} action in this ${noun} did not finish (started ${started}). It clears automatically at ${utcTime(blocking.startedAt + staleAfterMs)}.`);
+/** A write lock on one resource ends this long after its write started, unless the tool sets its own staleAfterMs. */
+export const UNCERTAIN_LOCK_MS = 10 * 60 * 1000;
+/** The message for a write that waits on an earlier unfinished write on the same resource. Names the operation, resource and age. */
+function blockedError(message: Message, name: string, blocking: BlockingOperation, resource: string, staleAfterMs: number): ToolError {
+  const error = new ToolError(`An earlier ${name} action in this ${isPrivateChannel(message.channel) ? "chat" : "task"} did not finish. Operation ${blocking.id} on ${resource} started ${ageText(blocking.startedAt)} ago. The lock on this resource clears at ${utcTime(blocking.startedAt + staleAfterMs)}. Check before you retry.`);
   return errorContext(error, { tool: name, operationId: blocking.id }) as ToolError;
 }
+/** The notice for a write whose outcome is unknown after its request was sent. */
+function uncertainError(name: string, operationId: string, resource: string | null, startedAt: number, cause?: unknown): UncertainActionError {
+  return new UncertainActionError(`This may have happened. Check before you retry. ${name} operation ${operationId} on ${resource ?? "its resource"} started ${ageText(startedAt)} ago; its result is uncertain.`, cause === undefined ? undefined : { cause });
+}
 function utcTime(ms: number): string { return new Date(ms).toISOString().slice(0, 16).replace("T", " ") + " UTC"; }
+function ageText(ms: number): string { const seconds = Math.max(0, Math.round((Date.now() - ms) / 1000)); return seconds < 120 ? `${seconds} s` : `${Math.round(seconds / 60)} min`; }
 export interface ToolJournal {
   operation(id: string): ToolOperation | undefined | Promise<ToolOperation | undefined>;
   blockingOperation(resource: string, exceptId: string): BlockingOperation | undefined | Promise<BlockingOperation | undefined>;
@@ -211,8 +216,6 @@ export class ToolRegistry {
   catalog(message?: Message): string { return catalogOf(this.definitions(), message); }
   schemas(message?: Message): readonly ModelTool[] { return schemasOf(this.definitions(), message); }
   effect(name: string, args: ToolArgs): "read" | "write" { const tool = this.tools.get(name); return tool?.writes ? tool.writes(args) ? "write" : "read" : tool?.effect ?? "read"; }
-  /** True when the tool may run while the channel has a blocked job. */
-  ignoresBlocked(name: string): boolean { return this.tools.get(name)?.setting === true; }
   scopeOf(name: string): "discord" | undefined { return this.tools.get(name)?.scope; }
   requiresThread(name: string, args: ToolArgs): boolean {
     const tool = this.tools.get(name);
@@ -285,21 +288,30 @@ export class ToolRegistry {
     if (tool!.access === "admin" && !context.isAdmin) throw new ToolError("Manage Server permission is required.");
     return context;
   }
+  /** Runs the checks a write needs before anything is saved or asked of the requester: argument validation, access, the tool's authorize, and its resource lock. Throws a ToolError for a failed check. */
+  async preflight(message: Message, name: string, input: unknown, operationId: string, source: "command" | "agent", expectedVersion?: number): Promise<void> {
+    const context = await this.authorizeCall(message, name, input, operationId, source, expectedVersion);
+    if (!context.resource) return;
+    const blocking = await this.journal.blockingOperation(context.resource, operationId);
+    if (blocking) throw blockedError(message, name, blocking, context.resource, this.staleAfter(name));
+  }
+  private staleAfter(name: string): number { return this.tools.get(name)?.staleAfterMs ?? UNCERTAIN_LOCK_MS; }
   private async perform(message: Message, name: string, input: unknown, operationId: string, source: "command" | "agent", expectedVersion?: number, invocation?: ToolInvocation): Promise<ToolResult> {
     const tool = this.tools.get(name);
     const context = await this.authorizeCall(message, name, input, operationId, source, expectedVersion, invocation);
     const args = context.arguments;
     const previous = await this.journal.operation(operationId);
     if (context.resource) {
-      // An uncertain write that outlived its own lifetime cannot have a live effect, so it stops blocking.
-      if (tool!.staleAfterMs !== undefined) await this.journal.expireOperations(context.resource, Date.now() - tool!.staleAfterMs, operationId, encodeToolResult({ text: "abandoned", reason: "abandoned", status: "failed", failure: { causes: [] } }));
+      // An uncertain write older than its lock cannot have a live effect, so it stops blocking. Only its own resource is checked.
+      const staleAfterMs = this.staleAfter(name);
+      await this.journal.expireOperations(context.resource, Date.now() - staleAfterMs, operationId, encodeToolResult({ text: "abandoned", reason: "abandoned", status: "failed", failure: { causes: [] } }));
       const blocking = await this.journal.blockingOperation(context.resource, operationId);
       if (blocking) {
         const pending = tool!.reconcileBlocking ? await this.journal.operation(blocking.id) : undefined;
         const recovered = pending?.name === name
           ? await tool!.reconcile?.({ ...context, operationId: pending.id, arguments: pending.args }, pending.args)
           : undefined;
-        if (recovered === undefined) throw blockedError(message, name, blocking, tool!.staleAfterMs);
+        if (recovered === undefined) throw blockedError(message, name, blocking, context.resource, staleAfterMs);
         await this.journal.endOperation(blocking.id, encodeToolResult(recovered));
       }
     }
@@ -312,19 +324,24 @@ export class ToolRegistry {
       }
       if (!tool!.retrySafe) {
         const result = await tool!.reconcile?.(context, args);
-        if (result === undefined) throw new UncertainActionError(`The result of ${name} is uncertain; inspect it before retrying.`);
+        if (result === undefined) throw uncertainError(name, operationId, context.resource, previous.createdAt ?? Date.now());
         await this.journal.endOperation(operationId, encodeToolResult(result));
         return toolResult(result);
       }
     } else await this.journal.beginOperation(context, name, args);
+    const startedAt = Date.now();
     try {
       const result = await tool!.execute(context, args);
       await this.journal.endOperation(operationId, encodeToolResult(result));
       return toolResult(result);
     } catch (error) {
-      // Only known validation failures are safely final; network outcomes stay uncertain.
-      if (error instanceof ToolError) await this.journal.endOperation(operationId, encodeToolResult({ text: errorSummary(error), reason: redactErrorText(error.message), status: error.status, failure: { causes: describeError(error).causes } }), true);
-      else if (context.resource && !tool!.retrySafe) throw new UncertainActionError(`The result of ${name} is uncertain and was recorded for reconciliation.`, { cause: error });
+      // Validation failures and errors before the request is sent are final (failed). Only an error after the request was sent is uncertain.
+      if (error instanceof ToolError || (context.resource && !tool!.retrySafe && isBeforeRequest(error))) {
+        const failure = error instanceof ToolError ? error : new ToolError(redactErrorText(errorSummary(error)), "failed", { cause: error });
+        await this.journal.endOperation(operationId, encodeToolResult({ text: errorSummary(failure), reason: redactErrorText(failure.message), status: failure.status, failure: { causes: describeError(failure).causes } }), true);
+        throw failure;
+      }
+      if (context.resource && !tool!.retrySafe) throw uncertainError(name, operationId, context.resource, startedAt, error);
       throw error;
     }
   }

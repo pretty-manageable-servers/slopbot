@@ -176,7 +176,7 @@ test('unresolved writes stay blocked and do not blindly create another issue', a
   f.client.createIssue = async () => { f.client.creates++; throw new Error('timeout before outcome known'); };
   await assert.rejects(f.invoke('issue_report', args, 'unknown'), /uncertain/);
   await assert.rejects(f.invoke('issue_report', args, 'unknown'), /uncertain/);
-  await assert.rejects(f.invoke('issue_report', args, 'other-operation'), /waits until it is reconciled/);
+  await assert.rejects(f.invoke('issue_report', args, 'other-operation'), /Operation unknown on github-issues:o\/r.*Check before you retry/);
   assert.equal(f.client.creates, 1);
 });
 
@@ -359,7 +359,7 @@ test('issue_report always needs Confirm; reads do not', async t => {
   assert.equal(f.registry.definitions().find(d => d.name === 'interaction_inspect')?.confirm, undefined);
 });
 
-test('confirmed report carries owner evidence across tasks and remains retryable after an access block', async t => {
+test('confirmed report carries owner evidence across tasks; a failed confirmed write is not retried by a second click', async t => {
   const f = await fixture(t);
   const evidence = await f.evidence();
   f.registry.register(runToolsCodeTool(f.registry, { confirmations: {
@@ -379,16 +379,15 @@ test('confirmed report carries owner evidence across tasks and remains retryable
   f.denied.add('task');
   await handleConfirm(interaction, f.store, f.registry);
   assert.equal(f.client.creates, 0);
+  // The failed call is final for this click. The model gets the error in a new turn; the channel never shows it or "still pending".
   const pending = (await f.store.record('s', CONFIRM_RECORD, id))!.value as { done?: boolean };
-  assert.equal(pending.done, undefined);
-  assert.match(replies.at(-1)!.content!, /still pending/);
-  assert.equal(replies.at(-1)!.components, undefined);
+  assert.equal(pending.done, true);
+  assert.equal(replies.at(-1)!.content, 'Confirmed.');
+  assert.doesNotMatch(replies.at(-1)!.content!, /pending|Could not/);
   f.denied.delete('task');
   await handleConfirm(interaction, f.store, f.registry);
-  assert.equal(f.client.creates, 1);
-  assert.match(replies.at(-1)!.content!, /https:\/\/github.com\/o\/r\/issues\/1/);
-  await handleConfirm(interaction, f.store, f.registry);
-  assert.equal(f.client.creates, 1);
+  assert.equal(f.client.creates, 0);
+  assert.match(replies.at(-1)!.content!, /no longer pending/);
 });
 
 test('evidence scope errors identify the selected ID and owning task', async t => {
