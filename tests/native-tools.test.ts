@@ -259,7 +259,7 @@ const weatherRegistry = (store: SQLiteStore, onFirstCall: () => Promise<void>, r
   return {registry, executor: {catalog:()=>registry.catalog(),schemas:()=>registry.schemas(),execute:(m: typeof chatRequest, call: {name:string;arguments:Record<string,import('../src/domain.js').Json>},id:string)=>registry.invokeResult(m,call.name,call.arguments,id,'agent')}};
 };
 
-test('chat_change_skips_remaining_calls', async t => {
+test('chat_change_does_not_skip_calls', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const ran: string[] = [];
   await store.ingest({...chatRequest, id:'earlier', author:'bob', text:'Earlier note'});
@@ -272,16 +272,18 @@ test('chat_change_skips_remaining_calls', async t => {
     const tools = body.messages.filter((item: any) => item.role === 'tool');
     assert.deepEqual(tools.map((item: any) => item.tool_call_id), ['call_one', 'call_two']);
     assert.match(tools[0].content, /Sunny one/);
-    assert.match(tools[1].content, /Not run: the chat changed\. Decide again with the current messages\./);
+    assert.match(tools[1].content, /Sunny two/);
     assert.ok(!/"error"|failed/.test(tools[1].content));
+    // The edit reaches the model as a note in its next tool round.
+    assert.match(JSON.stringify(body.messages), /Since you started[\s\S]*edited a message[\s\S]*Earlier note, now edited/);
     return response([{index:0,delta:{content:'Done.'},finish_reason:'stop'}]);
   });
   const reply = await new Application(store,llm,{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:executor,harness:store}).handle(chatRequest);
   assert.equal(reply?.text, 'Done.');
-  assert.deepEqual(ran, ['one']); assert.equal(requests, 2);
+  assert.deepEqual(ran, ['one', 'two']); assert.equal(requests, 2);
 });
 
-test('rebuild_uses_edited_text', async t => {
+test('request_edit_during_run_is_a_note', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const ran: string[] = [];
   const {executor} = weatherRegistry(store, async () => { await store.ingest({...chatRequest, text:'Look up the forecast for Oslo', revisionTimestamp:2}); }, ran);
@@ -290,11 +292,10 @@ test('rebuild_uses_edited_text', async t => {
     const body = JSON.parse(String(init?.body)); requests++;
     if (requests === 1) return twoLookups();
     const text = JSON.stringify(body.messages);
-    assert.match(text, /Look up the forecast for Oslo/);
-    assert.ok(!text.includes('Look up the weather'));
+    assert.match(text, /The user edited their request to: Look up the forecast for Oslo/);
     return response([{index:0,delta:{content:'Done.'},finish_reason:'stop'}]);
   });
   const reply = await new Application(store,llm,{allowedChannels:[{server:'s',channel:'c'}]},undefined,{tools:executor,harness:store}).handle(chatRequest);
-  assert.equal(reply?.text, 'Done.'); assert.equal(requests, 2);
+  assert.equal(reply?.text, 'Done.'); assert.equal(requests, 2); assert.deepEqual(ran, ['one', 'two']);
   assert.equal((await store.canonicalMessage('s', 'request'))?.text, 'Look up the forecast for Oslo');
 });

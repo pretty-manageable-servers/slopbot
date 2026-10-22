@@ -196,10 +196,10 @@ export class DiscordServer implements ChatGateway {
       const member = await guild.members.fetch({ user: message.author, force: true });
       return member.permissions.has(PermissionFlagsBits.ManageGuild);
     }, async context => {
-      // Only an edited or deleted request stops a write. A changed chat version does not.
+      // Edits, deletes and new messages never stop a tool. The run tells the model about them in its next round.
       if (context.source !== "agent") return;
-      const message = context.message, source = (await store.canonicalMessage(message.server, message.id));
-      if (!source || source.text !== message.text || !this.bot.accepts(message.server, message.channel)) throw new ToolError("Source or channel changed before the action");
+      const message = context.message;
+      if (!this.bot.accepts(message.server, message.channel)) throw new ToolError("This channel is no longer enabled for Slopbot");
       if (this.tools.effect(context.toolName, context.arguments) === "write" && context.toolName !== "task_retry" && !this.tools.ignoresBlocked(context.toolName)) {
         if ((await store.hasBlocked(message.server, message.channel))) throw new ToolError("This task has an uncertain action; reconcile it before new writes");
         if (message.taskId && (await store.hasPendingOther(message.server, message.channel, message.id))) throw new ToolError("New contributions are queued; review them before further actions");
