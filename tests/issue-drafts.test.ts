@@ -5,6 +5,7 @@ import { SQLiteStore } from '../src/adapters/sqlite.js';
 import type { OperationsClient, Issue } from '../src/adapters/operations-client.js';
 import { DRAFT_TTL_MS, ISSUE_DRAFT_KIND, issueDraftTools, openDraft, saveDraft, type IssueDraft } from '../src/issue-drafts.js';
 import { ToolError, ToolRegistry, type ToolContext } from '../src/tools.js';
+import { registerOperationsTools } from '../src/operations.js';
 import type { Message } from '../src/domain.js';
 
 const now = Date.parse('2026-10-22T12:00:00Z');
@@ -140,4 +141,33 @@ test('model_cannot_call_file_report', async t => {
   const filed = await f.invoke('file_report', {}, 'person-files');
   assert.match(String(filed.text), /Issue created/);
   assert.equal(f.client.creates.length, 1);
+});
+
+// Mirrors DiscordServer: drafts register on every server when GitHub is configured; diagnostics only in operations.servers.
+function githubRegistry(t: { after(fn: () => void): void }, servers: string[], guild: string) {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const client = new FakeClient();
+  const registry = new ToolRegistry(store, async () => false);
+  const config = { servers, repository: 'o/r', containers: ['slopbot'] };
+  const authorize = async () => {};
+  registerOperationsTools(registry, { store, client: client as unknown as OperationsClient, config, authorize }, guild);
+  for (const tool of issueDraftTools({ store, client: client as unknown as OperationsClient, authorize })) registry.register(tool);
+  return registry;
+}
+
+test('issue_draft_available_on_any_server_with_github', t => {
+  const registry = githubRegistry(t, ['allowed'], 'dynamic');
+  const names = registry.definitions().map(definition => definition.name);
+  assert.ok(names.includes('issue_draft'));
+  assert.ok(names.includes('file_report'));
+  assert.ok(names.includes('github_issue_read'));
+  assert.ok(names.includes('interaction_inspect'));
+});
+
+test('admin_diagnostics_still_limited', t => {
+  const registry = githubRegistry(t, ['allowed'], 'dynamic');
+  const names = registry.definitions().map(definition => definition.name);
+  for (const admin of ['deployment_inspect', 'ci_inspect', 'service_inspect', 'pipeline_read', 'fix_watch']) assert.ok(!names.includes(admin), `${admin} stays limited to operations.servers`);
+  const allowed = githubRegistry(t, ['allowed'], 'allowed').definitions().map(definition => definition.name);
+  assert.ok(allowed.includes('deployment_inspect'));
 });

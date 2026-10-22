@@ -258,8 +258,8 @@ export class DiscordServer implements ChatGateway {
     if (config.operations) {
       const client = new HttpOperationsClient(config.operations);
       const operations = registerOperationsTools(this.tools, { store, config: config.operations, client, authorize: authorizeFeature }, guildId);
-      // Issue drafts file through the same GitHub client, so they exist only where operations are configured.
-      if (config.operations.servers.includes(guildId)) for (const tool of issueDraftTools({ store, client, authorize: authorizeFeature })) this.tools.register(tool);
+      // Member issue drafts file through the same GitHub client. They exist on every server where GitHub is configured, like github_issue_read; admin diagnostics stay in operations.servers.
+      for (const tool of issueDraftTools({ store, client, authorize: authorizeFeature })) this.tools.register(tool);
       if (config.operations.servers.includes(guildId)) this.fixWatches = new FixWatchWorker(guildId, operations, async message => {
         await authorizeFeature(message, message.channel);
         await this.tools.checkAccess(message, 'fix_watch');
@@ -520,7 +520,7 @@ export class DiscordServer implements ChatGateway {
     const guild = await this.client.guilds.fetch(this.guildId);
     // set() replaces the whole list, so commands from older versions are removed.
     // /usage is a separate command, so /slopbot stays as it is.
-    await setGuildCommands(guild, runOnly => [buildToolCommands(this.tools, { runOnly }).toJSON(), buildUsageCommand().toJSON(), buildStopCommand().toJSON(), buildInboxCommand().toJSON(), buildFileReportCommand().toJSON(), buildVoiceCommand().toJSON(), ...buildMessageApps().map(app => app.toJSON())]);
+    await setGuildCommands(guild, runOnly => [buildToolCommands(this.tools, { runOnly }).toJSON(), buildUsageCommand().toJSON(), buildStopCommand().toJSON(), buildInboxCommand().toJSON(), ...(this.config.operations ? [buildFileReportCommand().toJSON()] : []), buildVoiceCommand().toJSON(), ...buildMessageApps().map(app => app.toJSON())]);
     // Slopbot registers no global commands. Old global commands stay visible and fail, so remove them.
     const global = await this.client.application?.commands.fetch();
     if (global?.size) await this.client.application!.commands.set([]);

@@ -63,8 +63,15 @@ const plainWordsOf: Record<string, (count: number) => string> = {
   memory_remember: count => `saved ${plural(count, 'memory')}`,
   file_store: count => `read ${plural(count, 'stored file')}`,
   file_store_write: count => `changed ${plural(count, 'stored file')}`,
+  attach_file: count => `attached ${plural(count, 'file')}`,
+  issue_draft: count => count === 1 ? 'drafted an issue' : `drafted ${plural(count, 'issue')}`,
+  bot_info: count => `read bot info${times(count)}`,
 };
-export const plainWords = (name: string, count: number): string => plainWordsOf[name]?.(count) ?? `${name.replace(/_/g, ' ')}${times(count)}`;
+// Tools without a phrase: the name in spaces, as a plain verb phrase. Never a × glued to the name.
+export const plainWords = (name: string, count: number): string => {
+  const label = name.replace(/_/g, ' ');
+  return plainWordsOf[name]?.(count) ?? (count > 1 ? `used ${label} ${count} times` : `used ${label}`);
+};
 export const escapeMarkdown = (text: string): string => text.replace(/\s+/g, " ").replace(/[\\`*_~<>|\[\]]/g, "\\$&");
 // Short text for the "now" line. Only the query is shown, never other arguments.
 export function currentStep(name: string, query: unknown): string {
