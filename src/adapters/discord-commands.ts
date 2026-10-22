@@ -1,5 +1,5 @@
-import { SlashCommandBuilder, ContextMenuCommandBuilder, ApplicationCommandType, ChannelType, type APIEmbed } from "discord.js";
-import type { ToolRegistry } from "../tools.js";
+import { SlashCommandBuilder, SlashCommandSubcommandBuilder, ContextMenuCommandBuilder, ApplicationCommandType, ChannelType, type APIEmbed, type ApplicationCommandDataResolvable } from "discord.js";
+import type { ToolDefinition, ToolRegistry } from "../tools.js";
 import { usageView, type UsageView, type UserLimiter } from "../user-limiter.js";
 
 const WINDOW_LABELS: Record<string, string> = { "5h": "5-hour", week: "weekly" };
@@ -82,11 +82,34 @@ export function buildFileReportCommand(): SlashCommandBuilder {
   return command;
 }
 
-export function buildToolCommands(registry: ToolRegistry): SlashCommandBuilder {
-  const command = new SlashCommandBuilder().setName("slopbot").setDescription("Slopbot tools, settings and diagnostics");
-  // Discord limits subcommands. The generic runner reaches every registered connector.
-  for (const tool of registry.definitions().filter(tool => !tool.provider?.startsWith('mcp:')).slice(0, 24)) command.addSubcommand(subcommand => {
-    subcommand.setName(tool.name).setDescription(tool.description.slice(0, 100));
+/** Discord rejects one command whose names, descriptions, choice names and choice values add up to more than this. */
+export const DISCORD_COMMAND_TEXT_LIMIT = 8000;
+/** Tool subcommands are added only while the /slopbot total stays under this, leaving room under the hard limit. */
+export const TOOL_COMMAND_TEXT_BUDGET = 7500;
+
+/** Discord's size count for one command or subcommand JSON: every name, description, choice name and choice value, in characters. */
+export function commandTextSize(json: unknown): number {
+  if (Array.isArray(json)) return json.reduce((total: number, item) => total + commandTextSize(item), 0);
+  if (typeof json !== "object" || json === null) return 0;
+  let total = 0;
+  for (const [key, value] of Object.entries(json)) {
+    if ((key === "name" || key === "description" || key === "value") && typeof value === "string") total += value.length;
+    else total += commandTextSize(value);
+  }
+  return total;
+}
+
+/** The generic runner. It reaches every registered tool, so it is always in /slopbot. */
+function runSubcommand(): SlashCommandSubcommandBuilder {
+  return new SlashCommandSubcommandBuilder().setName("run").setDescription("Run any registered tool, including external connectors")
+    .addStringOption(option => option.setName("tool").setDescription("Registered tool name").setRequired(true))
+    .addStringOption(option => option.setName("arguments").setDescription("JSON object of tool arguments").setMaxLength(6000));
+}
+
+/** One subcommand per registered tool, with its options and choices. */
+function toolSubcommand(tool: ToolDefinition): SlashCommandSubcommandBuilder {
+  const subcommand = new SlashCommandSubcommandBuilder();
+  subcommand.setName(tool.name).setDescription(tool.description.slice(0, 100));
     const fields = Object.entries(tool.fields).sort((a, b) => Number(Boolean(b[1].required)) - Number(Boolean(a[1].required)));
     for (const [name, field] of fields) {
       const description = field.description.slice(0, 100), required = Boolean(field.required);
@@ -100,10 +123,43 @@ export function buildToolCommands(registry: ToolRegistry): SlashCommandBuilder {
         return option;
       });
     }
-    return subcommand;
-  });
-  command.addSubcommand(subcommand => subcommand.setName("run").setDescription("Run any registered tool, including external connectors")
-    .addStringOption(option => option.setName("tool").setDescription("Registered tool name").setRequired(true))
-    .addStringOption(option => option.setName("arguments").setDescription("JSON object of tool arguments").setMaxLength(6000)));
+  return subcommand;
+}
+
+/**
+ * The /slopbot command. Tools come first in registry order, and each is added only while the total stays under
+ * TOOL_COMMAND_TEXT_BUDGET. The run subcommand is reserved first, so it is always there. runOnly drops every tool.
+ */
+export function buildToolCommands(registry: ToolRegistry, options: { runOnly?: boolean } = {}): SlashCommandBuilder {
+  const command = new SlashCommandBuilder().setName("slopbot").setDescription("Slopbot tools, settings and diagnostics");
+  const run = runSubcommand();
+  let size = commandTextSize(command.toJSON()) + commandTextSize(run.toJSON());
+  const tools: SlashCommandSubcommandBuilder[] = [];
+  // Discord limits subcommands. The generic runner reaches every registered connector.
+  if (!options.runOnly) for (const tool of registry.definitions().filter(tool => !tool.provider?.startsWith('mcp:')).slice(0, 24)) {
+    const subcommand = toolSubcommand(tool), next = commandTextSize(subcommand.toJSON());
+    if (size + next > TOOL_COMMAND_TEXT_BUDGET) break;
+    size += next;
+    tools.push(subcommand);
+  }
+  for (const subcommand of tools) command.addSubcommand(subcommand);
+  command.addSubcommand(run);
   return command;
+}
+
+/** The guild command set, the part of the discord.js manager that registration uses. */
+export interface GuildCommands { commands: { set(commands: ApplicationCommandDataResolvable[]): Promise<unknown> } }
+
+/**
+ * Replaces the guild command list. If Discord rejects it as too large (50035), /slopbot is registered again with only
+ * the run subcommand, so one oversized command cannot take the other commands down with it.
+ */
+export async function setGuildCommands(guild: GuildCommands, commandsFor: (runOnly: boolean) => ApplicationCommandDataResolvable[], log: (message: string) => void = message => console.warn(message)): Promise<void> {
+  try {
+    await guild.commands.set(commandsFor(false));
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code !== 50035) throw error;
+    log("Discord rejected the /slopbot command as too large (50035). Registering /slopbot with only the run subcommand; the other commands are still registered.");
+    await guild.commands.set(commandsFor(true));
+  }
 }
