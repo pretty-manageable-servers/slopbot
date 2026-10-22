@@ -14,7 +14,7 @@ const target = "100000000000000001";
 const cat = { name: "cat.png", url: "https://cdn.discordapp.com/attachments/1/2/cat.png", contentType: "image/png" };
 const dog = { name: "dog.png", url: "https://cdn.discordapp.com/attachments/1/3/dog.png", contentType: "image/png" };
 const stored = (attachments: readonly Attachment[]): Message => ({ id: target, server: "s", channel: "c", author: "b", text: "pictures", attachments });
-const fakeStore = (...messages: Message[]) => ({ readHistory: async (_server: string, _channel: string, id: string, _radius: number) => messages.filter(item => item.id === id) });
+const fakeStore = (...messages: Message[]) => ({ readHistory: async (_server: string, _channel: string, id: string, _radius: number) => messages.filter(item => item.id === id), context: async () => messages });
 const fixedImages = (url: string | undefined): ImageSource => ({ link: async () => url });
 
 test("view_image_returns_image_input", async t => {
@@ -41,7 +41,8 @@ test("view_image_no_channel_access_rejected", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const registry = new ToolRegistry(store, async () => false);
   let reads = 0;
-  const counted = { readHistory: async (...args: [string, string, string, number]) => { reads++; return fakeStore(stored([cat])).readHistory(...args); } };
+  const base = fakeStore(stored([cat]));
+  const counted = { ...base, readHistory: async (...args: [string, string, string, number]) => { reads++; return base.readHistory(...args); } };
   registerViewImage(registry, { store: counted, images: fixedImages("https://signed.example/cat.png"), authorize: async () => { throw new ToolError("You cannot read this channel."); } });
   await assert.rejects(registry.invokeResult(requester, "view_image", { message_ref: target }, "op-3", "agent"), /cannot read this channel/);
   assert.equal(reads, 0);
@@ -113,4 +114,32 @@ test("split_tool_pair_has_no_image_url", () => {
   assert.ok(!wire.includes("ex=abc"));
   assert.ok(!wire.includes("cdn.example"));
   assert.ok(wire.includes('\\"images_shown\\":1'));
+});
+
+test("view_image_uses_reply_target_images", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const registry = new ToolRegistry(store, async () => false);
+  const reply: Message = { id: "100000000000000003", server: "s", channel: "c", author: "bot", text: "Looks like a cat.", replyTo: target };
+  registerViewImage(registry, { store: fakeStore(stored([cat]), reply), images: fixedImages("https://signed.example/cat.png"), authorize: async () => {} });
+  const result = await registry.invokeResult(requester, "view_image", { message_ref: reply.id }, "op-5", "agent");
+  assert.equal(result.status, undefined);
+  assert.equal(result.text, "Image cat.png from the message it replies to.");
+  assert.deepEqual(result.images, [{ url: "https://signed.example/cat.png", label: "cat.png" }]);
+});
+
+test("view_image_miss_lists_messages_with_images", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const registry = new ToolRegistry(store, async () => false);
+  const at = Date.UTC(2026, 9, 22, 20, 8);
+  const picture: Message = { ...stored([cat]), id: "100000000000000002", authorName: "DerpZ", timestamp: at };
+  const words: Message = { id: "100000000000000004", server: "s", channel: "c", author: "bot", text: "No picture here.", timestamp: at + 60_000 };
+  registerViewImage(registry, { store: fakeStore(picture, words), images: fixedImages("https://signed.example/x"), authorize: async () => {} });
+  const result = await registry.invokeResult(requester, "view_image", { message_ref: words.id }, "op-6", "agent");
+  assert.equal(result.status, "rejected");
+  assert.equal(result.text, "That message has no images. Messages with images in this chat: 100000000000000002 (cat.png, by DerpZ at 20:08). Call view_image with one of these IDs.");
+  const none = new SQLiteStore(); t.after(() => none.close());
+  const bare = new ToolRegistry(none, async () => false);
+  registerViewImage(bare, { store: fakeStore(words), images: fixedImages("https://signed.example/x"), authorize: async () => {} });
+  const empty = await bare.invokeResult(requester, "view_image", { message_ref: words.id }, "op-7", "agent");
+  assert.equal(empty.text, "No message in this chat has images.");
 });
