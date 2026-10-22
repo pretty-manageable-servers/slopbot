@@ -183,6 +183,8 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
             }
             // Confirm was given. Its result is in the journal, so the call below uses it.
             if ((saved as Record<string, Json> | undefined)?.done !== true) {
+              // The schema, access and resource checks run first. A failed check is a normal failed result in this turn, and no Confirm is asked.
+              await registry.preflight(message, name, clean, operationId, context.source, context.invocation?.expectedVersion);
               await options.confirmations?.save(message.server, operationId, { name, arguments: clean, parentOperationId: parentId, channel: message.channel, author: message.author, requestId: message.id, ...(message.taskId ? { taskId: message.taskId } : {}), ...(message.replyTo ? { replyTo: message.replyTo } : {}), createdAt: Date.now() });
               throw new ConfirmationRequired({ name, arguments: clean, operationId, parentOperationId: parentId });
             }
@@ -207,12 +209,11 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
         result = await runtime.run(code, callableTools(registry).map(tool => tool.name), dispatch, context.invocation?.signal);
       } catch (error) {
         if (!(error instanceof ConfirmationRequired)) throw error;
-        return {
-          text: `Waiting for ${message.author} to confirm ${error.call.name}. The bot posted Confirm and Cancel buttons.`,
-          data: { childCalls, confirmation: { name: error.call.name, operationId: error.call.operationId }, limits } as unknown as Json,
-          sources: [...sources.values()], artifacts: [...artifacts.values()],
-        };
+        result = { outputs: [], logs: [], calls: 0, receipts: [], failures: [], confirmation: { name: error.call.name, operationId: error.call.operationId } };
       }
+      // A Confirm stop keeps the work done so far. The result of the confirmed call comes in a new turn.
+      if (result.confirmation) return { text: [result.outputs.length || result.returned !== undefined || result.logs.length ? programText(result) : '', `Waiting for Confirm on ${result.confirmation.name}. ${message.author} has the Confirm and Cancel buttons.`].filter(Boolean).join('\n'), data: { ...result, childCalls, limits } as unknown as Json,
+        sources: [...sources.values()], artifacts: [...artifacts.values()] };
       // A program error is a normal result: outputs, logs and receipts are kept in data, and the error is logged once.
       if (result.error) logError('program_failed', new ToolError(result.error.message, result.error.status), { stage: 'run_tools_code', calls: result.calls });
       return { text: programText(result), data: { ...result, childCalls, limits } as unknown as Json,

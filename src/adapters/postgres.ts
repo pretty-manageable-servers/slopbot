@@ -732,7 +732,7 @@ export class PostgresStore {
     }
     async operation(id: string): Promise<ToolOperation | undefined> {
         const row = (await this.db.prepare("SELECT * FROM tool_operations WHERE id=?").get(id));
-        return row ? { id, name: String(row.name), args: JSON.parse(String(row.args)) as ToolArgs, resource: row.resource === null ? null : String(row.resource), status: row.status as ToolOperation["status"], result: row.result === null ? null : String(row.result) } : undefined;
+        return row ? { id, name: String(row.name), args: JSON.parse(String(row.args)) as ToolArgs, resource: row.resource === null ? null : String(row.resource), status: row.status as ToolOperation["status"], result: row.result === null ? null : String(row.result), createdAt: Number(row.created_at) } : undefined;
     }
     async issueReportOrigin(server: string, url: string, body: string) {
       return findIssueReportOrigin(await this.db.prepare("SELECT id,author,channel,result FROM tool_operations WHERE server=? AND name='issue_report' AND status='done' AND result LIKE ?").all(server, `%${url}%`), url, body);

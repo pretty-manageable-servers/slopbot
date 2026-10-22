@@ -46,7 +46,7 @@ function fakeInteraction(customId: string, userId = 'requester', channelId = 'ch
   return { interaction: interaction as unknown as ButtonInteraction, log };
 }
 
-const pendingRecord = { name: 'channels', arguments: { action: 'remove', channel: '12345678901234567' }, parentOperationId: 'parent', channel: 'channel', author: 'requester', createdAt: 1 };
+const pendingRecord = { name: 'channels', arguments: { action: 'remove', channel: '12345678901234567' }, parentOperationId: 'parent', channel: 'channel', author: 'requester', createdAt: Date.now() };
 
 test('show code replies ephemerally with the program code in a js block', async () => {
   const store = fakeStore({ parent: { name: 'run_tools_code', args: { code: 'text("hi")' } } });
@@ -106,7 +106,8 @@ test('confirm runs the saved call once with its operation ID, and a second click
   assert.equal(calls[0]![1], 'channels');
   assert.deepEqual(calls[0]![2], pendingRecord.arguments);
   assert.equal(calls[0]![3], 'op1');
-  assert.match((first.log.at(-1)!.payload as { content: string }).content, /Confirmed channels\.\nChannel removed\./);
+  // The outcome goes to the model in a new turn (resume), not to the channel.
+  assert.equal((first.log.at(-1)!.payload as { content: string }).content, 'Confirmed.');
   const second = fakeInteraction('slopconfirm:op1:yes');
   await handleConfirm(second.interaction, store as unknown as CodeStore, tools as never);
   assert.equal(calls.length, 1);

@@ -1,6 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import type { Json } from './domain.js';
-import { ConfirmationRequired, ToolError } from './tools.js';
+import { ConfirmationRequired, ToolError, UncertainActionError } from './tools.js';
 
 export interface ProgramLimits {
   timeoutMs: number;
@@ -26,6 +26,7 @@ export interface ProgramResult {
   receipts: ProgramCallReceipt[];
   failures: { name: string; error: string }[];
   error?: { message: string; status: 'failed' | 'rejected' }; // the program failed; partial data above is kept
+  confirmation?: { name: string; operationId: string }; // the program stopped at a call that needs Confirm; partial data above is kept
 }
 /** args is whatever the guest sent, parsed from JSON. The dispatcher decides what is a valid argument value. */
 export type ProgramDispatch = (name: string, args: unknown, index: number, signal: AbortSignal) => Promise<Json>;
@@ -53,15 +54,16 @@ export class ProgramRuntime {
         let returned: Json | undefined;
         const timer = setTimeout(() => finish(new ToolError('Program exceeded its wall-clock deadline.', 'failed')), this.limits.timeoutMs);
         const abort = () => finish(new ToolError('Program interrupted.'), true);
-        // Only confirmation, abort, and transient-failure stops reject. Every other stop resolves with error set,
-        // so outputs, logs and call receipts reach the caller.
+        // Only abort and transient-failure stops reject. A confirmation and every other stop resolve, so outputs,
+        // logs and call receipts reach the caller. A confirmation also names the call that waits for Confirm.
         const finish = (error?: Error, rejects = false) => {
           if (finished) return;
           finished = true; clearTimeout(timer); invocationSignal.removeEventListener('abort', abort);
-          if (error && rejects) { reject(error); return; }
+          if (error && rejects && !(error instanceof ConfirmationRequired)) { reject(error); return; }
           const result: ProgramResult = { outputs, logs, calls, receipts: [...receipts.values()].map(receipt => ({ ...receipt })), failures };
           if (returned !== undefined) result.returned = returned;
-          if (error) result.error = { message: error.message, status: error instanceof ToolError ? error.status : 'failed' };
+          if (error instanceof ConfirmationRequired) result.confirmation = { name: error.call.name, operationId: error.call.operationId };
+          else if (error) result.error = { message: error.message, status: error instanceof ToolError ? error.status : 'failed' };
           resolve(result);
         };
         invocationSignal.addEventListener('abort', abort, { once: true });
@@ -92,8 +94,10 @@ export class ProgramRuntime {
                 if (finished) return;
                 // A confirmation stops the whole program, even when the guest code catches the error.
                 if (error instanceof ConfirmationRequired) { finish(error, true); return; }
-                const reason = error instanceof ToolError ? error.message.slice(0, 500) : 'Tool failed. Inspect its recorded result before retrying.';
-                if (!(error instanceof ToolError)) transientFailure = true;
+                // A ToolError or an uncertain write is a normal failed result the model reads in this turn. Any other error is transient.
+                const known = error instanceof ToolError || error instanceof UncertainActionError;
+                const reason = known ? error.message.slice(0, 500) : 'Tool failed. Inspect its recorded result before retrying.';
+                if (!known) transientFailure = true;
                 failures.push({ name: call.name, error: reason });
                 receipt.status = 'failed';
                 worker!.postMessage({ kind: 'result', id: call.id, error: reason });

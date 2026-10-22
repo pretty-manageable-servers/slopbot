@@ -199,11 +199,10 @@ test('inline_memory_no_thread', t => {
 
 test('confirm_flags', () => {
   const tool = objectStorageTool({ storage: {} as UserFileStorage, authorize: async () => {}, resolveAttachment: async () => { throw new Error('unused'); }, inspect: async () => '', send: async () => {} });
-  assert.equal(tool.confirm?.({ action: 'list' }), false);
-  assert.equal(tool.confirm?.({ action: 'read' }), false);
-  assert.equal(tool.confirm?.({ action: 'write' }), true);
-  assert.equal(tool.confirm?.({ action: 'to_sandbox' }), true);
-  assert.equal(tool.confirm?.({ action: 'delete' }), true);
+  // file_store writes run directly, like other writes. Only channels remove keeps Confirm.
+  assert.equal(tool.confirm, undefined);
+  assert.equal(tool.writes?.({ action: 'list' }), false);
+  assert.equal(tool.writes?.({ action: 'delete' }), true);
 });
 
 test('file_store_to_sandbox', async t => {

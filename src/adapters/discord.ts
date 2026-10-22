@@ -200,8 +200,8 @@ export class DiscordServer implements ChatGateway {
       if (context.source !== "agent") return;
       const message = context.message, source = (await store.canonicalMessage(message.server, message.id));
       if (!source || source.text !== message.text || !this.bot.accepts(message.server, message.channel)) throw new ToolError("Source or channel changed before the action");
-      if (this.tools.effect(context.toolName, context.arguments) === "write" && context.toolName !== "task_retry" && !this.tools.ignoresBlocked(context.toolName)) {
-        if ((await store.hasBlocked(message.server, message.channel))) throw new ToolError("This task has an uncertain action; reconcile it before new writes");
+      // An uncertain action blocks only its own resource (tools.ts), not the channel.
+      if (this.tools.effect(context.toolName, context.arguments) === "write" && context.toolName !== "task_retry") {
         if (message.taskId && (await store.hasPendingOther(message.server, message.channel, message.id))) throw new ToolError("New contributions are queued; review them before further actions");
       }
     });
@@ -440,11 +440,16 @@ export class DiscordServer implements ChatGateway {
     if (interaction.isButton() && interaction.customId.startsWith("slopvoice:")) void this.voice?.button(interaction).catch(error => logError("Voice button failed.", error));
     if (interaction.isButton() && (interaction.customId.startsWith("sloptrace:") || interaction.customId.startsWith("sloptracepage:"))) void handleToolTrace(interaction, this.store, message => this.validateChannel(message, message.channel), scope).catch(error => logError("Tool trace button failed.", error));
     if (interaction.isButton() && interaction.customId.startsWith("slopcode:")) void handleShowCode(interaction, this.store).catch(error => logError("Show code button failed.", error));
-    if (interaction.isButton() && interaction.customId.startsWith("slopconfirm:")) void handleConfirm(interaction, this.store, this.tools, scope).catch(error => logError("Confirm button failed.", error));
+    if (interaction.isButton() && interaction.customId.startsWith("slopconfirm:")) void handleConfirm(interaction, this.store, this.tools, scope, note => this.resumeConfirmed(note)).catch(error => logError("Confirm button failed.", error));
     if (interaction.isChatInputCommand() && interaction.commandName === "stop") void this.stopCommand(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isChatInputCommand() && interaction.commandName === "inbox") void this.inboxCommand(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isMessageContextMenuCommand() && interaction.commandName === CONTINUE_IN_WEB) void this.continueInWeb(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isMessageContextMenuCommand() && interaction.commandName in MESSAGE_APPS) void this.messageApp(interaction).catch(error => logError("Command failed.", error));
+  }
+  /** Starts a model turn with the outcome of a confirmed call. The note is saved, then queued on its channel like a request. */
+  private async resumeConfirmed(note: Message): Promise<void> {
+    await this.store.ingest({ ...note, addressed: false });
+    await this.worker.enqueue({ ...note, addressed: true });
   }
   /** Posts Confirm and Cancel for a stopped run_tools_code call. Only the pending record of that call is read. */
   private async postCodeConfirmation(message: Message, activity: ToolActivity): Promise<void> {

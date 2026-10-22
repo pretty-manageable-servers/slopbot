@@ -358,7 +358,6 @@ export class Bot {
       const thread = await this.startTask(message, message.text);
       return { text: `Task started in <#${thread}>. Updates will appear there.`, handoff: { threadId: thread } };
     }
-    if (registry.effect(call.name, call.arguments) === "write" && call.name !== "task_retry" && !registry.ignoresBlocked(call.name) && (await this.options.queueStore?.hasBlocked(message.server, message.channel))) throw new ToolError("This task has an uncertain action. Reconcile that job before new writes.");
     if (registry.effect(call.name, call.arguments) === "write" && call.name !== "task_retry" && (await this.options.queueStore?.hasPendingOther(message.server, message.channel, message.id))) throw new ToolError("New contributions are queued. Pause actions so the next contribution can be reviewed before proceeding.");
     const result = await registry.invokeResult(message, call.name, call.arguments, operationId, "agent", expectedVersion, invocation);
     return result;

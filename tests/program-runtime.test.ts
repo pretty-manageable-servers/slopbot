@@ -165,11 +165,14 @@ test('a replaced JSON.stringify does not change the return value', async () => {
   assert.deepEqual(result.logs, []);
 });
 
-test('confirmation and abort still reject', async () => {
+test('confirmation keeps the work done so far and names the call; abort still rejects', async () => {
   const confirmation = new ConfirmationRequired({ name: 'write', arguments: {}, operationId: 'op', parentOperationId: 'parent' });
-  await assert.rejects(new ProgramRuntime().run(`
-    try { await tools.write({}); } catch { text('caught'); }
-  `, ['write'], async () => { throw confirmation; }), ConfirmationRequired);
+  const stopped = await new ProgramRuntime().run(`
+    text('before'); try { await tools.write({}); } catch { text('caught'); } text('after');
+  `, ['write'], async () => { throw confirmation; });
+  assert.deepEqual(stopped.outputs, ['before']);
+  assert.deepEqual(stopped.confirmation, { name: 'write', operationId: 'op' });
+  assert.equal(stopped.error, undefined);
   await assert.rejects(new ProgramRuntime().run('text(1);', [], async () => ({}), AbortSignal.abort()), /interrupted/);
 });
 
