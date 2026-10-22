@@ -4,7 +4,7 @@ import { DEFAULT_CONTEXT_TOKENS, DEFAULT_OUTPUT_TOKENS, modelTokenLimits } from 
 import { ModelAliases } from "./model-aliases.js";
 import { requestTimings } from "../request-timing.js";
 import {PromptCacheDiagnostics} from '../prompt-cache.js';
-import { promptItems, type Json, type ModelEvent, type Prompt } from "../domain.js";
+import { promptItems, type Json, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
 import type { LLM } from "../ports.js";
 
 export interface ProviderOptions {
@@ -63,6 +63,12 @@ export async function inlineImages(messages: WireMessage[], fetcher: typeof fetc
   }));
 }
 
+/** A text copy of an item for the fallback branches: image links are dropped, only the count stays. */
+function withoutImageUrls(item: PromptItem): PromptItem | (Omit<PromptItem, 'images'> & { images_shown: number }) {
+  const { images, ...rest } = item;
+  return images?.length ? { ...rest, images_shown: images.length } : item;
+}
+
 export function wireMessages(prompt: Prompt): WireMessage[] {
   const items = promptItems(prompt), messages: WireMessage[] = [];
   const ordinary = (item: typeof items[number]): WireMessage => {
@@ -82,9 +88,9 @@ export function wireMessages(prompt: Prompt): WireMessage[] {
       } else {
         // Checkpoint/source invalidation may split an old pair. Keep the surviving
         // evidence without emitting an invalid assistant/tool protocol sequence.
-        messages.push({ role: 'user', content: JSON.stringify({ recorded_tool_activity: item }) });
+        messages.push({ role: 'user', content: JSON.stringify({ recorded_tool_activity: withoutImageUrls(item) }) });
       }
-    } else if (item.role === 'tool') messages.push({ role: 'user', content: JSON.stringify({ recorded_tool_result: item }) });
+    } else if (item.role === 'tool') messages.push({ role: 'user', content: JSON.stringify({ recorded_tool_result: withoutImageUrls(item) }) });
     else messages.push(ordinary(item));
   }
   return messages;

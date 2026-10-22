@@ -102,3 +102,15 @@ test("web_image_source_uses_storage_link", async () => {
   const noStorage = new DiscordImageSource({ attachments: async () => [] });
   assert.equal(await noStorage.link(message, { name: "a.png", url: `web-image:${id}` }), undefined);
 });
+
+test("split_tool_pair_has_no_image_url", () => {
+  const url = "https://cdn.example/cat.png?ex=abc&hm=def";
+  const prompt: Prompt = { prefixVersion: "v1", prefix: [{ role: "system", content: "fixed" }], history: [], inputs: [
+    { role: "assistant", content: "", toolCalls: [{ id: "call_1", name: "view_image", arguments: { message_ref: target } }] },
+    { role: "tool", toolCallId: "call_2", content: '{"tool":"view_image"}', images: [{ url, label: "cat.png" }] },
+  ] };
+  const wire = JSON.stringify(wireMessages(prompt));
+  assert.ok(!wire.includes("ex=abc"));
+  assert.ok(!wire.includes("cdn.example"));
+  assert.ok(wire.includes('\\"images_shown\\":1'));
+});
