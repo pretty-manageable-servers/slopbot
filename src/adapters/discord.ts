@@ -56,7 +56,7 @@ import {
 import { BOT_REPLY_LIMIT_KEY, botReplyLimit } from "../bot-reply-limit.js";
 import { MUTED_USERS_KEY, mutedUsers } from "../muted-users.js";
 import { GLOBAL_SETTINGS_SCOPE } from "../usage-cost.js";
-import { buildMessageApps, buildStopCommand, CONTINUE_IN_WEB, buildToolCommands, buildUsageCommand, MESSAGE_APPS, messageAppText, usageReply } from "./discord-commands.js";
+import { buildFileReportCommand, buildMessageApps, buildStopCommand, CONTINUE_IN_WEB, buildToolCommands, buildUsageCommand, MESSAGE_APPS, messageAppText, usageReply } from "./discord-commands.js";
 import { registerProfileTools } from "../profiles.js";
 import { Application } from "../application.js";
 import { Bot, splitReply, type ChatGateway, type Incoming } from "../bot.js";
@@ -91,6 +91,7 @@ import { MemberDirectory, discordMemberSource } from "../member-directory.js";
 import { discordWebReplies } from "./discord-web-replies.js";
 import { isPrivateChannel, isDirectMessageChannel, directMessageChannel, discordChannelId } from "../private-chat.js";
 import { registerOperationsTools } from '../operations.js';
+import { issueDraftTools } from '../issue-drafts.js';
 import { HttpOperationsClient } from './operations-client.js';
 import { FixWatchWorker } from '../fix-watch-worker.js';
 import { WebChatGateway, type ChatHost } from "../web-chats.js";
@@ -249,7 +250,10 @@ export class DiscordServer implements ChatGateway {
     this.uiRuntime = new UiRuntime(store,this.tools,authorizeFeature);
     registerTimingTools(this.tools, { store, authorize: authorizeFeature });
     if (config.operations) {
-      const operations = registerOperationsTools(this.tools, { store, config: config.operations, client: new HttpOperationsClient(config.operations), authorize: authorizeFeature }, guildId);
+      const client = new HttpOperationsClient(config.operations);
+      const operations = registerOperationsTools(this.tools, { store, config: config.operations, client, authorize: authorizeFeature }, guildId);
+      // Issue drafts file through the same GitHub client, so they exist only where operations are configured.
+      if (config.operations.servers.includes(guildId)) for (const tool of issueDraftTools({ store, client, authorize: authorizeFeature })) this.tools.register(tool);
       if (config.operations.servers.includes(guildId)) this.fixWatches = new FixWatchWorker(guildId, operations, async message => {
         await authorizeFeature(message, message.channel);
         await this.tools.checkAccess(message, 'fix_watch');
@@ -427,7 +431,7 @@ export class DiscordServer implements ChatGateway {
     this.schedules.start();
     this.fixWatches?.start();
     sync(); this.historyTimer = setInterval(sync, 60000);
-    void this.registerCommands().catch(error => logError("Could not register /slopbot, /usage, /stop, /inbox, /voice and message app commands. Check application command permissions.", error, { server: this.guildId }));
+    void this.registerCommands().catch(error => logError("Could not register /slopbot, /usage, /stop, /inbox, /file-report, /voice and message app commands. Check application command permissions.", error, { server: this.guildId }));
   }
   interaction(interaction: Interaction): void {
     const scope = !interaction.guildId && interaction.channelId ? { server: this.guildId, channel: directMessageChannel(interaction.channelId) } : undefined;
@@ -435,6 +439,7 @@ export class DiscordServer implements ChatGateway {
       void handleDiscordUi(interaction,this.uiRuntime,scope).catch(error => logError('UI interaction display failed.', error));
     }
     if (interaction.isChatInputCommand() && (interaction.commandName === "slopbot" || interaction.commandName === "voice")) void this.command(interaction).catch(error => logError("Command failed.", error));
+    if (interaction.isChatInputCommand() && interaction.commandName === "file-report") void this.command(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isChatInputCommand() && interaction.commandName === "usage") void this.usageCommand(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isButton() && interaction.customId.startsWith("slopstop:")) void this.continueButton(interaction).catch(error => logError("Continue button failed.", error));
     if (interaction.isButton() && interaction.customId.startsWith("slopvoice:")) void this.voice?.button(interaction).catch(error => logError("Voice button failed.", error));
@@ -503,7 +508,7 @@ export class DiscordServer implements ChatGateway {
     const guild = await this.client.guilds.fetch(this.guildId);
     // set() replaces the whole list, so commands from older versions are removed.
     // /usage is a separate command, so /slopbot stays as it is.
-    await guild.commands.set([buildToolCommands(this.tools).toJSON(), buildUsageCommand().toJSON(), buildStopCommand().toJSON(), buildInboxCommand().toJSON(), buildVoiceCommand().toJSON(), ...buildMessageApps().map(app => app.toJSON())]);
+    await guild.commands.set([buildToolCommands(this.tools).toJSON(), buildUsageCommand().toJSON(), buildStopCommand().toJSON(), buildInboxCommand().toJSON(), buildFileReportCommand().toJSON(), buildVoiceCommand().toJSON(), ...buildMessageApps().map(app => app.toJSON())]);
     // Slopbot registers no global commands. Old global commands stay visible and fail, so remove them.
     const global = await this.client.application?.commands.fetch();
     if (global?.size) await this.client.application!.commands.set([]);
@@ -631,7 +636,7 @@ export class DiscordServer implements ChatGateway {
     if (interaction.guildId !== this.guildId) return;
     let ephemeral = true;
     try {
-      const subcommand = interaction.commandName === "voice" ? "voice" : interaction.options.getSubcommand();
+      const subcommand = interaction.commandName === "voice" ? "voice" : interaction.commandName === "file-report" ? "file_report" : interaction.options.getSubcommand();
       const name = subcommand === "run" ? interaction.options.getString("tool", true) : subcommand;
       const definition = this.tools.definitions().find(tool => tool.name === name);
       const args = subcommand === "run" ? JSON.parse(interaction.options.getString("arguments") ?? "{}") : { action: interaction.options.getString("action") ?? "get" };
@@ -639,7 +644,7 @@ export class DiscordServer implements ChatGateway {
     } catch { /* Malformed requests receive private errors. */ }
     await interaction.deferReply(ephemeral ? { flags: MessageFlags.Ephemeral } : {});
     try {
-      const subcommand = interaction.commandName === "voice" ? "voice" : interaction.options.getSubcommand();
+      const subcommand = interaction.commandName === "voice" ? "voice" : interaction.commandName === "file-report" ? "file_report" : interaction.options.getSubcommand();
       const name = subcommand === "run" ? interaction.options.getString("tool", true) : subcommand;
       const definition = this.tools.definitions().find(tool => tool.name === name);
       if (!definition) throw new ToolError("Unknown Slopbot tool");

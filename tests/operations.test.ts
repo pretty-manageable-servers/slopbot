@@ -9,8 +9,6 @@ import { ToolRegistry } from '../src/tools.js';
 import type { Message, Json } from '../src/domain.js';
 import { loadOperationsConfig } from '../src/operations-config.js';
 import { runToolsCodeTool } from '../src/run-tools-code.js';
-import type { ButtonInteraction } from 'discord.js';
-import { handleConfirm, saveConfirmation, CONFIRM_RECORD } from '../src/adapters/discord-code.js';
 import { Application } from '../src/application.js';
 
 const sha = 'a'.repeat(40), oldSha = 'b'.repeat(40);
@@ -72,7 +70,6 @@ async function fixture(t: { after(fn: () => void): void }, servers = ['s']) {
   const evidence = async (id = 'inspect') => (await invoke('interaction_inspect', { message_id: output.id }, id)).data as { evidence_id: string };
   return { store, client, registry, ops, denied, invoke, evidence, setAdmin(value: boolean) { admin = value; } };
 }
-const reportArgs = (id: string) => ({ title: 'Attachment decoding fails', expected: 'Summary of the attachment', actual: 'DECODE_FAILED', steps: 'Reply to the linked attachment', acceptance: 'Attachment summary succeeds', evidence_ids: [id] });
 
 test('interaction inspection returns the persisted redacted code after running run_tools_code', async t => {
   const f = await fixture(t); f.registry.register(runToolsCodeTool(f.registry)); let rounds = 0;
@@ -89,40 +86,6 @@ test('interaction inspection returns the persisted redacted code after running r
   assert.ok(!result.text.includes('github_pat_'));
 });
 
-test('the original reporter can remove evidence and replace their report without creating duplicates', async t => {
-  const f = await fixture(t); const e = await f.evidence();
-  await f.invoke('issue_report', reportArgs(e.evidence_id), 'owned-create'); f.setAdmin(false);
-  await assert.rejects(f.invoke('issue_report_edit', { issue_number: 1, action: 'remove_evidence' }, 'foreign-edit', { ...report, author: 'another-user' }), /original reporter/);
-  await f.invoke('issue_report_edit', { issue_number: 1, action: 'remove_evidence' }, 'remove-evidence');
-  assert.ok(!f.client.issues[0]!.body!.includes('## Collected evidence')); assert.match(f.client.issues[0]!.body!, /Acceptance check/);
-  // Source edits invalidate evidence for publication, but cannot prevent its reporter removing a public report's diagnostics.
-  await f.store.revise({ ...request, text: 'edited' });
-  await f.invoke('issue_report_edit', { issue_number: 1, action: 'replace', body: 'A concise report. secret=github_pat_abcdefghijklmnop' }, 'replace-body');
-  assert.match(f.client.issues[0]!.body!, /A concise report/); assert.ok(!f.client.issues[0]!.body!.includes('github_pat_'));
-  assert.equal(f.client.creates, 1); assert.equal(f.client.commentsWritten, 0);
-});
-
-test('lost issue edits reconcile once and a spoofed public footer cannot establish ownership', async t => {
-  const f = await fixture(t); const e = await f.evidence();
-  await f.invoke('issue_report', reportArgs(e.evidence_id), 'original-create');
-  f.client.issues.push(issue(99, 'Spoof', f.client.issues[0]!.body ?? ''));
-  await assert.rejects(f.invoke('issue_report_edit', { issue_number: 99, action: 'remove_evidence' }, 'spoof-edit'), /durable creation record/);
-  const args = { issue_number: 1, action: 'replace', body: 'New concise report' };
-  f.client.loseWrite = true;
-  await assert.rejects(f.invoke('issue_report_edit', args, 'lost-edit'), /uncertain/);
-  assert.match((await f.invoke('issue_report_edit', args, 'lost-edit')).text, /Recovered GitHub edit/);
-  assert.equal(f.client.edits, 1);
-});
-
-test('issue edits PATCH the existing GitHub issue body', async () => {
-  const client = new HttpOperationsClient({ servers: ['s'], repository: 'o/r', githubToken: 'test-token', containers: ['slopbot'] }, async (url, init) => {
-    assert.equal(String(url), 'https://api.github.com/repos/o/r/issues/1'); assert.equal(init?.method, 'PATCH');
-    assert.deepEqual(JSON.parse(String(init?.body)), { body: 'Replacement' });
-    return Response.json(issue(1, 'Existing', 'Replacement'));
-  });
-  assert.equal((await client.updateIssue(1, 'Replacement')).body, 'Replacement');
-});
-
 test('interaction evidence resolves a reply and retains execution version without prompt/text/arguments', async t => {
   const f = await fixture(t); const result = await f.invoke('interaction_inspect', {}, 'inspect', { ...report, replyTo: output.id });
   assert.match(result.text, /DECODE_FAILED/); assert.match(result.text, new RegExp(sha));
@@ -131,13 +94,6 @@ test('interaction evidence resolves a reply and retains execution version withou
   assert.equal(f.registry.definitions().find(d => d.name === 'interaction_inspect')?.programmatic, undefined);
   f.denied.add('source');
   await assert.rejects(f.invoke('interaction_inspect', {}, 'inspect', { ...report, replyTo: output.id }), /denied/);
-});
-
-test('source edits invalidate saved evidence before publication, even on replay', async t => {
-  const f = await fixture(t); const e = await f.evidence();
-  await f.store.revise({ ...request, text: 'edited input' });
-  await assert.rejects(f.invoke('issue_report', reportArgs(e.evidence_id), 'report-one'), /edited, deleted/);
-  assert.equal(f.client.creates, 0);
 });
 
 test('interaction inspection without a usable default target returns guidance instead of a block', async t => {
@@ -149,83 +105,9 @@ test('interaction inspection without a usable default target returns guidance in
   await assert.rejects(f.invoke('interaction_inspect', { message_id: '99999999999999999' }, 'invalid-target'), /Invalid message_id: 99999999999999999.*accessible/);
 });
 
-test('issue creation reconciles a lost response and exact duplicates become comments', async t => {
-  const f = await fixture(t); const e = await f.evidence(); const args = reportArgs(e.evidence_id);
-  f.client.loseWrite = true;
-  await assert.rejects(f.invoke('issue_report', args, 'create-one'), /uncertain/);
-  const recovered = await f.invoke('issue_report', args, 'create-one'); assert.match(recovered.text, /Recovered/); assert.equal(f.client.creates, 1);
-  const body = f.client.issues[0]!.body!;
-  assert.match(body, /Acceptance check/); assert.match(body, /slopbot-operation:/); assert.ok(!body.includes('github_pat_')); assert.ok(!body.includes('private conversation'));
-  assert.match(body, new RegExp(output.id));
-  assert.ok(!body.includes(sha)); assert.ok(!body.includes('prefixVersion')); assert.ok(!body.includes('requestId'));
-  assert.ok(!body.includes('```json')); assert.ok(Buffer.byteLength(body) <= 8192);
-  await f.invoke('issue_report', args, 'duplicate'); assert.equal(f.client.creates, 1); assert.equal(f.client.commentsWritten, 1);
-  f.client.loseWrite = true;
-  await assert.rejects(f.invoke('issue_report', { ...args, issue_number: 1 }, 'comment-one'), /uncertain/);
-  await f.invoke('issue_report', { ...args, issue_number: 1 }, 'comment-one'); assert.equal(f.client.commentsWritten, 2);
-});
-
-test('public reports reject oversized multibyte text without publishing a partial report', async t => {
-  const f = await fixture(t); const e = await f.evidence();
-  await assert.rejects(f.invoke('issue_report', { ...reportArgs(e.evidence_id), expected: '界'.repeat(1800), actual: '界'.repeat(1800) }, 'oversized'), /exceeds 8 KiB/);
-  assert.equal(f.client.creates, 0); assert.equal(f.client.commentsWritten, 0);
-});
-
-test('unresolved writes stay blocked and do not blindly create another issue', async t => {
-  const f = await fixture(t); const e = await f.evidence(); const args = reportArgs(e.evidence_id);
-  f.client.createIssue = async () => { f.client.creates++; throw new Error('timeout before outcome known'); };
-  await assert.rejects(f.invoke('issue_report', args, 'unknown'), /uncertain/);
-  await assert.rejects(f.invoke('issue_report', args, 'unknown'), /uncertain/);
-  await assert.rejects(f.invoke('issue_report', args, 'other-operation'), /waits until it is reconciled/);
-  assert.equal(f.client.creates, 1);
-});
-
-test('member reports preserve guild/task boundaries while infrastructure remains admin-only', async t => {
-  const f = await fixture(t); const e = await f.evidence();
-  f.setAdmin(false);
-  await f.invoke('github_issue_read', { query: 'attachment' }, 'member-search');
-  await f.invoke('issue_report', reportArgs(e.evidence_id), 'member-report');
-  assert.equal(f.client.creates, 1);
-  await assert.rejects(f.invoke('deployment_inspect', {}, 'infra-no-admin'), /Manage Server/);
-  await f.invoke('interaction_inspect', { message_id: output.id }, 'member');
-  f.setAdmin(true);
-  await assert.rejects(f.invoke('issue_report', reportArgs(e.evidence_id), 'foreign-task', { ...report, channel: 'another', author: 'other' }), /another task/);
-  await assert.rejects(f.invoke('deployment_inspect', {}, 'foreign-guild', { ...report, server: 'foreign' }), /not enabled/);
-  await assert.rejects(f.invoke('pipeline_read', { path: '.env' }, 'env-file'), /Invalid choice for path: ".env"\. Use one of: /);
-  assert.equal(f.client.creates, 1);
-});
-
-test('dynamic servers can file member reports without a guild allowlist; admin diagnostics stay unavailable', async t => {
-  const f = await fixture(t, []);
-  f.setAdmin(false);
-  assert.deepEqual(f.registry.definitions().map(d => d.name).sort(), ['github_issue_read', 'interaction_inspect', 'issue_report', 'issue_report_edit']);
-  const e = await f.evidence();
-  await f.invoke('github_issue_read', { query: 'attachment' }, 'dynamic-search');
-  await f.invoke('issue_report', reportArgs(e.evidence_id), 'dynamic-report');
-  assert.equal(f.client.creates, 1);
-  f.setAdmin(true);
-  await assert.rejects(f.invoke('deployment_inspect', {}, 'dynamic-infra'), /Unknown tool/);
-  f.denied.add('source');
-  await assert.rejects(f.invoke('issue_report', reportArgs(e.evidence_id), 'revoked-report'), /denied/);
-  assert.equal(f.client.creates, 1);
-});
-
-test('PMServers logs exclude other guilds and inaccessible channels, then recheck access on publication', async t => {
+test('PMServers logs exclude other guilds and inaccessible channels', async t => {
   const f = await fixture(t); const logs = await f.invoke('service_inspect', { action: 'logs' }, 'logs');
   assert.match(logs.text, /DECODE_FAILED/); assert.ok(!logs.text.includes('other server private')); assert.ok(!logs.text.includes('hidden channel')); assert.ok(!logs.text.includes('github_pat_'));
-  f.denied.add('source');
-  await assert.rejects(f.invoke('issue_report', reportArgs((logs.data as { evidence_id: string }).evidence_id), 'publish-logs'), /denied/);
-});
-
-test('members cannot publish administrator diagnostic snapshots, including saved reports on replay', async t => {
-  const f = await fixture(t);
-  const snapshot = await f.invoke('deployment_inspect', {}, 'admin-snapshot');
-  const id = (snapshot.data as { evidence_id: string }).evidence_id;
-  await f.invoke('issue_report', reportArgs(id), 'admin-report');
-  f.setAdmin(false);
-  await assert.rejects(f.invoke('issue_report', reportArgs(id), 'member-infra'), /Manage Server/);
-  await assert.rejects(f.invoke('issue_report', reportArgs(id), 'admin-report'), /Manage Server/);
-  assert.equal(f.client.creates, 1); assert.equal(f.client.commentsWritten, 0);
 });
 
 test('behavioral verification requires the deployed fix and an interaction executed after deployment', async t => {
@@ -353,53 +235,3 @@ test('watch lookup failures notify once, recovery notifies, and revoked permissi
   allowed = false; f.client.issueState = 'closed'; await worker.tick(); assert.equal(notices.length, 2);
 });
 
-test('issue_report always needs Confirm; reads do not', async t => {
-  const f = await fixture(t);
-  assert.equal(f.registry.definitions().find(d => d.name === 'issue_report')?.confirm?.({}), true);
-  assert.equal(f.registry.definitions().find(d => d.name === 'interaction_inspect')?.confirm, undefined);
-});
-
-test('confirmed report carries owner evidence across tasks and remains retryable after an access block', async t => {
-  const f = await fixture(t);
-  const evidence = await f.evidence();
-  f.registry.register(runToolsCodeTool(f.registry, { confirmations: {
-    record: async (server, id) => (await f.store.record(server, CONFIRM_RECORD, id))?.value,
-    save: (server, id, value) => saveConfirmation(f.store, server, id, value),
-  } }));
-  const followup = { ...report, channel: 'followup', id: 'originating-report', taskId: 'followup' };
-  const queued = await f.registry.invokeResult(followup, 'run_tools_code', { code: `return await tools.issue_report(${JSON.stringify(reportArgs(evidence.evidence_id))})` }, 'queued-report', 'agent');
-  const id = (queued.data as { confirmation: { operationId: string } }).confirmation.operationId;
-  assert.equal(((await f.store.record('s', CONFIRM_RECORD, id))!.value as { requestId: string }).requestId, followup.id);
-  const replies: { content?: string; components?: unknown[] }[] = [];
-  const interaction = {
-    customId: `slopconfirm:${id}:yes`, guildId: 's', channelId: 'followup', id: 'confirm-click', user: { id: report.author },
-    deferUpdate: async () => {}, followUp: async (payload: { content?: string }) => { replies.push(payload); },
-    editReply: async (payload: { content?: string; components?: unknown[] }) => { replies.push(payload); },
-  } as unknown as ButtonInteraction;
-  f.denied.add('task');
-  await handleConfirm(interaction, f.store, f.registry);
-  assert.equal(f.client.creates, 0);
-  const pending = (await f.store.record('s', CONFIRM_RECORD, id))!.value as { done?: boolean };
-  assert.equal(pending.done, undefined);
-  assert.match(replies.at(-1)!.content!, /still pending/);
-  assert.equal(replies.at(-1)!.components, undefined);
-  f.denied.delete('task');
-  await handleConfirm(interaction, f.store, f.registry);
-  assert.equal(f.client.creates, 1);
-  assert.match(replies.at(-1)!.content!, /https:\/\/github.com\/o\/r\/issues\/1/);
-  await handleConfirm(interaction, f.store, f.registry);
-  assert.equal(f.client.creates, 1);
-});
-
-test('evidence scope errors identify the selected ID and owning task', async t => {
-  const f = await fixture(t);
-  const evidence = await f.evidence();
-  await assert.rejects(f.invoke('issue_report', reportArgs(evidence.evidence_id), 'wrong-owner', { ...report, channel: 'elsewhere', author: 'other' }), error => {
-    assert.ok(error instanceof Error);
-    assert.ok(error.message.includes(evidence.evidence_id));
-    assert.match(error.message, /task task, owned by admin/);
-    return true;
-  });
-  await assert.rejects(f.invoke('issue_report', reportArgs('missing-id'), 'missing-evidence'), /Evidence missing-id is unavailable; its owning task is unknown/);
-  assert.equal(f.client.creates, 0);
-});
