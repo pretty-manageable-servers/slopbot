@@ -45,8 +45,9 @@ export class S3StorageProvider implements ObjectStorageProvider {
     try { await this.client.send(new DeleteObjectCommand({ Bucket: this.options.bucket, Key: key }), { abortSignal: AbortSignal.timeout(30000) }); }
     catch (error) { this.mutationFailure(error, 'deletion'); }
   }
-  async link(key: string, name: string, seconds: number): Promise<string> {
-    return this.read(() => getSignedUrl(this.publicClient, new GetObjectCommand({ Bucket: this.options.bucket, Key: key, ResponseContentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(name).replace(/'/g, '%27')}` }), { expiresIn: seconds }));
+  async link(key: string, name: string, seconds: number, inline = false): Promise<string> {
+    const disposition = `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(name).replace(/'/g, '%27')}`;
+    return this.read(() => getSignedUrl(this.publicClient, new GetObjectCommand({ Bucket: this.options.bucket, Key: key, ResponseContentDisposition: disposition }), { expiresIn: seconds }));
   }
   close(): void { this.client.destroy(); this.publicClient.destroy(); }
 }

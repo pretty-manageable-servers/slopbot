@@ -31,12 +31,13 @@ import {discordUi} from './discord-ui.js';
 import { DiscordToolProgress } from './discord-tool-progress.js';
 import { saveToolTrace } from '../tool-trace.js';
 import { handleToolTrace } from './discord-tool-trace.js';
-import { CONFIRM_RECORD, handleConfirm, handleShowCode, postConfirmation, saveConfirmation, showCodeRows, startCodeMaintenance } from './discord-code.js';
+import { CONFIRM_RECORD, handleConfirm, postConfirmation, saveConfirmation, showCodeRows, startCodeMaintenance } from './discord-code.js';
 import { toolFooter, toolDisplayMode } from '../presentation/tool-activity.js';
 import type { ToolActivity } from '../tool-activity.js';
 import { discordPresentation, suppressLinkPreviews } from '../presentation/discord.js';
 import { registerHistoryTools } from '../search/history-search.js';
 import { registerViewImage } from '../view-image.js';
+import { AttachQueue, fileBatches, registerAttachFile, runKey, startAttachLinkSweep } from '../attach-file.js';
 import { DiscordImageSource } from './discord-image-source.js';
 import { registerWebSearch } from "../web-search.js";
 import { registerWebFetch } from "../web-fetch.js";
@@ -158,13 +159,18 @@ export class DiscordServer implements ChatGateway {
   private channels: string[];
   private historyTimer: ReturnType<typeof setInterval> | undefined;
   private codeMaintenance: (() => void) | undefined;
+  private attachSweep: (() => void) | undefined;
+  private readonly objectStorage: S3StorageProvider | undefined;
+  /** Files that attach_file queued, taken by the reply of each run. */
+  private readonly attachQueue = new AttachQueue();
   private readonly voice: DiscordVoice | undefined;
   private readonly inbox: Inbox;
 
   constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">, private readonly team?: Pick<TeamAdmins, "canEdit">, private readonly sandboxProfile?: SandboxProfile, private readonly degraded?: DegradedRouting) {
     this.client = client;
+    this.objectStorage = objectStorageProvider;
     this.renderer = new ReplyRenderer(store, discordPresentation);
-    this.chatGateway = new WebChatGateway(store, guildId);
+    this.chatGateway = new WebChatGateway(store, guildId, { queue: this.attachQueue, storage: objectStorageProvider ?? new LocalDiskStorage() });
     this.inbox = new Inbox(store, access);
     this.channels = configuredChannels(config, store, guildId);
     this.history = new HistoryImporter(guildId, store, {
@@ -317,6 +323,7 @@ export class DiscordServer implements ChatGateway {
     const chatFiles = new ChatFileFetcher(objectStorageProvider ?? new LocalDiskStorage());
     const sandboxProvider = sandboxProviderFor(config);
     const storage = new UserFileStorage(store, objectStorageProvider);
+    registerAttachFile(this.tools, { store, queue: this.attachQueue, storage, ...(objectStorageProvider ? { provider: objectStorageProvider } : {}), ...(sandboxProvider ? { sandbox: { provider: sandboxProvider, ...(this.sandboxProfile ? { profile: this.sandboxProfile } : {}) } } : {}), authorize: message => authorizeFeature(message, message.channel) });
     this.tools.register(sandboxManageTool(store, sandboxProvider));
     for (const tool of sandboxFileTools(store, sandboxProvider, this.sandboxProfile)) this.tools.register(tool);
     this.tools.register(objectStorageTool({
@@ -426,6 +433,7 @@ export class DiscordServer implements ChatGateway {
     for (const channel of await this.store.liveWebChatChannels(this.guildId)) this.bot.openPrivateChat(this.guildId, channel);
     this.worker.start();
     this.codeMaintenance = startCodeMaintenance(this.store, this.guildId);
+    this.attachSweep = startAttachLinkSweep(this.store, this.objectStorage, this.guildId);
     const sync = () => { for (const channel of this.channels) void this.history.start(channel).catch(error => logError("History import startup failed", error, { server: this.guildId })); };
     this.reminders.start();
     this.schedules.start();
@@ -444,7 +452,6 @@ export class DiscordServer implements ChatGateway {
     if (interaction.isButton() && interaction.customId.startsWith("slopstop:")) void this.continueButton(interaction).catch(error => logError("Continue button failed.", error));
     if (interaction.isButton() && interaction.customId.startsWith("slopvoice:")) void this.voice?.button(interaction).catch(error => logError("Voice button failed.", error));
     if (interaction.isButton() && (interaction.customId.startsWith("sloptrace:") || interaction.customId.startsWith("sloptracepage:"))) void handleToolTrace(interaction, this.store, message => this.validateChannel(message, message.channel), scope).catch(error => logError("Tool trace button failed.", error));
-    if (interaction.isButton() && interaction.customId.startsWith("slopcode:")) void handleShowCode(interaction, this.store).catch(error => logError("Show code button failed.", error));
     if (interaction.isButton() && interaction.customId.startsWith("slopconfirm:")) void handleConfirm(interaction, this.store, this.tools, scope, note => this.resumeConfirmed(note)).catch(error => logError("Confirm button failed.", error));
     if (interaction.isChatInputCommand() && interaction.commandName === "stop") void this.stopCommand(interaction).catch(error => logError("Command failed.", error));
     if (interaction.isChatInputCommand() && interaction.commandName === "inbox") void this.inboxCommand(interaction).catch(error => logError("Command failed.", error));
@@ -799,14 +806,27 @@ export class DiscordServer implements ChatGateway {
     const footer = await savedTimingFooter(this.store, message, timingRecordId);
     // A voice reply posts only its chat part: <speak> blocks are spoken, not posted. With no chat part, nothing is posted.
     const chat = message.source === "voice" ? splitSpeak(text).chat : text;
-    const rendered = await this.renderer.render(message.server, chat + toolFooter(activity, toolDisplayMode(this.store.setting(message.server, "tool_display"))) + footer);
-    const flags = suppressLinkPreviews(rendered) ? MessageFlags.SuppressEmbeds : undefined;
-    const payloads: import('discord.js').MessageCreateOptions[] = chat ? splitReply(rendered).map(content=>({content,flags})) : [];
+    // Files that attach_file queued in this run. Links go into the text; files are attached below.
+    const attached = this.attachQueue.take(runKey(message.server, message.id));
+    const rendered = [chat ? await this.renderer.render(message.server, chat) : "", ...attached.links.map(link => `[${link.name}](${link.url})${link.description ? ` — ${link.description}` : ""}`)].filter(Boolean).join("\n\n");
+    // The footer is added after the split, so it stays on the last page only.
+    const tail = toolFooter(activity, toolDisplayMode(this.store.setting(message.server, "tool_display"))) + footer;
+    const flags = suppressLinkPreviews(rendered + tail) ? MessageFlags.SuppressEmbeds : undefined;
+    const hasBody = Boolean(chat || attached.links.length || attached.files.length);
+    const payloads: import('discord.js').MessageCreateOptions[] = hasBody ? splitReply(rendered, 1900, tail).map(content=>({content,flags})) : [];
+    // Up to 10 files per message. The first 10 go on the final text message; the rest follow in messages of their own.
+    const files = attached.files.map(file => ({ attachment: Buffer.from(file.bytes), name: file.name }));
+    if (files.length && !payloads.length) payloads.push({ content: tail.trim(), flags });
     // Freeze one trace for the whole reply before publishing its entry point.
     const displayMode = toolDisplayMode(this.store.setting(message.server, "tool_display"));
     const traceId = payloads.length && displayMode !== "none" ? await saveToolTrace(this.store, message, activity) : undefined;
     const codeRows = showCodeRows(activity, displayMode, traceId);
-    if (payloads.length && codeRows.length) payloads[0] = { ...payloads[0]!, components: codeRows };
+    const finalText = payloads.length - 1;
+    if (payloads.length && codeRows.length) payloads[finalText] = { ...payloads[finalText]!, components: codeRows };
+    fileBatches(files).forEach((batch, index) => {
+      if (index === 0) payloads[finalText] = { ...payloads[finalText]!, files: batch };
+      else payloads.push({ content: "", files: batch, flags });
+    });
     if(ui){const state=await this.uiRuntime.prepare(message,ui,deliveryId??message.id);payloads.push(discordUi(ui,state.id,state.revision));}
     for (const payload of payloads) {
       const content = payload.content ?? JSON.stringify(payload);
@@ -990,6 +1010,7 @@ export class DiscordServer implements ChatGateway {
     this.voice?.stop();
     if (this.historyTimer) clearInterval(this.historyTimer);
     this.codeMaintenance?.();
+    this.attachSweep?.();
     await this.reminders.stop();
     await this.schedules.stop();
     await this.fixWatches?.stop();

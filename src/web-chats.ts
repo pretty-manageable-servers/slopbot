@@ -16,7 +16,10 @@ import { messageViews, openStream, type TranscriptStore } from "./web-transcript
 import type { WebChatRow } from "./web-chat-store.js";
 import { CHAT_IMAGE_ID, CHAT_IMAGE_MAX_BYTES, CHAT_IMAGE_MAX_COUNT, CHAT_IMAGE_SCHEME, LocalDiskStorage, chatImageContentType, chatImageKey, imageAttachments, imageName, newChatImageId, sniffImage } from "./web-chat-images.js";
 import { CHAT_FILE_ID, CHAT_FILE_MAX_BYTES, CHAT_ATTACHMENT_MAX_COUNT, chatFileKey, fileAttachments, fileContentType, fileName, fileUrl, newChatFileId, type ChatFileView } from "./web-chat-files.js";
+import type { Attachment } from "./domain.js";
 import type { ObjectStorageProvider } from "./object-storage.js";
+import { AttachQueue, runKey, type QueuedFile } from "./attach-file.js";
+const IMAGE_EXTENSIONS: Record<string, "png" | "jpg" | "gif" | "webp"> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
 import { ChatShareService, ShareError, type ShareService, type ShareStore } from "./shares.js";
 
 /** Store calls for private chats. SQLite and Postgres implement them. */
@@ -69,18 +72,37 @@ const MESSAGE_ID = /^[\w:.-]{1,64}$/;
 
 /** Replies that Slopbot posts in a private chat. They are saved and published, never sent to Discord. */
 export class WebChatGateway implements ChatGateway {
-  constructor(private readonly store: Pick<ChatStore, "setting" | "taskThreads" | "requestRunIds" | "replyRunIds">, private readonly server: string) {}
+  constructor(private readonly store: Pick<ChatStore, "setting" | "taskThreads" | "requestRunIds" | "replyRunIds">, private readonly server: string, private readonly files?: { queue: AttachQueue; storage: ObjectStorageProvider }) {}
+
+  /** Keeps one queued file in private storage and returns it as a chat attachment. Images show inline; other files are download links. */
+  private async keep(chat: string, file: QueuedFile): Promise<Attachment> {
+    const storage = this.files!.storage, size = file.bytes.length;
+    const extension = IMAGE_EXTENSIONS[file.contentType];
+    if (extension) {
+      const imageId = newChatImageId(extension);
+      await storage.put(chatImageKey(this.server, chat, imageId), file.bytes, file.contentType);
+      return { name: file.name, url: CHAT_IMAGE_SCHEME + imageId, contentType: file.contentType, size };
+    }
+    const fileId = newChatFileId(file.name);
+    await storage.put(chatFileKey(this.server, chat, fileId), file.bytes, file.contentType);
+    return { name: file.name, url: fileUrl(this.server, chat, fileId), contentType: file.contentType, size };
+  }
 
   /**
    * Saves the reply text only. The web UI shows the tools in the run summary, so the Discord tool footer is not added.
    * Live tool progress is published by the bot's tool observer. A UI document has no place in a saved Message, so it is not kept here.
    */
   async reply(message: Message, text: string, deliveryId?: string, _activity?: readonly ToolActivity[], _ui?: UiDocument): Promise<readonly Message[]> {
+    const queued = this.files?.queue.take(runKey(message.server, message.id)) ?? { files: [], links: [] };
+    const chat = message.channel.slice(PRIVATE_CHANNEL_PREFIX.length);
+    const attachments = await Promise.all(queued.files.map(file => this.keep(chat, file)));
+    const links = queued.links.map(link => `[${link.name}](${link.url})${link.description ? ` — ${link.description}` : ""}`);
     const output: Message = {
       id: `chat-reply-${deliveryId ? stableOperationId(deliveryId) : randomUUID()}`,
       server: this.server, channel: message.channel,
       author: slopbotId(this.store, this.server) ?? "slopbot", authorName: "Slopbot", isBot: true,
-      text, timestamp: Date.now(), addressed: false,
+      text: [text, ...links].filter(Boolean).join("\n\n"), timestamp: Date.now(), addressed: false,
+      ...(attachments.length ? { attachments } : {}),
     };
     const runIds = await this.store.requestRunIds(this.server, message.id);
     await publishMessage(this.store, output, runIds);

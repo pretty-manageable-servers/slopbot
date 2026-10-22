@@ -20,6 +20,7 @@ const special: Record<string, { emoji: string; group?: [string, string] }> = {
   history_search: { emoji: "📜", group: ["history search", "history searches"] },
   history_read: { emoji: "📖", group: ["message read", "message reads"] },
   view_image: { emoji: "🖼️", group: ["image view", "image views"] },
+  attach_file: { emoji: "📎", group: ["file attach", "file attaches"] },
   read: { emoji: "📎" },
   write: { emoji: "📝" },
   edit: { emoji: "📝" },
