@@ -15,8 +15,8 @@ test('summary footer counts calls by tool with plural forms and no durations', (
     {id:'3',name:'web_search',status:'completed',reused:true},
     {id:'4',name:'history_search',status:'completed',arguments:{query:'deploy'}},
   ];
-  assert.equal(toolFooter(calls, 'summary'), '\n\n-# 🔎 3 web searches · 📜 1 history search');
-  assert.equal(toolFooter(calls), '\n\n-# 🔎 3 web searches · 📜 1 history search');
+  assert.equal(toolFooter(calls, 'summary'), '\n\n-# searched the web 3× · searched history');
+  assert.equal(toolFooter(calls), '\n\n-# searched the web 3× · searched history');
   assert.match(toolProgress(calls, 'Blooming…'), /🔎 Web search × 3\n📜 History search × 1/);
 });
 
@@ -28,7 +28,7 @@ test('full footer shows counts and only the blocked calls', () => {
     {id:'3',name:'index',status:'rejected'},
     {id:'4',name:'index',status:'completed',reused:true},
   ];
-  assert.equal(toolFooter(calls), '\n\n-# 🔎 2 web searches · 🛠️ 1 index\n-# ❌ index blocked');
+  assert.equal(toolFooter(calls), '\n\n-# searched the web 2× · index · 1 blocked');
   assert.match(toolProgress(calls, 'Blooming…'), /🔎 Web search × 2/);
 });
 
@@ -51,15 +51,14 @@ test('tool errors retain distinct reasons and render them as bounded plain text'
     {id:'3',name:'remote_read',status:'failed',reason:'Service unavailable'},
     {id:'4',name:'read',status:'rejected',reason:'Bad\n**input** <@123> ' + 'x'.repeat(1000)},
   ];
+  // The footer is one line of counts. The reasons are in the progress trace.
   const footer = toolFooter(calls);
-  assert.match(footer, /-# ❌ index blocked: Missing argument: channel/);
-  assert.match(footer, /-# ❌ index blocked: Manage Server permission is required/);
-  assert.match(footer, /-# ❌ remote read failed: Service unavailable/);
-  assert.ok(!footer.includes('×2'));
+  assert.equal(footer, '\n\n-# 3 blocked · 1 failed');
   assert.ok(!footer.includes('Bad\n'));
   assert.ok(!footer.includes('<@123>'));
   assert.ok(footer.length < 900);
   assert.match(toolProgress(calls, 'Blooming…'), /-# ❌ remote read failed: Service unavailable/);
+  assert.match(toolProgress(calls, 'Blooming…'), /-# ❌ index blocked: Manage Server permission is required/);
 });
 
 for (const returned of [false, true]) test(`runner explains execution failures from ${returned ? 'results' : 'exceptions'} and lets the model explain the failure`, async t => {
@@ -142,9 +141,9 @@ test('completed replies support hidden, grouped, and expanded tool activity', ()
     {id:'3',name:'shell',status:'failed',arguments:{command:'ls'},reason:'Unavailable'},
   ];
   assert.equal(toolFooter(calls, 'none'), '');
-  assert.equal(toolFooter(calls, 'summary'), '\n\n-# 🔎 2 web searches');
+  assert.equal(toolFooter(calls, 'summary'), '\n\n-# searched the web 2× · 1 failed');
   const full = toolFooter(calls, 'full');
-  assert.equal(full, '\n\n-# 🔎 2 web searches\n-# ❌ shell failed: Unavailable');
+  assert.equal(full, '\n\n-# searched the web 2× · 1 failed');
   assert.ok(!full.includes('weather') && !full.includes('```'));
   assert.equal(toolDisplayMode(undefined), 'summary');
   assert.equal(toolDisplayMode('invalid'), 'summary');
@@ -226,7 +225,7 @@ test('footer total time spans first tool start to last tool end', () => {
     {id:'2',name:'web_search',status:'completed',startedAt:1500,durationMs:4000},
     {id:'3',name:'history_search',status:'completed',startedAt:40000,durationMs:3000},
   ];
-  assert.equal(toolFooter(calls, 'summary'), '\n\n-# 🔎 2 web searches · 📜 1 history search · 42s');
+  assert.equal(toolFooter(calls, 'summary'), '\n\n-# searched the web 2× · searched history · 42s');
 });
 
 test('programmatic progress renders actual child states and durations in a closed plain code block', () => {
@@ -236,12 +235,12 @@ test('programmatic progress renders actual child states and durations in a close
     {id:'2', parentId:'run', name:'history_search', status:'completed', durationMs:400},
     {id:'3', parentId:'run', name:'history_read', status:'running', arguments:{query:'secret query'}},
   ];
-  assert.equal(toolProgress(calls, 'Blooming…'), '<a:slopbot_pulse:1559390627152531586> Blooming…\nProgrammatic tools · Run 1 · running\n```\n┌ ✓ web_search · 1.2s\n│ ✓ history_search · 0.4s\n│ ◌ history_read · running\n└ 2 completed · 1 running\n```');
+  assert.equal(toolProgress(calls, 'Blooming…'), '<a:slopbot_pulse:1559390627152531586> Blooming…\nRun 1 · running\n```\n┌ ✓ web_search · 1.2s\n│ ✓ history_search · 0.4s\n│ ◌ history_read · running\n└ 2 completed · 1 running\n```');
 });
 
 test('code-only execution and completed, failed, blocked and reused children have honest states', () => {
   const run: ToolActivity = {id:'run', name:'run_tools_code', status:'running'};
-  assert.match(toolProgress([run], 'Blooming…'), /┌ ◌ executing code\n└ 0 tool calls/);
+  assert.match(toolProgress([run], 'Blooming…'), /┌ ◌ running\n└ 0 tool calls/);
   assert.match(toolProgress([{...run, status:'completed'}], 'Blooming…'), /Run 1 · completed\n```\n┌ ✓ completed/);
   const calls: ToolActivity[] = [run,
     {id:'1', parentId:'run', name:'read', status:'failed', durationMs:200},
@@ -292,6 +291,6 @@ test('programmatic child updates edit the same message and stay under their own 
   assert.match(messages[1]!, /┌ ◌ web_search · running\n└ 1 running/);
   assert.match(messages[2]!, /┌ ✓ web_search · 1.2s\n└ 1 completed/);
   assert.match(messages[4]!, /Run 1 · completed/);
-  assert.match(messages[4]!, /Run 2 · running\n```\n┌ ◌ executing code/);
+  assert.match(messages[4]!, /Run 2 · running\n```\n┌ ◌ running/);
   assert.equal((messages[4]!.match(/web_search/g) ?? []).length, 1);
 });

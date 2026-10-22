@@ -98,7 +98,7 @@ test('native validation errors return the original call ID and the model can cor
   registry.register({name:'lookup',surface:'top',description:'Lookup',fields:{limit:{type:'integer',min:1,max:10,required:true,description:'At most 10 results'}},access:'member',effect:'read',retrySafe:true,execute:async()=>{reads++;return 'Found results';}});
   const llm = new ChatCompletionsLLM(options, async (_url, init) => {
     const body = JSON.parse(String(init?.body)); requests++;
-    if (requests === 1) return callResponse('call_invalid', {limit:14});
+    if (requests === 1) return callResponse('call_invalid', {limit:'many'});
     const errors = body.messages.filter((item: any) => item.role === 'tool');
     assert.equal(errors[0].tool_call_id, 'call_invalid');
     assert.match(errors[0].content, /Invalid integer: limit/);

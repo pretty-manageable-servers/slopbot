@@ -18,6 +18,8 @@ export interface ToolResult {
   artifacts?: readonly { url: string; label: string }[];
   /** Image input for the model, sent inside this tool result (view_image). Not saved in the action log text. */
   images?: readonly import('./model-images.js').ModelImage[];
+  /** Forgiving-validation changes made to the arguments, for example a clamped number. Also named in text. */
+  notes?: readonly string[];
   handoff?: { threadId: string };
   ui?: import('./ui/schema.js').UiDocument;
 }
@@ -154,6 +156,34 @@ export class ConfirmationRequired extends ToolError {
 /** Returned when a private chat calls a Discord-scoped tool. */
 export const discordOnlyMessage = "This action is only available in Discord.";
 
+/** The kind of a value for an error message. */
+const kindOf = (value: unknown): string => value === null ? "null" : Array.isArray(value) ? "an array" : typeof value === "object" ? "an object" : `a ${typeof value}`;
+/** Clamps a number to the field range. A fraction is rounded. Returns the value to use, and notes each change. */
+function clampInteger(key: string, value: unknown, field: ToolField, notes: string[]): number {
+  const min = field.min ?? 0, max = field.max ?? Number.MAX_SAFE_INTEGER;
+  const number = typeof value === "string" && /^\s*-?\d+(\.\d+)?\s*$/.test(value) ? Number(value) : value;
+  if (typeof number !== "number" || !Number.isFinite(number)) throw new ToolError(`Invalid integer: ${key}. Use a whole number from ${min} to ${max}; received ${JSON.stringify(value)}.`);
+  const rounded = Math.round(number), target = Math.min(max, Math.max(min, rounded));
+  if (target !== number) notes.push(`${key} ${JSON.stringify(value)} → ${target}${rounded > max ? " (max)" : rounded < min ? " (min)" : ""}`);
+  return target;
+}
+/** Maps a value to the one choice it names: equal ignoring case, spaces, underscores and hyphens, or a unique prefix of it. Otherwise lists every valid value. */
+function matchChoice(key: string, value: string, choices: readonly string[]): string {
+  const folded = (text: string) => text.toLowerCase().replace(/[\s_-]+/g, "");
+  const wanted = folded(value);
+  const equal = choices.filter(choice => folded(choice) === wanted);
+  const prefixed = choices.filter(choice => folded(choice).startsWith(wanted));
+  const found = equal.length === 1 ? equal : prefixed.length === 1 ? prefixed : [];
+  if (found.length === 1) return found[0]!;
+  const problem = prefixed.length > 1 ? `${JSON.stringify(value.slice(0, 100))} matches more than one value for ${key}` : `Invalid choice for ${key}: ${JSON.stringify(value.slice(0, 100))}`;
+  throw new ToolError(`${problem}. Use one of: ${choices.join(", ")}.`);
+}
+/** Puts the forgiving-validation notes into a result, so the model sees what was changed. */
+function withNotes(output: ToolOutput, notes: readonly string[]): ToolResult {
+  const result = toolResult(output);
+  return notes.length ? { ...result, notes, text: `Note: ${notes.join("; ")}.\n${result.text}` } : result;
+}
+
 export class ToolRegistry {
   private readonly writers = new Map<string, Promise<void>>();
   private readonly tools = new Map<string, ToolDefinition>();
@@ -221,35 +251,43 @@ export class ToolRegistry {
     const tool = this.tools.get(name);
     return toolNeedsThread(name, args, this.effect(name, args), tool?.provider, tool?.execution);
   }
-  validate(name: string, input: unknown): ToolArgs {
+  validate(name: string, input: unknown): ToolArgs { return this.check(name, input).args; }
+  /** Validates arguments. Small mistakes are forgiven: a number is clamped to its range and an enum value is mapped when one valid value matches. Each change is returned as a note. */
+  check(name: string, input: unknown): { args: ToolArgs; notes: string[] } {
     const tool = this.tools.get(name);
     if (!tool) throw new ToolError(`Unknown tool: ${name}`);
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new ToolError("Tool arguments must be an object");
     const args = input as Record<string, unknown>;
     if (tool.inputSchema) {
       if (!validJson(input) || JSON.stringify(input).length > 64000 || !tool.validate) throw new ToolError("Invalid tool arguments");
-      return tool.validate(input as ToolArgs);
+      return { args: tool.validate(input as ToolArgs), notes: [] };
     }
-    const clean: ToolArgs = {};
-    for (const key of Object.keys(args)) if (!Object.hasOwn(tool.fields, key)) throw new ToolError(`Unknown argument: ${key}`);
+    const clean: ToolArgs = {}, notes: string[] = [];
+    for (const key of Object.keys(args)) if (!Object.hasOwn(tool.fields, key)) throw new ToolError(`Unknown argument: ${key}. ${tool.name} takes: ${Object.keys(tool.fields).join(', ')}.`);
     for (const [key, field] of Object.entries(tool.fields)) {
-      const value = args[key];
+      let value = args[key];
       if (value === undefined) { if (field.required) throw new ToolError(`Missing argument: ${key}`); continue; }
       if (field.type === "json") {
         if (!validJson(value) || JSON.stringify(value).length > (field.max ?? 16000)) throw new ToolError(`Invalid JSON: ${key}`);
       } else if (field.type === "integer") {
-        if (typeof value !== "number" || !Number.isSafeInteger(value) || value < (field.min ?? 0) || value > (field.max ?? Number.MAX_SAFE_INTEGER)) throw new ToolError(`Invalid integer: ${key}. Use a whole number from ${field.min ?? 0} to ${field.max ?? Number.MAX_SAFE_INTEGER}; received ${String(value)}.`);
+        value = clampInteger(key, value, field, notes);
       } else if (field.type === "boolean") {
-        if (typeof value !== "boolean") throw new ToolError(`Invalid boolean: ${key}`);
+        if (typeof value !== "boolean") throw new ToolError(`Invalid boolean: ${key}. Expected true or false, got ${kindOf(value)}.`);
       } else {
-        if (typeof value !== "string" || !value.trim() || value.length > (field.max ?? 4000)) throw new ToolError(`Invalid text: ${key}`);
+        if (typeof value !== "string") throw new ToolError(`Invalid text: ${key}. Expected a string, got ${kindOf(value)}.`);
+        if (!value.trim()) throw new ToolError(`${key} must not be empty.`);
+        if (value.length > (field.max ?? 4000)) throw new ToolError(`Invalid text: ${key}. Expected a string of at most ${field.max ?? 4000} characters.`);
         if (field.type === "channel" && !/^\d{17,20}$/.test(value)) throw new ToolError(`Use a Discord channel ID for ${key}`);
         if (field.type === "message_ref" && !messageRefPattern.test(value)) throw new ToolError(`Use a Discord message ID (17 to 20 digits) or a web chat message ID (chat-…) for ${key}`);
-        if (field.choices && !field.choices.includes(value)) throw new ToolError(`Invalid choice for ${key}: ${JSON.stringify(value.slice(0, 100))}. Use one of: ${field.choices.join(', ')}.`);
+        if (field.choices && !field.choices.includes(value)) {
+          const mapped = matchChoice(key, value, field.choices);
+          notes.push(`${key} ${JSON.stringify(value.slice(0, 100))} → ${mapped}`);
+          value = mapped;
+        }
       }
       clean[key] = value as Json;
     }
-    return tool.validate ? tool.validate(clean) : clean;
+    return { args: tool.validate ? tool.validate(clean) : clean, notes };
   }
   async checkAccess(message: Message, name: string): Promise<boolean> {
     const tool = this.tools.get(name);
@@ -262,17 +300,17 @@ export class ToolRegistry {
     return displayToolResult(await this.invokeResult(message, name, input, operationId, source, expectedVersion));
   }
   async invokeResult(message: Message, name: string, input: unknown, operationId: string, source: "command" | "agent", expectedVersion?: number, invocation?: ToolInvocation): Promise<ToolResult> {
-    const args = this.validate(name, input), tool = this.tools.get(name)!;
+    const { args, notes } = this.check(name, input), tool = this.tools.get(name)!;
     // A private chat cannot act on Discord. Every other tool follows the same rules as in Discord.
     if (isPrivateChannel(message.channel) && tool.scope === "discord") throw new ToolError(discordOnlyMessage);
-    if (this.effect(name, args) === "read") return this.perform(message, name, args, operationId, source, expectedVersion, invocation);
+    if (this.effect(name, args) === "read") return this.perform(message, name, args, operationId, source, expectedVersion, invocation, notes);
     const key = tool.resource?.(message, args) ?? `server:${message.server}:tool:${name}`;
     const previous = this.writers.get(key) ?? Promise.resolve();
     let release!: () => void;
     const tail = new Promise<void>(resolve => { release = resolve; });
     this.writers.set(key, tail);
     await requestTimings.wait("tool resource lock", () => previous);
-    try { return await this.perform(message, name, args, operationId, source, expectedVersion, invocation); }
+    try { return await this.perform(message, name, args, operationId, source, expectedVersion, invocation, notes); }
     finally { release(); if (this.writers.get(key) === tail) this.writers.delete(key); }
   }
   async authorizeCall(message: Message, name: string, input: unknown, operationId: string, source: "command" | "agent", expectedVersion?: number, invocation?: ToolInvocation): Promise<ToolContext> {
@@ -296,7 +334,7 @@ export class ToolRegistry {
     if (blocking) throw blockedError(message, name, blocking, context.resource, this.staleAfter(name));
   }
   private staleAfter(name: string): number { return this.tools.get(name)?.staleAfterMs ?? UNCERTAIN_LOCK_MS; }
-  private async perform(message: Message, name: string, input: unknown, operationId: string, source: "command" | "agent", expectedVersion?: number, invocation?: ToolInvocation): Promise<ToolResult> {
+  private async perform(message: Message, name: string, input: unknown, operationId: string, source: "command" | "agent", expectedVersion?: number, invocation?: ToolInvocation, notes: string[] = []): Promise<ToolResult> {
     const tool = this.tools.get(name);
     const context = await this.authorizeCall(message, name, input, operationId, source, expectedVersion, invocation);
     const args = context.arguments;
@@ -331,9 +369,9 @@ export class ToolRegistry {
     } else await this.journal.beginOperation(context, name, args);
     const startedAt = Date.now();
     try {
-      const result = await tool!.execute(context, args);
+      const result = withNotes(await tool!.execute(context, args), notes);
       await this.journal.endOperation(operationId, encodeToolResult(result));
-      return toolResult(result);
+      return result;
     } catch (error) {
       // Validation failures and errors before the request is sent are final (failed). Only an error after the request was sent is uncertain.
       if (error instanceof ToolError || (context.resource && !tool!.retrySafe && isBeforeRequest(error))) {

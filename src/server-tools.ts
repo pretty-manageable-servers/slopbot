@@ -280,7 +280,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
     const origin = await services.originMessage(context.message), current = await store.memories(origin.server, origin.channel);
     if (saved.some(item => !current.some(note => note.id === item.id && note.revision === item.revision))) throw new ToolError('Memory result changed or was forgotten. Search again with a new request.');
   };
-  add({ name: "memory_remember", description: "Save an attributed memory in this channel. Categories share search and permissions. Facts default to source-bound; memes default to independent, requiring no saved source or media copy. A media_url is optional but needed to reuse media. Save when asked; keep humor explanations separate from bot interpretations.", fields: { text: { type: "string", description: "Searchable content to remember", max: 2000, required: true }, ...memoryFields,
+  add({ name: "memory_remember", surface: "top", description: "Save an attributed memory in this channel. Categories share search and permissions. Facts default to source-bound; memes default to independent, requiring no saved source or media copy. A media_url is optional but needed to reuse media. Save when asked; keep humor explanations separate from bot interpretations.", fields: { text: { type: "string", description: "Searchable content to remember", max: 2000, required: true }, ...memoryFields,
     source_policy: { type: 'string', choices: ['source_bound', 'independent'], description: 'source_bound: supporting messages must exist; their edits/deletion invalidate the entry. independent: persists until forgotten and stores no message source IDs. Does not change channel access' },
     source_ids: { type: 'json', max: 4000, description: 'Optional source-bound message IDs in this same channel; defaults to the current request. Omit for independent memories', schema: { type: 'array', description: 'Source-bound message IDs in this same channel; defaults to current request. Omit for independent memories.', maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 160 } } },
   }, access: "member", effect: "write", retrySafe: false, execution: "inline", resource: memoryResource, authorize: authorizeMemory,
@@ -292,7 +292,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
     },
     async reconcile(context) { const origin = await services.originMessage(context.message); const found = (await store.memories(origin.server, origin.channel)).find(note => note.id === memoryIdForOperation(context.operationId) && note.author === context.message.author); return found ? `Saved memory ID: ${found.id}; revision ${found.revision}.` : undefined; }
   });
-  add({ name: "memory", description: "Search or browse active memories in this channel by category, tags, or situation. Returns structured details and revisions. Separate accessible task-thread scopes are listed; use memory there to read them.", fields: {
+  add({ name: "memory", surface: "top", description: "Search or browse active memories in this channel by category, tags, or situation. Returns structured details and revisions. Separate accessible task-thread scopes are listed; use memory there to read them.", fields: {
     query: { type: 'string', max: 2000, description: 'Optional name, topic, or situation; omit to browse' }, category: memoryFields.category!, tags: memoryFields.tags!,
     limit: { type: 'integer', min: 1, max: 50, description: 'Page size; default 20' }, offset: { type: 'integer', min: 0, max: 100000, description: 'Page offset; default 0' },
   }, access: "member", effect: "read", retrySafe: true, authorize: authorizeMemory,
@@ -310,7 +310,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
       return { text: [page.length ? page.map(note => JSON.stringify(note)).join("\n") : "No active saved memories matching this search in this channel.", ...scopes].join('\n'), data: { memories: JSON.parse(JSON.stringify(page)) as Json, total: notes.length, next_offset: offset + limit < notes.length ? offset + limit : null } };
     }
   });
-  add({ name: 'memory_update', description: 'Correct one of your active memories using its current revision. Changes content, category, tags, or details. Details replace the entire object. Source policy and supporting messages remain unchanged. Changing category may require replacing details to match.', fields: {
+  add({ name: 'memory_update', surface: "top", description: 'Correct one of your active memories using its current revision. Changes content, category, tags, or details. Details replace the entire object. Source policy and supporting messages remain unchanged. Changing category may require replacing details to match.', fields: {
     id: { type: 'string', required: true, description: 'Memory ID' }, expected_revision: { type: 'integer', min: 1, required: true, description: 'Current revision from memory search; protects against overwriting another edit' }, text: { type: 'string', max: 2000, description: 'Replacement searchable content' }, ...memoryFields,
   }, access: 'member', effect: 'write', retrySafe: false, execution: 'inline', resource: memoryResource, authorize: authorizeMemory,
     validate(args) { if (!['text', 'category', 'tags', 'details'].some(key => args[key] !== undefined)) throw new ToolError('Supply at least one memory field to update.'); return args; },
@@ -322,7 +322,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
     },
     async reconcile(context, args) { const origin = await services.originMessage(context.message); const note = (await store.memories(origin.server, origin.channel)).find(note => note.id === args.id && note.author === context.message.author && note.lastOperationId === context.operationId); return note ? `Updated memory ${note.id}; revision ${note.revision}.` : undefined; }
   });
-  add({ name: "memory_forget", description: "Forget one of your saved memories without deleting chat history or other memories", fields: { id: { type: "string", description: "Memory ID", required: true } }, access: "member", effect: "write", retrySafe: true, execution: "inline", resource: memoryResource,
+  add({ name: "memory_forget", surface: "top", description: "Forget one of your saved memories without deleting chat history or other memories", fields: { id: { type: "string", description: "Memory ID", required: true } }, access: "member", effect: "write", retrySafe: true, execution: "inline", resource: memoryResource,
     async execute(context, args) { return await store.forget(context.message.server, (await services.originMessage(context.message)).channel, String(args.id), context.message.author) ? "Memory forgotten." : "No active memory with that ID owned by you in this channel."; } });
   add({ name: "task_start", surface: "top", scope: "discord", description: "Move sustained work or an action request into a dedicated task thread", fields: { goal: { type: "string", description: "Task goal", required: true } }, access: "member", effect: "write", retrySafe: false, resource: message => `task-thread:${message.server}:${message.id}`,
     async execute(context, args) { await context.assertActive(); const threadId = await services.startTask(context.message, String(args.goal)); return { text: `Task thread: <#${threadId}>`, handoff: { threadId } }; },
@@ -338,7 +338,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
     } });
   const inbox = services.inbox;
   if (inbox) {
-    add({ name: "inbox_add", description: "Put a summary in another member's inbox, when a member asks to put something in someone's inbox. Runs directly: do not call task_start first. Write a plain summary of at most 1000 characters: who said what and what the target must act on. Use the source message IDs from context.", fields: { target: { type: "string", description: "Discord user ID of the member whose inbox gets the item", required: true }, summary: { type: "string", description: "Plain summary, at most 1000 characters", required: true }, source_ids: { type: "string", description: "Comma-separated Discord message IDs that the summary covers", required: true } }, access: "member", effect: "write", execution: "inline", retrySafe: false,
+    add({ name: "inbox_add", surface: "top", description: "Put a summary in another member's inbox, when a member asks to put something in someone's inbox. Runs directly: do not call task_start first. Write a plain summary of at most 1000 characters: who said what and what the target must act on. Use the source message IDs from context.", fields: { target: { type: "string", description: "Discord user ID of the member whose inbox gets the item", required: true }, summary: { type: "string", description: "Plain summary, at most 1000 characters", required: true }, source_ids: { type: "string", description: "Comma-separated Discord message IDs that the summary covers", required: true } }, access: "member", effect: "write", execution: "inline", retrySafe: false,
       async execute(context, args) {
         const target = userId(args.target);
         if (!target) throw new ToolError("Target must be a Discord user ID.");
@@ -348,14 +348,14 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
         const item = await inbox.add({ server: context.message.server, target, sender: context.message.author, channel, sourceIds, summary: String(args.summary ?? "") });
         return `Added inbox item ${item.id} for <@${target}>.`;
       } });
-    add({ name: "inbox_list", description: "List your own inbox items in this server: id, sender, age, summary and a jump link. Open items only, unless include_done is true.", fields: { include_done: { type: "boolean", description: "Include items you marked done" } }, access: "member", effect: "read", retrySafe: true,
+    add({ name: "inbox_list", surface: "top", description: "List your own inbox items in this server: id, sender, age, summary and a jump link. Open items only, unless include_done is true.", fields: { include_done: { type: "boolean", description: "Include items you marked done" } }, access: "member", effect: "read", retrySafe: true,
       async execute(context, args) {
         const items = await inbox.list(context.message.server, context.message.author, args.include_done === true);
         if (!items.length) return "Your inbox is empty.";
         const now = Date.now();
         return items.map(item => `${item.id} | from <@${item.sender}> | ${inboxAge(now - item.created_at)} | ${item.summary} | https://discord.com/channels/${context.message.server}/${item.channel}/${item.sourceIds[0]}${item.done_at === null ? "" : " | done"}`).join("\n");
       } });
-    add({ name: "inbox_done", description: "Mark your own inbox items done. Runs directly: do not call task_start first. Use the item IDs from inbox_list, comma-separated, or all.", fields: { ids: { type: "string", description: "Comma-separated item IDs, or all", required: true } }, access: "member", effect: "write", execution: "inline", retrySafe: true,
+    add({ name: "inbox_done", surface: "top", description: "Mark your own inbox items done. Runs directly: do not call task_start first. Use the item IDs from inbox_list, comma-separated, or all.", fields: { ids: { type: "string", description: "Comma-separated item IDs, or all", required: true } }, access: "member", effect: "write", execution: "inline", retrySafe: true,
       async execute(context, args) {
         const raw = String(args.ids ?? "").trim();
         if (!raw) throw new ToolError("Give item IDs, or all.");

@@ -31,10 +31,11 @@ test("commands and agents share permissions, validation and operation deduplicat
   await assert.rejects(registry.invoke(message, "limit", { count: 5 }, "op", "agent"), /Manage Server/);
   admin = true;
   await assert.rejects(registry.invoke(message, "limit", { count: 5, isAdmin: true }, "op", "agent"), /Unknown argument/);
-  await assert.rejects(registry.invoke(message, "limit", { count: 11 }, "op", "command"), /Invalid integer/);
+  assert.equal(await registry.invoke(message, "limit", { count: 11 }, "clamped", "command"), "Note: count 11 → 10 (max).\nset 10");
   assert.equal(await registry.invoke(message, "limit", { count: 5 }, "op", "agent"), "set 5");
   assert.equal(await registry.invoke(message, "limit", { count: 5 }, "op", "command"), "set 5");
-  assert.equal(executions, 1);
+  // The clamped call is its own operation and ran once; the two "op" calls ran once between them.
+  assert.equal(executions, 2);
   admin = false;
   await assert.rejects(registry.invoke(message, "limit", { count: 5 }, "op", "command"), /Manage Server/);
 });

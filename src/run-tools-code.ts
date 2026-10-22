@@ -7,7 +7,7 @@ import type { RecordStore } from './records.js';
 import type { SandboxProfile } from './sandbox-profile.js';
 import { resolveSandboxPath, sandboxSession } from './sandbox-session.js';
 import type { SandboxProvider } from './sandbox.js';
-import { ConfirmationRequired, ToolError, stableOperationId, toolResult, type ToolArgs, type ToolDefinition, type ToolRegistry, type ToolResult } from './tools.js';
+import { ConfirmationRequired, ToolError, stableOperationId, toolResult, type ToolArgs, type ToolDefinition, type ToolField, type ToolRegistry, type ToolResult } from './tools.js';
 
 export const RUN_TOOLS_CODE = 'run_tools_code';
 
@@ -65,12 +65,27 @@ function callableTools(registry: ToolRegistry): ToolDefinition[] {
   return registry.definitions().filter(tool => tool.name !== RUN_TOOLS_CODE && tool.surface !== 'top');
 }
 
-/** The core catalog: catalog tools sorted by name, one line each. Built once from the registry, so it is the same for every user. */
+/** A field as a short type for the catalog: enums list their values, integers show their range, booleans are bool. */
+function fieldType(field: ToolField): string {
+  if (field.choices) return field.choices.join('|');
+  if (field.type === 'integer') return field.max !== undefined ? `${field.min ?? 0}-${field.max}` : 'int';
+  if (field.type === 'boolean') return 'bool';
+  if (field.type === 'json') return 'json';
+  if (field.type === 'channel') return 'channel_id';
+  if (field.type === 'message_ref') return 'message_ref';
+  return 'string';
+}
+
+/** The core catalog: catalog tools sorted by name, one typed signature per line. Built once from the registry, so it is the same for every user. */
 function catalogLines(registry: ToolRegistry): string {
   return registry.definitions()
     .filter(tool => tool.name !== RUN_TOOLS_CODE && (tool.surface === undefined || tool.surface === 'catalog'))
     .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
-    .map(tool => `- ${tool.name}(${Object.entries(tool.fields).map(([key, field]) => field.required ? key : `${key}?`).join(', ')}): ${oneLine(tool.description)}`)
+    .map(tool => {
+      const args = Object.entries(tool.fields).map(([key, field]) => `${key}${field.required ? '' : '?'}: ${fieldType(field)}`).join(', ');
+      const summary = oneLine(tool.description);
+      return `- ${tool.name}(${args}): ${summary.length > 110 ? summary.slice(0, 109) + '…' : summary}`;
+    })
     .join('\n');
 }
 
@@ -82,6 +97,7 @@ export interface ProgramOutcome {
   receipts?: { id: number; name: string; status: 'ok' | 'failed' | 'unfinished'; bytes: number }[];
   failures: { name: string; error: string }[];
   error?: { message: string; status: 'failed' | 'rejected' };
+  truncatedBytes?: number;
 }
 
 const plainText = (value: Json): string => typeof value === 'string' ? value : JSON.stringify(value);
@@ -102,6 +118,7 @@ export function programText(result: ProgramOutcome): string {
   if (logs.length) parts.push(['Logs:', ...logs].join('\n'));
   if (receipts.length && (result.error || noOutput)) parts.push(`Calls: ${receipts.map(receiptText).join(', ')}`);
   if (noOutput && !logs.length && !result.error) parts.push('No output. The call results are not shown. To see data, end with return result, or call text(result).');
+  if (result.truncatedBytes) parts.push(`truncated, ${result.truncatedBytes} bytes more; use save_to_sandbox to keep all of it`);
   return parts.join('\n');
 }
 
@@ -163,9 +180,11 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
         if (builtinNames.has(name)) return builtin(name, input, index);
         // The tool is looked up now, so a definition that changed during the run is used. Access is checked per call.
         const current = registry.definitions().find(item => item.name === name);
+        // Direct tools are sent to the model as function tools, so a program cannot call them.
+        if (current?.surface === 'top') throw new ToolError(`${name} is a direct tool. Call it outside run_tools_code.`);
         const values = normalizeArgs(current, input);
         if (current && !isArgs(values)) throw argumentError(current);
-        const clean = registry.validate(name, values);
+        const { args: clean, notes } = registry.check(name, values);
         const operationId = stableOperationId(parentId, 'program', String(index), name, stableJson(clean));
         const call = { name, operationId, status: 'running' }; childCalls.push(call);
         const started = performance.now(), startedAt = Date.now();
@@ -197,7 +216,9 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
           for (const source of output.sources ?? []) sources.set(stableJson(source), source);
           for (const artifact of output.artifacts ?? []) artifacts.set(artifact.url, artifact);
           call.status = 'completed'; await childReport('completed', reused);
-          return (output.data ?? { text: output.text }) as Json;
+          const value = (output.data ?? { text: output.text }) as Json;
+          // A forgiven argument (a clamped number, a mapped enum) is returned with the value, so the program can see it.
+          return notes.length ? { note: notes.join('; '), result: value } : value;
         } catch (error) {
           call.status = error instanceof ToolError ? error.status : 'failed';
           await childReport(error instanceof ToolError ? error.status : 'failed', false, errorSummary(error)); throw error;
@@ -206,7 +227,8 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
       const limits = { maxCalls: runtime.limits.maxCalls, concurrency: runtime.limits.concurrency };
       let result;
       try {
-        result = await runtime.run(code, callableTools(registry).map(tool => tool.name), dispatch, context.invocation?.signal);
+        // Direct tools are passed too, so a call to one gets the direct-tool error instead of "not defined".
+        result = await runtime.run(code, registry.definitions().filter(tool => tool.name !== RUN_TOOLS_CODE).map(tool => tool.name), dispatch, context.invocation?.signal);
       } catch (error) {
         if (!(error instanceof ConfirmationRequired)) throw error;
         result = { outputs: [], logs: [], calls: 0, receipts: [], failures: [], confirmation: { name: error.call.name, operationId: error.call.operationId } };

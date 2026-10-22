@@ -9,7 +9,7 @@ import { sandboxManageTool, readSandboxFile } from "../sandbox.js";
 import { sandboxFileTools } from "../sandbox-tools.js";
 import { uploadRequestFiles } from "../sandbox-uploads.js";
 import { probeSandboxProfile, sandboxPromptLine, type SandboxProfile } from "../sandbox-profile.js";
-import { objectStorageTool, UserFileStorage, MAX_STORED_FILE_BYTES, fileStorageScope } from '../object-storage.js';
+import { objectStorageTools, UserFileStorage, MAX_STORED_FILE_BYTES, fileStorageScope } from '../object-storage.js';
 import { sendStoredFile } from './discord-storage.js';
 import { S3StorageProvider } from './s3-storage.js';
 import { runToolsCodeTool } from '../run-tools-code.js';
@@ -319,7 +319,7 @@ export class DiscordServer implements ChatGateway {
     const storage = new UserFileStorage(store, objectStorageProvider);
     this.tools.register(sandboxManageTool(store, sandboxProvider));
     for (const tool of sandboxFileTools(store, sandboxProvider, this.sandboxProfile)) this.tools.register(tool);
-    this.tools.register(objectStorageTool({
+    for (const tool of objectStorageTools({
       storage,
       fetcher: chatFiles,
       authorize: message => authorizeFeature(message, message.channel),
@@ -334,7 +334,7 @@ export class DiscordServer implements ChatGateway {
       ...(sandboxProvider ? { store, provider: sandboxProvider, ...(this.sandboxProfile ? { profile: this.sandboxProfile } : {}), sandbox: {
         read: (context, path) => readSandboxFile(store, sandboxProvider, context, path, MAX_STORED_FILE_BYTES, this.sandboxProfile?.home),
       } } : {}),
-    }));
+    })) this.tools.register(tool);
     this.limiter = usage.limiter;
     this.webReplies = new WebReplies({
       store, discord: discordWebReplies(client), access, limiter: this.limiter, secret: webReplyKey(),
