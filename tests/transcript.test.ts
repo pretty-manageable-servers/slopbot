@@ -25,7 +25,7 @@ test("formats one line", () => {
     attachments: [{ name: "a.png", url: "https://example.test/a.png" }],
     revisionTimestamp: at(14, 5),
   }), "m3", new Map([["p", "m1"]]));
-  assert.equal(formatLine(line), "[14:02] #m3 Alice (@alice) ↩#m1 [edited] [files: a.png]: text a");
+  assert.equal(formatLine(line), "[14:02] #m3 Alice (@alice) ↩#m1 [edited] [images: a.png]: text a");
 });
 
 test("drops empty fields", () => {

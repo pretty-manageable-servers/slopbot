@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { suggestRequestTool, personResponses, shouldRecall } from '../src/request-routing.js';
-import type { Message } from '../src/domain.js';
+import { suggestRequestTool, personResponses, shouldRecall, expandReplySubject } from '../src/request-routing.js';
+import type { Message, PromptItem } from '../src/domain.js';
+import type { ProfileStore } from '../src/profiles.js';
 import type { ToolExecutor } from '../src/tools.js';
 const request: Message = {id:'request',server:'s',channel:'c',author:'alice',text:'analyze this gif',replyTo:'file'};
 test('reply file routing supplies attachments without replacing request identity', () => {
@@ -12,6 +13,18 @@ test('reply file routing supplies attachments without replacing request identity
  assert.equal(seen?.id,request.id); assert.equal(seen?.author,request.author); assert.equal(seen?.attachments,target.attachments);
  assert.equal(request.attachments,undefined);
 });
+test('reply_subject_has_no_cdn_url', async () => {
+ const label = '[Attachment shot.png, type image/png: https://cdn.discordapp.com/attachments/1/2/shot.png; content not inspected]';
+ const target: Message = {...request,id:'file',author:'bob',text:`<@474858037970993152> posted this\n${label}`,attachments:[{name:'shot.png',url:'https://cdn.discordapp.com/attachments/1/2/shot.png?ex=a&is=b&hm=c',contentType:'image/png'}]};
+ const asked: Message = {...request,text:`what did he mean\n${label}`,replyTo:'file',attachments:[{name:'shot.png',url:'https://cdn.discordapp.com/attachments/1/2/shot.png?ex=a&is=b&hm=c',contentType:'image/png'}]};
+ const profiles = {findPeople: async () => [{id:'474858037970993152',name:'Bob'}]} as unknown as ProfileStore;
+ const base: PromptItem = {role:'user',content:'unused'};
+ const expanded = await expandReplySubject(profiles, asked, target, base);
+ assert.match(expanded.content,/^About Bob/);
+ assert.doesNotMatch(expanded.content,/http|cdn\.discordapp/);
+ assert.equal(expanded.content.endsWith('what did he mean'), true);
+});
+
 test('person responses quote only the resolved author and preserve original text', () => {
  const scope = {kind:'retrieval' as const,content:'resolved',author:'alice',targetAuthor:'bob',sourceIds:[]};
  const evidence = [{kind:'message' as const,content:'actual quote',author:'bob',authorName:'Bob',sourceIds:['one'],sourceUrl:'https://discord.com/channels/s/c/one'}, {kind:'message' as const,content:'other speaker',author:'alice',sourceIds:['two']}];

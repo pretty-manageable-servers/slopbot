@@ -16,6 +16,8 @@ export interface ToolResult {
   failure?: { causes: readonly string[] };
   sources?: readonly ({ kind: "message"; server: string; channel: string; id: string } | { kind: "web"; url: string; title: string })[];
   artifacts?: readonly { url: string; label: string }[];
+  /** Image input for the model, sent inside this tool result (view_image). Not saved in the action log text. */
+  images?: readonly import('./model-images.js').ModelImage[];
   handoff?: { threadId: string };
   ui?: import('./ui/schema.js').UiDocument;
 }
@@ -28,7 +30,11 @@ export function displayToolResult(output: ToolOutput): string {
   return [result.text, ...links].join("\n");
 }
 const resultTag = "slopbot-tool-result-v1:";
-export function encodeToolResult(output: ToolOutput): string { return resultTag + JSON.stringify(toolResult(output)); }
+export function encodeToolResult(output: ToolOutput): string {
+  // Image links expire, so the action log keeps only how many images were shown.
+  const { images, ...result } = toolResult(output);
+  return resultTag + JSON.stringify(images?.length ? { ...result, images_shown: images.length } : result);
+}
 export function decodeToolResult(value: string): ToolResult {
   return value.startsWith(resultTag) ? JSON.parse(value.slice(resultTag.length)) as ToolResult : { text: value };
 }
