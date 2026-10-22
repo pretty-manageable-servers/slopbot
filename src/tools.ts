@@ -16,6 +16,8 @@ export interface ToolResult {
   failure?: { causes: readonly string[] };
   sources?: readonly ({ kind: "message"; server: string; channel: string; id: string } | { kind: "web"; url: string; title: string })[];
   artifacts?: readonly { url: string; label: string }[];
+  /** Image input for the model, sent inside this tool result (view_image). Not saved in the action log text. */
+  images?: readonly import('./model-images.js').ModelImage[];
   handoff?: { threadId: string };
   ui?: import('./ui/schema.js').UiDocument;
 }
