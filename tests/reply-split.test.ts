@@ -52,4 +52,6 @@ test('footer_on_last_page_only', () => {
   const extra = splitReply(full, 100, '\n\n-# footer that does not fit here');
   assert.equal(extra.length, 2);
   assert.ok(extra[1]!.endsWith('-# footer that does not fit here'));
+  // Discord pages keep room for closing markers; a short footer may use it instead of a page of its own.
+  assert.equal(splitReply('y'.repeat(1874), 1900, '\n\n-# searched history 2× · read 1 message · 14s', 2000).length, 1);
 });

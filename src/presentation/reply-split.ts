@@ -91,7 +91,8 @@ function units(text: string, limit: number): Unit[] {
   return out;
 }
 
-export function splitReply(text: string, limit = 1900, footer = ''): string[] {
+/** `max` is the hard message size; the footer may use the room above `limit` that pages keep for closing markers. */
+export function splitReply(text: string, limit = 1900, footer = '', max = limit): string[] {
   const queue = units(text, limit), pages: string[] = [];
   let state: State = { open: [] }, page = '', fresh = true;
   const flush = () => { pages.push(finish(page, state)); page = reopening(state); fresh = true; };
@@ -112,7 +113,7 @@ export function splitReply(text: string, limit = 1900, footer = ''): string[] {
   if (!fresh) pages.push(finish(page, state));
   if (footer) {
     const last = pages.length - 1;
-    if (last >= 0 && pages[last]!.length + footer.length <= limit) pages[last] += footer;
+    if (last >= 0 && pages[last]!.length + footer.length <= max) pages[last] += footer;
     else pages.push(...splitReply(footer, limit));
   }
   return pages;

@@ -818,7 +818,7 @@ export class DiscordServer implements ChatGateway {
     const tail = toolFooter(activity, toolDisplayMode(this.store.setting(message.server, "tool_display"))) + footer;
     const flags = suppressLinkPreviews(rendered + tail) ? MessageFlags.SuppressEmbeds : undefined;
     const hasBody = Boolean(chat || attached.links.length || attached.files.length);
-    const payloads: import('discord.js').MessageCreateOptions[] = hasBody ? splitReply(rendered, 1900, tail).map(content=>({content,flags})) : [];
+    const payloads: import('discord.js').MessageCreateOptions[] = hasBody ? splitReply(rendered, 1900, tail, 2000).map(content=>({content,flags})) : [];
     // Up to 10 files per message. The first 10 go on the final text message; the rest follow in messages of their own.
     const files = attached.files.map(file => ({ attachment: Buffer.from(file.bytes), name: file.name }));
     if (files.length && !payloads.length) payloads.push({ content: tail.trim(), flags });
