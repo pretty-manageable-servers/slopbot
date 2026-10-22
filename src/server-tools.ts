@@ -2,6 +2,7 @@ import { MAX_MUTE_MINUTES, MUTED_USERS_KEY, mutedUsers, userId } from "./muted-u
 import { CLASSIFIER_CONTEXT_LIMIT } from './classifier-input.js';
 import { BOT_REPLY_LIMIT_KEY, MAX_BOT_REPLIES, MAX_BOT_REPLY_MINUTES, MAX_TEMPORARY_MINUTES, botReplyLimits, describeBotReplyLimits, type BotReplyLimits } from "./bot-reply-limit.js";
 import { GLOBAL_SETTINGS_SCOPE } from "./usage-cost.js";
+import { discordTime } from "./presentation/discord-time.js";
 import { isPrivateChannel } from "./private-chat.js";
 import type { Config } from "./config.js";
 import { selfKnowledgeTool } from "./self-knowledge.js";
@@ -111,7 +112,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
       const mutes = mutedUsers(store.setting(server, MUTED_USERS_KEY));
       if (args.action === "list") {
         const rows = Object.entries(mutes);
-        return rows.length ? `Muted users: ${rows.map(([user, until]) => `<@${user}> until ${new Date(until).toISOString()}`).join(", ")}.` : "No users are muted.";
+        return rows.length ? `Muted users: ${rows.map(([user, until]) => `<@${user}> until ${discordTime(until)}`).join(", ")}.` : "No users are muted.";
       }
       if (!await services.isTeamEditor(context.message.author)) throw new ToolError("Only the Slopbot team can mute or unmute users.");
       const user = userId(args.user);
@@ -121,7 +122,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
       const minutes = Number(args.minutes ?? 60);
       mutes[user] = Date.now() + minutes * 60_000;
       await store.setSetting(server, MUTED_USERS_KEY, mutes);
-      return `Slopbot will not answer <@${user}> in this server until ${new Date(mutes[user]!).toISOString()}.`;
+      return `Slopbot will not answer <@${user}> in this server until ${discordTime(mutes[user]!)}.`;
     }
   });
   add(selfKnowledgeTool(registry, services.isTeamEditor, () => `Native function calling: enabled\nObject storage: ${config.objectStorage ? "configured" : "not configured"}; file_store scopes user/server/user_server, with ownership and sharing controls\nTool rounds per attempt: ${config.maxToolRounds}\nPMServers docs reviewed: 2026-10-12; latest changelog: 2026-10-12`));

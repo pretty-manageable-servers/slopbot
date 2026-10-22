@@ -1,6 +1,7 @@
 import type { Json, Message } from "../domain.js";
 import type { AppRecord, RecordStore } from "../records.js";
 import { ToolError, type ToolRegistry, type ToolResult } from "../tools.js";
+import { discordTimeIso } from "../presentation/discord-time.js";
 import { stableJson } from "../prompt-cache.js";
 import { uiKey } from "../ui/runtime.js";
 import { GLOBAL_SETTINGS_SCOPE } from "../usage-cost.js";
@@ -73,17 +74,17 @@ async function parseRun(registry: ToolRegistry, message: Message, value: Json | 
 function describe(schedule: Schedule): string {
   const when = schedule.when.kind === "once" ? `once at ${schedule.when.at}` : `${schedule.when.cron} ${schedule.when.timezone}`;
   const state = schedule.pauseReason ? `${schedule.status}, ${schedule.pauseReason}` : schedule.status;
-  return `${schedule.name} — ${when} — next ${schedule.nextAt ?? "none"} — expires ${schedule.expiresAt ?? "never"} — ${state}\nReference: ${schedule.id}`;
+  return `${schedule.name} — ${when} — next ${schedule.nextAt ? discordTimeIso(schedule.nextAt) : "none"} — expires ${schedule.expiresAt ? discordTimeIso(schedule.expiresAt) : "never"} — ${state}\nReference: ${schedule.id}`;
 }
 
 function createdResult(schedule: Schedule): ToolResult {
   return {
-    text: `Schedule "${schedule.name}" created. Next run: ${schedule.nextAt ?? "none"}.\nReference: ${schedule.id}`,
+    text: `Schedule "${schedule.name}" created. Next run: ${schedule.nextAt ? discordTimeIso(schedule.nextAt) : "none"}.\nReference: ${schedule.id}`,
     ui: {
       version: 1,
       type: "card",
       title: "Schedule",
-      text: `${schedule.name}\nNext run: ${schedule.nextAt ?? "none"}${schedule.expiresAt ? `\nExpires: ${schedule.expiresAt}` : ""}`,
+      text: `${schedule.name}\nNext run: ${schedule.nextAt ? discordTimeIso(schedule.nextAt) : "none"}${schedule.expiresAt ? `\nExpires: ${discordTimeIso(schedule.expiresAt)}` : ""}`,
       actions: [
         { label: "Pause", action: "schedule.pause", arguments: { id: schedule.id } },
         { label: "Cancel", action: "schedule.cancel", arguments: { id: schedule.id } },
@@ -231,7 +232,7 @@ export function registerScheduleTool(registry: ToolRegistry, services: ScheduleT
         const resumed: Schedule = { ...schedule, status: "active", nextAt: iso(next.getTime()), failures: 0 };
         delete resumed.pauseReason;
         await save(message.server, record, resumed);
-        return `Schedule "${schedule.name}" resumed. Next run: ${resumed.nextAt}.`;
+        return `Schedule "${schedule.name}" resumed. Next run: ${discordTimeIso(resumed.nextAt!)}.`;
       }
 
       if (action === "renew") {
@@ -245,7 +246,7 @@ export function registerScheduleTool(registry: ToolRegistry, services: ScheduleT
           renewed.nextAt = next ? iso(next.getTime()) : null;
         }
         await save(message.server, record, renewed);
-        return `Schedule "${schedule.name}" renewed. Expires: ${renewed.expiresAt}.`;
+        return `Schedule "${schedule.name}" renewed. Expires: ${discordTimeIso(renewed.expiresAt!)}.`;
       }
 
       // cancel

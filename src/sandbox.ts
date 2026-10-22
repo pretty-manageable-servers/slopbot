@@ -2,6 +2,7 @@ import type { RecordStore } from './records.js';
 import { ToolError, type ToolDefinition, type ToolContext } from './tools.js';
 import { resolveSandboxPath, SANDBOX_HOME } from './sandbox-session.js';
 import { requestTimings } from './request-timing.js';
+import { discordTime } from './presentation/discord-time.js';
 
 export interface SandboxSession {
   id: string;
@@ -146,7 +147,7 @@ export function sandboxManageTool(store: RecordStore, provider?: SandboxProvider
       const id = value?.id && (value.expiresAt ?? 0) > Date.now() ? value.id : undefined;
       if (!id) return 'No active sandbox in this task. The read, write, edit and shell tools start one.';
       const session = await requestTimings.wait('sandbox connect', () => provider.connect(id));
-      if (args.action === 'status') return `Sandbox ${session.id} is connected. Template: ${value?.template ?? 'unknown (legacy workspace)'}. Recorded lease expires at ${new Date(value!.expiresAt!).toISOString()}.`;
+      if (args.action === 'status') return `Sandbox ${session.id} is connected. Template: ${value?.template ?? 'unknown (legacy workspace)'}. Recorded lease expires at ${discordTime(value!.expiresAt!)}.`;
       const fresh = await store.record(message.server, 'sandbox', message.channel);
       await requestTimings.wait('sandbox close', () => session.close());
       if (!await store.putRecord(message.server, 'sandbox', message.channel, { closed: true }, fresh!.revision)) throw new ToolError('Sandbox record changed during close.');

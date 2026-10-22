@@ -3,6 +3,7 @@ import type { Json, Message } from "../domain.js";
 import type { RecordStore } from "../records.js";
 import { ToolError, type ToolRegistry } from "../tools.js";
 import { uiKey } from "../ui/runtime.js";
+import { discordTimeWithRelative } from "../presentation/discord-time.js";
 export interface Reminder {
   channel: string;
   owner: string;
@@ -67,7 +68,7 @@ export function registerReminderTools(
           records
             .map((record) => {
               const reminder = record.value as unknown as Reminder;
-              return `${reminder.text} — ${new Date(reminder.at).toISOString()} (${reminder.status}${reminder.error ? `; ${reminder.error}` : ""})\nReference: ${record.id}`;
+              return `${reminder.text} — ${discordTimeWithRelative(reminder.at)} (${reminder.status}${reminder.error ? `; ${reminder.error}` : ""})\nReference: ${record.id}`;
             })
             .join("\n\n") || "No reminders in this channel."
         );
@@ -129,12 +130,12 @@ export function registerReminderTools(
         0,
       );
       return {
-        text: `Reminder scheduled for ${new Date(at).toISOString()}.\nReference: ${id}`,
+        text: `Reminder scheduled for ${discordTimeWithRelative(at)}.\nReference: ${id}`,
         ui: {
           version: 1,
           type: "card",
           title: "Reminder",
-          text: `${reminder.text}\n${new Date(at).toISOString()}`,
+          text: `${reminder.text}\n${discordTimeWithRelative(at)}`,
           actions: [
             { label: "Cancel", action: "reminder.cancel", arguments: { id } },
           ],

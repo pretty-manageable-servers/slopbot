@@ -60,18 +60,41 @@ const plainWordsOf: Record<string, (count: number) => string> = {
   shell: count => `ran ${plural(count, 'command')}`,
   view_image: count => `viewed ${plural(count, 'image')}`,
   memory: count => `checked memory${times(count)}`,
-  memory_remember: count => `saved ${plural(count, 'memory')}`,
+  memory_remember: count => count === 1 ? 'saved a memory' : `saved ${count} memories`,
+  memory_update: count => count === 1 ? 'updated a memory' : `updated ${count} memories`,
+  memory_forget: count => count === 1 ? 'forgot a memory' : `forgot ${count} memories`,
+  profile: count => count === 1 ? 'checked a profile' : `checked ${count} profiles`,
+  reminder: count => count === 1 ? 'set a reminder' : `set ${count} reminders`,
+  inbox_add: count => count === 1 ? 'added to inbox' : `added ${count} items to inbox`,
+  inbox_done: count => `cleared ${plural(count, 'inbox item')}`,
+  inbox_list: count => `read inbox${times(count)}`,
+  schedule: count => `updated ${plural(count, 'schedule')}`,
   file_store: count => `read ${plural(count, 'stored file')}`,
-  file_store_write: count => `changed ${plural(count, 'stored file')}`,
+  file_store_write: count => `saved ${plural(count, 'file')}`,
   attach_file: count => `attached ${plural(count, 'file')}`,
   issue_draft: count => count === 1 ? 'drafted an issue' : `drafted ${plural(count, 'issue')}`,
+  file_report: count => count === 1 ? 'filed a report' : `filed ${count} reports`,
   bot_info: count => `read bot info${times(count)}`,
+  task_start: count => count === 1 ? 'started a task' : `started ${count} tasks`,
+  task_manage: count => `managed tasks${times(count)}`,
+  task_status: count => `checked task status${times(count)}`,
+  task_retry: count => count === 1 ? 'retried a task' : `retried ${count} tasks`,
+  poll_create: count => count === 1 ? 'made a poll' : `made ${count} polls`,
+  ui_publish: count => count === 1 ? 'published a view' : `published ${count} views`,
+  sandbox_manage: count => `managed the sandbox${times(count)}`,
+  usage: count => `checked usage${times(count)}`,
+  run_tools_code: count => `ran code${times(count)}`,
+  voice: count => `managed voice${times(count)}`,
+  voice_say: count => `said ${plural(count, 'line')} aloud`,
+  voice_skip: count => `skipped ${plural(count, 'transcript')}`,
 };
 // Tools without a phrase: the name in spaces, as a plain verb phrase. Never a × glued to the name.
 export const plainWords = (name: string, count: number): string => {
   const label = name.replace(/_/g, ' ');
   return plainWordsOf[name]?.(count) ?? (count > 1 ? `used ${label} ${count} times` : `used ${label}`);
 };
+// True when the tool has its own footer phrase, so plainWords does not fall back to the tool name.
+export const hasPlainWords = (name: string): boolean => Object.hasOwn(plainWordsOf, name);
 export const escapeMarkdown = (text: string): string => text.replace(/\s+/g, " ").replace(/[\\`*_~<>|\[\]]/g, "\\$&");
 // Short text for the "now" line. Only the query is shown, never other arguments.
 export function currentStep(name: string, query: unknown): string {

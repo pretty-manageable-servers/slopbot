@@ -6,6 +6,7 @@ import { diagnosticText, safeDiagnosticData } from './diagnostic-data.js';
 export { diagnosticText, safeDiagnosticData } from './diagnostic-data.js';
 import type { OperationsConfig } from './operations-config.js';
 import { runtimeVersion } from './operations-config.js';
+import { discordTime } from './presentation/discord-time.js';
 import type { OperationsClient, PullRequest } from './adapters/operations-client.js';
 import type { RuntimeStore } from './runtime-store.js';
 import { toolResult, type ToolArgs, type ToolContext, type ToolDefinition, type ToolRegistry, type ToolResult } from './tools.js';
@@ -69,7 +70,7 @@ export class Operations {
     // Return that same immutable snapshot, never fresh output backed by an older evidence ID.
     const saved = await this.evidence(context.message, id);
     await context.assertActive();
-    return { text: `Evidence ${id} (${saved.kind}, captured ${new Date(saved.capturedAt).toISOString()}):\n${diagnosticText(JSON.stringify(saved.data, null, 2), 48000)}`,
+    return { text: `Evidence ${id} (${saved.kind}, captured ${discordTime(saved.capturedAt)}):\n${diagnosticText(JSON.stringify(saved.data, null, 2), 48000)}`,
       data: { evidence_id: id, ...json(saved) as Record<string, Json> }, sources: saved.sources.map(m => ({ kind: 'message' as const, server: m.server, channel: m.channel, id: m.id })) };
   }
   async selectedEvidence(context: ToolContext, args: ToolArgs) {

@@ -6,6 +6,7 @@ import { parseEffort, type Effort, type Message } from "./domain.js";
 import type { ToolActivity } from "./tool-activity.js";
 import type { UiDocument } from "./ui/schema.js";
 import { prepareUi } from "./ui/runtime.js";
+import { forWeb } from "./presentation/discord-time.js";
 import type { RecordStore } from "./records.js";
 import type { ChannelAccess } from "./channel-access.js";
 import type { MemberDirectory } from "./member-directory.js";
@@ -105,12 +106,12 @@ export class WebChatGateway implements ChatGateway {
       id: `chat-reply-${deliveryId ? stableOperationId(deliveryId) : randomUUID()}`,
       server: this.server, channel: message.channel,
       author: slopbotId(this.store, this.server) ?? "slopbot", authorName: "Slopbot", isBot: true,
-      text: [text, ...links].filter(Boolean).join("\n\n"), timestamp: Date.now(), addressed: false,
+      text: forWeb([text, ...links].filter(Boolean).join("\n\n")), timestamp: Date.now(), addressed: false,
       ...(attachments.length ? { attachments } : {}),
     };
     const runIds = await this.store.requestRunIds(this.server, message.id);
     const saved = ui ? await prepareUi(this.store, message, ui, output.id) : undefined;
-    await publishMessage(this.store, output, runIds, undefined, saved && { id: saved.id, revision: saved.revision, document: saved.state.document });
+    await publishMessage(this.store, output, runIds, undefined, saved && { id: saved.id, revision: saved.revision, document: forWeb(saved.state.document) });
     requestTimings.finish(message);
     return [output];
   }
@@ -466,7 +467,7 @@ export class WebChatService {
     if (!/^[0-9a-f]{24}$/.test(cardId) || !Number.isSafeInteger(revision) || !Number.isSafeInteger(index)) throw new ChatError(400, "Invalid control.");
     const handle = await this.handle(chat.server);
     try {
-      return await handle.act(privateChannel(chat.id), user, cardId, revision, index, randomUUID());
+      return forWeb(await handle.act(privateChannel(chat.id), user, cardId, revision, index, randomUUID()));
     } catch (error) {
       if (error instanceof ToolError) throw new ChatError(400, error.message);
       throw error;
