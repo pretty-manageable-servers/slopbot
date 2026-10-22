@@ -27,7 +27,7 @@ elif 'show' in args:
 else: raise SystemExit('Unexpected CLI invocation')
 `;
     writeFileSync(join(packageRoot, 'pms'), cli, { mode: 0o700 });
-    const archiveName = 'pms-v0.11.0-x86_64-unknown-linux-gnu.tar.gz', archive = join(directory, archiveName);
+    const archiveName = 'pms-v0.11.1-x86_64-unknown-linux-gnu.tar.gz', archive = join(directory, archiveName);
     execFileSync('tar', ['-czf', archive, '-C', archiveRoot, 'package']);
     const sums = join(directory, 'SHA256SUMS'); writeFileSync(sums, `${createHash('sha256').update(readFileSync(archive)).digest('hex')}  ${archiveName}\n`);
     writeFileSync(join(bin, 'gh'), '#!/bin/sh\ncp "$PMS_TEST_ARCHIVE" .\ncp "$PMS_TEST_SUMS" .\n', { mode: 0o700 });

@@ -6,9 +6,9 @@ set -euo pipefail
 umask 077
 mkdir -p "$RUNNER_TEMP/pms-bin"
 cd "$RUNNER_TEMP/pms-bin"
-gh release download v0.11.0 --repo pretty-manageable-servers/pmservers-cli --pattern 'pms-v0.11.0-x86_64-unknown-linux-gnu.tar.gz' --pattern SHA256SUMS
-grep 'pms-v0.11.0-x86_64-unknown-linux-gnu.tar.gz$' SHA256SUMS | sha256sum --check -
-tar -xzf pms-v0.11.0-x86_64-unknown-linux-gnu.tar.gz --strip-components=1
+gh release download v0.11.1 --repo pretty-manageable-servers/pmservers-cli --pattern 'pms-v0.11.1-x86_64-unknown-linux-gnu.tar.gz' --pattern SHA256SUMS
+grep 'pms-v0.11.1-x86_64-unknown-linux-gnu.tar.gz$' SHA256SUMS | sha256sum --check -
+tar -xzf pms-v0.11.1-x86_64-unknown-linux-gnu.tar.gz --strip-components=1
 ./pms --project slop container show "${CONTAINER:-slopbot}" --output json > "$RUNNER_TEMP/slopbot-before-deployment.json"
 python3 - <<'PYVARS' > "$RUNNER_TEMP/slopbot-token-overrides"
 import json, os
