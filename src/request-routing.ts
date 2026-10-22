@@ -2,12 +2,15 @@ import type { Message, PromptItem } from './domain.js';
 import type { Evidence } from './memory.js';
 import { replySubject, type ProfileStore } from './profiles.js';
 import type { ToolExecutor } from './tools.js';
+import { authoredSourceText } from './source-context.js';
 
 // These are deterministic shortcuts. The model handles requests without a match.
+// Both texts are authored text: attachment labels with CDN URLs never reach the model.
 export async function expandReplySubject(profiles: ProfileStore | undefined, message: Message, target: Message | undefined, request: PromptItem): Promise<PromptItem> {
-  if (!target || !/\b(his|her|their|he|she|they|him|them)\b/i.test(message.text)) return request;
-  const subject = await replySubject(profiles, message.server, target.text);
-  return subject ? { ...request, content: `About ${subject.name} (<@${subject.id}>), the person in your reply target:\n${message.text}` } : request;
+  const text = authoredSourceText(message);
+  if (!target || !/\b(his|her|their|he|she|they|him|them)\b/i.test(text)) return request;
+  const subject = await replySubject(profiles, message.server, authoredSourceText(target));
+  return subject ? { ...request, content: `About ${subject.name} (<@${subject.id}>), the person in your reply target:\n${text}` } : request;
 }
 export function shouldRecall(message: Message): boolean {
   return !message.replyTo || /\b(history|remember|said|say|quotes?)\b/i.test(message.text);

@@ -59,6 +59,19 @@ test("max_four_newest_first", async () => {
   const images = await selectRunImages({ request: msg("req"), recent, source });
   assert.equal(images.length, RUN_IMAGE_LIMIT);
   assert.deepEqual(labels(images), ["m1.png", "m2.png", "m3.png", "m4.png"]);
+  // The request's own image takes one of the four places, so only three recent ones fit.
+  const withOwn = await selectRunImages({ request: msg("req", { attachments: [image("own.jpg")] }), recent, source });
+  assert.deepEqual(labels(withOwn), ["own.jpg", "m1.png", "m2.png", "m3.png"]);
+});
+
+test("request_own_images_never_capped", async () => {
+  const own = [1, 2, 3, 4, 5, 6].map(n => image(`own${n}.jpg`));
+  const request = msg("req", { attachments: own });
+  const images = await selectRunImages({ request, recent: [msg("old", { timestamp: NOW - SEC, attachments: [image("old.png")] })], source });
+  assert.deepEqual(labels(images), own.map(item => item.name), "all six of the request's own attachments pass, and nothing else fits");
+  const links = Array.from({ length: 10 }, (_, n) => ({ url: `web-chat://${n}`, label: `web${n}.png` }));
+  const web = await selectRunImages({ request: { ...msg("web"), modelImages: links }, recent: [], source });
+  assert.deepEqual(web, links, "all ten web chat links pass");
 });
 
 test("preview_never_included", async () => {
