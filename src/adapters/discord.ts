@@ -57,7 +57,7 @@ import {
 import { BOT_REPLY_LIMIT_KEY, botReplyLimit } from "../bot-reply-limit.js";
 import { MUTED_USERS_KEY, mutedUsers } from "../muted-users.js";
 import { GLOBAL_SETTINGS_SCOPE } from "../usage-cost.js";
-import { buildFileReportCommand, buildMessageApps, buildStopCommand, CONTINUE_IN_WEB, buildToolCommands, buildUsageCommand, MESSAGE_APPS, messageAppText, usageReply } from "./discord-commands.js";
+import { buildFileReportCommand, buildMessageApps, buildStopCommand, CONTINUE_IN_WEB, buildToolCommands, buildUsageCommand, MESSAGE_APPS, messageAppText, setGuildCommands, usageReply } from "./discord-commands.js";
 import { registerProfileTools } from "../profiles.js";
 import { Application } from "../application.js";
 import { Bot, splitReply, type ChatGateway, type Incoming } from "../bot.js";
@@ -520,7 +520,7 @@ export class DiscordServer implements ChatGateway {
     const guild = await this.client.guilds.fetch(this.guildId);
     // set() replaces the whole list, so commands from older versions are removed.
     // /usage is a separate command, so /slopbot stays as it is.
-    await guild.commands.set([buildToolCommands(this.tools).toJSON(), buildUsageCommand().toJSON(), buildStopCommand().toJSON(), buildInboxCommand().toJSON(), buildFileReportCommand().toJSON(), buildVoiceCommand().toJSON(), ...buildMessageApps().map(app => app.toJSON())]);
+    await setGuildCommands(guild, runOnly => [buildToolCommands(this.tools, { runOnly }).toJSON(), buildUsageCommand().toJSON(), buildStopCommand().toJSON(), buildInboxCommand().toJSON(), buildFileReportCommand().toJSON(), buildVoiceCommand().toJSON(), ...buildMessageApps().map(app => app.toJSON())]);
     // Slopbot registers no global commands. Old global commands stay visible and fail, so remove them.
     const global = await this.client.application?.commands.fetch();
     if (global?.size) await this.client.application!.commands.set([]);
