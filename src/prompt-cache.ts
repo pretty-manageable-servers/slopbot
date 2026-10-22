@@ -78,12 +78,14 @@ export function appendToolEvidence(
     role: toolCallId ? "tool" : "user",
     ...(toolCallId ? { toolCallId } : {}),
     contextOnly: true,
+    ...(output.images?.length ? { images: output.images } : {}),
     content: JSON.stringify({
       tool: name,
       result: {
         ...output,
         ...(output.data !== undefined && JSON.stringify(output.data).length > 2000 ? { data: undefined, data_omitted: 'Full structured data is retained in the action log.' } : {}),
         ...(output.content !== undefined && JSON.stringify(output.content).length > 2000 ? { content: undefined, content_omitted: 'Full native content is retained in the action log.' } : {}),
+        ...(output.images?.length ? { images: undefined, images_shown: output.images.length } : {}),
         ...(output.ui ? { ui: { type: output.ui.type, prepared: true } } : {}),
         text:
           output.text.slice(0, length) +

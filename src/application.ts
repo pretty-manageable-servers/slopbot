@@ -10,6 +10,7 @@ import type { ToolExecutor } from "./tools.js";
 import type { TokenCounter } from "./context.js";
 import { AgentRunner } from "./agent-runner.js";
 import type { UsageMeter } from "./usage-meter.js";
+import type { ImageSource } from "./model-images.js";
 export type { Policy } from "./agent-runner.js";
 import type { Policy } from "./agent-runner.js";
 
@@ -17,7 +18,7 @@ export class Application {
   private readonly taskTails = new Map<string, Promise<void>>();
   private readonly runner: AgentRunner;
   constructor(private readonly store: Store, llm: LLM, policy: Policy, recall?: Recall,
-    services: { profiles?: ProfileStore; tools?: ToolExecutor; counter?: TokenCounter; harness?: HarnessJournal; presentation?: PresentationPolicy; sandboxPrompt?: string; onToolActivity?: ToolActivityObserver; usage?: UsageMeter } = {}) {
+    services: { profiles?: ProfileStore; tools?: ToolExecutor; counter?: TokenCounter; harness?: HarnessJournal; presentation?: PresentationPolicy; sandboxPrompt?: string; onToolActivity?: ToolActivityObserver; usage?: UsageMeter; images?: ImageSource } = {}) {
     this.runner = new AgentRunner(store, llm, policy, recall, services);
   }
   interrupt(server: string, messageId: string): Promise<boolean> { return this.runner.interrupt(server, messageId); }
