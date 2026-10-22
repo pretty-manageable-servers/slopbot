@@ -1,4 +1,6 @@
 import type { Json, Message, PromptItem } from "./domain.js";
+import { isImageAttachment } from "./model-images.js";
+import { authoredSourceText } from "./source-context.js";
 
 /**
  * One message in the prompt transcript. Only these fields reach the model.
@@ -15,6 +17,7 @@ export interface TranscriptLine {
   replyTarget?: true;     // this line is the message being replied to
   edited?: true;          // revisionTimestamp > timestamp
   attachments?: string[]; // file names only
+  images?: string[];      // image names only; the model sees them as image input
   text: string;
 }
 
@@ -30,7 +33,10 @@ function clockTime(timestamp: number | undefined): string {
 function lineOf(message: Message, ref: string, refs: ReadonlyMap<string, string>, slopbot: boolean, targetId?: string): TranscriptLine {
   const handle = message.authorIdentity?.discord_handle;
   const replied = message.replyTo !== undefined ? refs.get(message.replyTo) : undefined;
-  const files = (message.attachments ?? []).map(file => file.name).filter(name => name.length > 0);
+  // Link previews are not part of the message. Images and files are listed by name only, never by URL.
+  const shown = (message.attachments ?? []).filter(file => !file.preview);
+  const images = shown.filter(isImageAttachment).map(file => file.name).filter(name => name.length > 0);
+  const files = shown.filter(file => !isImageAttachment(file)).map(file => file.name).filter(name => name.length > 0);
   const edited = message.revisionTimestamp !== undefined && message.revisionTimestamp > (message.timestamp ?? 0);
   return {
     ref,
@@ -42,8 +48,9 @@ function lineOf(message: Message, ref: string, refs: ReadonlyMap<string, string>
     ...(replied !== undefined ? { replyTo: replied } : {}),
     ...(targetId !== undefined && message.id === targetId ? { replyTarget: true as const } : {}),
     ...(edited ? { edited: true as const } : {}),
+    ...(images.length ? { images } : {}),
     ...(files.length ? { attachments: files } : {}),
-    text: message.text,
+    text: authoredSourceText(message),
   };
 }
 
@@ -56,23 +63,25 @@ export function toLine(message: Message, ref: string, refs: ReadonlyMap<string, 
  * The current request as the model reads it: same time, name, handle, edited and file fields as a transcript line, no ref.
  * `text` replaces message.text when a reply subject was added. Example: "[14:05] Alice (@alice) [current request]: text"
  */
-export function requestLine(message: Message, text: string = message.text): string {
+export function requestLine(message: Message, text: string = authoredSourceText(message)): string {
   const line = lineOf(message, "", new Map(), false);
   let head = `[${line.time}] ${line.name}`;
   if (line.handle) head += ` (@${line.handle})`;
   if (line.bot) head += " [bot]";
   if (line.edited) head += " [edited]";
+  if (line.images?.length) head += ` [images: ${line.images.join(", ")}]`;
   if (line.attachments?.length) head += ` [files: ${line.attachments.join(", ")}]`;
   return `${head} [current request]: ${text}`;
 }
 
-/** The text of one line for the prompt. Example: "[14:02] #m3 Alice (@alice) ↩#m1 [edited] [files: a.png]: text" */
+/** The text of one line for the prompt. Example: "[14:02] #m3 Alice (@alice) ↩#m1 [edited] [images: a.png]: text" */
 export function formatLine(line: TranscriptLine): string {
   let head = `[${line.time}] #${line.ref} ${line.notice ? "Slopbot notice" : line.name}`;
   if (line.handle) head += ` (@${line.handle})`;
   if (line.bot) head += " [bot]";
   if (line.replyTo) head += ` ↩#${line.replyTo}`;
   if (line.edited) head += " [edited]";
+  if (line.images?.length) head += ` [images: ${line.images.join(", ")}]`;
   if (line.attachments?.length) head += ` [files: ${line.attachments.join(", ")}]`;
   if (line.replyTarget) head += " [reply target]";
   return `${head}: ${line.text}`;
