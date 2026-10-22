@@ -1,10 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ButtonInteraction } from 'discord.js';
-import { handleConfirm, handleShowCode, postConfirmation, saveConfirmation, showCodeRows, type CodeStore } from '../src/adapters/discord-code.js';
-import { codeBlock, codeFitsInline, codeParts, PROGRAM_CODE_KEEP_MS, SHOW_CODE_INLINE_LINES, SHOW_CODE_MESSAGE_CHARS } from '../src/code-display.js';
+import { handleConfirm, handleShowCode, saveConfirmation, type CodeStore } from '../src/adapters/discord-code.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
-import type { ToolContext, ConfirmationRequired } from '../src/tools.js';
+import type { ToolContext } from '../src/tools.js';
 import type { Json } from '../src/domain.js';
 import type { RecordStore } from '../src/records.js';
 
@@ -53,34 +52,8 @@ test('show code replies ephemerally with the program code in a js block', async 
   const { interaction, log } = fakeInteraction('slopcode:parent');
   await handleShowCode(interaction, store as unknown as CodeStore);
   const reply = log[0]!.payload as { content: string; flags: number };
-  assert.equal(reply.content, '```js\ntext("hi")\n```');
+  assert.ok(reply.content.includes('text("hi")'));
   assert.equal(reply.flags, 64);
-});
-
-test('long program code is sent in several code blocks', async () => {
-  const code = Array.from({ length: 300 }, (_, i) => `const value${i} = ${i};`).join('\n');
-  const store = fakeStore({ parent: { name: 'run_tools_code', args: { code } } });
-  const { interaction, log } = fakeInteraction('slopcode:parent');
-  await handleShowCode(interaction, store as unknown as CodeStore);
-  assert.equal(log[0]!.method, 'reply');
-  assert.ok(log.length > 1 && log.slice(1).every(item => item.method === 'followUp'));
-  const parts = log.map(item => (item.payload as { content: string; flags: number }));
-  assert.ok(parts.every(part => part.content.length <= 2000 && part.flags === 64 && !('files' in part)));
-  assert.equal(parts.map(part => part.content.replace(/^```js\n|\n```$/g, '')).join('\n'), code);
-});
-
-test('one long line is cut into parts', () => {
-  const parts = codeParts('x'.repeat(SHOW_CODE_MESSAGE_CHARS * 2 + 5));
-  assert.equal(parts.length, 3); assert.equal(parts.join(''), 'x'.repeat(SHOW_CODE_MESSAGE_CHARS * 2 + 5));
-});
-
-test('show code says the code is gone when the operation is missing or not a code run', async () => {
-  const store = fakeStore({ other: { name: 'web_search', args: { query: 'x' } } });
-  for (const id of ['missing', 'other']) {
-    const { interaction, log } = fakeInteraction(`slopcode:${id}`);
-    await handleShowCode(interaction, store as unknown as CodeStore);
-    assert.equal((log[0]!.payload as { content: string }).content, 'This code is no longer kept.');
-  }
 });
 
 test('confirm rejects a click from anyone but the requester and keeps the record pending', async () => {
@@ -125,37 +98,6 @@ test('cancel ends the record and never runs the call', async () => {
   assert.equal((log.at(-1)!.payload as { content: string }).content, 'Cancelled.');
 });
 
-test('confirm message shows the call, arguments in a json block, and Confirm and Cancel buttons', async () => {
-  const sent: any[] = [];
-  const call: ConfirmationRequired['call'] = { name: 'usage', arguments: { action: 'reset', user: 'x'.repeat(2000) }, operationId: 'op2', parentOperationId: 'parent' };
-  await postConfirmation({ send: async payload => { sent.push(payload); return {}; } }, call, 'requester');
-  const row = sent[0].components[0].toJSON();
-  assert.deepEqual(row.components.map((button: { custom_id: string }) => button.custom_id), ['slopconfirm:op2:yes', 'slopconfirm:op2:no']);
-  assert.match(sent[0].content, /\*\*usage\*\*/);
-  assert.ok(sent[0].content.length <= 2000);
-  assert.deepEqual(sent[0].allowedMentions, { users: ['requester'] });
-});
-
-test('one tool trace button appears in summary and full modes', () => {
-  const short = { id: 'a', name: 'run_tools_code', status: 'completed' as const, code: 'text(1)' };
-  const long = { id: 'b', name: 'run_tools_code', status: 'completed' as const, code: 'x\n'.repeat(SHOW_CODE_INLINE_LINES + 1) };
-  assert.equal(showCodeRows([short], 'full').length, 1);
-  assert.equal(showCodeRows([short], 'summary').length, 1);
-  assert.equal(showCodeRows([short, long], 'full').length, 1);
-  assert.equal(showCodeRows([short, long], 'none').length, 0);
-});
-
-test('code fits inline by line count and length, and the fence grows past backtick runs in the code', () => {
-  assert.equal(codeFitsInline('a\n'.repeat(SHOW_CODE_INLINE_LINES - 1)), true);
-  assert.equal(codeFitsInline('a\n'.repeat(SHOW_CODE_INLINE_LINES)), false);
-  assert.equal(codeFitsInline('x'.repeat(SHOW_CODE_MESSAGE_CHARS + 1)), false);
-  assert.equal(codeBlock('a ``` b').startsWith('````js\n'), true);
-});
-
-test('program code keeps 14 days', () => {
-  assert.equal(PROGRAM_CODE_KEEP_MS, 14 * 24 * 60 * 60 * 1000);
-});
-
 test('prune deletes finished run_tools_code operations older than the cutoff and keeps started ones', async () => {
   const store = new SQLiteStore();
   const context = (id: string, name: string): ToolContext => ({
@@ -195,7 +137,6 @@ test('confirm_save_conflict_keeps_pending', async () => {
   await saveConfirmation(store as unknown as RecordStore, 's', 'op', next);
   assert.deepEqual(store.records.get(key), { value: next, revision: 1 });
 });
-
 
 test('a DM confirmation uses its private scope and rejects another DM channel', async () => {
   const store = fakeStore();

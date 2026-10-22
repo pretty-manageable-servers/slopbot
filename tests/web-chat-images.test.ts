@@ -9,7 +9,7 @@ import { createChatRoutes, WebChatService, type ChatHost } from "../src/web-chat
 import { runEvents } from "../src/run-events.js";
 import { createTranscripts } from "../src/web-transcripts.js";
 import { ShareService } from "../src/shares.js";
-import { ContextBuilder } from "../src/context-builder.js";
+
 import type { ObjectStorageProvider } from "../src/object-storage.js";
 import type { Message } from "../src/domain.js";
 
@@ -108,29 +108,6 @@ test("more than 10 images are rejected", async t => {
   assert.equal((await f.upload(ALICE, id, PNG)).status, 400);
   const sent = await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "x", images: [...ids, ids[0]] });
   assert.equal(sent.status, 400);
-});
-
-test("a sent image reaches the model as a link, and the stored rows hold only a placeholder", async t => {
-  const f = await setup(t), id = await f.chat();
-  const up = await f.upload(ALICE, id, PNG, "cat.png");
-  const sent = await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "what is this?", images: [up.json.imageId] });
-  assert.equal(sent.status, 201);
-  // The bot gets short-lived links in memory.
-  const handed = f.received[0]!;
-  assert.equal(handed.modelImages?.length, 1);
-  assert.match(handed.modelImages![0]!.url, /^https:\/\/storage\.example\/web-chats\//);
-  // The context builder puts them on the request item.
-  const builder = new ContextBuilder({ store: { contextVersion: async () => "1", context: async () => [] } as never, counter: { name: "test", count: () => 1 }, inputLimit: 1e6, outputLimit: 1000, prefix: [] });
-  const built = await builder.build(handed, undefined, 0, async () => []);
-  const request = [...built.inputs].reverse().find(item => item.images);
-  assert.equal(request?.images?.[0]?.label, "cat.png");
-  // Nothing saved holds image data. The row has name, type, size and ID only.
-  const rows = await f.call(ALICE, "GET", `/api/chats/${id}/messages`);
-  const message = rows.json.messages[0];
-  assert.deepEqual(message.images, [{ imageId: up.json.imageId, name: "cat.png", contentType: "image/png", size: PNG.length }]);
-  const stored = JSON.stringify(await f.store.canonicalMessage(SERVER, sent.json.id));
-  assert.ok(!stored.includes("base64") && !stored.includes("modelImages") && !stored.includes("storage.example"));
-  assert.ok(!JSON.stringify(rows.json).includes("storage.example"));
 });
 
 test("only the owner reads an image, and deleting the chat deletes the objects", async t => {

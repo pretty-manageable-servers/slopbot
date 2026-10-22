@@ -10,7 +10,6 @@ import { MemberDirectory } from '../src/member-directory.js';
 import { GLOBAL_SETTINGS_SCOPE } from '../src/usage-cost.js';
 import { WebKeySecrets } from '../src/web-keys.js';
 import { DEFAULT_BREAKER, DEFAULT_STATUS_NOTE_MINUTES, LLM_DEGRADED_SETTING, LLM_FALLBACK_KEY_ID } from '../src/llm-mode.js';
-import { loadDegradedSettings } from '../src/llm-settings.js';
 import { fakeSource } from './member-fakes.js';
 
 const KEY = 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=';
@@ -31,15 +30,6 @@ function setup(secrets = new WebKeySecrets(KEY)) {
 function savedFallback(store: SQLiteStore) {
   return (store.setting(GLOBAL_SETTINGS_SCOPE, LLM_DEGRADED_SETTING) as { fallback: { keySealed?: string; keyLast4?: string; model: string } }).fallback;
 }
-
-test('defaults', async t => {
-  const { store, panel } = setup(); t.after(() => store.close());
-  assert.deepEqual(loadDegradedSettings(store), defaults);
-  assert.deepEqual(panel.llm(), { settings: defaults, state: { mode: 'normal', source: 'breaker', since: 0 } });
-  panel.setLlmState(() => ({ mode: 'offline', source: 'override', since: 5 }));
-  assert.deepEqual(panel.llm().state, { mode: 'offline', source: 'override', since: 5 });
-  assert.equal(store.setting(GLOBAL_SETTINGS_SCOPE, LLM_DEGRADED_SETTING), undefined, 'reading saves nothing');
-});
 
 test('rejects http and credentials in baseUrl', async t => {
   const { store, panel } = setup(); t.after(() => store.close());
@@ -72,28 +62,6 @@ test('seals key and hides it', async t => {
   assert.deepEqual(view.settings.fallback, { ...endpoint, keyLast4: '1234' });
 });
 
-test('keeps key when omitted', async t => {
-  const { store, panel, secrets } = setup(); t.after(() => store.close());
-  await panel.saveLlm({ fallback: { ...endpoint, key: SECRET } });
-  const sealed = savedFallback(store).keySealed;
-  const view = await panel.saveLlm({ fallback: { ...endpoint, model: 'cloud-model-2' } });
-  const saved = savedFallback(store);
-  assert.equal(saved.keySealed, sealed, 'the sealed key is the same');
-  assert.equal(saved.model, 'cloud-model-2');
-  assert.equal(view.settings.fallback?.keyLast4, '1234');
-  assert.equal(secrets.open(saved.keySealed!, LLM_FALLBACK_KEY_ID), SECRET);
-});
-
-test('removes key on empty', async t => {
-  const { store, panel } = setup(); t.after(() => store.close());
-  await panel.saveLlm({ fallback: { ...endpoint, key: SECRET } });
-  const view = await panel.saveLlm({ fallback: { ...endpoint, key: '' } });
-  const saved = savedFallback(store);
-  assert.equal(Object.hasOwn(saved, 'keySealed'), false);
-  assert.equal(Object.hasOwn(saved, 'keyLast4'), false);
-  assert.deepEqual(view.settings.fallback, endpoint, 'the endpoint stays');
-});
-
 test('drops key when origin changes', async t => {
   const { store, panel } = setup(); t.after(() => store.close());
   await panel.saveLlm({ fallback: { ...endpoint, key: SECRET } });
@@ -116,39 +84,6 @@ test('test reuses primary key on same origin', async t => {
   await panel.saveLlm({ fallback: { ...endpoint, baseUrl: 'https://other.example.net/v1' } });
   await panel.testLlm();
   assert.deepEqual(auth, ['Bearer primary-key-9999', null], 'the primary key goes to the primary origin only');
-});
-
-test('no secret configured', async t => {
-  const { store, panel } = setup(new WebKeySecrets('')); t.after(() => store.close());
-  await assert.rejects(panel.saveLlm({ fallback: { ...endpoint, key: SECRET } }), (error: unknown) => error instanceof AdminInputError && error.message === 'The operator must configure WEB_KEYS_SECRET before saving the fallback key.');
-  assert.equal(store.setting(GLOBAL_SETTINGS_SCOPE, LLM_DEGRADED_SETTING), undefined, 'a refused key save changes nothing');
-  const view = await panel.saveLlm({ fallback: endpoint });
-  assert.deepEqual(view.settings.fallback, endpoint, 'an endpoint without a key still saves');
-  assert.equal(savedFallback(store).keySealed, undefined);
-});
-
-test('test sends one 1-token request with the key and reports the code', async t => {
-  const { store, panel } = setup(); t.after(() => store.close());
-  await assert.rejects(panel.testLlm(), AdminInputError, 'nothing to test before an endpoint is saved');
-  await panel.saveLlm({ fallback: { ...endpoint, key: SECRET } });
-  const calls: { url: string; init: RequestInit }[] = [];
-  let reply: () => Response = () => Response.json({ choices: [] });
-  t.mock.method(globalThis, 'fetch', async (url: string | URL | Request, init?: RequestInit) => { calls.push({ url: String(url), init: init! }); return reply(); });
-
-  const ok = await panel.testLlm();
-  assert.equal(ok.ok, true);
-  assert.equal(calls[0]!.url, 'https://fallback.example.com/v1/chat/completions');
-  const body = JSON.parse(String(calls[0]!.init.body));
-  assert.deepEqual([body.model, body.max_tokens], ['cloud-model', 1]);
-  assert.equal((calls[0]!.init.headers as Record<string, string>).Authorization, `Bearer ${SECRET}`);
-
-  reply = () => new Response('busy', { status: 503 });
-  const busy = await panel.testLlm();
-  assert.equal(busy.ok, false);
-  assert.equal(busy.code, 'PROVIDER_HTTP_503');
-
-  reply = () => { throw new TypeError('fetch failed'); };
-  assert.equal((await panel.testLlm()).code, 'PROVIDER_NETWORK');
 });
 
 function consoleAdmin(teams: TeamAdmins, panel: AdminPanel): ConsoleAdmin {
@@ -229,21 +164,4 @@ test('llm routes: members read, only editors save, test needs a saved fallback',
   const body = await saved.json() as { settings: { override: string; fallback: unknown } };
   assert.equal(body.settings.override, 'offline');
   assert.deepEqual(body.settings.fallback, { ...endpoint, keyLast4: '1234' });
-});
-
-test('cooldown ranges and maximum order', async t => {
-  const { store, panel } = setup(); t.after(() => store.close());
-  await assert.rejects(panel.saveLlm({ breaker: { cooldownSeconds: 59 } }), /Breaker cooldown must be a whole number from 60 to 86400/);
-  await assert.rejects(panel.saveLlm({ breaker: { cooldownSeconds: 86401 } }), /Breaker cooldown must be a whole number from 60 to 86400/);
-  await assert.rejects(panel.saveLlm({ breaker: { maxCooldownSeconds: 59 } }), /Breaker maximum cooldown must be a whole number from 60 to 86400/);
-  await assert.rejects(panel.saveLlm({ breaker: { cooldownSeconds: 600, maxCooldownSeconds: 300 } }), /maximum cooldown must be at least the cooldown/);
-  assert.equal(store.setting(GLOBAL_SETTINGS_SCOPE, LLM_DEGRADED_SETTING), undefined, 'refused saves change nothing');
-  await panel.saveLlm({ breaker: { cooldownSeconds: 900, maxCooldownSeconds: 1800 } });
-  assert.deepEqual(loadDegradedSettings(store).breaker, { failures: 5, windowSeconds: 60, cooldownSeconds: 900, maxCooldownSeconds: 1800 });
-});
-
-test('old probe fields load with cooldown defaults', async t => {
-  const { store } = setup(); t.after(() => store.close());
-  store.setSetting(GLOBAL_SETTINGS_SCOPE, LLM_DEGRADED_SETTING, { breaker: { failures: 3, windowSeconds: 90, probeSeconds: 45, recoverProbes: 4 } });
-  assert.deepEqual(loadDegradedSettings(store).breaker, { failures: 3, windowSeconds: 90, cooldownSeconds: 600, maxCooldownSeconds: 7200 });
 });

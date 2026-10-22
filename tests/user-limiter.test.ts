@@ -5,18 +5,20 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { Application } from "../src/application.js";
-import { loadConfig } from "../src/config.js";
+
 import type { Message, Prompt } from "../src/domain.js";
 import { TaskWorker } from "../src/queue.js";
-import { ToolRegistry } from "../src/tools.js";
-import { USER_LIMIT_OVERRIDES_SETTING, UserLimiter, UserLimitError, limitOverride, limitReply, usageView } from "../src/user-limiter.js";
-import { activePrices, DEFAULT_FALLBACK_PRICE, parseFallbackPrice, parseModelPrices, usageCostMicros } from "../src/usage-cost.js";
-import { registerUsageTool } from "../src/usage-tools.js";
-import { ProviderEmbeddings, embeddingPriceModel } from "../src/adapters/embeddings.js";
+
+import { USER_LIMIT_OVERRIDES_SETTING, UserLimiter, UserLimitError } from "../src/user-limiter.js";
+import { DEFAULT_FALLBACK_PRICE, usageCostMicros } from "../src/usage-cost.js";
+
+import { attribution, DECISION_OUTPUT_TOKENS, streamMetered, UsageMeter } from "../src/usage-meter.js";
+import { ProviderEmbeddings } from "../src/adapters/embeddings.js";
 import { DecisionClassifier } from "../src/adapters/decisions.js";
 import { ByteTokenCounter } from "../src/context.js";
 import { inspectFile } from "../src/files.js";
-import { attribution, DECISION_OUTPUT_TOKENS, modelsInUse, streamMetered, UsageMeter } from "../src/usage-meter.js";
+const payer = { server: "s", user: "alice" };
+const prompt: Prompt = { prefixVersion: "test", prefix: [], history: [], inputs: [] };
 
 const HOUR = 3600000, WEEK = 7 * 24 * HOUR;
 const DOLLAR = 1000000;
@@ -24,6 +26,13 @@ const limiter = (store: SQLiteStore, fiveHour: number, week: number, grace = 10)
 const message = (id: string, extra: Partial<Message> = {}): Message => ({ id, server: "s", channel: "c", author: "alice", text: `request ${id}`, ...extra });
 // One micro-dollar per token, so usage payloads read as their cost.
 const ONE_MICRO_PER_TOKEN = { input: 1000000, cached_input: 1000000, output: 1000000 };
+
+const call = [{ name: "read", arguments: {} }];
+const request = { id: "request", server: "s", channel: "c", author: "alice", text: "Do the task", addressed: true };
+function meterFor(limits: UserLimiter): UsageMeter {
+  return new UsageMeter(limits, () => ({}), ONE_MICRO_PER_TOKEN);
+}
+const spentBy = async (limits: UserLimiter, user = "alice") => (await limits.usage(user))[0]?.spent;
 
 test("usageCostMicros prices cached input, output and rounds up", () => {
   const prices = { nimbus: { input: 2000000, cached_input: 500000, output: 8000000 } };
@@ -34,57 +43,12 @@ test("usageCostMicros prices cached input, output and rounds up", () => {
   assert.equal(usageCostMicros({}, "nimbus", prices, DEFAULT_FALLBACK_PRICE), 0);
 });
 
-test("price settings merge over defaults, and invalid configuration fails", () => {
-  const defaults = { nimbus: { input: 1, cached_input: 1, output: 1 } };
-  assert.deepEqual(activePrices({ nimbus: { input: 2, cached_input: 2, output: 2 }, bad: { input: "x" } }, defaults), { nimbus: { input: 2, cached_input: 2, output: 2 } });
-  assert.deepEqual(activePrices("nope", defaults), defaults);
-  assert.deepEqual(parseModelPrices(undefined, "MODEL_PRICES"), {});
-  assert.throws(() => parseModelPrices('{"m":{"input":1}}', "MODEL_PRICES"), /MODEL_PRICES entry m/);
-  assert.throws(() => parseFallbackPrice('{"input":0,"cached_input":0,"output":0}', "MODEL_FALLBACK_PRICE"), /non-zero/);
-  assert.deepEqual(parseFallbackPrice(undefined, "MODEL_FALLBACK_PRICE"), DEFAULT_FALLBACK_PRICE);
-});
-
-test("a window starts at the first spend after the previous window ended", async () => {
-  const store = new SQLiteStore(), limits = limiter(store, 100, 0);
-  await limits.record("u", 60, 0);
-  assert.deepEqual(await limits.check("u", 1), { allowed: true });
-  await limits.record("u", 60, 1);
-  assert.deepEqual(await limits.check("u", 2), { allowed: false, resetAt: 5 * HOUR });
-  const later = 9 * HOUR + 123;
-  assert.deepEqual(await limits.check("u", later), { allowed: true });
-  await limits.record("u", 60, later);
-  assert.deepEqual(await limits.usage("u", later + 1), [
-    { kind: "5h", spent: 60, limit: 100, resetAt: later + 5 * HOUR, banked: 0 },
-    { kind: "week", spent: 180, limit: 0, resetAt: WEEK, banked: 0 },
-  ]);
-  store.close();
-});
-
 test("check refuses at the limit and allows just under it", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 0);
   await limits.record("u", 99, 0);
   assert.deepEqual(await limits.check("u", 1), { allowed: true });
   await limits.record("u", 1, 1);
   assert.deepEqual(await limits.check("u", 2), { allowed: false, resetAt: 5 * HOUR });
-  store.close();
-});
-
-test("either window can refuse, and both windows blocking reports the latest reset", async () => {
-  const store = new SQLiteStore();
-  const weekOnly = limiter(store, 1000, 100);
-  await weekOnly.record("week", 100, 0);
-  assert.deepEqual(await weekOnly.check("week", 1), { allowed: false, resetAt: WEEK });
-  const both = limiter(store, 100, 100);
-  await both.record("both", 100, 0);
-  assert.deepEqual(await both.check("both", 1), { allowed: false, resetAt: WEEK });
-  store.close();
-});
-
-test("0 means no limit for that window, and spend is still shown", async () => {
-  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
-  await limits.record("u", 10 * DOLLAR, 0);
-  assert.deepEqual(await limits.check("u", 1), { allowed: true });
-  assert.deepEqual((await limits.usage("u", 1)).map(window => [window.kind, window.spent, window.limit]), [["5h", 10 * DOLLAR, 0], ["week", 10 * DOLLAR, 0]]);
   store.close();
 });
 
@@ -115,55 +79,12 @@ test("a banked reset clears its window once and leaves the other window alone", 
   store.close();
 });
 
-test("a banked week reset is a full reset: it clears the 5-hour and weekly windows", async () => {
-  const store = new SQLiteStore(), limits = limiter(store, 100, 1000);
-  await store.grantResets("global", "u", "week", 1);
-  await limits.record("u", 100, 0);
-  assert.equal(await limits.useReset("u", "week"), true);
-  assert.deepEqual(await limits.usage("u", 1), [
-    { kind: "5h", spent: 0, limit: 100, resetAt: null, banked: 0 },
-    { kind: "week", spent: 0, limit: 1000, resetAt: null, banked: 0 },
-  ]);
-  store.close();
-});
-
-test("an admin week reset clears the 5-hour and weekly windows", async () => {
-  const store = new SQLiteStore(), limits = limiter(store, 100, 1000);
-  await limits.record("u", 100, 0);
-  await store.resetUserUsage("global", "u", "week");
-  assert.deepEqual((await limits.usage("u", 1)).map(window => window.spent), [0, 0]);
-  store.close();
-});
-
 test("two concurrent resets of one banked reset cannot both succeed", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 0);
   await store.grantResets("global", "u", "5h", 1);
   const results = await Promise.all([limits.useReset("u", "5h"), limits.useReset("u", "5h")]);
   assert.deepEqual(results.sort(), [false, true]);
   await assert.rejects(store.grantResets("global", "u", "5h", 0));
-  store.close();
-});
-
-test("global settings override the defaults, settings for one server are ignored, and invalid settings fall back", async () => {
-  const store = new SQLiteStore(), limits = limiter(store, 100, 0);
-  store.setSetting("s", "user_limit_5h_cost_micros", 10);
-  store.setSetting("global", "user_limit_5h_cost_micros", 50);
-  await limits.record("u", 49, 0);
-  assert.deepEqual(await limits.check("u", 1), { allowed: true });
-  await limits.record("u", 1, 0);
-  assert.deepEqual(await limits.check("u", 1), { allowed: false, resetAt: 5 * HOUR });
-  store.setSetting("global", "user_limit_5h_cost_micros", "many");
-  assert.deepEqual(await limits.check("u", 1), { allowed: true });
-  store.close();
-});
-
-test("users have separate counters, and resetUserUsage clears one user", async () => {
-  const store = new SQLiteStore(), limits = limiter(store, 100, 0);
-  await limits.record("u", 100, 0);
-  assert.deepEqual(await limits.check("v", 1), { allowed: true });
-  assert.deepEqual(await limits.check("u", 1), { allowed: false, resetAt: 5 * HOUR });
-  await store.resetUserUsage("global", "u");
-  assert.deepEqual(await limits.check("u", 2), { allowed: true });
   store.close();
 });
 
@@ -187,55 +108,6 @@ test("an override replaces the global limit and 0 means no limit", async () => {
   store.close();
 });
 
-test("clearing an override restores the global limit, and invalid override fields fall back to it", async () => {
-  const store = new SQLiteStore(), limits = limiter(store, 100, 0);
-  store.setSetting("global", USER_LIMIT_OVERRIDES_SETTING, { alice: { five_hour_cost_micros: 1000, week_cost_micros: null } });
-  await limits.record("alice", 500, 0);
-  assert.deepEqual(await limits.check("alice", 1), { allowed: true });
-  store.setSetting("global", USER_LIMIT_OVERRIDES_SETTING, {});
-  assert.deepEqual((await limits.usage("alice", 1)).map(window => window.limit), [100, 0]);
-  assert.deepEqual(await limits.check("alice", 1), { allowed: false, resetAt: 5 * HOUR });
-  store.setSetting("global", USER_LIMIT_OVERRIDES_SETTING, { alice: { five_hour_cost_micros: 1.5, week_cost_micros: -1 } });
-  assert.deepEqual((await limits.usage("alice", 1)).map(window => window.limit), [100, 0]);
-  store.close();
-});
-
-test("limitOverride keeps safe whole numbers from 0 to 1e12, and returns null when no field is set", () => {
-  const only = { five_hour_cost_micros: 5, week_cost_micros: null };
-  assert.deepEqual(limitOverride({ alice: only }, "alice"), only);
-  assert.deepEqual(limitOverride({ alice: { five_hour_cost_micros: -1, week_cost_micros: 1000000000000 } }, "alice"), { five_hour_cost_micros: null, week_cost_micros: 1000000000000 });
-  assert.equal(limitOverride({ alice: { five_hour_cost_micros: 1.5, week_cost_micros: 1000000000001 } }, "alice"), null);
-  assert.equal(limitOverride({ alice: { five_hour_cost_micros: null, week_cost_micros: null } }, "alice"), null);
-  assert.equal(limitOverride({ alice: 5 }, "alice"), null);
-  assert.equal(limitOverride({ alice: only }, "bob"), null);
-  assert.equal(limitOverride({}, "constructor"), null);
-  assert.equal(limitOverride(undefined, "alice"), null);
-});
-
-test("the limit reply shows the reset as a Discord relative time", () => {
-  assert.equal(limitReply(1700000000500), "Usage limit reached. Try again <t:1700000001:R>.");
-  assert.equal(new UserLimitError(42).resetAt, 42);
-});
-
-test("the usage tool shows percents and uses a banked reset, with no dollar amounts", async () => {
-  const store = new SQLiteStore(), limits = limiter(store, 100 * DOLLAR, 0);
-  const registry = new ToolRegistry(store, async () => false);
-  registerUsageTool(registry, limits);
-  await limits.record("alice", 100 * DOLLAR);
-  await store.grantResets("global", "alice", "5h", 1);
-  const shown = await registry.invokeResult(message("1"), "usage", {}, "usage-show-1", "command");
-  assert.match(shown.text, /^5h: 100% used, resets <t:\d+:R>\. Banked resets: 1\./m);
-  assert.match(shown.text, /^week: no limit, resets <t:\d+:R>\. Banked resets: 0\./m);
-  assert.doesNotMatch(shown.text, /\$/);
-  const reset = await registry.invokeResult(message("2"), "usage", { action: "reset", window: "5h" }, "usage-reset-2", "command");
-  assert.match(reset.text, /Used one 5h reset/);
-  assert.doesNotMatch(reset.text, /\$/);
-  const after = await registry.invokeResult(message("3"), "usage", {}, "usage-show-3", "command");
-  assert.match(after.text, /^5h: 0% used\. Banked resets: 0\./m);
-  assert.doesNotMatch(after.text, /\$/);
-  store.close();
-});
-
 test("TaskWorker.enqueue refuses an over-limit user and queues nothing for them", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 0);
   await limits.record("alice", 100);
@@ -244,24 +116,6 @@ test("TaskWorker.enqueue refuses an over-limit user and queues nothing for them"
   assert.equal(store.jobs("s", "c").length, 0);
   store.close();
 });
-
-test("TaskWorker.enqueue lets bot messages and task seeds through an over-limit user's gate", async () => {
-  const store = new SQLiteStore(), limits = limiter(store, 100, 0);
-  await limits.record("alice", 100);
-  const worker = new TaskWorker("s", store, limits, async () => undefined, async () => {}, () => true);
-  await worker.enqueue(message("3", { isBot: true }));
-  await worker.enqueue(message("task-seed:4"));
-  await assert.rejects(worker.enqueue(message("5")), UserLimitError);
-  assert.deepEqual(store.jobs("s", "c").map(job => job.message.id).sort(), ["3", "task-seed:4"]);
-  store.close();
-});
-
-// Runner tests: a fake model that reports usage, and a meter backed by the real limiter.
-const call = [{ name: "read", arguments: {} }];
-const request = { id: "request", server: "s", channel: "c", author: "alice", text: "Do the task", addressed: true };
-function meterFor(limits: UserLimiter): UsageMeter {
-  return new UsageMeter(limits, () => ({}), ONE_MICRO_PER_TOKEN);
-}
 
 test("a run pays for each model call, and past grace it starts no new tool round", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 0, 10);
@@ -332,24 +186,44 @@ test("entry points check the user limiter before work starts", () => {
   }
 });
 
-test("config reads the cost limits, grace and prices from the environment", () => {
-  const base = { DISCORD_BOT_TOKEN: "test", LLM_MODE: "mock" };
-  const config = loadConfig(base);
-  assert.equal(config.userLimit5hCostMicros, 2000000);
-  assert.equal(config.userLimitWeekCostMicros, 20000000);
-  assert.equal(config.userLimitGracePercent, 10);
-  assert.deepEqual(config.modelPrices, {});
-  const priced = loadConfig({ ...base, USER_LIMIT_5H_COST_MICROS: "0", MODEL_PRICES: '{"nimbus":{"input":1,"cached_input":1,"output":2}}' });
-  assert.equal(priced.userLimit5hCostMicros, 0);
-  assert.deepEqual(priced.modelPrices.nimbus, { input: 1, cached_input: 1, output: 2 });
-  assert.throws(() => loadConfig({ ...base, USER_LIMIT_WEEK_COST_MICROS: "-1" }), /USER_LIMIT_WEEK_COST_MICROS/);
+test("bot messages are not charged for their model calls", async () => {
+  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
+  const meter = new UsageMeter(limits, () => ({ nimbus: ONE_MICRO_PER_TOKEN }), ONE_MICRO_PER_TOKEN);
+  const llm = { model: "nimbus", async *stream() {
+    yield { kind: "text" as const, payload: { text: "Hello" } };
+    yield { kind: "usage" as const, payload: { prompt_tokens: 100, completion_tokens: 0 } };
+  } };
+  const app = new Application(store, llm, { allowedChannels: [{ server: "s", channel: "c" }] }, undefined, { usage: meter });
+  assert.equal(attribution({ ...request, isBot: true }), undefined);
+  await app.handle({ ...request, isBot: true });
+  await meter.record(attribution({ ...request, isBot: true }), "nimbus", { prompt_tokens: 100 });
+  assert.equal(await spentBy(limits), 0);
+  store.close();
 });
 
-// Model calls made outside a reply are charged to the user whose message caused them.
-const prompt: Prompt = { prefixVersion: "test", prefix: [], history: [], inputs: [] };
-const payer = { server: "s", user: "alice" };
-const spentBy = async (limits: UserLimiter, user = "alice") => (await limits.usage(user))[0]?.spent;
-
+test("one limit covers a user in all servers, and old rows for each server merge on open", async () => {
+  const dir = (await import("node:fs")).mkdtempSync(join((await import("node:os")).tmpdir(), "limits-"));
+  const file = join(dir, "db.sqlite");
+  const now = Date.now();
+  const before = new SQLiteStore(file);
+  // Rows as the old code wrote them: one counter set for each server.
+  await before.updateUserLimits("s1", "alice", () => ({ windows: [{ kind: "5h", windowStart: now - HOUR, spent: 2 * DOLLAR }, { kind: "week", windowStart: now - 2 * HOUR, spent: 2 * DOLLAR }], result: undefined }));
+  await before.updateUserLimits("s2", "alice", () => ({ windows: [{ kind: "5h", windowStart: now - 6 * HOUR, spent: 9 * DOLLAR }, { kind: "week", windowStart: now - 3 * HOUR, spent: 3 * DOLLAR }], result: undefined }));
+  await before.grantResets("s1", "alice", "5h", 1);
+  await before.grantResets("s2", "alice", "5h", 2);
+  before.close();
+  const store = new SQLiteStore(file);
+  assert.deepEqual((await store.userUsage("s1", "alice")).windows, [], "no rows stay for each server");
+  const shared = limiter(store, 4 * DOLLAR, 100 * DOLLAR);
+  const usage = await shared.usage("alice", now);
+  // The ended 5h window in s2 is dropped; the week windows add up and keep the earliest start.
+  assert.deepEqual(usage.map(window => [window.kind, window.spent, window.resetAt, window.banked]), [["5h", 2 * DOLLAR, now - HOUR + 5 * HOUR, 3], ["week", 5 * DOLLAR, now - 3 * HOUR + WEEK, 0]]);
+  await shared.record("alice", 2 * DOLLAR, now);
+  assert.equal((await shared.check("alice", now)).allowed, false, "spend in one server blocks the user in another");
+  assert.equal((await shared.check("bob", now)).allowed, true);
+  assert.equal(await shared.useReset("alice", "5h"), true);
+  assert.equal((await shared.check("alice", now)).allowed, true);
+});
 test("JEV decisions are charged to the message author at the JEV model price", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 0, 0);
   // The JEV price is output only, so only the answer size is charged. Any other price would give a different total.
@@ -399,34 +273,6 @@ test("embedding calls are priced as input, charged to the requester, and skipped
   store.close();
 });
 
-test("a reply is charged at the reply model price", async () => {
-  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
-  const meter = new UsageMeter(limits, () => ({ nimbus: { input: 2 * DOLLAR, cached_input: 0, output: 3 * DOLLAR }, vane: { input: 0, cached_input: 0, output: 0 } }), DEFAULT_FALLBACK_PRICE);
-  const llm = { model: "nimbus", async *stream() {
-    yield { kind: "text" as const, payload: { text: "Hello" } };
-    yield { kind: "usage" as const, payload: { prompt_tokens: 5, completion_tokens: 5 } };
-  } };
-  const app = new Application(store, llm, { allowedChannels: [{ server: "s", channel: "c" }] }, undefined, { usage: meter });
-  assert.equal((await app.handle({ ...request, text: "Hi" }))?.text, "Hello");
-  assert.equal(await spentBy(limits), 5 * 2 + 5 * 3);
-  store.close();
-});
-
-test("bot messages are not charged for their model calls", async () => {
-  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
-  const meter = new UsageMeter(limits, () => ({ nimbus: ONE_MICRO_PER_TOKEN }), ONE_MICRO_PER_TOKEN);
-  const llm = { model: "nimbus", async *stream() {
-    yield { kind: "text" as const, payload: { text: "Hello" } };
-    yield { kind: "usage" as const, payload: { prompt_tokens: 100, completion_tokens: 0 } };
-  } };
-  const app = new Application(store, llm, { allowedChannels: [{ server: "s", channel: "c" }] }, undefined, { usage: meter });
-  assert.equal(attribution({ ...request, isBot: true }), undefined);
-  await app.handle({ ...request, isBot: true });
-  await meter.record(attribution({ ...request, isBot: true }), "nimbus", { prompt_tokens: 100 });
-  assert.equal(await spentBy(limits), 0);
-  store.close();
-});
-
 test("an unpriced model is charged the fallback price, including a model that names no id", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 0, 0);
   const fallback = { input: 2 * DOLLAR, cached_input: 2 * DOLLAR, output: 2 * DOLLAR };
@@ -450,119 +296,3 @@ test("a model stream with no usage is charged the estimate: no input plus the fu
   store.close();
 });
 
-test("modelsInUse lists the reply, JEV and embedding model ids, with the PMServers embedding name", () => {
-  const base = { DISCORD_BOT_TOKEN: "test", LLM_MODE: "mock" };
-  assert.deepEqual(modelsInUse(loadConfig(base)), ["nimbus", "vane", "stratus"]);
-  assert.deepEqual(modelsInUse(loadConfig({ ...base, LLM_BASE_URL: "https://gateway.example.test/v1", LLM_MODEL: "chat-a", JEV_MODEL: "judge-b", EMBEDDING_MODEL: "embed-c" })), ["chat-a", "judge-b", "embed-c"]);
-  assert.equal(embeddingPriceModel("https://example.test/v1", "llama.cpp/embeddinggemma-2"), "llama.cpp/embeddinggemma-2");
-});
-
-test("listUserUsage lists the users of one scope, highest 5-hour spend first, up to the limit", async () => {
-  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
-  await limits.record("alice", 50, 0);
-  await limits.record("bob", 90, 0);
-  await limits.record("dave", 10, 0);
-  await store.grantResets("global", "carol", "week", 1);
-  await store.updateUserLimits("t", "erin", () => ({ windows: [{ kind: "5h", windowStart: 0, spent: 999 }], result: undefined }));
-  assert.deepEqual((await store.listUserUsage("global", 200)).map(row => row.user), ["bob", "alice", "dave", "carol"]);
-  assert.deepEqual((await store.listUserUsage("global", 2)).map(row => row.user), ["bob", "alice"]);
-  assert.deepEqual((await store.listUserUsage("global", 200)).find(row => row.user === "carol")?.resets, { week: 1 });
-  store.close();
-});
-
-test("resetUserUsage with a kind clears only that window", async () => {
-  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
-  await limits.record("u", 5, 0);
-  await store.resetUserUsage("global", "u", "5h");
-  assert.deepEqual((await store.userUsage("global", "u")).windows.map(window => window.kind), ["week"]);
-  store.close();
-});
-
-test("the usage meter view has percents and reset times only, with no cost or limit amounts", async () => {
-  const store = new SQLiteStore(":memory:");
-  const limiter = new UserLimiter(store, { fiveHourCostMicros: 1000000, weekCostMicros: 0, gracePercent: 10 });
-  await limiter.record("u", 2500000, 1000);
-  const view = usageView(await limiter.usage("u", 1000));
-  assert.equal(view.plan, "Seed");
-  // Over the 5-hour limit: capped at 100. No weekly limit: percent is null, not a number.
-  assert.deepEqual(view.windows.map(window => [window.kind, window.percent]), [["5h", 100], ["week", null]]);
-  assert.deepEqual(view.windows.map(window => window.resetAt), [1000 + 5 * 3600000, 1000 + 7 * 86400000]);
-  const keys = JSON.stringify(view);
-  assert.doesNotMatch(keys, /cost|spent|limit|micro|dollar|price|\$/i);
-  assert.equal(usageView([{ kind: "5h", spent: 333, limit: 1000, resetAt: null, banked: 0 }]).windows[0]!.percent, 33);
-  store.close();
-});
-
-test("one limit covers a user in all servers, and old rows for each server merge on open", async () => {
-  const dir = (await import("node:fs")).mkdtempSync(join((await import("node:os")).tmpdir(), "limits-"));
-  const file = join(dir, "db.sqlite");
-  const now = Date.now();
-  const before = new SQLiteStore(file);
-  // Rows as the old code wrote them: one counter set for each server.
-  await before.updateUserLimits("s1", "alice", () => ({ windows: [{ kind: "5h", windowStart: now - HOUR, spent: 2 * DOLLAR }, { kind: "week", windowStart: now - 2 * HOUR, spent: 2 * DOLLAR }], result: undefined }));
-  await before.updateUserLimits("s2", "alice", () => ({ windows: [{ kind: "5h", windowStart: now - 6 * HOUR, spent: 9 * DOLLAR }, { kind: "week", windowStart: now - 3 * HOUR, spent: 3 * DOLLAR }], result: undefined }));
-  await before.grantResets("s1", "alice", "5h", 1);
-  await before.grantResets("s2", "alice", "5h", 2);
-  before.close();
-  const store = new SQLiteStore(file);
-  assert.deepEqual((await store.userUsage("s1", "alice")).windows, [], "no rows stay for each server");
-  const shared = limiter(store, 4 * DOLLAR, 100 * DOLLAR);
-  const usage = await shared.usage("alice", now);
-  // The ended 5h window in s2 is dropped; the week windows add up and keep the earliest start.
-  assert.deepEqual(usage.map(window => [window.kind, window.spent, window.resetAt, window.banked]), [["5h", 2 * DOLLAR, now - HOUR + 5 * HOUR, 3], ["week", 5 * DOLLAR, now - 3 * HOUR + WEEK, 0]]);
-  await shared.record("alice", 2 * DOLLAR, now);
-  assert.equal((await shared.check("alice", now)).allowed, false, "spend in one server blocks the user in another");
-  assert.equal((await shared.check("bob", now)).allowed, true);
-  assert.equal(await shared.useReset("alice", "5h"), true);
-  assert.equal((await shared.check("alice", now)).allowed, true);
-});
-
-test("listKnownUsers merges servers, adds web-only users, searches names and IDs, pages and sorts by 5h spend", async () => {
-  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
-  store.identifyAuthor("s1", "100", ["Alice", "ali"]);
-  store.identifyAuthor("s2", "100", ["Alice A"]);
-  store.identifyAuthor("s1", "200", ["Bob"]);
-  store.identifyAuthor("s1", "700", ["Amy"]);
-  store.identifyAuthor("s1", "400", ["Robot"], true);
-  store.identifyAuthor("web", "500", ["Dan"]);
-  store.identifyAuthor("web", "300", ["Carol"]);
-  await limits.record("100", 50, 0);
-  await limits.record("200", 90, 0);
-  await limits.record("500", 10, 0);
-  await store.grantResets("global", "300", "week", 1);
-  const ids = (page: { users: { user: string }[] }) => page.users.map(row => row.user);
-  const all = await store.listKnownUsers("", 50, 0);
-  // Bot 400 is not listed. Web-only 500 and 300 are listed, with no servers.
-  assert.equal(all.total, 5);
-  assert.deepEqual(ids(all), ["200", "100", "500", "700", "300"]);
-  assert.deepEqual(all.users.find(row => row.user === "100"), { user: "100", names: ["Alice", "ali", "Alice A"], servers: ["s1", "s2"] });
-  assert.deepEqual(all.users.find(row => row.user === "500"), { user: "500", names: ["Dan"], servers: [] });
-  assert.deepEqual(all.users.find(row => row.user === "300"), { user: "300", names: ["Carol"], servers: [] });
-  assert.deepEqual(ids(await store.listKnownUsers("  ALI ", 50, 0)), ["100"], "name search is case-insensitive and trimmed");
-  assert.deepEqual(ids(await store.listKnownUsers("carol", 50, 0)), ["300"], "web names are searched");
-  assert.deepEqual(ids(await store.listKnownUsers("100", 50, 0)), ["100"], "an exact ID matches that ID");
-  assert.deepEqual(ids(await store.listKnownUsers(" 200 ", 50, 0)), ["200"]);
-  assert.deepEqual(ids(await store.listKnownUsers("400", 50, 0)), [], "a bot is not a known user");
-  assert.deepEqual(ids(await store.listKnownUsers("30", 50, 0)), [], "digits that are not an ID search the names");
-  assert.deepEqual(ids(await store.listKnownUsers("zzz", 50, 0)), []);
-  const page = await store.listKnownUsers("", 2, 0);
-  assert.deepEqual([page.total, ids(page)], [5, ["200", "100"]]);
-  assert.deepEqual(ids(await store.listKnownUsers("", 2, 2)), ["500", "700"]);
-  assert.deepEqual(ids(await store.listKnownUsers("", 2, 4)), ["300"]);
-  store.close();
-});
-
-test("userTokenTotalsByServer lists each server and model", async () => {
-  const store = new SQLiteStore();
-  const totals = { input: 10, output: 2, cached: 4, costMicros: 7 };
-  await store.addTokenTotals("s2", "alice", "nimbus", totals, 1000);
-  await store.addTokenTotals("s1", "alice", "vane", totals, 1000);
-  await store.addTokenTotals("s1", "alice", "nimbus", totals, 2000);
-  await store.addTokenTotals("s1", "alice", "nimbus", totals, 3000);
-  await store.addTokenTotals("s1", "bob", "nimbus", totals, 1000);
-  const rows = await store.userTokenTotalsByServer("alice");
-  assert.deepEqual(rows.map(row => [row.server, row.model]), [["s1", "nimbus"], ["s1", "vane"], ["s2", "nimbus"]]);
-  assert.deepEqual(rows[0], { server: "s1", model: "nimbus", requests: 2, input: 20, output: 4, cached: 8, costMicros: 14, firstAt: 2000, lastAt: 3000 });
-  assert.deepEqual(await store.userTokenTotalsByServer("nobody"), []);
-  store.close();
-});

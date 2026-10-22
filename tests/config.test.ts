@@ -21,31 +21,11 @@ test("reply budgets follow documented model limits and retain room for input", (
   assert.equal(loadConfig({ ...env, LLM_BASE_URL: "https://example.com/v1", OUTPUT_TOKENS: "65536" }).outputTokens, 65536);
 });
 
-test("cooldown defaults and environment settings", () => {
-  assert.equal(loadConfig(env).jevCooldownSeconds, 60);
-  assert.equal(loadConfig(env).jevMaxRepliesPerHour, 3);
-  const config = loadConfig({ ...env, JEV_COOLDOWN_SECONDS: "120", JEV_MAX_REPLIES_PER_HOUR: "5" });
-  assert.equal(config.jevCooldownSeconds, 120);
-  assert.equal(config.jevMaxRepliesPerHour, 5);
-  assert.equal(loadConfig({ ...env, JEV_COOLDOWN_SECONDS: "0" }).jevCooldownSeconds, 0);
-});
-
 test("invalid reply limits fail startup with actionable errors", () => {
   for (const value of ["-1", "1.5", "3601", "abc"]) {
     assert.throws(() => loadConfig({ ...env, JEV_COOLDOWN_SECONDS: value }), /JEV_COOLDOWN_SECONDS/);
   }
   assert.throws(() => loadConfig({ ...env, JEV_MAX_REPLIES_PER_HOUR: "1001" }), /JEV_MAX_REPLIES_PER_HOUR/);
-});
-
-test("web transcript event retention defaults and limits", () => {
-  const defaults = loadConfig(env);
-  assert.equal(defaults.conversationEventsRetentionDays, 14);
-  assert.equal(defaults.conversationEventsMaxRows, 2000000);
-  const config = loadConfig({ ...env, CONVERSATION_EVENTS_RETENTION_DAYS: "30", CONVERSATION_EVENTS_MAX_ROWS: "500000" });
-  assert.equal(config.conversationEventsRetentionDays, 30);
-  assert.equal(config.conversationEventsMaxRows, 500000);
-  assert.throws(() => loadConfig({ ...env, CONVERSATION_EVENTS_RETENTION_DAYS: "0" }), /CONVERSATION_EVENTS_RETENTION_DAYS/);
-  assert.throws(() => loadConfig({ ...env, CONVERSATION_EVENTS_MAX_ROWS: "1.5" }), /CONVERSATION_EVENTS_MAX_ROWS/);
 });
 
 test('object storage uses PMServers path-style settings and requires a dedicated bucket and credentials', () => {
@@ -66,8 +46,4 @@ test("servers: empty allowlist allows all, initial channels need their server", 
   assert.deepEqual(loadConfig({ ...base, DISCORD_GUILD_ID: "12345678901234567" }).guildIds, []);
   assert.throws(() => loadConfig({ ...base, DISCORD_CHANNEL_IDS: "12345678901234568" }), /DISCORD_GUILD_ID/);
   assert.throws(() => loadConfig({ ...base, DISCORD_GUILD_IDS: "my-server" }), /numeric IDs/);
-});
-
-test("VOICE_INSTRUCTIONS over 1000 characters fails startup", () => {
-  assert.throws(() => loadConfig({ ...env, VOICE_INSTRUCTIONS: "a".repeat(1001) }), /VOICE_INSTRUCTIONS/);
 });

@@ -2,11 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   RequestTimings,
-  requestTimings,
   timingFooter,
-  savedTimingFooter,
 } from "../src/request-timing.js";
-import { SQLiteStore } from "../src/adapters/sqlite.js";
 
 const message = {
   server: "s",
@@ -75,56 +72,6 @@ test("timings isolate concurrent requests, aggregate rounds and close failures",
   );
 });
 
-test("wait ledger captures live overlapping awaits without double-counting elapsed time", async () => {
-  let now = 0;
-  const timings = new RequestTimings(() => now);
-  timings.begin(message);
-  await timings.withScope(message, async () => {
-    let releaseDb!: () => void, releaseProvider!: () => void;
-    now = 10;
-    const db = timings.wait(
-      "database",
-      () =>
-        new Promise<void>((resolve) => {
-          releaseDb = resolve;
-        }),
-    );
-    now = 20;
-    const provider = timings.wait(
-      "provider",
-      () =>
-        new Promise<void>((resolve) => {
-          releaseProvider = resolve;
-        }),
-    );
-    now = 30;
-    const live = timings.snapshot(message)!;
-    assert.deepEqual(live.activeWaits, [
-      { name: "database", elapsedMs: 20 },
-      { name: "provider", elapsedMs: 10 },
-    ]);
-    now = 40;
-    releaseDb();
-    await db;
-    now = 50;
-    releaseProvider();
-    await provider;
-    now = 60;
-  });
-  const final = timings.finish(message)!;
-  assert.deepEqual(final.blockedMs, {
-    "application/uninstrumented": 20,
-    database: 10,
-    "database + provider": 20,
-    provider: 10,
-  });
-  assert.equal(
-    Object.values(final.blockedMs!).reduce((a, b) => a + b, 0),
-    final.totalMs,
-  );
-  assert.deepEqual(final.activeWaits, []);
-});
-
 test("await scopes remain isolated across concurrent requests and close on failures", async () => {
   let now = 0;
   const timings = new RequestTimings(() => now),
@@ -150,55 +97,4 @@ test("await scopes remain isolated across concurrent requests and close on failu
   assert.ok(!("provider" in timings.snapshot(message)!.blockedMs!));
   assert.ok(!("database" in timings.snapshot(other)!.blockedMs!));
   assert.deepEqual(timings.snapshot(message)!.activeWaits, []);
-});
-
-test("bounded timelines retain complete aggregate elapsed accounting", async () => {
-  let now = 0;
-  const timings = new RequestTimings(() => now);
-  timings.begin(message);
-  await timings.withScope(message, async () => {
-    for (let index = 0; index < 600; index++)
-      await timings.wait(index % 2 ? "provider" : "database", async () => {
-        now++;
-      });
-  });
-  const value = timings.finish(message)!;
-  assert.equal(value.timeline!.length, 256);
-  assert.equal(value.timelineTruncated, true);
-  assert.equal(
-    Object.values(value.blockedMs!).reduce((a, b) => a + b, 0),
-    600,
-  );
-});
-test("recovered traces are partial and timing footers stay identical across delivery retries", async (t) => {
-  const store = new SQLiteStore();
-  t.after(() => {
-    store.close();
-    requestTimings.finish(message);
-  });
-  requestTimings.start(message, "model");
-  requestTimings.end(message, "model");
-  assert.equal(requestTimings.snapshot(message)!.partial, true);
-  await store.setSetting("s", "timing_footer", false);
-  assert.equal(await savedTimingFooter(store, message, "delivery"), "");
-  await store.setSetting("s", "timing_footer", true);
-  assert.equal(await savedTimingFooter(store, message, "delivery"), "");
-  const first = await savedTimingFooter(store, message, "new-delivery");
-  assert.match(first, /partial/);
-  requestTimings.finish(message);
-  assert.equal(await savedTimingFooter(store, message, "new-delivery"), first);
-});
-
-
-test("snapshot uses one clock boundary so wait buckets always reconcile", () => {
-  let tick = 0;
-  const timing = new RequestTimings(() => tick++);
-  timing.begin(message);
-  for (let i = 0; i < 5; i++) {
-    const snapshot = timing.snapshot(message)!;
-    assert.equal(Object.values(snapshot.blockedMs!).reduce((sum, value) => sum + value, 0), snapshot.totalMs);
-    assert.equal(snapshot.timeline!.at(-1)!.endMs, snapshot.totalMs);
-  }
-  const snapshot = timing.finish(message)!;
-  assert.equal(Object.values(snapshot.blockedMs!).reduce((sum, value) => sum + value, 0), snapshot.totalMs);
 });

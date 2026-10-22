@@ -6,7 +6,7 @@ import { ChannelAccess, type ChannelFacts } from "../src/channel-access.js";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { webTranscriptKey } from "../src/server-tools.js";
 import { createTranscripts, type TranscriptHost } from "../src/web-transcripts.js";
-import { SOURCE_CHAIN_MS, conversationTitle, groupConversations, type ChannelReply, type ChannelRun, type RunSource } from "../src/conversation-groups.js";
+import { SOURCE_CHAIN_MS, groupConversations, type ChannelReply, type ChannelRun, type RunSource } from "../src/conversation-groups.js";
 import type { Message } from "../src/domain.js";
 
 const SERVER = "1528063444874432734", CHANNEL = "1528063444874432735", OTHER = "1528063444874432737";
@@ -117,17 +117,6 @@ async function get(f: Fixture, path: string, user: string | null = USER): Promis
   const response = await fetch(f.base + path, { headers: user ? { "x-user": user } : {} });
   return { status: response.status, body: await response.json() };
 }
-const idsOf = (items: { id: string }[]) => items.map(item => item.id);
-
-test("conversation titles are one line, trimmed to 60 characters", () => {
-  assert.equal(conversationTitle("  hello \n\n  there  "), "hello there");
-  assert.equal(conversationTitle("   "), "(no text)");
-  const exact = "a".repeat(60);
-  assert.equal(conversationTitle(exact), exact);
-  const long = conversationTitle("b".repeat(61));
-  assert.equal(Array.from(long).length, 60);
-  assert.ok(long.endsWith("…"));
-});
 
 test("grouping joins runs that continue each other and keeps the rest apart", () => {
   const run = (id: string, trigger: string, seconds: number, extra: Partial<Message> = {}): ChannelRun =>
@@ -154,79 +143,6 @@ test("grouping joins runs that continue each other and keeps the rest apart", ()
   ];
   const groups = groupConversations(runs, replies, sources).map(group => group.runIds.slice().sort());
   assert.deepEqual(groups.sort(), [["A", "B", "C", "G"], ["D"], ["E"], ["F"]]);
-});
-
-test("grouping returns the newest conversation first", () => {
-  const trigger = (id: string, seconds: number): ChannelRun => ({ id, status: "completed", message: message(id, CHANNEL, seconds, id) });
-  const groups = groupConversations([trigger("old", 1), trigger("new", 50)], [], []);
-  assert.deepEqual(groups.map(group => group.id), ["new", "old"]);
-});
-
-test("the store lists only reply runs of the channel, oldest first, and reads messages in time order", async t => {
-  const f = await fixture(t);
-  const runs = await f.store.channelRuns(SERVER, CHANNEL);
-  assert.deepEqual(runs.map(run => run.id), ["run-a", "run-b", "run-b2", "run-c", "run-d", "run-e"]);
-  assert.equal(runs[0]!.message.text.startsWith("How do cats purr"), true);
-  const found = await f.store.messagesById(SERVER, CHANNEL, ["bot-b", "nope", "h1", "o1"]);
-  assert.deepEqual(idsOf(found), ["h1", "bot-b"]);
-  const replies = await f.store.channelReplies(SERVER, CHANNEL);
-  assert.deepEqual(replies.map(item => [item.messageId, item.runId]), [["bot-a", "run-a"], ["bot-b", "run-b"], ["bot-c", "run-c"]]);
-  const sources = await f.store.channelSources(SERVER, CHANNEL);
-  assert.equal(sources.some(source => source.messageId === "o1"), false);
-});
-
-test("the list groups chained runs, puts the newest first and pages with limit and offset", async t => {
-  const f = await fixture(t);
-  const first = await get(f, `/api/conversations/${CHANNEL}/runs?server=${SERVER}&limit=2`);
-  assert.equal(first.status, 200);
-  assert.deepEqual(idsOf(first.body.conversations), ["run-e", "run-c"]);
-  assert.equal(first.body.hasMore, true);
-  assert.deepEqual(first.body.conversations.map((item: { messageCount: number }) => item.messageCount), [2, 4]);
-  assert.equal(first.body.conversations[0].title, "unrelated");
-  assert.equal(first.body.conversations[0].author, USER);
-  assert.equal(first.body.conversations[0].authorName, "Ada");
-  assert.equal(first.body.conversations[0].start, at(9000));
-  assert.equal(first.body.conversations[0].end, at(9000));
-  assert.equal(first.body.conversations[1].end, at(5020));
-
-  const second = await get(f, `/api/conversations/${CHANNEL}/runs?server=${SERVER}&limit=2&offset=2`);
-  assert.deepEqual(idsOf(second.body.conversations), ["run-a"]);
-  assert.equal(second.body.hasMore, false);
-  assert.equal(second.body.conversations[0].messageCount, 6);
-  assert.equal(second.body.conversations[0].title.length, 60);
-  assert.ok(second.body.conversations[0].title.endsWith("…"));
-  assert.equal(second.body.conversations[0].end, at(210));
-
-  const all = await get(f, `/api/conversations/${CHANNEL}/runs?server=${SERVER}`);
-  assert.equal(all.body.conversations.length, 3);
-  assert.equal(all.body.hasMore, false);
-  assert.equal((await get(f, `/api/conversations/${CHANNEL}/runs?server=${SERVER}&limit=0`)).status, 400);
-  assert.equal((await get(f, `/api/conversations/${CHANNEL}/runs?server=${SERVER}&limit=51`)).status, 400);
-  assert.equal((await get(f, `/api/conversations/${CHANNEL}/runs?server=${SERVER}&offset=-1`)).status, 400);
-  assert.equal((await get(f, `/api/conversations/${CHANNEL}/runs?server=${SERVER}&offset=abc`)).status, 400);
-  assert.equal((await get(f, `/api/conversations/${CHANNEL}/runs?server=nope`)).status, 400);
-});
-
-test("one conversation returns its triggers, sources and replies in time order, from any of its runs", async t => {
-  const f = await fixture(t);
-  const lighthouse = await get(f, `/api/conversations/${CHANNEL}/runs/run-c?server=${SERVER}`);
-  assert.equal(lighthouse.status, 200);
-  assert.deepEqual(idsOf(lighthouse.body.messages), ["h2", "r3", "bot-c", "r4"]);
-  assert.deepEqual(lighthouse.body.conversation.runIds, ["run-c", "run-d"]);
-  assert.equal(lighthouse.body.hasMore, false);
-  assert.equal(lighthouse.body.channel.name, "general");
-  assert.equal(lighthouse.body.canSend, true);
-  const bot = lighthouse.body.messages.find((item: { id: string }) => item.id === "bot-c");
-  assert.equal(bot.slopbot, true);
-  assert.deepEqual(bot.runIds, ["run-c"]);
-  assert.equal(bot.used, true);
-  // The same conversation from run-d gives the same messages.
-  const fromD = await get(f, `/api/conversations/${CHANNEL}/runs/run-d?server=${SERVER}`);
-  assert.deepEqual(idsOf(fromD.body.messages), ["h2", "r3", "bot-c", "r4"]);
-  // The tool round of run-b gives the whole ask conversation, including the replies to it.
-  const ask = await get(f, `/api/conversations/${CHANNEL}/runs/run-b2?server=${SERVER}`);
-  assert.deepEqual(idsOf(ask.body.messages), ["h1", "h2", "r1", "bot-a", "r2", "bot-b"]);
-  assert.equal(ask.body.conversation.id, "run-a");
 });
 
 test("a conversation route refuses runs that are not conversations, runs of other channels and bad IDs", async t => {

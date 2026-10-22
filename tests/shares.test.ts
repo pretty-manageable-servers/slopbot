@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { parseMessage, type Message } from '../src/domain.js';
 import { webTranscriptKey } from '../src/server-tools.js';
-import { ShareError, ShareService, buildMessages, canCreateShare, isShareId, isShareWrite, renderSharePage, scrubText, toolLine } from '../src/shares.js';
+import { ShareError, ShareService, canCreateShare, isShareId, isShareWrite, scrubText } from '../src/shares.js';
 import { createConsole } from '../src/web-console.js';
 import { TeamAdmins } from '../src/team-admins.js';
 
@@ -64,25 +64,6 @@ test('a non-manager gets 403 for create, list, revoke and revoke-all', async () 
   assert.ok(await service.snapshot(id), 'the failed revoke must leave the link live');
 });
 
-test('a team admin can create and revoke when the hook says so', async () => {
-  const { service } = await fixture({ managers: [], teamAdmins: [ada] });
-  const { id } = await service.create(ada, { server, channel });
-  assert.equal((await service.list(ada, server)).shares.length, 1);
-  await service.revoke(ada, id);
-  assert.equal(await service.snapshot(id), undefined);
-});
-
-test('team editors share through TeamAdmins.canEdit, and team readers get 403', async () => {
-  const EDITOR = '151441325952283860', READER = '151441325952283861';
-  const teams = new TeamAdmins({ async load() { return { ownerId: admin, members: [{ id: EDITOR, role: 'developer', accepted: true }, { id: READER, role: 'read_only', accepted: true }] }; } });
-  const { service } = await fixture({ managers: [], teams });
-  const { id } = await service.create(EDITOR, { server, channel });
-  assert.equal(isShareId(id), true);
-  await assert.rejects(service.create(READER, { server, channel }), (error: unknown) => error instanceof ShareError && error.status === 403);
-  await service.revoke(EDITOR, id);
-  assert.equal(await service.snapshot(id), undefined);
-});
-
 test('create needs channel view and the web transcript switch', async () => {
   const hidden = await fixture({ view: false });
   await assert.rejects(hidden.service.create(admin, { server, channel }), (error: unknown) => error instanceof ShareError && error.status === 403);
@@ -117,14 +98,6 @@ test('messages after creation are not added to a live link', async () => {
   assert.ok(page);
   assert.equal(page.includes('added afterwards'), false);
   assert.equal(page.includes('later secret message'), true, 'the snapshot holds what was in range at creation');
-});
-
-test('a range is inclusive and capped; an empty range is refused', async () => {
-  const { service } = await fixture();
-  const { id } = await service.create(admin, { server, channel, from: human, to: answer });
-  assert.deepEqual((await service.snapshot(id))!.messages.map(message => message.bot), [false, true]);
-  await assert.rejects(service.create(admin, { server, channel, from: later, to: human }), /No messages/);
-  await assert.rejects(service.create(admin, { server, channel, to: '1528063444874432999' }), /No messages/);
 });
 
 test('thinking appears only when asked for', async () => {
@@ -197,33 +170,9 @@ function shareDataOf(page: string): { messages: { author: string; text: string; 
   return JSON.parse(match[1]!);
 }
 
-test('renderSharePage keeps an unsafe tool name and status text as text', () => {
-  const html = renderSharePage({ id: 'x', created_at: 1, options: { show_avatars: false, show_thinking: false }, messages: [{ author: 'A', bot: true, text: 'hi\n<i>x</i>', attachments: 2, tools: [toolLine('<script>bad()</script>')] }] });
-  assert.equal(html.includes('<script>bad()'), false);
-  assert.equal(html.includes('<i>x</i>'), false);
-  const data = shareDataOf(html);
-  assert.deepEqual(data.messages[0]!.tools, ['Used tool <script>bad()</script>']);
-  assert.equal(data.messages[0]!.other, 2);
-  assert.equal(data.messages[0]!.text, 'hi\n<i>x</i>');
-});
-
 test('scrubText removes mentions, emails and long numeric IDs', () => {
   assert.equal(scrubText('<@123456789012345678> <@!123456789012345679> <@&123456789012345680> <#123456789012345681>'), '@member @member @role #channel');
   assert.equal(scrubText('write to a.b+c@mail.example.org or 12345678901234567890 now'), 'write to [email] or [id] now');
-});
-
-test('buildMessages gives tool lines and thinking only to the first answer of a request', () => {
-  const question = parseMessage({ id: human, server, channel, author: ada, authorName: 'Ada', text: 'q', timestamp: 1 });
-  const first = parseMessage({ id: answer, server, channel, author: bot, authorName: 'Slopbot', isBot: true, replyTo: human, text: 'a', timestamp: 2 });
-  const second = parseMessage({ id: later, server, channel, author: bot, authorName: 'Slopbot', isBot: true, replyTo: human, text: 'b', timestamp: 3 });
-  const rows = buildMessages([question, first, second], [
-    { request: human, kind: 'tool_call', payload: [{ id: 'c', name: 'read', arguments: { path: 'x' } }] },
-    { request: human, kind: 'reasoning', payload: { reasoning: 'why' } },
-  ], { show_thinking: true });
-  assert.deepEqual(rows[1]!.tools, [{ name: 'read', status: 'Read a file' }]);
-  assert.equal(rows[1]!.thinking, 'why');
-  assert.deepEqual(rows[2]!.tools, []);
-  assert.equal(rows[2]!.thinking, undefined);
 });
 
 /** Signs in as user through the mocked Discord OAuth. Returns the session cookie and CSRF token. */

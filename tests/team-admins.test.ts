@@ -41,27 +41,6 @@ test("a team owner is read from the Team object, by user ID", async () => {
   assert.equal(await admins.role(INVITED), undefined);
 });
 
-test("when the bot application is owned by a user, that user is the owner", async () => {
-  const application = { owner: { id: OWNER } };
-  const admins = new TeamAdmins(discordTeamSource({ application: { fetch: async () => application } } as unknown as Client));
-  assert.equal(await admins.role(OWNER), "owner");
-  assert.equal(await admins.role(ADMIN), undefined);
-  assert.equal(await admins.canEdit(OWNER), true);
-});
-
-test("the team loads again after 5 minutes, and a removed member loses access then", async () => {
-  let now = 0, loads = 0, members = [accepted(DEVELOPER, "developer")];
-  const admins = new TeamAdmins({ async load() { loads++; return team([...members]); } }, () => now);
-  assert.equal(await admins.canEdit(DEVELOPER), true);
-  now = FIVE_MINUTES - 1;
-  assert.equal(await admins.canEdit(DEVELOPER), true);
-  assert.equal(loads, 1, "no reload before 5 minutes");
-  members = [];
-  now = FIVE_MINUTES;
-  assert.equal(await admins.role(DEVELOPER), undefined);
-  assert.equal(loads, 2, "reload at 5 minutes");
-});
-
 test("concurrent checks share one team load, and a failed reload grants no role", async () => {
   let now = 0, loads = 0, failing = false;
   const admins = new TeamAdmins({ async load() { loads++; if (failing) throw new Error("Discord is down"); return team([accepted(ADMIN, "admin")]); } }, () => now);

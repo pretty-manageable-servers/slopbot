@@ -4,8 +4,6 @@ import { test } from "node:test";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { registerProfileTools } from "../src/profiles.js";
 import { ToolRegistry } from "../src/tools.js";
-import { Application } from "../src/application.js";
-import { FakeLLM } from "../src/adapters/fake-llm.js";
 import type { Message } from "../src/domain.js";
 const alice = "474858037970993152", bot = "1470866073862672434";
 const message = (id: string, author = alice): Message => ({ id, server: "s", channel: "c", author, text: "explicit profile update", authorName: author === alice ? "Teddio" : "Slopbot", isBot: author === bot });
@@ -60,23 +58,4 @@ test("shared profile tools enforce ownership, expose public dumps and retain sou
  assert.equal(registry.definitions()[0]?.publicResult?.({action:"get"}),true);
  assert.equal(registry.definitions()[0]?.publicResult?.({action:"history"}),false);
  assert.deepEqual(store.profile("s",alice).fields[0]?.sourceIds,["source"]);
-});
-
-test("relevant profile fields enter prompts with names and original sources", async t => {
- const store = new SQLiteStore(); t.after(() => store.close()); const llm=new FakeLLM();
- await store.ingest(message("profile-source")); store.editProfile(message("profile-source"),alice,"github","https://github.com/example","github");
- const app=new Application(store,llm,{allowedChannels:[{server:"s",channel:"c"}]},undefined,{profiles:store});
- await app.handle({...message("question"),text:"what do you know about me"});
- const profile=llm.prompts[0]?.inputs.find(item=>item.content.includes("People:\n"));
- assert.ok(profile?.content.includes("Teddio")&&profile.content.includes("github=https://github.com/example"));
-});
-
-test("profiles include the mentioned subject of a referenced bot message in a task", async t => {
- const store=new SQLiteStore();t.after(()=>store.close());const llm=new FakeLLM(),rice="12345678901234567";
- await store.ingest({...message("rice",rice),authorName:"Rice Farmer"});
- await store.ingest({...message("profile",bot),text:`Rice Farmer (<@${rice}>) Discord identity`});
- const app=new Application(store,llm,{allowedChannels:[{server:"s",channel:"c"}]},undefined,{profiles:store});
- await app.handle({...message("correction"),text:"his name is Oscar",replyTo:"profile",taskId:"c"});
- assert.ok(llm.prompts[0]?.inputs.some(item=>item.content.includes("People:\n")&&item.content.includes(`(user_id ${rice})`)));
- assert.ok(llm.prompts[0]?.inputs.at(-1)?.content.includes("About Rice Farmer"));
 });

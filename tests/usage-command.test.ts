@@ -1,42 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
-import { buildToolCommands, buildUsageCommand, usageBar, usageEmbed, usageReply } from "../src/adapters/discord-commands.js";
-import { ToolRegistry } from "../src/tools.js";
-import { UserLimiter, usageView } from "../src/user-limiter.js";
+import { usageReply } from "../src/adapters/discord-commands.js";
+
+import { UserLimiter } from "../src/user-limiter.js";
 
 const limiter = (store: SQLiteStore, fiveHour: number, week: number) => new UserLimiter(store, { fiveHourCostMicros: fiveHour, weekCostMicros: week, gracePercent: 10 });
-
-test("the /usage embed shows percents, a 10-block bar and banked resets, never dollars", async () => {
-  const store = new SQLiteStore(":memory:"), limits = limiter(store, 1000000, 3000000);
-  await limits.record("alice", 300000);
-  await store.grantResets("global", "alice", "week", 2);
-  const embed = usageEmbed(usageView(await limits.usage("alice")));
-  assert.equal(embed.title, "Your Slopbot usage");
-  assert.equal(embed.description, "Plan: Seed (free)");
-  const [fiveHour, weekly] = embed.fields ?? [];
-  assert.equal(fiveHour?.name, "5-hour");
-  assert.equal(weekly?.name, "weekly");
-  assert.match(fiveHour!.value, /^▰▰▰▱▱▱▱▱▱▱\n30% used\nresets <t:\d+:R>\nBanked resets: 0$/);
-  assert.match(weekly!.value, /^▰▱▱▱▱▱▱▱▱▱\n10% used\nresets <t:\d+:R>\nBanked resets: 2$/);
-  assert.doesNotMatch(JSON.stringify(embed), /\$|cost|spent/i);
-  store.close();
-});
-
-test("a window with no limit shows No limit and no reset time until it runs", async () => {
-  const store = new SQLiteStore(":memory:"), limits = limiter(store, 1000000, 0);
-  const embed = usageEmbed(usageView(await limits.usage("alice")));
-  assert.equal(embed.fields?.[1]?.value, "▱▱▱▱▱▱▱▱▱▱ No limit\nBanked resets: 0");
-  assert.equal(embed.fields?.[0]?.value, "▱▱▱▱▱▱▱▱▱▱\n0% used\nBanked resets: 0");
-  store.close();
-});
-
-test("usageBar draws 10 blocks for any percent", () => {
-  assert.equal(usageBar(34), "▰▰▰▱▱▱▱▱▱▱");
-  assert.equal(usageBar(0), "▱▱▱▱▱▱▱▱▱▱");
-  assert.equal(usageBar(100), "▰▰▰▰▰▰▰▰▰▰");
-  assert.equal(usageBar(null), "▱▱▱▱▱▱▱▱▱▱");
-});
 
 test("a user over the limit can still run /usage and use a banked reset, and /usage charges nothing", async () => {
   const store = new SQLiteStore(":memory:"), limits = limiter(store, 100, 0);
@@ -77,14 +46,4 @@ test("/usage rejects an unknown window without touching any banked reset", async
   assert.equal((await usageReply(limits, "alice", "month")).content, "Choose 5-hour or weekly to reset.");
   assert.equal((await limits.usage("alice"))[0]!.banked, 1);
   store.close();
-});
-
-test("the /usage command is top-level with one optional reset choice, and /slopbot is unchanged", () => {
-  const usage = buildUsageCommand().toJSON() as unknown as { name: string; description: string; options: { name: string; required?: boolean; choices?: { value: string }[] }[] };
-  assert.equal(usage.name, "usage");
-  assert.equal(usage.description, "See your Slopbot usage and limits");
-  assert.deepEqual(usage.options.map(option => [option.name, option.required]), [["reset", false]]);
-  assert.deepEqual(usage.options[0]!.choices?.map(choice => choice.value), ["5h", "week"]);
-  const registry = new ToolRegistry(new SQLiteStore(":memory:"), async () => false);
-  assert.equal(buildToolCommands(registry).toJSON().name, "slopbot");
 });

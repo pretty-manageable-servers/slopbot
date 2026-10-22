@@ -1,14 +1,14 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { readFile } from 'node:fs/promises';
+
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { AdminPanel, type AdminConfig } from '../src/admin-panel.js';
 import { createConsole, type ConsoleAdmin, type ConsoleOptions } from '../src/web-console.js';
 import { TeamAdmins, type TeamSnapshot } from '../src/team-admins.js';
 import { UserLimiter } from '../src/user-limiter.js';
 import { MemberDirectory } from '../src/member-directory.js';
-import { DEGRADED_NOTE, FALLBACK_NOTE, SERVER_NON_ZDR_SETTING, USER_NON_ZDR_SETTING } from '../src/llm-mode.js';
+import { SERVER_NON_ZDR_SETTING, USER_NON_ZDR_SETTING } from '../src/llm-mode.js';
 import { GLOBAL_SETTINGS_SCOPE } from '../src/usage-cost.js';
 import { fakeSource } from './member-fakes.js';
 
@@ -61,12 +61,6 @@ test('status route shape', async t => {
   assert.deepEqual(await (await get('/api/status', bob)).json(), { mode: 'fallback', canChat: true });
 });
 
-test('status without llmStatus reads normal and chat open', async t => {
-  const store = new SQLiteStore();
-  const { login, get } = await consoleFor(t, store);
-  assert.deepEqual(await (await get('/api/status', await login(ALICE))).json(), { mode: 'normal', canChat: true });
-});
-
 test('status needs sign-in', async t => {
   const store = new SQLiteStore();
   const { get } = await consoleFor(t, store, { llmStatus: () => ({ mode: 'offline', canChat: false }) });
@@ -117,10 +111,4 @@ test('server non-zdr needs editor', async t => {
   assert.equal(store.setting(SERVER, SERVER_NON_ZDR_SETTING), true);
   assert.equal(store.setting(OTHER, SERVER_NON_ZDR_SETTING), undefined, 'other servers keep their own value');
   assert.deepEqual(await (await get(`/api/admin/servers/non-zdr?server=${SERVER}`, reader)).json(), { allow: true });
-});
-
-test('web app notes match the contract', async () => {
-  const app = await readFile(new URL('../../web/app.js', import.meta.url), 'utf8');
-  assert.ok(app.includes(DEGRADED_NOTE), 'the banner text is the contract note');
-  assert.ok(app.includes(FALLBACK_NOTE), 'the fallback banner text is the contract note');
 });

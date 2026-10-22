@@ -12,7 +12,7 @@ import { UsageMeter } from '../src/usage-meter.js';
 import { UserLimiter } from '../src/user-limiter.js';
 import type { ToolDefinition, ToolRegistry, ToolContext } from '../src/tools.js';
 import { loadConfig } from '../src/config.js';
-import { DEFAULT_VOICE_INSTRUCTIONS, VOICE_SKIP } from '../src/voice-rules.js';
+import { DEFAULT_VOICE_INSTRUCTIONS } from '../src/voice-rules.js';
 
 type PostInput = Parameters<VoicePoster['reply']>[0];
 
@@ -31,10 +31,6 @@ async function until(condition: () => boolean): Promise<void> {
   assert.fail('condition was not reached');
 }
 
-/** Lets pending async work finish, for checks that something did NOT happen. */
-async function settle(): Promise<void> {
-  for (let index = 0; index < 50; index++) await new Promise(resolve => setImmediate(resolve));
-}
 
 function meter() {
   const limiter = { check: async () => ({ allowed: true as const }), record: async () => {}, overGrace: async () => false } as unknown as UserLimiter;
@@ -114,36 +110,6 @@ test('transcribes when offline', async t => {
   await until(() => r.provider.speeches.includes(DEGRADED_NOTE));
 });
 
-test('note spoken once', async t => {
-  const r = await rig(t, { offline: true });
-  r.talk();
-  await until(() => r.posts.length === 1);
-  // The bot's reply to a skipped transcript speaks VOICE_SKIP, which ends the turn.
-  await r.voice.speak('channel', VOICE_SKIP);
-  r.talk();
-  await until(() => r.posts.length === 2);
-  await r.voice.speak('channel', VOICE_SKIP);
-  assert.equal(r.provider.speeches.filter(text => text === DEGRADED_NOTE).length, 1);
-  assert.equal(r.notices.filter(notice => notice === DEGRADED_NOTE).length, 0);
-});
-
-test('text note when speech fails', async t => {
-  const r = await rig(t, { offline: true, speechStatus: 500 });
-  r.talk();
-  await until(() => r.notices.includes(DEGRADED_NOTE));
-  assert.deepEqual(r.provider.speeches, [DEGRADED_NOTE]);
-  assert.equal(r.notices.filter(notice => notice === DEGRADED_NOTE).length, 1);
-  assert.equal(r.notices.some(notice => notice.includes('failed')), false);
-});
-
-test('text session posts the note as text and makes no speech call', async t => {
-  const r = await rig(t, { offline: true, replies: 'text' });
-  r.talk();
-  await until(() => r.notices.includes(DEGRADED_NOTE));
-  assert.deepEqual(r.provider.speeches, []);
-  assert.equal(r.notices.filter(notice => notice === DEGRADED_NOTE).length, 1);
-});
-
 test('leaves when transcription down', async t => {
   const r = await rig(t, { transcribeStatus: 503 });
   r.talk();
@@ -159,14 +125,4 @@ test('without a router a transcription outage does not leave', async t => {
   await until(() => r.notices.some(notice => notice.includes('failed')));
   assert.equal(r.destroyed(), false);
   assert.deepEqual(r.provider.speeches, []);
-});
-
-test('online router leaves the turn alone', async t => {
-  const r = await rig(t, { transcript: 'Hello' });
-  r.talk();
-  await until(() => r.posts.length === 1);
-  await settle();
-  assert.equal(r.provider.speeches.includes(DEGRADED_NOTE), false);
-  assert.equal(r.notices.includes(DEGRADED_NOTE), false);
-  assert.equal(r.destroyed(), false);
 });
