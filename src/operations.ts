@@ -11,12 +11,11 @@ import { toolResult, type ToolArgs, type ToolContext, type ToolDefinition, type 
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 32);
 const evidenceId = (context: ToolContext) => hash(`${context.message.channel}:${context.operationId}`);
-const marker = (context: ToolContext) => `<!-- slopbot-operation:${hash(context.operationId)} -->`;
 const json = (value: unknown): Json => JSON.parse(JSON.stringify(value)) as Json;
 const messageLink = (m: Pick<Message, 'server' | 'channel' | 'id'>) => /^\d+$/.test(m.id) ? `https://discord.com/channels/${m.server}/${m.channel}/${m.id}` : undefined;
 const integer = (description: string, max = Number.MAX_SAFE_INTEGER) => ({ type: 'integer' as const, description, min: 1, max });
 const text = (description: string, max = 2000, required = false) => ({ type: 'string' as const, description, max, required });
-const memberReportingTools = new Set(['interaction_inspect', 'github_issue_read', 'issue_report', 'issue_report_edit']);
+const memberReportingTools = new Set(['interaction_inspect', 'github_issue_read']);
 
 interface Evidence {
   channel: string; owner: string; capturedAt: number; kind: string; data: Json;
@@ -79,14 +78,6 @@ export class Operations {
       if (!context.isAdmin && value.kind !== 'interaction') throw new ToolError('Manage Server permission is required to publish repository or infrastructure evidence');
       return { id, value };
     }));
-  }
-  async ownedIssue(context: ToolContext, number: number) {
-    await this.authorize(context);
-    const issue = await this.services.client.issue(number);
-    const origin = await this.services.store.issueReportOrigin(context.message.server, issue.html_url, issue.body ?? '');
-    if (issue.pull_request || !origin || origin.author !== context.message.author) throw new ToolError('Only the original reporter can edit an issue created by Slopbot in this server. A durable creation record is required.');
-    await this.services.authorize(context.message, origin.channel);
-    return { issue, origin };
   }
   async interaction(context: ToolContext, args: ToolArgs) {
     let origin = context.message;
@@ -214,59 +205,6 @@ export function registerOperationsTools(registry: ToolRegistry, services: Operat
       const data = args.number ? { issue: await services.client.issue(Number(args.number)), comments: await services.client.comments(Number(args.number)), commentsLimit: 100 } : await services.client.searchIssues(String(args.query ?? 'is:open'));
       const safe = safeDiagnosticData(json(data));
       return { text: diagnosticText(JSON.stringify(safe, null, 2)), data: safe };
-    } });
-  add({ ...base, name: 'issue_report', access: 'member', effect: 'write', retrySafe: false, confirm: () => true, resource: () => `github-issues:${services.config.repository}`,
-    description: 'When the requester asks to file a bug, create an evidence-backed GitHub issue or append evidence to issue_number. Search existing issues first. Exact title matches are reused. Include concise expected/actual behavior, steps, acceptance check, facts, hypotheses and missing evidence. Reports must fit 8 KiB. Selected evidence contributes source links only; never paste diagnostic snapshots into report fields. Reconciliation prevents duplicate writes after a lost response. Does not change code.',
-    fields: { title: text('Concrete bug title', 200, true), expected: text('Expected behavior', 2000, true), actual: text('Observed behavior', 2000, true), steps: text('Reproduction steps or explicitly unknown', 3000, true), acceptance: text('Concrete check a coding agent can use to verify the fix', 2000, true), hypotheses: text('Suspected causes, clearly unconfirmed', 2000), missing: text('Missing evidence or uncertainty', 2000), issue_number: integer('Existing issue to append evidence to'), evidence_ids: { type: 'json', description: '1–8 diagnostic evidence IDs collected in this task', required: true, schema: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 8 } } },
-    authorize: async (context, args) => { await ops.authorize(context); await ops.selectedEvidence(context, args); },
-    async execute(context, args) {
-      const evidence = await ops.selectedEvidence(context, args);
-      let number = args.issue_number ? Number(args.issue_number) : undefined;
-      if (!number) {
-        const matches = await services.client.searchIssues(`in:title ${String(args.title).replace(/["\r\n]/g, ' ')}`);
-        number = matches.items.find(i => i.title.toLowerCase() === String(args.title).toLowerCase())?.number;
-      }
-      if (number && (await services.client.issue(number)).pull_request) throw new ToolError('Choose an issue, not a pull request');
-      const intentId = hash(context.operationId);
-      await services.store.putRecord(context.message.server, 'issue_intent', intentId, { number: number ?? null }, 0);
-      const report = [
-        '## Report', `Expected: ${args.expected}`, `Actual: ${args.actual}`, '## Reproduction', String(args.steps), '## Acceptance check', String(args.acceptance),
-        '## Unconfirmed hypotheses', String(args.hypotheses ?? 'None established.'), '## Missing evidence', String(args.missing ?? 'No additional gaps reported; see snapshot limitations.'),
-        '## Collected evidence', ...new Set(evidence.flatMap(e => e.value.sources.map(s => messageLink(s)).filter((link): link is string => Boolean(link)))),
-        'Permission-checked diagnostic snapshots are retained privately. Runtime inventories are not published.',
-        `Reported by Discord user ${context.message.author}. Investigation by Slopbot; code changes belong to coding agents.`,
-      ].join('\n\n');
-      const body = diagnosticText(report) + `\n\n${marker(context)}`;
-      if (Buffer.byteLength(body, 'utf8') > 8192) throw new ToolError('Report exceeds 8 KiB. Shorten expected, actual, steps, acceptance, hypotheses or missing; include only relevant excerpts.');
-      await ops.authorize(context); await ops.selectedEvidence(context, args); await context.assertActive();
-      const issue = number ? await services.client.comment(number, body) : await services.client.createIssue(diagnosticText(String(args.title), 200), body);
-      return { text: `${number ? 'Evidence added' : 'Issue created'}: ${issue.html_url}`, data: { number: number ?? issue.number, url: issue.html_url }, artifacts: [{ url: issue.html_url, label: number ? 'Issue evidence' : 'GitHub issue' }] };
-    },
-    async reconcile(context) {
-      const intent = await services.store.record(context.message.server, 'issue_intent', hash(context.operationId));
-      if (!intent) return undefined;
-      const number = (intent.value as { number: number | null }).number;
-      const result = number ? await services.client.findComment(number, marker(context)) : await services.client.findIssue(marker(context));
-      return result ? { text: `Recovered GitHub report: ${result.html_url}`, data: { number: number ?? result.number, url: result.html_url }, artifacts: [{ url: result.html_url, label: 'GitHub report' }] } : undefined;
-    } });
-  add({ ...base, name: 'issue_report_edit', access: 'member', effect: 'write', retrySafe: false, confirm: () => true, resource: () => `github-issues:${services.config.repository}`,
-    description: 'On the original reporter\'s request, replace the body or remove collected evidence from an issue Slopbot created. Ownership is checked against the creation journal. Does not create an issue. Replacement text is credential-redacted and bounded to 8 KiB. Uncertain edits are reconciled before retrying.',
-    fields: { issue_number: { ...integer('Slopbot-created issue to revise'), required: true }, action: { ...text('replace or remove_evidence', 30, true), choices: ['replace', 'remove_evidence'] }, body: text('Replacement Markdown body, required for replace; omit for remove_evidence', 7000) },
-    authorize: async (context, args) => { await ops.ownedIssue(context, Number(args.issue_number)); },
-    async execute(context, args) {
-      const { issue, origin } = await ops.ownedIssue(context, Number(args.issue_number));
-      if (args.action === 'replace' && !String(args.body ?? '').trim()) throw new ToolError('Supply body with the replacement Markdown for action replace');
-      const content = args.action === 'replace' ? String(args.body) : (issue.body ?? '').split('## Collected evidence')[0]!;
-      const withoutMarkers = content.replace(/<!-- slopbot-operation:[a-f0-9]{32} -->/g, '').replace(/Reported by Discord user[^\n]*/g, '').trim();
-      const body = diagnosticText(withoutMarkers) + `\n\nReported by Discord user ${origin.author}. Investigation by Slopbot; code changes belong to coding agents.\n\n<!-- slopbot-operation:${hash(origin.operationId)} -->\n${marker(context)}`;
-      if (Buffer.byteLength(body) > 8192) throw new ToolError('Replacement exceeds 8 KiB. Shorten body before retrying.');
-      await context.assertActive();
-      const updated = await services.client.updateIssue(issue.number, body);
-      return { text: `Issue updated: ${updated.html_url}`, data: { number: updated.number, url: updated.html_url } };
-    },
-    async reconcile(context, args) {
-      const issue = await services.client.issue(Number(args.issue_number));
-      return issue.body?.includes(marker(context)) ? { text: `Recovered GitHub edit: ${issue.html_url}`, data: { number: issue.number, url: issue.html_url } } : undefined;
     } });
   add({ ...base, name: 'fix_watch', effect: 'write', retrySafe: true, writes: args => args.action !== 'status', resource: message => `fix-watch:${message.server}:${message.channel}`,
     authorize: async (context, args) => { await ops.authorize(context); if (args.action === 'verify') await ops.selectedEvidence(context, args); },

@@ -75,6 +75,13 @@ export async function usageReply(limiter: UserLimiter, user: string, reset: stri
   return { embeds: [usageEmbed(usageView(await limiter.usage(user)))] };
 }
 
+/** The top-level /file-report command. Files the open issue draft of this channel, or comments on issue_number. */
+export function buildFileReportCommand(): SlashCommandBuilder {
+  const command = new SlashCommandBuilder().setName("file-report").setDescription("File the Slopbot issue draft in this channel on GitHub, or comment on an issue");
+  command.addIntegerOption(option => option.setName("issue_number").setDescription("Existing issue to comment on instead of creating one").setRequired(false).setMinValue(1));
+  return command;
+}
+
 export function buildToolCommands(registry: ToolRegistry): SlashCommandBuilder {
   const command = new SlashCommandBuilder().setName("slopbot").setDescription("Slopbot tools, settings and diagnostics");
   // Discord limits subcommands. The generic runner reaches every registered connector.

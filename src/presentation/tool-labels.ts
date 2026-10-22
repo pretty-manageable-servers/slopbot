@@ -34,6 +34,8 @@ const special: Record<string, { emoji: string; group?: [string, string] }> = {
   task_status: { emoji: "📋" },
   task_retry: { emoji: "📋" },
   poll_create: { emoji: "📊" },
+  issue_draft: { emoji: "📝", group: ["issue draft", "issue drafts"] },
+  file_report: { emoji: "🐞", group: ["report filing", "report filings"] },
   sandbox_manage: { emoji: "💻" },
   run_tools_code: { emoji: "🧩", group: ["code run", "code runs"] },
 };
