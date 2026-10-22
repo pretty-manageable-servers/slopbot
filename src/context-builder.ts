@@ -13,6 +13,7 @@ import { isPrivateChannel, isDirectMessageChannel } from "./private-chat.js";
 import { VOICE_RULE } from "./voice-rules.js";
 import { renderTranscript, requestLine } from "./transcript.js";
 import { slopbotId, type ConversationEventStore } from "./run-events.js";
+import { selectRunImages } from "./run-images.js";
 
 const privateChatRule = "This is a private conversation. It has no task threads. Do writes directly in this chat. Never call task_start. This replaces the task thread rule in the tool instructions for this chat.";
 const webMathRule = "The web view renders LaTeX math: use $…$ inline and $$…$$ for display.";
@@ -36,7 +37,12 @@ export class ContextBuilder {
     boundedHistory: (message: Message, taskKey: string, limit: number) => Promise<readonly PromptItem[]>,
     prefix = this.options.prefix, tools = this.options.tools, schemaBudget = 0) {
     const sourceVersion = await this.options.store.contextVersion(message.server, message.channel);
-    let request: PromptItem = { role: "user", content: requestLine(message), author: message.author, sourceIds: [message.id], ...(message.modelImages?.length ? { images: message.modelImages } : {}) };
+    const referencedContext = message.replyTo ? await this.options.store.context(message, recentMessages) : undefined;
+    const target = referencedContext?.find(item => item.id === message.replyTo);
+    // Images as image input: the request's own, the reply target's, and the same author's messages just before the request.
+    const recent = this.options.images ? await this.options.store.context(message, 20) : [];
+    const images = await selectRunImages({ request: message, target, recent, source: this.options.images });
+    let request: PromptItem = { role: "user", content: requestLine(message), author: message.author, sourceIds: [message.id], ...(images.length ? { images } : {}) };
     // A private chat has no task threads, so the thread rule in the tool instructions does not apply to it. Only this request says so.
     const privateChat = isPrivateChannel(message.channel) ? { ...(isDirectMessageChannel(message.channel) ? { private_direct_message: true } : { private_web_chat: true }), private_chat_rule: privateChatRule } : {};
     const voice = message.source === "voice" ? { voice_channel: true, voice_rule: VOICE_RULE } : {};
@@ -48,8 +54,6 @@ export class ContextBuilder {
     const metadata: PromptItem[] = this.options.tools ? [contextBlock({ request: requestContext, people: [], evidence: [] })] : [];
     let budget = this.options.inputLimit - schemaBudget - this.options.counter.count([...prefix, ...metadata, request]);
     if (budget < 0) throw new RequestError("CONTEXT_BUDGET", `Request exceeds context budget: request and schemas are ${-budget} estimated input units over the limit.`, "Reduce the request or increase CONTEXT_TOKENS while leaving room for OUTPUT_TOKENS.", { inputLimit: this.options.inputLimit, schemaBudget });
-    const referencedContext = message.replyTo ? await this.options.store.context(message, recentMessages) : undefined;
-    const target = referencedContext?.find(item => item.id === message.replyTo);
     const expanded = await expandReplySubject(this.options.profiles, message, target, request);
     // expandReplySubject returns the same object when it adds nothing. Otherwise the header goes back on, around the subject text.
     const headed: PromptItem = expanded === request ? request : { ...expanded, content: requestLine(message, expanded.content) };
