@@ -508,6 +508,11 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     return result.changes === 1;
   }
 
+  /** The newest messages of a channel, oldest first. Used for the notes about changes during a run. */
+  async recentChannelMessages(server: string, channel: string, limit: number): Promise<readonly Message[]> {
+    const rows = this.db.prepare("SELECT body FROM messages WHERE server=? AND channel=? ORDER BY coalesce(json_extract(body,'$.timestamp'),sequence) DESC LIMIT ?").all(server, channel, limit);
+    return rows.reverse().map(row => this.namedMessage(parseMessage(JSON.parse(String(row.body)))));
+  }
   async context(message: Message, limit: number): Promise<readonly Message[]> {
     const current = this.db.prepare("SELECT coalesce(json_extract(body,'$.timestamp'),sequence) AS moment FROM messages WHERE server=? AND id=?")
       .get(message.server, message.id);

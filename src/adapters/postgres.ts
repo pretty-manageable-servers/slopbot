@@ -356,6 +356,11 @@ export class PostgresStore {
         const result = (await this.db.prepare("INSERT OR IGNORE INTO messages(server,id,channel,body) VALUES(?,?,?,?)").run(message.server, message.id, message.channel, JSON.stringify(message)));
         return result.changes === 1;
     }
+    /** The newest messages of a channel, oldest first. Used for the notes about changes during a run. */
+    async recentChannelMessages(server: string, channel: string, limit: number): Promise<readonly Message[]> {
+        const rows = await this.db.prepare("SELECT body FROM messages WHERE server=? AND channel=? ORDER BY coalesce(json_extract(body,'$.timestamp'),sequence) DESC LIMIT ?").all(server, channel, limit);
+        return (await Promise.all(rows.reverse().map(async (row) => this.namedMessage(parseMessage(JSON.parse(String(row.body))))))) as Message[];
+    }
     async context(message: Message, limit: number): Promise<readonly Message[]> {
         const current = (await this.db.prepare("SELECT coalesce(json_extract(body,'$.timestamp'),sequence) AS moment FROM messages WHERE server=? AND id=?")
             .get(message.server, message.id));

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Json, Message } from './domain.js';
 import { ToolError } from './errors.js';
+import { sourceFingerprint } from './source-context.js';
 import { diagnosticText, safeDiagnosticData } from './diagnostic-data.js';
 export { diagnosticText, safeDiagnosticData } from './diagnostic-data.js';
 import type { OperationsConfig } from './operations-config.js';
@@ -53,7 +54,7 @@ export class Operations {
     for (const source of evidence.sources) {
       await this.services.authorize(message, source.channel);
       const current = await this.services.store.canonicalMessage(message.server, source.id);
-      if (source.server !== message.server || !current || current.channel !== source.channel || hash(JSON.stringify(current)) !== source.fingerprint) throw new ToolError(`Evidence ${id} from task ${evidence.channel}: source ${source.id} was edited, deleted, or is no longer accessible. Collect it again.`);
+      if (source.server !== message.server || !current || current.channel !== source.channel || sourceFingerprint(current) !== source.fingerprint) throw new ToolError(`Evidence ${id} from task ${evidence.channel}: source ${source.id} was edited, deleted, or is no longer accessible. Collect it again.`);
     }
     return evidence;
   }
@@ -62,7 +63,7 @@ export class Operations {
     let safe = safeDiagnosticData(json(data));
     if (JSON.stringify(safe).length > 48000) safe = { excerpt: diagnosticText(JSON.stringify(safe), 40000), truncated: true, limitations: 'Snapshot exceeds its size budget. Query a smaller diagnostic scope before reporting.' };
     const value: Evidence = { channel: context.message.channel, owner: context.message.author, capturedAt: Date.now(), kind,
-      channels: [...new Set(channels)], data: safe, sources: sources.map(m => ({ server: m.server, channel: m.channel, id: m.id, fingerprint: hash(JSON.stringify(m)) })) };
+      channels: [...new Set(channels)], data: safe, sources: sources.map(m => ({ server: m.server, channel: m.channel, id: m.id, fingerprint: sourceFingerprint(m) })) };
     await this.services.store.putRecord(context.message.server, 'diagnostic_evidence', id, json(value), 0);
     // A read may resume after saving its snapshot but before completing its operation journal.
     // Return that same immutable snapshot, never fresh output backed by an older evidence ID.
