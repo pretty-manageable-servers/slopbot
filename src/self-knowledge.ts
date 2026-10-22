@@ -16,7 +16,7 @@ export function selfKnowledgeTool(registry: ToolRegistry, isTeamEditor: (user: s
   sections.set("participation_prompt", participationPrompt);
   const topics = [...sections.keys(), "capabilities", "runtime"];
   return {
-    name: "bot_info",
+    name: "bot_info", surface: "top",
     description: "Read Slopbot's architecture, tools, error diagnostics, current safe runtime, and reviewed PMServers documentation/changelog. Use this before explaining how the bot works or how to use it. Documentation describes design, not live service health.",
     fields: { topic: { type: "string", description: "Default: overview. Use capabilities for registered tools, runtime for current safe configuration.", choices: topics } },
     access: "member", effect: "read", retrySafe: true,

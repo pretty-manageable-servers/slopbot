@@ -143,6 +143,17 @@ export interface StorageServices {
   profile?: SandboxProfile;
 }
 const readActions = ['list', 'info', 'read', 'link'];
+/** The file store as two tools: file_store reads (a direct tool) and file_store_write changes files (called from run_tools_code). Both share one implementation. */
+export function objectStorageTools(services: StorageServices): ToolDefinition[] {
+  const base = objectStorageTool(services), action = base.fields.action!;
+  const read: ToolDefinition = { ...base, name: 'file_store', surface: 'top', retrySafe: true,
+    description: 'Read persistent files: list, info, read (answers a question about a stored file; images and documents are supported), or link (a download link). Personal files are private by default; server files are shared by default.',
+    fields: { ...base.fields, action: { ...action, choices: readActions, description: 'File read action: list, info, read or link.' } } };
+  const write: ToolDefinition = { ...base, name: 'file_store_write',
+    description: 'Change persistent files: save a Discord attachment, write text, save or load sandbox files, copy, send by DM, publish, unpublish or delete. Personal files are owner-controlled; server files can be changed by their creator or a server admin. Publishing global user files makes them discoverable across servers.',
+    fields: { ...base.fields, action: { ...action, choices: action.choices!.filter(choice => !readActions.includes(choice)), description: 'File change action. send DMs the file only to the requester.' } } };
+  return [read, write];
+}
 export function objectStorageTool(services: StorageServices): ToolDefinition {
   const fetcher = services.fetcher ?? new DiscordFileFetcher();
   return {

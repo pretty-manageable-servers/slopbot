@@ -23,7 +23,7 @@ export function registerReminderTools(
   now = Date.now,
 ): void {
   registry.register({
-    name: "reminder",
+    name: "reminder", surface: "top",
     description:
       "Schedule a personal reminder in this channel, list your reminders, or cancel one. Use an ISO timestamp with explicit timezone; ask for clarification when time is ambiguous.",
     fields: {

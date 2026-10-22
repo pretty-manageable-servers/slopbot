@@ -46,6 +46,25 @@ export const toolGroup = (name: string): [string, string] => {
   const words = name.replace(/_/g, " ");
   return special[name]?.group ?? [words, words];
 };
+const times = (count: number): string => count > 1 ? ` ${count}×` : '';
+const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`;
+// Plain words for the footer, by tool and count. Other tools use their name with spaces.
+const plainWordsOf: Record<string, (count: number) => string> = {
+  history_search: count => `searched history${times(count)}`,
+  history_read: count => `read ${plural(count, 'message')}`,
+  web_search: count => `searched the web${times(count)}`,
+  web_fetch: count => `read ${plural(count, 'page')}`,
+  read: count => `read ${plural(count, 'file')}`,
+  write: count => `wrote ${plural(count, 'file')}`,
+  edit: count => `edited ${plural(count, 'file')}`,
+  shell: count => `ran ${plural(count, 'command')}`,
+  view_image: count => `viewed ${plural(count, 'image')}`,
+  memory: count => `checked memory${times(count)}`,
+  memory_remember: count => `saved ${plural(count, 'memory')}`,
+  file_store: count => `read ${plural(count, 'stored file')}`,
+  file_store_write: count => `changed ${plural(count, 'stored file')}`,
+};
+export const plainWords = (name: string, count: number): string => plainWordsOf[name]?.(count) ?? `${name.replace(/_/g, ' ')}${times(count)}`;
 export const escapeMarkdown = (text: string): string => text.replace(/\s+/g, " ").replace(/[\\`*_~<>|\[\]]/g, "\\$&");
 // Short text for the "now" line. Only the query is shown, never other arguments.
 export function currentStep(name: string, query: unknown): string {

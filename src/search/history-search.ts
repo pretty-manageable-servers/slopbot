@@ -84,7 +84,7 @@ export function registerHistoryTools(
   services: SearchServices,
 ): void {
   registry.register({
-    name: "history_search",
+    name: "history_search", surface: "top",
     description:
       "Search stored chat messages using keywords. Exact finds literal quotes. Resolve authors by name or mention. Refine queries and use history_read for context; no result is not proof something was never said.",
     fields: {
@@ -204,7 +204,7 @@ export function registerHistoryTools(
     },
   });
   registry.register({
-    name: "history_read",
+    name: "history_read", surface: "top",
     description:
       "Read an indexed message with nearby chronological messages and its reply ancestors.",
     fields: {

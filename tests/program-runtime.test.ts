@@ -42,7 +42,10 @@ test('guest code has no Node, host globals, network, timers, or module access', 
 test('CPU, memory, output, call-count, argument-size, and input limits stop programs', async () => {
   await failed(new ProgramRuntime({ ...programLimits, cpuMs: 50 }).run('while(true){}', [], async () => ({})), /interrupted|failed/);
   await failed(new ProgramRuntime({ ...programLimits, memoryBytes: 1024 * 1024 }).run('const a=[]; while(true)a.push({text:"x".repeat(1000)});', [], async () => ({})), /memory|failed|exited/);
-  await failed(new ProgramRuntime({ ...programLimits, maxOutputBytes: 100 }).run('text("x".repeat(101));', [], async () => ({})), /limit|failed/);
+  // Output over the limit is cut and the program still succeeds.
+  const cut = await new ProgramRuntime({ ...programLimits, maxOutputBytes: 100 }).run('text("x".repeat(101));', [], async () => ({}));
+  assert.equal(cut.error, undefined);
+  assert.equal(cut.truncatedBytes, 1);
   await failed(new ProgramRuntime({ ...programLimits, maxCalls: 2 }).run('await Promise.all([tools.read({}),tools.read({}),tools.read({})]); text("done");', ['read'], async () => ({})), /limit|failed/);
   await failed(new ProgramRuntime().run('await tools.read({x:"x".repeat(65000)});text("done");', ['read'], async () => ({})), /limit|failed/);
   await failed(new ProgramRuntime({ ...programLimits, maxInputBytes: 100 }).run('text(await tools.read({}));', ['read'], async () => ({ x: 'x'.repeat(101) })), /input budget/);
@@ -77,8 +80,12 @@ test('returns the program return value', async () => {
   assert.equal(unserializable.returned, undefined);
   assert.equal(unserializable.error, undefined);
   assert.deepEqual(unserializable.logs, ['[WARN] Return value is not JSON serializable.']);
-  // A return value over the output limit fails and keeps earlier outputs.
-  await failed(new ProgramRuntime({ ...programLimits, maxOutputBytes: 100 }).run('text("kept"); return "x".repeat(200);', [], async () => ({})), /output limit/);
+  // A return value over the output limit is cut to its first part, and the program does not fail.
+  const over = await new ProgramRuntime({ ...programLimits, maxOutputBytes: 100 }).run('text("kept"); return "x".repeat(200);', [], async () => ({}));
+  assert.equal(over.error, undefined);
+  assert.deepEqual(over.outputs, ['kept']);
+  assert.equal(over.returned, 'x'.repeat(94));
+  assert.equal(over.truncatedBytes, 106);
 });
 
 test('no return and no text is ok', async () => {

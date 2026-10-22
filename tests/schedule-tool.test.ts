@@ -6,7 +6,6 @@ import { registerScheduleTool } from "../src/schedules/schedule-tool.js";
 import { SCHEDULE_KIND, SCHEDULE_LIMITS_KEY, type Schedule } from "../src/schedules/schedule-types.js";
 import { ToolRegistry, UncertainActionError } from "../src/tools.js";
 import { runToolsCodeTool } from "../src/run-tools-code.js";
-import type { ToolActivity } from "../src/tool-activity.js";
 import { GLOBAL_SETTINGS_SCOPE } from "../src/usage-cost.js";
 
 // Wed 14 Oct 2026, 08:00 UTC. London is on BST (UTC+1) until 25 Oct.
@@ -322,13 +321,15 @@ test("distinct creates in one request and identical creates in separate requests
 test("program create, retry and list report success with one schedule", async () => {
   const env = setup();
   env.registry.register(runToolsCodeTool(env.registry));
-  const activities: ToolActivity[] = [];
   const input = JSON.stringify(retryInput);
-  const result = await env.registry.invokeResult(retryRequest, "run_tools_code", {
-    code: `const first = await tools.schedule(${input}); const retry = await tools.schedule(${input}); const list = await tools.schedule({action:"list"}); return { first, retry, list };`,
-  }, "program", "agent", undefined, { onActivity: async activity => { activities.push(activity); } });
-  assert.doesNotMatch(result.text, /rejected|handoff or UI/);
+  // schedule is a direct tool, so a program cannot call it. The program fails with the direct-tool error.
+  const refused = await env.registry.invokeResult(retryRequest, "run_tools_code", { code: `return await tools.schedule(${input});` }, "program", "agent");
+  assert.match(refused.text, /schedule is a direct tool\. Call it outside run_tools_code\./);
+  assert.equal((await env.store.records("s", SCHEDULE_KIND)).length, 0);
+  // The same three calls, made directly, report success with one schedule.
+  await env.registry.invokeResult(retryRequest, "schedule", retryInput, "first", "agent");
+  await env.registry.invokeResult(retryRequest, "schedule", retryInput, "retry", "agent");
+  const list = await env.registry.invokeResult(retryRequest, "schedule", { action: "list" }, "list", "agent");
+  assert.doesNotMatch(list.text, /rejected|handoff or UI/);
   assert.equal((await env.store.records("s", SCHEDULE_KIND)).length, 1);
-  assert.equal(activities.filter(activity => activity.name === "schedule" && activity.status === "completed").length, 3);
-  assert.equal(activities.filter(activity => activity.status === "rejected" || activity.status === "failed").length, 0);
 });
