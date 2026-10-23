@@ -18,7 +18,7 @@ test('SearXNG reports unavailable JSON, oversized replies and rate limits',async
  const limited=new SearxNGSearch('http://localhost:8080',async()=>Response.json({results:[]}),()=>0);
  for(let i=0;i<30;i++)await limited.search('q',1);
  await assert.rejects(limited.search('q',1),/limit reached/);
- await assert.rejects(new UnconfiguredSearch().search(),/SEARXNG_URL/);
+ await assert.rejects(new UnconfiguredSearch().search(),/not set up on this server/);
 });
 test('web search is shared, returns structured sources and replays without another request',async t=>{
  const store=new SQLiteStore();t.after(()=>store.close());const registry=new ToolRegistry(store,async()=>false);let calls=0;

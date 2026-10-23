@@ -1,6 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import type { Json } from './domain.js';
-import { ConfirmationRequired, ToolError } from './tools.js';
+import { ConfirmationRequired, ToolError, UncertainActionError } from './tools.js';
 
 export interface ProgramLimits {
   timeoutMs: number;
@@ -26,11 +26,27 @@ export interface ProgramResult {
   receipts: ProgramCallReceipt[];
   failures: { name: string; error: string }[];
   error?: { message: string; status: 'failed' | 'rejected' }; // the program failed; partial data above is kept
+  truncatedBytes?: number;    // output past maxOutputBytes that was cut; the first part is kept
+  confirmation?: { name: string; operationId: string }; // the program stopped at a call that needs Confirm; partial data above is kept
 }
 /** args is whatever the guest sent, parsed from JSON. The dispatcher decides what is a valid argument value. */
 export type ProgramDispatch = (name: string, args: unknown, index: number, signal: AbortSignal) => Promise<Json>;
 
 const maxLogLines = 64, maxLogText = 1000;
+/** The part of a JSON output that fits in room bytes, and how many bytes were cut. A string keeps its text; other values keep their JSON. */
+function headOf(json: string, room: number): { kept: Json; cut: number } {
+  const value = JSON.parse(json) as Json;
+  const whole = typeof value === 'string' ? value : json;
+  const bytes = Buffer.byteLength(whole);
+  if (bytes <= room) return { kept: value, cut: 0 };
+  const head = Buffer.from(whole).subarray(0, Math.max(0, room)).toString('utf8').replace(/\uFFFD$/, '');
+  return { kept: head, cut: bytes - Buffer.byteLength(head) };
+}
+/** Guest errors name the sandbox limits: a missing global is almost always Node code (require, process, fs). */
+function guestErrorText(message: string): string {
+  const missing = /^'?([A-Za-z_$][\w$]*)'? is not defined/.exec(message);
+  return missing ? `${missing[1]} is not defined. The sandbox has no Node modules, so no require, imports, process or file system. Call tools as tools.NAME({...}) or NAME({...}).` : message;
+}
 
 // Guest code executes only in QuickJS's WASM heap. The Node worker loads our
 // bridge, never evaluates guest code with Node eval, Function, or node:vm.
@@ -49,25 +65,28 @@ export class ProgramRuntime {
         const allowed = new Set<string>([...names, ...programBuiltins]), outputs: Json[] = [], logs: string[] = [], failures: ProgramResult['failures'] = [];
         const receipts = new Map<number, ProgramCallReceipt>();
         const queue: { id: number; name: string; args: unknown }[] = [];
-        let finished = false, calls = 0, running = 0, inputBytes = 0, outputBytes = 0, completed = false, transientFailure = false, logsDropped = false;
+        let finished = false, calls = 0, running = 0, inputBytes = 0, outputBytes = 0, truncatedBytes = 0, completed = false, transientFailure = false, logsDropped = false;
         let returned: Json | undefined;
         const timer = setTimeout(() => finish(new ToolError('Program exceeded its wall-clock deadline.', 'failed')), this.limits.timeoutMs);
         const abort = () => finish(new ToolError('Program interrupted.'), true);
-        // Only confirmation, abort, and transient-failure stops reject. Every other stop resolves with error set,
-        // so outputs, logs and call receipts reach the caller.
+        // Only abort and transient-failure stops reject. A confirmation and every other stop resolve, so outputs,
+        // logs and call receipts reach the caller. A confirmation also names the call that waits for Confirm.
         const finish = (error?: Error, rejects = false) => {
           if (finished) return;
           finished = true; clearTimeout(timer); invocationSignal.removeEventListener('abort', abort);
-          if (error && rejects) { reject(error); return; }
+          if (error && rejects && !(error instanceof ConfirmationRequired)) { reject(error); return; }
           const result: ProgramResult = { outputs, logs, calls, receipts: [...receipts.values()].map(receipt => ({ ...receipt })), failures };
           if (returned !== undefined) result.returned = returned;
-          if (error) result.error = { message: error.message, status: error instanceof ToolError ? error.status : 'failed' };
+          if (truncatedBytes) result.truncatedBytes = truncatedBytes;
+          if (error instanceof ConfirmationRequired) result.confirmation = { name: error.call.name, operationId: error.call.operationId };
+          else if (error) result.error = { message: error.message, status: error instanceof ToolError ? error.status : 'failed' };
           resolve(result);
         };
         invocationSignal.addEventListener('abort', abort, { once: true });
         try {
           worker = new Worker(new URL('./adapters/program-worker.js', import.meta.url), {
-            workerData: { code, names, limits: this.limits }, env: {}, execArgv: [],
+            // The worker only guards a single output value; the host cuts output to maxOutputBytes and keeps the first part.
+            workerData: { code, names, limits: { ...this.limits, maxOutputBytes: this.limits.maxInputBytes } }, env: {}, execArgv: [],
             resourceLimits: { maxOldGenerationSizeMb: 64, maxYoungGenerationSizeMb: 16, stackSizeMb: 4 },
           });
         } catch (error) { finish(new ToolError('Program worker could not start.', 'failed', { cause: error })); return; }
@@ -92,8 +111,10 @@ export class ProgramRuntime {
                 if (finished) return;
                 // A confirmation stops the whole program, even when the guest code catches the error.
                 if (error instanceof ConfirmationRequired) { finish(error, true); return; }
-                const reason = error instanceof ToolError ? error.message.slice(0, 500) : 'Tool failed. Inspect its recorded result before retrying.';
-                if (!(error instanceof ToolError)) transientFailure = true;
+                // A ToolError or an uncertain write is a normal failed result the model reads in this turn. Any other error is transient.
+                const known = error instanceof ToolError || error instanceof UncertainActionError;
+                const reason = known ? error.message.slice(0, 500) : 'Tool failed. Inspect its recorded result before retrying.';
+                if (!known) transientFailure = true;
                 failures.push({ name: call.name, error: reason });
                 receipt.status = 'failed';
                 worker!.postMessage({ kind: 'result', id: call.id, error: reason });
@@ -117,9 +138,12 @@ export class ProgramRuntime {
               queue.push({ id, name: item.name, args: JSON.parse(item.json) as unknown }); pump();
             } else if (item.kind === 'text') {
               if (typeof item.json !== 'string') throw new ToolError('Program output must be JSON serializable.');
-              outputBytes += Buffer.byteLength(item.json);
-              if (outputBytes > this.limits.maxOutputBytes || outputs.length >= 32) throw new ToolError('Program exceeded its output limit.');
-              outputs.push(JSON.parse(item.json) as Json);
+              // Output past the limit is cut, not fatal: the program keeps running and the model is told how much was cut.
+              const room = this.limits.maxOutputBytes - outputBytes;
+              if (outputs.length >= 32 || room <= 0) { truncatedBytes += Buffer.byteLength(item.json); return; }
+              const { kept, cut } = headOf(item.json, room);
+              if (cut) { outputBytes = this.limits.maxOutputBytes; truncatedBytes += cut; } else outputBytes += Buffer.byteLength(item.json);
+              outputs.push(kept);
             } else if (item.kind === 'log') {
               if (typeof item.text !== 'string' || (item.level !== 'log' && item.level !== 'warn' && item.level !== 'error')) throw new ToolError('Invalid program bridge message.');
               // Logs are a notice when they run out of room, so they are dropped with one warning line, not an error.
@@ -138,16 +162,16 @@ export class ProgramRuntime {
             } else if (item.kind === 'done') {
               completed = true;
               if (typeof item.json === 'string') {
-                outputBytes += Buffer.byteLength(item.json);
-                if (outputBytes > this.limits.maxOutputBytes) throw new ToolError('Program exceeded its output limit.');
-                returned = JSON.parse(item.json) as Json;
+                const { kept, cut } = headOf(item.json, this.limits.maxOutputBytes - outputBytes);
+                if (cut) { outputBytes = this.limits.maxOutputBytes; truncatedBytes += cut; } else outputBytes += Buffer.byteLength(item.json);
+                returned = kept;
               }
               // Fire-and-forget tool requests still belong to this program.
               // Wait for their journaled results before returning to the model.
               if (!running && !queue.length) finish();
             } else if (item.kind === 'error') {
               if (transientFailure) { finish(new Error('Program failed after a transient tool failure. Completed reads remain journaled.'), true); return; }
-              throw new ToolError(typeof item.error === 'string' ? item.error.slice(0, 1000) : 'runtime error', 'failed');
+              throw new ToolError(typeof item.error === 'string' ? guestErrorText(item.error.slice(0, 1000)) : 'runtime error', 'failed');
             }
             else throw new ToolError('Invalid program bridge message.');
           } catch (error) { finish(error instanceof Error ? error : new ToolError('Program bridge failed.', 'failed')); }

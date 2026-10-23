@@ -17,18 +17,3 @@ export function codeBlock(text: string, language = "js"): string {
   return `${fence}${language}\n${text}\n${fence}`;
 }
 
-/** Splits code into parts that each fit one message as a code block. Splits at line ends when it can. */
-export function codeParts(code: string, limit = SHOW_CODE_MESSAGE_CHARS): string[] {
-  const parts: string[] = [];
-  let part = "";
-  for (const line of code.split("\n")) {
-    for (let piece = line; ; piece = piece.slice(limit)) {
-      const next = part ? `${part}\n${piece.slice(0, limit)}` : piece.slice(0, limit);
-      if (next.length > limit && part) { parts.push(part); part = piece.slice(0, limit); } else part = next;
-      if (piece.length <= limit) break;
-      parts.push(part); part = "";
-    }
-  }
-  if (part || !parts.length) parts.push(part);
-  return parts;
-}

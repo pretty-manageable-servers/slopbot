@@ -260,6 +260,11 @@ html[data-view-dir=back]::view-transition-new(chat-side),html[data-view-dir=back
 .chat a.chat-file-chip:hover{text-decoration:underline}
 .chat .chat-files{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;margin-bottom:6px}
 .chat .chat-attach{border:0;background:transparent;color:var(--muted);font-size:22px;cursor:pointer;padding:0 8px}
+.chat .chat-card{margin-top:8px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;max-width:100%;overflow-wrap:anywhere}
+.chat .chat-card-title{display:block;margin-bottom:6px}
+.chat .chat-card-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.chat .chat-card-button{font:inherit;font-size:14px;padding:6px 12px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;cursor:pointer}
+.chat .chat-card-button:disabled{opacity:.5;cursor:default}
 .chat .chat-form.dragging .chat-input{outline:2px dashed var(--accent)}
 
 /* The mobile list overlays the transcript so opening it never moves the composer. */

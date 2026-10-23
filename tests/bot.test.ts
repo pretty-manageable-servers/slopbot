@@ -141,6 +141,53 @@ test('unaddressed bot error commentary cannot enqueue task work or trigger parti
   assert.equal(enqueued, 2);
 });
 
+test('bot_limit_logs_and_notifies_once: a bot past the reply limit gets one notice per window, and each refusal is logged', async t => {
+  const f = setup(); t.after(() => f.store.close());
+  const lines = captureConsoleLogs(t);
+  const bot = new Bot(f.app, f.store, f.store, f.gateway, 's', ['c'], { botReplyLimit: () => ({ replies: 1, minutes: 10 }) });
+  await bot.receive(incoming('bot-1', 'hello', { author: 'other-bot', botAuthor: true, mentionsBot: true }));
+  await bot.receive(incoming('bot-2', 'hello again', { author: 'other-bot', botAuthor: true, mentionsBot: true }));
+  await bot.receive(incoming('bot-3', 'and again', { author: 'other-bot', botAuthor: true, mentionsBot: true }));
+  assert.equal(f.llm.prompts.length, 1);
+  const notices = f.outputs.filter(output => output.text.startsWith('I reply to bots at most'));
+  assert.deepEqual(notices.map(output => output.text), ['I reply to bots at most 1 times in 10 minutes in this channel. A team editor can change this in Bot admin.']);
+  const skipped = skippedLines(lines);
+  assert.deepEqual(skipped.map(line => line.messageId), ['bot-2', 'bot-3']);
+  assert.equal(skipped[0]?.reason, 'bot_reply_limit');
+  assert.equal(skipped[0]?.limit, 1);
+  assert.equal(skipped[0]?.windowMinutes, 10);
+  assert.equal(skipped[0]?.author, 'other-bot');
+  assert.equal(skipped[0]?.channel, 'c');
+  assert.equal(skipped[0]?.server, 's');
+});
+
+test('muted_logs_without_notice: a muted user gets no reply and no notice, but the skip is logged', async t => {
+  const f = setup(); t.after(() => f.store.close());
+  const lines = captureConsoleLogs(t);
+  const bot = new Bot(f.app, f.store, f.store, f.gateway, 's', ['c'], { mutedUntil: user => user === 'mallory' ? Date.now() + 60_000 : undefined });
+  await bot.receive(incoming('muted-1', 'hello', { author: 'mallory', mentionsBot: true }));
+  assert.equal(f.llm.prompts.length, 0);
+  assert.equal(f.outputs.length, 0);
+  const skipped = skippedLines(lines);
+  assert.equal(skipped.length, 1);
+  assert.equal(skipped[0]?.reason, 'muted');
+  assert.equal(skipped[0]?.messageId, 'muted-1');
+  assert.equal(skipped[0]?.author, 'mallory');
+  // An unaddressed message from a muted user is not logged.
+  await bot.receive(incoming('muted-2', 'just chatting', { author: 'mallory' }));
+  assert.equal(skippedLines(lines).length, 1);
+});
+
+function captureConsoleLogs(t: { mock: { method(object: object, name: string, impl: (line: string) => void): unknown } }): string[] {
+  const lines: string[] = [];
+  t.mock.method(console, 'log', (line: string) => { lines.push(line); });
+  return lines;
+}
+
+function skippedLines(lines: string[]): Record<string, unknown>[] {
+  return lines.map(line => JSON.parse(line) as Record<string, unknown>).filter(line => line.type === 'request_skipped');
+}
+
 test("source edits invalidate copied task context but preserve reasoning events", async t => {
   const f = setup(); t.after(() => f.store.close());
   await f.bot.receive(incoming("1", "!task old goal", { mentionsBot: true }));

@@ -19,7 +19,7 @@ export interface ProfileStore {
 }
 export function registerProfileTools(registry: ToolRegistry, store: ProfileStore): void {
   registry.register({
-    name: "profile", description: "Find or inspect profiles; explicitly add attributed facts, aliases or links. scope:server is this server's profile, scope:global is the same account profile across servers, editable only by its owner. Global fields persist until the owner removes them and override conflicting server fields in model context. Never infer personal facts from jokes or guesses.",
+    name: "profile", surface: "top", description: "Find or inspect profiles; explicitly add attributed facts, aliases or links. scope:server is this server's profile, scope:global is the same account profile across servers, editable only by its owner. Global fields persist until the owner removes them and override conflicting server fields in model context. Never infer personal facts from jokes or guesses.",
     access: "member", effect: "write", retrySafe: true, execution: "inline",
     fields: {
       action: { type: "string", description: "Default: get. History and undo are owner-only.", choices: ["get", "find", "set", "remove", "lock", "history", "undo"] },

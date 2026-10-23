@@ -1,4 +1,4 @@
-import { ToolError, UncertainActionError, errorContext, errorSummary, redactErrorText, describeError } from "./errors.js";
+import { ToolError, UncertainActionError, errorContext, errorSummary, isBeforeRequest, redactErrorText, describeError } from "./errors.js";
 import {stableJson} from './prompt-cache.js';
 import { toolNeedsThread } from './thread-policy.js';
 import { requestTimings } from "./request-timing.js";
@@ -18,6 +18,8 @@ export interface ToolResult {
   artifacts?: readonly { url: string; label: string }[];
   /** Image input for the model, sent inside this tool result (view_image). Not saved in the action log text. */
   images?: readonly import('./model-images.js').ModelImage[];
+  /** Forgiving-validation changes made to the arguments, for example a clamped number. Also named in text. */
+  notes?: readonly string[];
   handoff?: { threadId: string };
   ui?: import('./ui/schema.js').UiDocument;
 }
@@ -78,16 +80,18 @@ export interface ToolDefinition {
   access: "member" | "admin";
   effect: "read" | "write";
   retrySafe: boolean;
-  /** A bot setting that does not touch task state. It runs even when the channel has a blocked job. */
+  /** A bot setting that does not touch task state. */
   setting?: boolean;
   /** External/custom tool default. Native routing is defined centrally in thread-policy.ts. */
   execution?: "inline" | "thread";
   /** The tool acts on Discord itself (posts or edits Discord messages, threads, reactions, or changes Discord server or channel settings), so it is not offered in private web chats. */
   scope?: "discord";
+  /** Only a person's command or button runs this tool. The model is not offered it, and an agent call is refused with this text. */
+  commandOnly?: string;
   publicResult?(args: ToolArgs): boolean;
   matchRead?(message: Message): ToolArgs | undefined;
   resource?(message: Message, args: ToolArgs): string;
-  /** A started write on its resource older than this no longer blocks other writes; it is ended as failed with reason "abandoned". Only for work that cannot outlive this time (for example an orphan that expires on its own). */
+  /** A started write on its resource older than this no longer blocks writes on that resource; it is ended as failed with reason "abandoned". Default: UNCERTAIN_LOCK_MS. A tool sets it only when its orphan expires on its own sooner or later (sandbox lifetime). */
   staleAfterMs?: number;
   writes?(args: ToolArgs): boolean;
   validate?(args: ToolArgs): ToolArgs;
@@ -99,18 +103,23 @@ export interface ToolDefinition {
 }
 export interface ToolOperation {
   id: string; name: string; args: ToolArgs; resource: string | null; status: "started" | "done" | "failed"; result: string | null;
+  /** When the operation started, in ms. */
+  createdAt?: number;
 }
 export interface BlockingOperation { id: string; startedAt: number }
-/** The message for a write that waits on an earlier unfinished write. Private chats say "chat", not "task". */
-function blockedError(message: Message, name: string, blocking: BlockingOperation, staleAfterMs: number | undefined): ToolError {
-  const noun = isPrivateChannel(message.channel) ? "chat" : "task";
-  const started = utcTime(blocking.startedAt);
-  const error = new ToolError(staleAfterMs === undefined
-    ? `An earlier ${name} action in this ${noun} did not finish (started ${started}). Another ${name} action waits until it is reconciled.`
-    : `An earlier ${name} action in this ${noun} did not finish (started ${started}). It clears automatically at ${utcTime(blocking.startedAt + staleAfterMs)}.`);
+/** A write lock on one resource ends this long after its write started, unless the tool sets its own staleAfterMs. */
+export const UNCERTAIN_LOCK_MS = 10 * 60 * 1000;
+/** The message for a write that waits on an earlier unfinished write on the same resource. Names the operation, resource and age. */
+function blockedError(message: Message, name: string, blocking: BlockingOperation, resource: string, staleAfterMs: number): ToolError {
+  const error = new ToolError(`An earlier ${name} action in this ${isPrivateChannel(message.channel) ? "chat" : "task"} did not finish. Operation ${blocking.id} on ${resource} started ${ageText(blocking.startedAt)} ago. The lock on this resource clears at ${utcTime(blocking.startedAt + staleAfterMs)}. Check before you retry.`);
   return errorContext(error, { tool: name, operationId: blocking.id }) as ToolError;
 }
+/** The notice for a write whose outcome is unknown after its request was sent. */
+function uncertainError(name: string, operationId: string, resource: string | null, startedAt: number, cause?: unknown): UncertainActionError {
+  return new UncertainActionError(`This may have happened. Check before you retry. ${name} operation ${operationId} on ${resource ?? "its resource"} started ${ageText(startedAt)} ago; its result is uncertain.`, cause === undefined ? undefined : { cause });
+}
 function utcTime(ms: number): string { return new Date(ms).toISOString().slice(0, 16).replace("T", " ") + " UTC"; }
+function ageText(ms: number): string { const seconds = Math.max(0, Math.round((Date.now() - ms) / 1000)); return seconds < 120 ? `${seconds} s` : `${Math.round(seconds / 60)} min`; }
 export interface ToolJournal {
   operation(id: string): ToolOperation | undefined | Promise<ToolOperation | undefined>;
   blockingOperation(resource: string, exceptId: string): BlockingOperation | undefined | Promise<BlockingOperation | undefined>;
@@ -148,6 +157,34 @@ export class ConfirmationRequired extends ToolError {
 
 /** Returned when a private chat calls a Discord-scoped tool. */
 export const discordOnlyMessage = "This action is only available in Discord.";
+
+/** The kind of a value for an error message. */
+const kindOf = (value: unknown): string => value === null ? "null" : Array.isArray(value) ? "an array" : typeof value === "object" ? "an object" : `a ${typeof value}`;
+/** Clamps a number to the field range. A fraction is rounded. Returns the value to use, and notes each change. */
+function clampInteger(key: string, value: unknown, field: ToolField, notes: string[]): number {
+  const min = field.min ?? 0, max = field.max ?? Number.MAX_SAFE_INTEGER;
+  const number = typeof value === "string" && /^\s*-?\d+(\.\d+)?\s*$/.test(value) ? Number(value) : value;
+  if (typeof number !== "number" || !Number.isFinite(number)) throw new ToolError(`Invalid integer: ${key}. Use a whole number from ${min} to ${max}; received ${JSON.stringify(value)}.`);
+  const rounded = Math.round(number), target = Math.min(max, Math.max(min, rounded));
+  if (target !== number) notes.push(`${key} ${JSON.stringify(value)} → ${target}${rounded > max ? " (max)" : rounded < min ? " (min)" : ""}`);
+  return target;
+}
+/** Maps a value to the one choice it names: equal ignoring case, spaces, underscores and hyphens, or a unique prefix of it. Otherwise lists every valid value. */
+function matchChoice(key: string, value: string, choices: readonly string[]): string {
+  const folded = (text: string) => text.toLowerCase().replace(/[\s_-]+/g, "");
+  const wanted = folded(value);
+  const equal = choices.filter(choice => folded(choice) === wanted);
+  const prefixed = choices.filter(choice => folded(choice).startsWith(wanted));
+  const found = equal.length === 1 ? equal : prefixed.length === 1 ? prefixed : [];
+  if (found.length === 1) return found[0]!;
+  const problem = prefixed.length > 1 ? `${JSON.stringify(value.slice(0, 100))} matches more than one value for ${key}` : `Invalid choice for ${key}: ${JSON.stringify(value.slice(0, 100))}`;
+  throw new ToolError(`${problem}. Use one of: ${choices.join(", ")}.`);
+}
+/** Puts the forgiving-validation notes into a result, so the model sees what was changed. */
+function withNotes(output: ToolOutput, notes: readonly string[]): ToolResult {
+  const result = toolResult(output);
+  return notes.length ? { ...result, notes, text: `Note: ${notes.join("; ")}.\n${result.text}` } : result;
+}
 
 export class ToolRegistry {
   private readonly writers = new Map<string, Promise<void>>();
@@ -211,42 +248,48 @@ export class ToolRegistry {
   catalog(message?: Message): string { return catalogOf(this.definitions(), message); }
   schemas(message?: Message): readonly ModelTool[] { return schemasOf(this.definitions(), message); }
   effect(name: string, args: ToolArgs): "read" | "write" { const tool = this.tools.get(name); return tool?.writes ? tool.writes(args) ? "write" : "read" : tool?.effect ?? "read"; }
-  /** True when the tool may run while the channel has a blocked job. */
-  ignoresBlocked(name: string): boolean { return this.tools.get(name)?.setting === true; }
   scopeOf(name: string): "discord" | undefined { return this.tools.get(name)?.scope; }
   requiresThread(name: string, args: ToolArgs): boolean {
     const tool = this.tools.get(name);
     return toolNeedsThread(name, args, this.effect(name, args), tool?.provider, tool?.execution);
   }
-  validate(name: string, input: unknown): ToolArgs {
+  validate(name: string, input: unknown): ToolArgs { return this.check(name, input).args; }
+  /** Validates arguments. Small mistakes are forgiven: a number is clamped to its range and an enum value is mapped when one valid value matches. Each change is returned as a note. */
+  check(name: string, input: unknown): { args: ToolArgs; notes: string[] } {
     const tool = this.tools.get(name);
     if (!tool) throw new ToolError(`Unknown tool: ${name}`);
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new ToolError("Tool arguments must be an object");
     const args = input as Record<string, unknown>;
     if (tool.inputSchema) {
       if (!validJson(input) || JSON.stringify(input).length > 64000 || !tool.validate) throw new ToolError("Invalid tool arguments");
-      return tool.validate(input as ToolArgs);
+      return { args: tool.validate(input as ToolArgs), notes: [] };
     }
-    const clean: ToolArgs = {};
-    for (const key of Object.keys(args)) if (!Object.hasOwn(tool.fields, key)) throw new ToolError(`Unknown argument: ${key}`);
+    const clean: ToolArgs = {}, notes: string[] = [];
+    for (const key of Object.keys(args)) if (!Object.hasOwn(tool.fields, key)) throw new ToolError(`Unknown argument: ${key}. ${tool.name} takes: ${Object.keys(tool.fields).join(', ')}.`);
     for (const [key, field] of Object.entries(tool.fields)) {
-      const value = args[key];
+      let value = args[key];
       if (value === undefined) { if (field.required) throw new ToolError(`Missing argument: ${key}`); continue; }
       if (field.type === "json") {
         if (!validJson(value) || JSON.stringify(value).length > (field.max ?? 16000)) throw new ToolError(`Invalid JSON: ${key}`);
       } else if (field.type === "integer") {
-        if (typeof value !== "number" || !Number.isSafeInteger(value) || value < (field.min ?? 0) || value > (field.max ?? Number.MAX_SAFE_INTEGER)) throw new ToolError(`Invalid integer: ${key}. Use a whole number from ${field.min ?? 0} to ${field.max ?? Number.MAX_SAFE_INTEGER}; received ${String(value)}.`);
+        value = clampInteger(key, value, field, notes);
       } else if (field.type === "boolean") {
-        if (typeof value !== "boolean") throw new ToolError(`Invalid boolean: ${key}`);
+        if (typeof value !== "boolean") throw new ToolError(`Invalid boolean: ${key}. Expected true or false, got ${kindOf(value)}.`);
       } else {
-        if (typeof value !== "string" || !value.trim() || value.length > (field.max ?? 4000)) throw new ToolError(`Invalid text: ${key}`);
+        if (typeof value !== "string") throw new ToolError(`Invalid text: ${key}. Expected a string, got ${kindOf(value)}.`);
+        if (!value.trim()) throw new ToolError(`${key} must not be empty.`);
+        if (value.length > (field.max ?? 4000)) throw new ToolError(`Invalid text: ${key}. Expected a string of at most ${field.max ?? 4000} characters.`);
         if (field.type === "channel" && !/^\d{17,20}$/.test(value)) throw new ToolError(`Use a Discord channel ID for ${key}`);
         if (field.type === "message_ref" && !messageRefPattern.test(value)) throw new ToolError(`Use a Discord message ID (17 to 20 digits) or a web chat message ID (chat-…) for ${key}`);
-        if (field.choices && !field.choices.includes(value)) throw new ToolError(`Invalid choice for ${key}: ${JSON.stringify(value.slice(0, 100))}. Use one of: ${field.choices.join(', ')}.`);
+        if (field.choices && !field.choices.includes(value)) {
+          const mapped = matchChoice(key, value, field.choices);
+          notes.push(`${key} ${JSON.stringify(value.slice(0, 100))} → ${mapped}`);
+          value = mapped;
+        }
       }
       clean[key] = value as Json;
     }
-    return tool.validate ? tool.validate(clean) : clean;
+    return { args: tool.validate ? tool.validate(clean) : clean, notes };
   }
   async checkAccess(message: Message, name: string): Promise<boolean> {
     const tool = this.tools.get(name);
@@ -259,17 +302,18 @@ export class ToolRegistry {
     return displayToolResult(await this.invokeResult(message, name, input, operationId, source, expectedVersion));
   }
   async invokeResult(message: Message, name: string, input: unknown, operationId: string, source: "command" | "agent", expectedVersion?: number, invocation?: ToolInvocation): Promise<ToolResult> {
-    const args = this.validate(name, input), tool = this.tools.get(name)!;
+    const { args, notes } = this.check(name, input), tool = this.tools.get(name)!;
+    if (tool.commandOnly && source === "agent") throw new ToolError(tool.commandOnly);
     // A private chat cannot act on Discord. Every other tool follows the same rules as in Discord.
     if (isPrivateChannel(message.channel) && tool.scope === "discord") throw new ToolError(discordOnlyMessage);
-    if (this.effect(name, args) === "read") return this.perform(message, name, args, operationId, source, expectedVersion, invocation);
+    if (this.effect(name, args) === "read") return this.perform(message, name, args, operationId, source, expectedVersion, invocation, notes);
     const key = tool.resource?.(message, args) ?? `server:${message.server}:tool:${name}`;
     const previous = this.writers.get(key) ?? Promise.resolve();
     let release!: () => void;
     const tail = new Promise<void>(resolve => { release = resolve; });
     this.writers.set(key, tail);
     await requestTimings.wait("tool resource lock", () => previous);
-    try { return await this.perform(message, name, args, operationId, source, expectedVersion, invocation); }
+    try { return await this.perform(message, name, args, operationId, source, expectedVersion, invocation, notes); }
     finally { release(); if (this.writers.get(key) === tail) this.writers.delete(key); }
   }
   async authorizeCall(message: Message, name: string, input: unknown, operationId: string, source: "command" | "agent", expectedVersion?: number, invocation?: ToolInvocation): Promise<ToolContext> {
@@ -285,21 +329,30 @@ export class ToolRegistry {
     if (tool!.access === "admin" && !context.isAdmin) throw new ToolError("Manage Server permission is required.");
     return context;
   }
-  private async perform(message: Message, name: string, input: unknown, operationId: string, source: "command" | "agent", expectedVersion?: number, invocation?: ToolInvocation): Promise<ToolResult> {
+  /** Runs the checks a write needs before anything is saved or asked of the requester: argument validation, access, the tool's authorize, and its resource lock. Throws a ToolError for a failed check. */
+  async preflight(message: Message, name: string, input: unknown, operationId: string, source: "command" | "agent", expectedVersion?: number): Promise<void> {
+    const context = await this.authorizeCall(message, name, input, operationId, source, expectedVersion);
+    if (!context.resource) return;
+    const blocking = await this.journal.blockingOperation(context.resource, operationId);
+    if (blocking) throw blockedError(message, name, blocking, context.resource, this.staleAfter(name));
+  }
+  private staleAfter(name: string): number { return this.tools.get(name)?.staleAfterMs ?? UNCERTAIN_LOCK_MS; }
+  private async perform(message: Message, name: string, input: unknown, operationId: string, source: "command" | "agent", expectedVersion?: number, invocation?: ToolInvocation, notes: string[] = []): Promise<ToolResult> {
     const tool = this.tools.get(name);
     const context = await this.authorizeCall(message, name, input, operationId, source, expectedVersion, invocation);
     const args = context.arguments;
     const previous = await this.journal.operation(operationId);
     if (context.resource) {
-      // An uncertain write that outlived its own lifetime cannot have a live effect, so it stops blocking.
-      if (tool!.staleAfterMs !== undefined) await this.journal.expireOperations(context.resource, Date.now() - tool!.staleAfterMs, operationId, encodeToolResult({ text: "abandoned", reason: "abandoned", status: "failed", failure: { causes: [] } }));
+      // An uncertain write older than its lock cannot have a live effect, so it stops blocking. Only its own resource is checked.
+      const staleAfterMs = this.staleAfter(name);
+      await this.journal.expireOperations(context.resource, Date.now() - staleAfterMs, operationId, encodeToolResult({ text: "abandoned", reason: "abandoned", status: "failed", failure: { causes: [] } }));
       const blocking = await this.journal.blockingOperation(context.resource, operationId);
       if (blocking) {
         const pending = tool!.reconcileBlocking ? await this.journal.operation(blocking.id) : undefined;
         const recovered = pending?.name === name
           ? await tool!.reconcile?.({ ...context, operationId: pending.id, arguments: pending.args }, pending.args)
           : undefined;
-        if (recovered === undefined) throw blockedError(message, name, blocking, tool!.staleAfterMs);
+        if (recovered === undefined) throw blockedError(message, name, blocking, context.resource, staleAfterMs);
         await this.journal.endOperation(blocking.id, encodeToolResult(recovered));
       }
     }
@@ -312,19 +365,24 @@ export class ToolRegistry {
       }
       if (!tool!.retrySafe) {
         const result = await tool!.reconcile?.(context, args);
-        if (result === undefined) throw new UncertainActionError(`The result of ${name} is uncertain; inspect it before retrying.`);
+        if (result === undefined) throw uncertainError(name, operationId, context.resource, previous.createdAt ?? Date.now());
         await this.journal.endOperation(operationId, encodeToolResult(result));
         return toolResult(result);
       }
     } else await this.journal.beginOperation(context, name, args);
+    const startedAt = Date.now();
     try {
-      const result = await tool!.execute(context, args);
+      const result = withNotes(await tool!.execute(context, args), notes);
       await this.journal.endOperation(operationId, encodeToolResult(result));
-      return toolResult(result);
+      return result;
     } catch (error) {
-      // Only known validation failures are safely final; network outcomes stay uncertain.
-      if (error instanceof ToolError) await this.journal.endOperation(operationId, encodeToolResult({ text: errorSummary(error), reason: redactErrorText(error.message), status: error.status, failure: { causes: describeError(error).causes } }), true);
-      else if (context.resource && !tool!.retrySafe) throw new UncertainActionError(`The result of ${name} is uncertain and was recorded for reconciliation.`, { cause: error });
+      // Validation failures and errors before the request is sent are final (failed). Only an error after the request was sent is uncertain.
+      if (error instanceof ToolError || (context.resource && !tool!.retrySafe && isBeforeRequest(error))) {
+        const failure = error instanceof ToolError ? error : new ToolError(redactErrorText(errorSummary(error)), "failed", { cause: error });
+        await this.journal.endOperation(operationId, encodeToolResult({ text: errorSummary(failure), reason: redactErrorText(failure.message), status: failure.status, failure: { causes: describeError(failure).causes } }), true);
+        throw failure;
+      }
+      if (context.resource && !tool!.retrySafe) throw uncertainError(name, operationId, context.resource, startedAt, error);
       throw error;
     }
   }
@@ -337,6 +395,7 @@ function sortedDefinitions(tools: ReadonlyMap<string, ToolDefinition>): readonly
 
 /** A private chat is offered every tool except Discord-scoped ones. Other channels are offered every tool. */
 function offeredIn(tool: ToolDefinition, message?: Message): boolean {
+  if (tool.commandOnly) return false;
   return !message || !isPrivateChannel(message.channel) || tool.scope !== "discord";
 }
 

@@ -125,10 +125,14 @@ export class PlainFetch implements WebFetch {
   }
 
   private async readPage(url: URL, response: FetchedResponse): Promise<PageText> {
-    if (response.status < 200 || response.status > 299) { response.destroy(); throw failure(`Page returned HTTP ${response.status}.`); }
+    if (response.status < 200 || response.status > 299) {
+      response.destroy();
+      // A 4xx is the site's own answer. A 5xx may be an outage, so it is not.
+      throw failure(`Page returned HTTP ${response.status}.`, undefined, response.status >= 400 && response.status < 500 ? { httpStatus: response.status } : undefined);
+    }
     const contentType = header(response.headers, 'content-type') ?? '';
     const type = contentType.split(';')[0]?.trim().toLowerCase() ?? '';
-    if (!TYPES.includes(type)) { response.destroy(); throw failure(`Page type ${type || 'unknown'} is not supported.`); }
+    if (!TYPES.includes(type)) { response.destroy(); throw failure(`Page type ${type || 'unknown'} is not supported.`, undefined, {}); }
     const encoding = header(response.headers, 'content-encoding');
     if (encoding && encoding.toLowerCase() !== 'identity') { response.destroy(); throw failure('Compressed pages are not supported.'); }
     const declared = header(response.headers, 'content-length');
@@ -144,7 +148,7 @@ export class PlainFetch implements WebFetch {
     const body = page.content.trim();
     // Plain text has no markup to inspect, so only the length rule applies to it.
     const reason = type === 'text/plain' ? (collapse(body).length < MIN_TEXT ? NO_TEXT : undefined) : uselessPage(raw, body);
-    if (reason) throw failure(reason);
+    if (reason) throw failure(reason, undefined, {});
     const truncated = body.length > FETCH_TEXT_LIMIT;
     return {
       url: url.href,
@@ -279,6 +283,7 @@ function refusal(message: string): ToolError {
   return new ToolError(message, 'rejected');
 }
 
-function failure(message: string, cause?: unknown): ProviderFailed {
-  return new ProviderFailed('plain_fetch', message, false, cause === undefined ? undefined : { cause });
+/** A failed page read. siteAnswer is set when the site answered for certain: a 4xx status, or a page that cannot be read. */
+function failure(message: string, cause?: unknown, siteAnswer?: { httpStatus?: number }): ProviderFailed {
+  return new ProviderFailed('plain_fetch', message, false, { ...(cause === undefined ? {} : { cause }), ...(siteAnswer ? { siteAnswer } : {}) });
 }

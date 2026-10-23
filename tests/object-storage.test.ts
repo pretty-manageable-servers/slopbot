@@ -100,7 +100,7 @@ test('paths, MIME types, upload size and signing lifetimes are bounded', async t
   await assert.rejects(registry.invokeResult(message, 'file_store', { action: 'save_attachment', path: 'huge' }, 'huge', 'agent'), /10 MiB/);
   assert.equal(f.objects.size, 0);
   await f.call({ action: 'write', path: 'x', text: 'x' });
-  for (const seconds of [0, 604801]) await assert.rejects(f.call({ action: 'link', path: 'x', seconds }), /Invalid integer/);
+  for (const seconds of ['soon', null]) await assert.rejects(f.call({ action: 'link', path: 'x', seconds: seconds as never }), /Invalid integer/);
   assert.match((await f.call({ action: 'link', path: 'x', seconds: 60 })).artifacts![0]!.url, /expires=60/);
 });
 

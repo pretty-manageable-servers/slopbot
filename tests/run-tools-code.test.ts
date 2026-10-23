@@ -132,7 +132,7 @@ test('confirm_tool_stops_program', async t => {
   registry.register(runToolsCodeTool(registry, { confirmations: { record: async (_server, operationId) => saved.get(operationId), save: async (_server, operationId, value) => { saved.set(operationId, value); } } }));
   const code = 'try { await tools.remove({id:"c1"}); } catch (error) { text("caught"); } await tools.other({}); text("after");';
   const result = await registry.invokeResult(request, 'run_tools_code', { code }, 'confirm-run', 'agent');
-  assert.equal(result.text, 'Waiting for alice to confirm remove. The bot posted Confirm and Cancel buttons.');
+  assert.equal(result.text, 'Waiting for Confirm on remove. alice has the Confirm and Cancel buttons.');
   assert.equal(removed, 0); assert.equal(other, 0);
   const [operationId] = [...saved.keys()];
   assert.ok(operationId);
@@ -152,7 +152,7 @@ test('cancelled_confirm_not_repeated', async t => {
   const tool = runToolsCodeTool(registry, { confirmations: { record: async (_server, operationId) => saved.get(operationId), save: async (_server, operationId, value) => { asked++; saved.set(operationId, value); } } });
   registry.register(tool);
   const code = 'text(await tools.remove({id:"c1"}));';
-  assert.equal((await registry.invokeResult(request, 'run_tools_code', { code }, 'confirm-run', 'agent')).text, 'Waiting for alice to confirm remove. The bot posted Confirm and Cancel buttons.');
+  assert.equal((await registry.invokeResult(request, 'run_tools_code', { code }, 'confirm-run', 'agent')).text, 'Waiting for Confirm on remove. alice has the Confirm and Cancel buttons.');
   assert.equal(asked, 1);
   const [operationId] = [...saved.keys()];
   // The Cancel button writes the record as done and cancelled.

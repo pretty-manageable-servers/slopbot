@@ -29,7 +29,7 @@ test('causes are bounded and uncertainty survives added diagnostic context', () 
   assert.ok(errorContext(error, { stage: 'request execution' }) instanceof UncertainActionError);
   assert.equal(describeError(error).context.stage, 'tool execution');
   assert.equal(describeError(error).code, 'ACTION_UNCERTAIN');
-  assert.match(errorReply(error), /may already have happened/);
+  assert.match(errorReply(error), /This may have happened/);
   assert.ok(errorSummary(new Error('x'.repeat(3000))).length <= 1000);
 });
 

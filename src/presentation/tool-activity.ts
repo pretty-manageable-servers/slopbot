@@ -1,5 +1,5 @@
 import type { ToolActivity } from "../tool-activity.js";
-import { currentStep, slopbotEmoji, toolEmoji, toolGroup } from "./tool-labels.js";
+import { currentStep, escapeMarkdown, plainWords, slopbotEmoji, toolEmoji, toolGroup } from "./tool-labels.js";
 
 const PROGRAM_TOOL = "run_tools_code";
 // Child calls of a code run are shown under the run, not in the summary counts.
@@ -10,9 +10,16 @@ const status = (item: ToolActivity) => {
   const text = item.status === "rejected" ? "blocked" : item.status;
   return item.reused ? `${text}, saved result` : text;
 };
-const reason = (item: ToolActivity, limit = 500) => item.reason
-  ? `: ${item.reason.replace(/\s+/g, " ").replace(/[\\`*_~<>|\[\]]/g, "\\$&").slice(0, limit).replace(/[\uD800-\uDBFF]$/, "")}`
-  : "";
+// Users never see error-code tags such as [TOOL_BLOCKED]. The model still gets the full text in its tool result.
+const LEADING_CODE_TAGS = /^(\[[A-Z0-9_]+\]\s*)+/;
+const FIRST_SENTENCE = /^.*?[.!?](?=\s|$)/;
+// Plain text for a user-facing failure line. sentence:true keeps only the first sentence.
+const reason = (item: ToolActivity, limit = 500, sentence = false) => {
+  const text = (item.reason ?? "").replace(/\s+/g, " ").replace(LEADING_CODE_TAGS, "").trim();
+  if (!text) return "";
+  const short = sentence ? (FIRST_SENTENCE.exec(text)?.[0] ?? text) : text;
+  return `: ${escapeMarkdown(clip(short, limit))}`;
+};
 export function toolFailureSummary(activity: readonly ToolActivity[]): string {
   return activity.filter(item => item.status === "rejected" || item.status === "failed")
     .map(item => `- ${label(item.name)}: ${status(item)}${reason(item)}`).join("\n");
@@ -24,12 +31,12 @@ const counts = (activity: readonly ToolActivity[]) => {
   for (const item of activity) groups.set(item.name, (groups.get(item.name) ?? 0) + 1);
   return groups;
 };
-// Wall time from the first tool start to the last tool end.
+// Wall time from the first tool start to the last tool end, for example "12s".
 const totalTime = (activity: readonly ToolActivity[]) => {
   const timed = activity.filter(item => item.startedAt !== undefined && item.durationMs !== undefined);
   if (!timed.length) return "";
   const ms = Math.max(...timed.map(item => item.startedAt! + item.durationMs!)) - Math.min(...timed.map(item => item.startedAt!));
-  return ` · ${Math.max(1, Math.round(ms / 1000))}s`;
+  return `${Math.max(1, Math.round(ms / 1000))}s`;
 };
 const title = (text: string) => text[0]!.toUpperCase() + text.slice(1);
 export function toolDisplayMode(value: unknown): ToolDisplayMode {
@@ -44,7 +51,7 @@ function programProgress(run: ToolActivity, calls: readonly ToolActivity[], numb
     totals.set(state, (totals.get(state) ?? 0) + 1);
   }
   const summary = [...totals].map(([state, count]) => `${count} ${state}`).join(" · ") || "0 tool calls";
-  const header = `Programmatic tools · Run ${number} · ${status(run)}\n\`\`\`\n`;
+  const header = `Run ${number} · ${status(run)}\n\`\`\`\n`;
   const footer = `\n└ ${summary}\n\`\`\``;
   const row = (call: ToolActivity) => {
     const name = call.name.replace(/[^a-zA-Z0-9_]/g, "").slice(0, 40);
@@ -64,16 +71,21 @@ function programProgress(run: ToolActivity, calls: readonly ToolActivity[], numb
   }
   const rows = calls.filter(call => selected.has(call)).map(row);
   if (selected.size < calls.length) rows.push(`… ${calls.length - selected.size} more calls in tool trace`);
-  if (!rows.length) rows.push(run.status === "running" ? "◌ executing code" : `${progressSymbol(run)} ${status(run)}`);
+  if (!rows.length) rows.push(run.status === "running" ? "◌ running" : `${progressSymbol(run)} ${status(run)}`);
   return header + rows.map((text, index) => `${index ? "│" : "┌"} ${text}`).join("\n") + footer;
 }
+/** One plain-words line after the reply. Every call counts by its own tool, including calls inside a code run; the run itself is not counted. Details are in the Tool runs view. */
 export function toolFooter(activity: readonly ToolActivity[], mode: ToolDisplayMode = "full"): string {
   if (!activity.length || mode === "none") return "";
-  const groups = [...counts(topLevel(activity).filter(item => item.status === 'completed'))].map(([name, count]) => `${toolEmoji(name)} ${count} ${toolGroup(name)[count === 1 ? 0 : 1]}`);
-  const unknown = activity.filter(item => item.status === 'running').map(item => `-# ${toolGroup(item.name)[0]} outcome unknown: no confirmed result.`);
-  const failures = mode === "full" ? activity.filter(failed).map(item => `-# ❌ ${toolGroup(item.name)[0]} ${status(item)}${reason(item, 200)}`) : [];
-  const lines = [...(groups.length ? [`-# ${groups.join(" · ")}${totalTime(activity)}`] : []), ...failures, ...unknown];
-  return lines.length ? "\n\n" + lines.join("\n") : '';
+  const calls = activity.filter(item => item.name !== PROGRAM_TOOL);
+  const parts = [...counts(calls.filter(item => item.status === 'completed'))].map(([name, count]) => plainWords(name, count));
+  const blocked = calls.filter(item => item.status === 'rejected').length, failedCount = calls.filter(item => item.status === 'failed').length, unknown = calls.filter(item => item.status === 'running').length;
+  if (blocked) parts.push(`${blocked} blocked`);
+  if (failedCount) parts.push(`${failedCount} failed`);
+  if (unknown) parts.push(`${unknown} outcome unknown`);
+  if (!parts.length) return "";
+  const time = totalTime(activity);
+  return "\n\n-# " + [...parts, ...(time ? [time] : [])].join(" · ");
 }
 export function toolProgress(activity: readonly ToolActivity[], funLine: string): string {
   const programRuns = topLevel(activity).filter(item => item.name === PROGRAM_TOOL);
@@ -81,7 +93,7 @@ export function toolProgress(activity: readonly ToolActivity[], funLine: string)
   const runs = visibleRuns.map((run, index) => programProgress(run, activity.filter(item => item.parentId === run.id), programRuns.length - visibleRuns.length + index + 1, Math.floor(1500 / visibleRuns.length)));
   if (programRuns.length > visibleRuns.length) runs.unshift(`-# ${programRuns.length - visibleRuns.length} earlier code runs in tool trace`);
   const groups = [...counts(topLevel(activity).filter(item => item.name !== PROGRAM_TOOL))].map(([name, count]) => `${toolEmoji(name)} ${title(toolGroup(name)[0])} × ${count}`);
-  const failures = topLevel(activity).filter(failed).slice(-3).map(item => `-# ❌ ${toolGroup(item.name)[0]} ${status(item)}${reason(item, 120)}`);
+  const failures = topLevel(activity).filter(failed).slice(-3).map(item => `-# ❌ ${toolGroup(item.name)[0]} ${status(item)}${reason(item, 100, true)}`);
   const last = activity[activity.length - 1];
   const now = last && !last.parentId && last.name !== PROGRAM_TOOL ? [`-# now: ${toolEmoji(last.name)} ${currentStep(last.name, last.arguments?.query)}`] : [];
   const blocks = runs.join("\n");

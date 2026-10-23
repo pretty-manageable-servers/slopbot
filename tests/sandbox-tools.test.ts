@@ -118,8 +118,10 @@ test('shell passes the time limit in milliseconds and enforces its bounds', asyn
   await f.invoke('shell', { command: 'ls' }, 's1');
   await f.invoke('shell', { command: 'ls', timeout_seconds: 45 }, 's2');
   assert.deepEqual(f.timeouts.slice(-2), [30000, 45000]);
-  await assert.rejects(f.invoke('shell', { command: 'ls', timeout_seconds: 121 }, 's3'));
-  await assert.rejects(f.invoke('shell', { command: 'ls', timeout_seconds: 0 }, 's4'));
+  // Out-of-range times are clamped to the range, not refused.
+  await f.invoke('shell', { command: 'ls', timeout_seconds: 121 }, 's3');
+  await f.invoke('shell', { command: 'ls', timeout_seconds: 0 }, 's4');
+  assert.deepEqual(f.timeouts.slice(-2), [120000, 1000]);
 });
 
 test('the first call starts a sandbox and later calls reuse it', async t => {

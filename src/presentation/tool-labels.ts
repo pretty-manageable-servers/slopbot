@@ -20,6 +20,7 @@ const special: Record<string, { emoji: string; group?: [string, string] }> = {
   history_search: { emoji: "📜", group: ["history search", "history searches"] },
   history_read: { emoji: "📖", group: ["message read", "message reads"] },
   view_image: { emoji: "🖼️", group: ["image view", "image views"] },
+  attach_file: { emoji: "📎", group: ["file attach", "file attaches"] },
   read: { emoji: "📎" },
   write: { emoji: "📝" },
   edit: { emoji: "📝" },
@@ -34,6 +35,8 @@ const special: Record<string, { emoji: string; group?: [string, string] }> = {
   task_status: { emoji: "📋" },
   task_retry: { emoji: "📋" },
   poll_create: { emoji: "📊" },
+  issue_draft: { emoji: "📝", group: ["issue draft", "issue drafts"] },
+  file_report: { emoji: "🐞", group: ["report filing", "report filings"] },
   sandbox_manage: { emoji: "💻" },
   run_tools_code: { emoji: "🧩", group: ["code run", "code runs"] },
 };
@@ -42,6 +45,32 @@ export const toolEmoji = (name: string): string => special[name]?.emoji ?? "🛠
 export const toolGroup = (name: string): [string, string] => {
   const words = name.replace(/_/g, " ");
   return special[name]?.group ?? [words, words];
+};
+const times = (count: number): string => count > 1 ? ` ${count}×` : '';
+const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`;
+// Plain words for the footer, by tool and count. Other tools use their name with spaces.
+const plainWordsOf: Record<string, (count: number) => string> = {
+  history_search: count => `searched history${times(count)}`,
+  history_read: count => `read ${plural(count, 'message')}`,
+  web_search: count => `searched the web${times(count)}`,
+  web_fetch: count => `read ${plural(count, 'page')}`,
+  read: count => `read ${plural(count, 'file')}`,
+  write: count => `wrote ${plural(count, 'file')}`,
+  edit: count => `edited ${plural(count, 'file')}`,
+  shell: count => `ran ${plural(count, 'command')}`,
+  view_image: count => `viewed ${plural(count, 'image')}`,
+  memory: count => `checked memory${times(count)}`,
+  memory_remember: count => `saved ${plural(count, 'memory')}`,
+  file_store: count => `read ${plural(count, 'stored file')}`,
+  file_store_write: count => `changed ${plural(count, 'stored file')}`,
+  attach_file: count => `attached ${plural(count, 'file')}`,
+  issue_draft: count => count === 1 ? 'drafted an issue' : `drafted ${plural(count, 'issue')}`,
+  bot_info: count => `read bot info${times(count)}`,
+};
+// Tools without a phrase: the name in spaces, as a plain verb phrase. Never a × glued to the name.
+export const plainWords = (name: string, count: number): string => {
+  const label = name.replace(/_/g, ' ');
+  return plainWordsOf[name]?.(count) ?? (count > 1 ? `used ${label} ${count} times` : `used ${label}`);
 };
 export const escapeMarkdown = (text: string): string => text.replace(/\s+/g, " ").replace(/[\\`*_~<>|\[\]]/g, "\\$&");
 // Short text for the "now" line. Only the query is shown, never other arguments.

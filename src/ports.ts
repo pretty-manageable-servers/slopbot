@@ -18,6 +18,8 @@ export interface Store extends ProviderKeyStore {
   recordSources(runId: string, server: string, sourceIds: readonly string[]): Promise<void>;
   linkOutput(message: Message, runId: string | undefined, sourceId: string): Promise<void>;
   contextVersion(server: string, channel: string): Promise<number>;
+  // The newest messages of a channel, oldest first. Optional: a run without it gets no notes about channel changes.
+  recentChannelMessages?(server: string, channel: string, limit: number): Promise<readonly Message[]>;
   ingest(message: Message): Promise<boolean>;
   context(message: Message, limit: number): Promise<readonly Message[]>;
   history(taskKey: string): Promise<readonly PromptItem[]>;

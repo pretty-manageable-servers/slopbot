@@ -1,5 +1,4 @@
 import { readParticipationHistory, type ParticipationHistoryQuery } from '../participation-history.js';
-import { findIssueReportOrigin } from '../issue-report-origin.js';
 import { diagnosticArgs } from '../diagnostic-data.js';
 import { contextChangedError, legacyToolProgress, sourceFingerprint, type ContextChange } from "../source-context.js";
 import { logError } from "../errors.js";
@@ -355,6 +354,11 @@ export class PostgresStore {
             (await this.identifyAuthor(message.server, message.author, [message.authorName, ...(message.authorAliases ?? [])], message.isBot, message.authorIdentity));
         const result = (await this.db.prepare("INSERT OR IGNORE INTO messages(server,id,channel,body) VALUES(?,?,?,?)").run(message.server, message.id, message.channel, JSON.stringify(message)));
         return result.changes === 1;
+    }
+    /** The newest messages of a channel, oldest first. Used for the notes about changes during a run. */
+    async recentChannelMessages(server: string, channel: string, limit: number): Promise<readonly Message[]> {
+        const rows = await this.db.prepare("SELECT body FROM messages WHERE server=? AND channel=? ORDER BY coalesce(json_extract(body,'$.timestamp'),sequence) DESC LIMIT ?").all(server, channel, limit);
+        return (await Promise.all(rows.reverse().map(async (row) => this.namedMessage(parseMessage(JSON.parse(String(row.body))))))) as Message[];
     }
     async context(message: Message, limit: number): Promise<readonly Message[]> {
         const current = (await this.db.prepare("SELECT coalesce(json_extract(body,'$.timestamp'),sequence) AS moment FROM messages WHERE server=? AND id=?")
@@ -716,7 +720,6 @@ export class PostgresStore {
     async failJob(id: string, error: string, blocked: boolean): Promise<void> {
         (await this.db.prepare("UPDATE jobs SET status=?,error=? WHERE id=? AND status<>'cancelled'").run(blocked ? "blocked" : "failed", error.slice(0, 1000), id));
     }
-    async hasBlocked(server: string, channel: string): Promise<boolean> { return Boolean((await this.db.prepare("SELECT 1 FROM jobs WHERE server=? AND channel=? AND status='blocked' LIMIT 1").get(server, channel))); }
     async hasPendingOther(server: string, channel: string, messageId: string): Promise<boolean> { return Boolean((await this.db.prepare("SELECT 1 FROM jobs WHERE server=? AND channel=? AND message_id<>? AND status='pending' LIMIT 1").get(server, channel, messageId))); }
     async jobs(server: string, channel: string): Promise<Job[]> {
         return (await this.db.prepare("SELECT * FROM jobs WHERE server=? AND channel=? ORDER BY sequence DESC LIMIT 20").all(server, channel)).map(row => this.job(row));
@@ -732,10 +735,7 @@ export class PostgresStore {
     }
     async operation(id: string): Promise<ToolOperation | undefined> {
         const row = (await this.db.prepare("SELECT * FROM tool_operations WHERE id=?").get(id));
-        return row ? { id, name: String(row.name), args: JSON.parse(String(row.args)) as ToolArgs, resource: row.resource === null ? null : String(row.resource), status: row.status as ToolOperation["status"], result: row.result === null ? null : String(row.result) } : undefined;
-    }
-    async issueReportOrigin(server: string, url: string, body: string) {
-      return findIssueReportOrigin(await this.db.prepare("SELECT id,author,channel,result FROM tool_operations WHERE server=? AND name='issue_report' AND status='done' AND result LIKE ?").all(server, `%${url}%`), url, body);
+        return row ? { id, name: String(row.name), args: JSON.parse(String(row.args)) as ToolArgs, resource: row.resource === null ? null : String(row.resource), status: row.status as ToolOperation["status"], result: row.result === null ? null : String(row.result), createdAt: Number(row.created_at) } : undefined;
     }
     async blockingOperation(resource: string, exceptId: string): Promise<BlockingOperation | undefined> {
         const row = (await this.db.prepare("SELECT id,created_at FROM tool_operations WHERE resource=? AND id<>? AND status='started' LIMIT 1").get(resource, exceptId));

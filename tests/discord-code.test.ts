@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ButtonInteraction } from 'discord.js';
-import { handleConfirm, handleShowCode, postConfirmation, saveConfirmation, showCodeRows, type CodeStore } from '../src/adapters/discord-code.js';
-import { codeBlock, codeFitsInline, codeParts, PROGRAM_CODE_KEEP_MS, SHOW_CODE_INLINE_LINES, SHOW_CODE_MESSAGE_CHARS } from '../src/code-display.js';
+import { handleConfirm, postConfirmation, saveConfirmation, showCodeRows, type CodeStore } from '../src/adapters/discord-code.js';
+import { codeBlock, codeFitsInline, PROGRAM_CODE_KEEP_MS, SHOW_CODE_INLINE_LINES, SHOW_CODE_MESSAGE_CHARS } from '../src/code-display.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import type { ToolContext, ConfirmationRequired } from '../src/tools.js';
 import type { Json } from '../src/domain.js';
@@ -46,42 +46,7 @@ function fakeInteraction(customId: string, userId = 'requester', channelId = 'ch
   return { interaction: interaction as unknown as ButtonInteraction, log };
 }
 
-const pendingRecord = { name: 'channels', arguments: { action: 'remove', channel: '12345678901234567' }, parentOperationId: 'parent', channel: 'channel', author: 'requester', createdAt: 1 };
-
-test('show code replies ephemerally with the program code in a js block', async () => {
-  const store = fakeStore({ parent: { name: 'run_tools_code', args: { code: 'text("hi")' } } });
-  const { interaction, log } = fakeInteraction('slopcode:parent');
-  await handleShowCode(interaction, store as unknown as CodeStore);
-  const reply = log[0]!.payload as { content: string; flags: number };
-  assert.equal(reply.content, '```js\ntext("hi")\n```');
-  assert.equal(reply.flags, 64);
-});
-
-test('long program code is sent in several code blocks', async () => {
-  const code = Array.from({ length: 300 }, (_, i) => `const value${i} = ${i};`).join('\n');
-  const store = fakeStore({ parent: { name: 'run_tools_code', args: { code } } });
-  const { interaction, log } = fakeInteraction('slopcode:parent');
-  await handleShowCode(interaction, store as unknown as CodeStore);
-  assert.equal(log[0]!.method, 'reply');
-  assert.ok(log.length > 1 && log.slice(1).every(item => item.method === 'followUp'));
-  const parts = log.map(item => (item.payload as { content: string; flags: number }));
-  assert.ok(parts.every(part => part.content.length <= 2000 && part.flags === 64 && !('files' in part)));
-  assert.equal(parts.map(part => part.content.replace(/^```js\n|\n```$/g, '')).join('\n'), code);
-});
-
-test('one long line is cut into parts', () => {
-  const parts = codeParts('x'.repeat(SHOW_CODE_MESSAGE_CHARS * 2 + 5));
-  assert.equal(parts.length, 3); assert.equal(parts.join(''), 'x'.repeat(SHOW_CODE_MESSAGE_CHARS * 2 + 5));
-});
-
-test('show code says the code is gone when the operation is missing or not a code run', async () => {
-  const store = fakeStore({ other: { name: 'web_search', args: { query: 'x' } } });
-  for (const id of ['missing', 'other']) {
-    const { interaction, log } = fakeInteraction(`slopcode:${id}`);
-    await handleShowCode(interaction, store as unknown as CodeStore);
-    assert.equal((log[0]!.payload as { content: string }).content, 'This code is no longer kept.');
-  }
-});
+const pendingRecord = { name: 'channels', arguments: { action: 'remove', channel: '12345678901234567' }, parentOperationId: 'parent', channel: 'channel', author: 'requester', createdAt: Date.now() };
 
 test('confirm rejects a click from anyone but the requester and keeps the record pending', async () => {
   const store = fakeStore();
@@ -106,7 +71,8 @@ test('confirm runs the saved call once with its operation ID, and a second click
   assert.equal(calls[0]![1], 'channels');
   assert.deepEqual(calls[0]![2], pendingRecord.arguments);
   assert.equal(calls[0]![3], 'op1');
-  assert.match((first.log.at(-1)!.payload as { content: string }).content, /Confirmed channels\.\nChannel removed\./);
+  // The outcome goes to the model in a new turn (resume), not to the channel.
+  assert.equal((first.log.at(-1)!.payload as { content: string }).content, 'Confirmed.');
   const second = fakeInteraction('slopconfirm:op1:yes');
   await handleConfirm(second.interaction, store as unknown as CodeStore, tools as never);
   assert.equal(calls.length, 1);

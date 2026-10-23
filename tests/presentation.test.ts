@@ -52,15 +52,16 @@ test('code runs show grouped child rows and no child rows in the footer', async 
     { id: 'c2', name: 'web_search', status: 'completed' as const, parentId: 'run' },
     { id: 'c3', name: 'file_store', status: 'completed' as const, parentId: 'run' },
   ];
-  assert.match(toolProgress(activity, 'Blooming…'), /Programmatic tools · Run 1 · completed\n```\n┌ ✓ web_search · completed\n│ ✓ web_search · completed\n│ ✓ file_store · completed\n└ 3 completed\n```/);
-  assert.equal(toolFooter(activity, 'summary'), '\n\n-# 🧩 1 code run');
+  assert.match(toolProgress(activity, 'Blooming…'), /Run 1 · completed\n```\n┌ ✓ web_search · completed\n│ ✓ web_search · completed\n│ ✓ file_store · completed\n└ 3 completed\n```/);
+  assert.equal(toolFooter(activity, 'summary'), '\n\n-# searched the web 2× · read 1 stored file');
 });
 
 test('full footer stays compact while program details are available in the trace pager', async () => {
   const { toolFooter } = await import('../src/presentation/tool-activity.js');
   const short = [{ id: 'run', name: 'run_tools_code', status: 'completed' as const, code: 'text(1)' }];
-  assert.equal(toolFooter(short), '\n\n-# 🧩 1 code run');
-  assert.equal(toolFooter(short, 'summary'), '\n\n-# 🧩 1 code run');
+  // A code run is not counted: with no calls in it there is no footer line.
+  assert.equal(toolFooter(short), '');
+  assert.equal(toolFooter(short, 'summary'), '');
   const long = [{ id: 'run', name: 'run_tools_code', status: 'completed' as const, code: Array.from({ length: 16 }, (_, i) => `line${i}`).join('\n') }];
-  assert.equal(toolFooter(long), '\n\n-# 🧩 1 code run');
+  assert.equal(toolFooter(long), '');
 });

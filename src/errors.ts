@@ -8,7 +8,18 @@ export class ToolError extends Error {
   override name = 'ToolError';
   constructor(message: string, readonly status: 'rejected' | 'failed' = 'rejected', options?: ErrorOptions) { super(message, options); }
 }
+/** A write whose outcome is unknown. Only an error after its request was sent is uncertain; see isBeforeRequest. */
 export class UncertainActionError extends Error { override name = 'UncertainActionError'; }
+/** Codes raised before any request leaves the process: bad arguments, a missing or unreadable local file, an invalid request body. */
+const beforeRequestCodes = new Set(['UND_ERR_INVALID_ARG', 'ERR_INVALID_ARG_TYPE', 'ERR_INVALID_ARG_VALUE', 'ENOENT', 'EISDIR', 'EACCES', 'ERR_INVALID_URL']);
+/** Rule: an error before the request is sent is final (failed). Only an error after the request was sent can hide a sent request, so only that is uncertain. */
+export function isBeforeRequest(error: unknown): boolean {
+  for (let value: unknown = error, depth = 0; value instanceof Error && depth < 5; value = value.cause, depth++) {
+    const code = (value as Error & { code?: unknown }).code;
+    if (typeof code === 'string' && beforeRequestCodes.has(code)) return true;
+  }
+  return false;
+}
 export class ProviderError extends Error {
   override name = 'ProviderError';
   constructor(readonly status: number, options?: ErrorOptions, readonly providerCode?: string) { super(`AI provider returned HTTP ${status}`, options); }
@@ -48,7 +59,7 @@ export function describeError(error: unknown) {
     : value instanceof ProviderError ? value.providerCode ? `PROVIDER_${value.providerCode.toUpperCase()}` : `PROVIDER_HTTP_${value.status}`
     : value.name === 'HarnessInterrupted' ? 'REQUEST_INTERRUPTED'
     : value.name === 'TimeoutError' ? 'REQUEST_TIMEOUT' : value.name === 'AbortError' ? 'REQUEST_ABORTED' : nativeCode !== undefined ? String(nativeCode) : 'UNEXPECTED_ERROR';
-  const recovery = value instanceof RequestError ? value.recovery : value instanceof UncertainActionError ? 'Inspect the recorded action before retrying; it may already have happened.'
+  const recovery = value instanceof RequestError ? value.recovery : value instanceof UncertainActionError ? 'This may have happened. Check before you retry.'
     : value instanceof ProviderError ? value.status === 402 ? 'The key or account budget is spent. Check the budget; retrying without a budget change will not help.' : value.status === 413 ? 'Reduce the request size before retrying.' : value.status === 401 || value.status === 403 ? 'Check the AI key and model access.' : value.status === 400 || value.status === 404 ? 'Check the provider endpoint and model configuration.' : value.status === 429 ? 'Wait for the provider rate limit to reset, then retry.' : 'Check provider availability, then retry.'
     : value instanceof ToolError ? value.status === 'rejected' ? 'Correct the arguments, permissions, or configuration described above.' : 'Check the tool or service, then retry.'
     : value.name === 'HarnessInterrupted' ? 'Send a new message to continue from recorded progress.' : 'Use the error code and request ID to inspect the logs before retrying.';

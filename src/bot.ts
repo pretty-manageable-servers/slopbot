@@ -20,6 +20,11 @@ import { DegradedNotes } from "./degraded-notes.js";
 
 const BACKUP_FOOTER = "-# reduced capacity: backup model";
 
+/** One JSON line for an addressed message that Slopbot does not answer. Holds the reason and ids, never the message text. */
+function logSkipped(message: Message, reason: string, detail: Record<string, string | number> = {}): void {
+  console.log(JSON.stringify({ type: "request_skipped", timestamp: new Date().toISOString(), reason, server: message.server, channel: message.channel, messageId: message.id, author: message.author, ...detail }));
+}
+
 export interface Incoming extends Message {
   readonly botAuthor: boolean;
   readonly mentionsBot: boolean;
@@ -49,6 +54,8 @@ export class Bot {
   private readonly voiceChannels = new Set<string>();
   /** Times of recent replies to other bots, per channel. Stops bot-to-bot loops. */
   private readonly botReplies = new Map<string, number[]>();
+  /** Channels where a bot has hit the limit and no reply has been allowed since. The notice is posted once for each of these. */
+  private readonly botLimited = new Set<string>();
   private readonly replies = new Map<string, Promise<void>>();
   private readonly classificationRetries = new Map<string, ReturnType<typeof setTimeout>>();
   // Open private chats of this server. A chat is added when its web chat row exists, and removed when it is deleted.
@@ -109,7 +116,10 @@ export class Bot {
       this.threads.add(message.channel);
       this.app.allowChannel(this.server, message.channel);
     }
-    if (!this.accepts(message.server, message.channel)) return;
+    if (!this.accepts(message.server, message.channel)) {
+      if (message.mentionsBot || message.repliesToBot || message.addressed === true || isPrivateChannel(message.channel)) logSkipped(message, "channel_not_allowed");
+      return;
+    }
     if (message.botAuthor) message = { ...message, isBot: true };
     requestTimings.begin(message);
     try { await requestTimings.withScope(message, () => this.receiveScoped(message, options.ingested === true, options.classificationAttempt ?? 0)); }
@@ -120,30 +130,36 @@ export class Bot {
     }
   }
   private async receiveScoped(message: Incoming, alreadyIngested: boolean, classificationAttempt: number): Promise<void> {
-    if (!hasMessageContent(message)) {
-      if (!alreadyIngested) await this.store.ingest({ ...message, addressed: false });
-      await this.options.participation?.recordBlocked(message, 'empty_message');
-      requestTimings.finish(message);
-      return;
-    }
     const task = this.tasks.has(message.channel);
     const privateChat = isPrivateChannel(message.channel);
     // A web reply arrives with addressed=true, so it always gets an answer and skips JEV. A private chat always does, even without that flag.
     let addressed = task && !message.botAuthor || privateChat || message.mentionsBot || message.repliesToBot || message.addressed === true;
+    if (!hasMessageContent(message)) {
+      if (!alreadyIngested) await this.store.ingest({ ...message, addressed: false });
+      await this.options.participation?.recordBlocked(message, 'empty_message');
+      if (addressed) logSkipped(message, "empty_message");
+      requestTimings.finish(message);
+      return;
+    }
     let ingested = alreadyIngested;
-    // The Slopbot team muted this user. The message is saved but gets no reply.
+    // The Slopbot team muted this user. The message is saved but gets no reply. Muting is silent for the user, so there is no notice.
     const muted = this.options.mutedUntil?.(message.author);
     if (muted !== undefined && muted > Date.now()) {
       if (!ingested) await this.store.ingest({ ...message, addressed: false });
       await this.options.participation?.recordBlocked?.(message, 'muted');
+      if (addressed) logSkipped(message, "muted");
       requestTimings.finish(message);
       return;
     }
     if (addressed && !message.botAuthor) await this.options.participation?.recordBypass?.(message,
       privateChat ? 'private_chat' : task ? 'task_thread' : message.mentionsBot ? 'mention' : message.repliesToBot ? 'reply_to_bot' : 'explicit_request');
     // Another bot can mention or reply to Slopbot without end. Past the cap, its messages are saved but get no reply.
-    if (addressed && message.botAuthor && !this.allowBotReply(message.channel)) {
+    const refused = addressed && message.botAuthor ? this.botReplyRefusal(message.channel) : undefined;
+    if (refused) {
       if (!ingested) await this.store.ingest({ ...message, addressed: false });
+      logSkipped(message, "bot_reply_limit", { limit: refused.limit.replies, windowMinutes: refused.limit.minutes });
+      // One notice per channel until the window resets. Muted and other silent skips never post one.
+      if (refused.first) await this.send(message, `I reply to bots at most ${refused.limit.replies} times in ${refused.limit.minutes} minutes in this channel. A team editor can change this in Bot admin.`);
       requestTimings.finish(message);
       return;
     }
@@ -195,7 +211,7 @@ export class Bot {
       return;
     }
     // Checked before the queue, so a request in an outage is never queued for a later answer. Commands above need no model.
-    if (this.options.router && await this.declineWithoutModel(this.options.router, message, ingested)) return;
+    if (this.options.router && await this.declineWithoutModel(this.options.router, message, ingested, addressed)) return;
     if (!task && /^!task(?:\s|$)/i.test(text)) {
       if (privateChat) { if (!ingested && !await this.store.ingest({ ...message, addressed: false })) return; await this.send(message, discordOnlyMessage); return; }
       if (this.options.worker) { await this.options.worker.enqueue({ ...message, addressed: true }); return; }
@@ -224,8 +240,9 @@ export class Bot {
   }
 
   /** No model may answer this request now. It gets one note per channel, then a reaction. Nothing is charged. */
-  private async declineWithoutModel(router: LlmRouter, message: Incoming, ingested: boolean): Promise<boolean> {
+  private async declineWithoutModel(router: LlmRouter, message: Incoming, ingested: boolean, addressed: boolean): Promise<boolean> {
     if (router.select({ user: message.author, server: message.server, private: isPrivateChannel(message.channel) })) return false;
+    if (addressed) logSkipped(message, "model_unavailable");
     if (!ingested && !await this.store.ingest({ ...message, addressed: false })) return true;
     // Bots get no note, so two bots cannot answer each other's notes.
     if (!message.botAuthor) {
@@ -294,13 +311,20 @@ export class Bot {
   }
 
   /** True when Slopbot may answer one more bot message in this channel. The team sets the limit in Bot admin. */
-  private allowBotReply(channel: string): boolean {
+  /** Undefined when the reply to a bot is allowed. Otherwise the limit that refused it, and whether this is the first refusal in this window. */
+  private botReplyRefusal(channel: string): { limit: BotReplyLimit; first: boolean } | undefined {
     const limit = this.options.botReplyLimit?.() ?? DEFAULT_BOT_REPLY_LIMIT;
     const now = Date.now();
     const recent = (this.botReplies.get(channel) ?? []).filter(at => now - at < limit.minutes * 60_000);
-    if (recent.length >= limit.replies) { this.botReplies.set(channel, recent); return false; }
+    if (recent.length >= limit.replies) {
+      this.botReplies.set(channel, recent);
+      const first = !this.botLimited.has(channel);
+      this.botLimited.add(channel);
+      return { limit, first };
+    }
     recent.push(now); this.botReplies.set(channel, recent);
-    return true;
+    this.botLimited.delete(channel);
+    return undefined;
   }
 
   setChannels(channels: readonly string[]): void {
@@ -358,7 +382,6 @@ export class Bot {
       const thread = await this.startTask(message, message.text);
       return { text: `Task started in <#${thread}>. Updates will appear there.`, handoff: { threadId: thread } };
     }
-    if (registry.effect(call.name, call.arguments) === "write" && call.name !== "task_retry" && !registry.ignoresBlocked(call.name) && (await this.options.queueStore?.hasBlocked(message.server, message.channel))) throw new ToolError("This task has an uncertain action. Reconcile that job before new writes.");
     if (registry.effect(call.name, call.arguments) === "write" && call.name !== "task_retry" && (await this.options.queueStore?.hasPendingOther(message.server, message.channel, message.id))) throw new ToolError("New contributions are queued. Pause actions so the next contribution can be reviewed before proceeding.");
     const result = await registry.invokeResult(message, call.name, call.arguments, operationId, "agent", expectedVersion, invocation);
     return result;
@@ -410,40 +433,4 @@ export class Bot {
   }
 }
 
-export function splitReply(text: string, limit = 1900): string[] {
-  const chunks: string[] = [];
-  const sentences = new Intl.Segmenter(undefined, { granularity: "sentence" });
-  let chunk = "", fence = "";
-  const flush = () => {
-    chunks.push(chunk + (fence ? "\n```" : ""));
-    chunk = fence;
-  };
-  // Treat fence lines atomically so each Discord message can close and reopen them.
-  const tokens = text.split(/(^```[^\n]*\n|^```$)/gm).filter(Boolean);
-  for (const token of tokens) {
-    if (/^```[^\n]*(?:\n|$)$/.test(token) && token.length + 4 < limit) {
-      const nextFence = fence ? "" : token.endsWith("\n") ? token : token + "\n";
-      if (chunk.length + token.length + (nextFence ? 4 : 0) > limit) flush();
-      chunk += token;
-      fence = nextFence;
-      continue;
-    }
-    // Keep prose sentences and code lines together whenever a whole unit fits.
-    const units = fence ? token.match(/[^\n]*\n|[^\n]+$/g) ?? [] : Array.from(sentences.segment(token), item => item.segment);
-    const append = (unit: string) => {
-      if (chunk.length + unit.length + (fence ? 4 : 0) > limit) flush();
-      chunk += unit;
-    };
-    for (const unit of units) {
-      const capacity = limit - fence.length - (fence ? 4 : 0);
-      if (unit.length <= capacity) { append(unit); continue; }
-      // An oversized sentence/line falls back to words, then Unicode characters.
-      for (const word of unit.match(/\S+\s*|\s+/g) ?? []) {
-        if (word.length <= capacity) { append(word); continue; }
-        for (const character of word) append(character);
-      }
-    }
-  }
-  if (chunk) chunks.push(chunk + (fence ? "\n```" : ""));
-  return chunks;
-}
+export { splitReply } from "./presentation/reply-split.js";

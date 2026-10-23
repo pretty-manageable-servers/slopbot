@@ -119,7 +119,7 @@ export function registerScheduleTool(registry: ToolRegistry, services: ScheduleT
   };
 
   registry.register({
-    name: "schedule",
+    name: "schedule", surface: "top",
     description:
       "Create, list, pause, resume, renew or cancel scheduled work in this channel. A schedule runs once, or on a cron schedule with an IANA timezone. A run posts text, sends a prompt as the owner, or runs one saved tool call without the model. Recurring schedules expire after 30 days unless renewed.",
     fields: {

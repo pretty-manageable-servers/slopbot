@@ -14,4 +14,5 @@ export const uiActions: Readonly<Record<string, UiActionHandler>> = {
   "reminder.cancel": { tool: "reminder", fixedArguments: { action: "cancel" } },
   "schedule.pause": { tool: "schedule", fixedArguments: { action: "pause" } },
   "schedule.cancel": { tool: "schedule", fixedArguments: { action: "cancel" } },
+  "issue.file": { tool: "file_report" },
 };
