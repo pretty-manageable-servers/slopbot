@@ -22,6 +22,8 @@ export interface Meta {
   mine: boolean;
   slopbot: boolean;
   edited: boolean;
+  /** A reply run used this message. Only other people's messages fold when it is false. */
+  used: boolean;
   runIds: string[];
   /** Set by displayMessages: the message before is by the same author, within GROUP_MS. */
   continued: boolean;
@@ -32,7 +34,7 @@ export type TranscriptEvent =
   | Exclude<BotEvent, { type: "message" }>
   | { type: "message"; id: number; data: { action: "upsert"; message: TranscriptMessage } | { action: "delete"; id: string } };
 
-const LIVE_META: Meta = { key: "slopbot", name: "Slopbot", username: null, avatarUrl: null, mine: false, slopbot: true, edited: false, runIds: [], continued: false };
+const LIVE_META: Meta = { key: "slopbot", name: "Slopbot", username: null, avatarUrl: null, mine: false, slopbot: true, edited: false, used: true, runIds: [], continued: false };
 
 /** A Discord avatar on the CDN, or null. */
 export function avatarSrc(url: string | null): string | null {
@@ -81,6 +83,7 @@ function decorate(kit: Message, message: TranscriptMessage, user: string): Messa
     mine,
     slopbot: message.slopbot,
     edited: message.editedAt !== null,
+    used: message.used,
     runIds: message.runIds,
     continued: false,
   };
@@ -117,4 +120,48 @@ export function displayMessages(messages: readonly Message[], steps: ReadonlyMap
     // The meta stays first: the author line is drawn above the steps and the text.
     return { ...body, parts: [metaPart(message.id, { ...meta, continued }), ...body.parts] };
   });
+}
+
+const FOLD = "fold";
+
+/** A folded run's row. Its key is the ID of the run's first message. */
+export interface FoldRow { key: string; count: number; open: boolean }
+
+/** The fold row of a part, when it is one. */
+export function foldOfPart(part: Part): FoldRow | undefined {
+  return part.type === "custom" && part.kind === FOLD ? part.data as FoldRow : undefined;
+}
+
+/** Another person's message that no reply used. The viewer's own and Slopbot's never fold. */
+function unusedByOthers(message: Message): boolean {
+  const meta = metaOf(message);
+  return meta !== undefined && !meta.slopbot && !meta.mine && !meta.used;
+}
+
+/**
+ * The messages with each run of unused messages from other people folded into one muted row. A run's row shows its
+ * messages after it when `shown` has the run's key. Nothing folds from the trigger of a live run onward: `live` lists
+ * the trigger IDs. A trigger that is not in the list counts as the first message, so nothing folds (the old console's rule).
+ */
+export function foldUnused(messages: readonly Message[], live: readonly string[], shown: ReadonlySet<string>): Message[] {
+  const guard = Math.min(messages.length, ...live.map((id) => Math.max(0, messages.findIndex((message) => message.id === id))));
+  const rows: Message[] = [];
+  let run: Message[] = [];
+  const flush = () => {
+    const first = run[0];
+    if (!first) return;
+    const row: FoldRow = { key: first.id, count: run.length, open: shown.has(first.id) };
+    rows.push({ id: `fold:${first.id}`, parentId: null, role: "assistant", status: "done", createdAt: first.createdAt, parts: [{ type: "custom", id: `fold:${first.id}:row`, status: "done", kind: FOLD, data: row }] });
+    if (row.open) rows.push(...run);
+    run = [];
+  };
+  messages.forEach((message, index) => {
+    if (index < guard && unusedByOthers(message)) run.push(message);
+    else {
+      flush();
+      rows.push(message);
+    }
+  });
+  flush();
+  return rows;
 }
