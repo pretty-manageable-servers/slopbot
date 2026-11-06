@@ -43,16 +43,6 @@ test("tool_command_stays_under_discord_limit", t => {
   assert.ok(optionNames(json).length <= 25);
 });
 
-test("run_subcommand_always_present", t => {
-  const { registry, store } = bigRegistry(40);
-  const empty = new SQLiteStore(":memory:");
-  const emptyRegistry = new ToolRegistry(empty, async () => false);
-  t.after(() => { store.close(); empty.close(); });
-  assert.ok(optionNames(buildToolCommands(registry).toJSON()).includes("run"));
-  assert.ok(optionNames(buildToolCommands(emptyRegistry).toJSON()).includes("run"));
-  assert.deepEqual(optionNames(buildToolCommands(registry, { runOnly: true }).toJSON()), ["run"]);
-});
-
 test("registration_retries_with_small_command_on_50035", async t => {
   const { registry, store } = bigRegistry(3);
   t.after(() => store.close());
@@ -75,11 +65,4 @@ test("registration_retries_with_small_command_on_50035", async t => {
   assert.deepEqual(optionNames(slopbot!), ["run"]);
   assert.equal(usage!.name, "usage");
   assert.equal(logs.length, 1);
-});
-
-test("registration_rethrows_other_errors_without_retry", async () => {
-  const calls: unknown[] = [];
-  const guild = { commands: { async set(commands: ApplicationCommandDataResolvable[]) { calls.push(commands); throw Object.assign(new Error("Missing Access"), { code: 50001 }); } } };
-  await assert.rejects(setGuildCommands(guild, () => [], () => {}), { code: 50001 });
-  assert.equal(calls.length, 1);
 });

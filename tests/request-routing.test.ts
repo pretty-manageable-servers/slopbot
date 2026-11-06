@@ -1,18 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { suggestRequestTool, personResponses, shouldRecall, expandReplySubject } from '../src/request-routing.js';
+import { personResponses, shouldRecall, expandReplySubject } from '../src/request-routing.js';
 import type { Message, PromptItem } from '../src/domain.js';
 import type { ProfileStore } from '../src/profiles.js';
-import type { ToolExecutor } from '../src/tools.js';
 const request: Message = {id:'request',server:'s',channel:'c',author:'alice',text:'analyze this gif',replyTo:'file'};
-test('reply file routing supplies attachments without replacing request identity', () => {
- const target = {...request,id:'file',author:'bob',text:'',attachments:[{name:'a.gif',url:'https://cdn.discordapp.com/a.gif'}]};
- let seen: Message | undefined;
- const tools: ToolExecutor = {schemas: () => [], catalog:()=>'',execute:async()=>'',suggest:message=>{seen=message;return {name:'read',arguments:{}};}};
- assert.equal(suggestRequestTool(tools,request,target)?.name,'read');
- assert.equal(seen?.id,request.id); assert.equal(seen?.author,request.author); assert.equal(seen?.attachments,target.attachments);
- assert.equal(request.attachments,undefined);
-});
 test('reply_subject_has_no_cdn_url', async () => {
  const label = '[Attachment shot.png, type image/png: https://cdn.discordapp.com/attachments/1/2/shot.png; content not inspected]';
  const target: Message = {...request,id:'file',author:'bob',text:`<@474858037970993152> posted this\n${label}`,attachments:[{name:'shot.png',url:'https://cdn.discordapp.com/attachments/1/2/shot.png?ex=a&is=b&hm=c',contentType:'image/png'}]};

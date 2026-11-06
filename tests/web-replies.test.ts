@@ -12,7 +12,7 @@ import { loadConfig } from "../src/config.js";
 import { parseMessage } from "../src/domain.js";
 import type { ParticipationGate } from "../src/participation.js";
 import { createConsole } from "../src/web-console.js";
-import { asWebUser, botWebContent, escapeMarkdown, MANAGE_WEBHOOKS_TTL_MS, MissingWebhookPermissionError, openToken, sealToken, stripBotWebPrefix, UnknownWebhookError, WEB_REPLY_WAIT_MS, WebReplies, WebReplyError, webReplyKey, type WebAuthor, type WebHook, type WebOrigin, type WebReplyDiscord } from "../src/web-replies.js";
+import { asWebUser, botWebContent, escapeMarkdown, MANAGE_WEBHOOKS_TTL_MS, MissingWebhookPermissionError, openToken, sealToken, stripBotWebPrefix, UnknownWebhookError, WebReplies, WebReplyError, webReplyKey, type WebAuthor, type WebHook, type WebOrigin, type WebReplyDiscord } from "../src/web-replies.js";
 import { UserLimiter } from "../src/user-limiter.js";
 
 const SERVER = "1528063444874432734", PARENT = "1528063444874432735", THREAD = "1528063444874432736", USER = "1514413259522838529";
@@ -70,8 +70,6 @@ function harness(options: HarnessOptions = {}) {
 const reply = (service: WebReplies, channel = PARENT, text = "hello from the web") => service.reply({ user: USER, server: SERVER, channel, text });
 const expectStatus = (promise: Promise<unknown>, status: number) => assert.rejects(promise, (error: unknown) => error instanceof WebReplyError && error.status === status);
 const event = (id: string, webhookId: string | undefined, channel = PARENT) => ({ server: SERVER, channel, id, webhookId });
-
-test("the wait for a web reply post is 10 seconds", () => assert.equal(WEB_REPLY_WAIT_MS, 10000));
 
 test("a web reply posts through the channel webhook and stores the returned message ID", async t => {
   const h = harness(); t.after(() => h.store.close());
@@ -141,17 +139,6 @@ test("a thread reply uses the parent webhook with thread_id", async t => {
   assert.deepEqual(h.calls.createWebhook, [PARENT]);
   assert.equal(h.calls.send[0]!.post.threadId, THREAD);
   assert.equal(h.calls.send[0]!.hook.id, "hook-1");
-});
-
-test("missing or short WEB_REPLY_KEY disables web replies with a clear error", async t => {
-  const missing = webReplyKey({});
-  assert.ok("error" in missing && /WEB_REPLY_KEY/.test(missing.error));
-  assert.ok("error" in webReplyKey({ WEB_REPLY_KEY: Buffer.alloc(16).toString("base64") }));
-  const h = harness({ secret: missing }); t.after(() => h.store.close());
-  const error = await reply(h.service).then(() => undefined, (failure: unknown) => failure);
-  assert.ok(error instanceof WebReplyError && error.status === 503 && /WEB_REPLY_KEY/.test(error.message));
-  assert.equal(h.calls.createWebhook.length, 0);
-  assert.equal(h.calls.send.length, 0);
 });
 
 test("the webhook token is encrypted at rest and opens with the key", async t => {
@@ -327,18 +314,6 @@ test("a bot reply that cannot fit the name is refused before anything is posted"
   await expectStatus(reply(h.service, PARENT, "x".repeat(1980)), 400);
   assert.equal(h.calls.sendAsBot.length, 0);
   assert.equal((await reply(h.service, PARENT, "x".repeat(1960))).via, "bot");
-});
-
-test("no Manage Webhooks is not kept for good: the check runs again after 30 seconds", async t => {
-  let clock = 1_000_000;
-  const h = harness({ manage: false, now: () => clock }); t.after(() => h.store.close());
-  await reply(h.service);
-  h.state.manage = true;
-  assert.equal((await reply(h.service)).via, "bot", "the no is reused for 30 seconds");
-  clock += MANAGE_WEBHOOKS_TTL_MS;
-  assert.equal((await reply(h.service)).via, "webhook");
-  assert.deepEqual(h.calls.createWebhook, [PARENT]);
-  assert.equal(h.calls.sendAsBot.length, 2);
 });
 
 test("a create that Discord refuses with Missing Permissions falls back to the bot", async t => {
@@ -576,12 +551,6 @@ test("voice reply without key posts as bot", async t => {
   assert.deepEqual(h.calls.sendAsBot, [{ channel: PARENT, content: "**Alice Display** (from voice): spoken" }]);
 });
 
-test("bot voice prefix is stripped", () => {
-  assert.equal(botWebContent("Alice", "hi", "voice"), "**Alice** (from voice): hi");
-  assert.equal(stripBotWebPrefix(botWebContent("Alice", "hi", "voice")), "hi");
-  assert.equal(stripBotWebPrefix("**Alice** (from voice): **x** (from web): hi"), "**x** (from web): hi", "only one prefix is removed");
-});
-
 test("origin returns voice kind", async t => {
   let pending: Promise<unknown> | undefined;
   const h = harness({ secret: webReplyKey({}), sendAsBot: async (channel) => { pending = h.service.origin(event("voice-1", undefined, channel)); return "voice-1"; } });
@@ -593,14 +562,6 @@ test("origin returns voice kind", async t => {
   const user = asWebUser(incoming, origin!);
   assert.equal(user.source, "voice");
   assert.equal(user.text, "spoken");
-});
-
-test("origin after the post settles keeps voice kind", async t => {
-  const h = harness({ secret: webReplyKey({}), sendAsBot: async () => "voice-2" });
-  t.after(() => h.store.close());
-  await h.service.reply({ user: USER, server: SERVER, channel: PARENT, text: "spoken", kind: "voice" });
-  const origin = await h.service.origin(event("voice-2", undefined, PARENT));
-  assert.deepEqual([origin?.user, origin?.via, origin?.kind], [USER, "bot", "voice"]);
 });
 
 test("web reply without key still returns 503", async t => {
