@@ -9,7 +9,12 @@
 | `src/agent-runner.ts` | Stable prompt prefix, model/tool loop, durable events, checkpoints and context-version checks |
 | `src/reply-renderer.ts` | User-facing identity formatting through a profile lookup |
 | `src/tools.ts` | Shared tool registration, arguments, permissions and operation journal |
-| `src/adapters/discord.ts` | Discord normalization, channel permissions and delivery |
+| `src/engine/workspace.ts` | One Discord server's state and services, through `EngineWorkspace`. It needs its platform only through `WorkspacePorts` (`src/engine/ports.ts`). |
+| `src/engine/event-log.ts` | Engine events: checks, saves to `engine_events` and sends to subscribers |
+| `src/clients/discord/discord.ts` | Discord connection, normalization, channel permissions and delivery (`DiscordAdapter`, `DiscordServer`) |
+| `src/clients/web/` | The web console's HTTP app, routes and private chat service. See [web client and console](WEB_UI.md). |
+
+The engine and clients are described in [engine and clients](ADAPTERS.md).
 
 Keep new feature rules out of `Application`. Add external actions through `ToolRegistry`; add file decoders through `FileReaders`. Change context selection in `ContextBuilder`, request shortcuts in request routing, and presentation in `ReplyRenderer`. These are explicit modules, not a general plugin framework.
 
