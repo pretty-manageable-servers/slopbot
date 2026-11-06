@@ -4,8 +4,9 @@
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { Outlet, useMatchRoute, useNavigate } from "@tanstack/react-router";
 import { AppShell, ChatList, ChatTitleMenu, Menu, MenuItem, MenuSeparator, SegmentedControl, Sidebar, SidebarItem, SidebarUser, defaultIcons } from "agentic-ui-kit";
-import { Suspense, useEffect } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { ApiError, api } from "./api";
+import { ShareDialog } from "./chat/share-dialog";
 import { chatsQuery, pickServer, sessionQuery, useServer } from "./data";
 import { Loader, Logo } from "./logo";
 import { CommandPalette } from "./palette";
@@ -106,6 +107,7 @@ function Chats() {
   const open = useMatchRoute()({ to: "/chat/$chatId" }) as { chatId?: string } | false;
   const activeId = open ? open.chatId : undefined;
   const refresh = () => void client.invalidateQueries({ queryKey: chatsQuery.queryKey });
+  const [sharing, setSharing] = useState<string | null>(null);
 
   const remove = async (id: string) => {
     if (!(await confirmAction({ title: "Delete this chat?", body: "This cannot be undone.", confirmLabel: "Delete", danger: true }))) return;
@@ -120,12 +122,15 @@ function Chats() {
     refresh();
   };
   return (
-    <ChatList
-      aria-label="Chats"
-      sections={[{ id: "chats", title: "Chats", items: chats.map((c) => ({ id: c.id, title: c.title || "New chat", href: `${BASE}/chat/${c.id}` })) }]}
-      {...(activeId && { activeId })}
-      onSelect={(id) => void navigate({ to: "/chat/$chatId", params: { chatId: id } })}
-      rowMenu={(chat) => <ChatTitleMenu onRename={() => void rename(chat)} onDelete={() => void remove(chat.id)} />}
-    />
+    <>
+      <ChatList
+        aria-label="Chats"
+        sections={[{ id: "chats", title: "Chats", items: chats.map((c) => ({ id: c.id, title: c.title || "New chat", href: `${BASE}/chat/${c.id}` })) }]}
+        {...(activeId && { activeId })}
+        onSelect={(id) => void navigate({ to: "/chat/$chatId", params: { chatId: id } })}
+        rowMenu={(chat) => <ChatTitleMenu onRename={() => void rename(chat)} onShare={() => setSharing(chat.id)} onDelete={() => void remove(chat.id)} />}
+      />
+      <ShareDialog chatId={sharing} onClose={() => setSharing(null)} />
+    </>
   );
 }
