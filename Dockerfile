@@ -11,7 +11,9 @@ COPY architecture/BOT_GUIDE.md ./architecture/BOT_GUIDE.md
 RUN npm run build
 RUN npm prune --omit=dev
 # The runtime is Alpine; retain its DAVE encryption binary alongside the build's glibc binary.
-RUN node -e 'const {version}=require("@snazzah/davey/package.json"); const r=require("node:child_process").spawnSync("npm",["install","--no-save","--omit=dev","--package-lock=false","--force",`@snazzah/davey-linux-${process.arch}-musl@${version}`],{stdio:"inherit"}); process.exit(r.status ?? 1)'
+# Unpack the musl package by hand: `npm install` here would re-resolve the tree without the lockfile and pull newer undici.
+RUN V=$(node -p 'require("@snazzah/davey/package.json").version') && P="@snazzah/davey-linux-$(node -p process.arch)-musl" \
+  && mkdir -p "node_modules/$P" && npm pack "$P@$V" --silent | xargs -I{} tar -xzf {} -C "node_modules/$P" --strip-components=1 && rm -f snazzah-davey-*.tgz
 COPY site ./site
 RUN cd site && npm ci && npm run build
 
