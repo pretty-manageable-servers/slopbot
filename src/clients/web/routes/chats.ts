@@ -97,6 +97,7 @@ export function chatRoutes(service: WebChatService): ChatRoutes {
   app.get('/:id/shares', async c => json(200, await service.shareList(userOf(c), c.req.param('id'))));
   app.post('/:id/shares', async c => json(201, await service.shareCreate(userOf(c), c.req.param('id'))));
   app.post('/:id/shares/:share/revoke', async c => json(200, await service.shareRevoke(userOf(c), c.req.param('id'), c.req.param('share'))));
+  app.post('/:id/shares/:share/refresh', async c => json(200, await service.shareRefresh(userOf(c), c.req.param('id'), c.req.param('share'))));
 
   app.all('*', () => notFound());
   return app;

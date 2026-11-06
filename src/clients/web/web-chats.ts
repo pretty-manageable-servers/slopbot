@@ -128,7 +128,7 @@ export class WebChatService {
   }
 
   /** The owner's share links of this chat. Anyone else gets 404. */
-  async shareList(user: string, id: string): Promise<{ shares: { id: string; created_at: number; revoked: boolean }[] }> {
+  async shareList(user: string, id: string): Promise<{ shares: { id: string; created_at: number; revoked: boolean; frozen_at: number; newer: boolean }[] }> {
     return this.shares.list(await this.owned(user, id));
   }
 
@@ -140,6 +140,11 @@ export class WebChatService {
   /** Revokes one link of this chat. Anyone else gets 404. */
   async shareRevoke(user: string, id: string, shareId: string): Promise<{ id: string; revoked: true }> {
     return this.shares.revoke(await this.owned(user, id), shareId);
+  }
+
+  /** Freezes the chat again under an existing link of it. Anyone else gets 404. */
+  async shareRefresh(user: string, id: string, shareId: string): Promise<{ id: string; frozen_at: number }> {
+    return this.shares.refresh(await this.owned(user, id), shareId);
   }
 
   /**
