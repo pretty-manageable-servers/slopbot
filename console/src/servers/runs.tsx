@@ -11,7 +11,8 @@ const PAGE = 20;
 /** One page of a channel's conversations (the bot's answer to GET .../runs). */
 interface ConversationPage { conversations: ConversationSummary[]; hasMore: boolean }
 
-export function RunsPanel({ server, channel, active, onClose }: { server: string; channel: string; active: string | undefined; onClose: () => void }) {
+/** The conversations panel. Its size comes from `className`: a column on desktop, a drawer on phones. */
+export function RunsPanel({ server, channel, active, onClose, className }: { server: string; channel: string; active: string | undefined; onClose: () => void; className: string }) {
   const navigate = useNavigate();
   const runs = useInfiniteQuery({
     queryKey: ["conversations", server, channel, "runs"],
@@ -27,7 +28,7 @@ export function RunsPanel({ server, channel, active, onClose }: { server: string
       actions={<Button variant="ghost" size="sm" onPress={onClose}>Close</Button>}
       variant="flush"
       aria-label="Conversations"
-      className="w-80 shrink-0 border-l border-chat-border"
+      className={className}
     >
       {runs.isPending && <p className="px-4 text-chat-muted">Loading…</p>}
       {runs.isSuccess && items.length === 0 && <p className="px-4 text-chat-muted">No conversations yet.</p>}

@@ -3,7 +3,7 @@
 // src/web-transcripts.ts (the conversation list, messages, stream, runs and reply).
 import { useMutation, useQueries, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { AttachmentCard, Button, ChatHeader, ChatTranscript, SidebarToggle } from "agentic-ui-kit";
+import { AttachmentCard, Button, ChatHeader, ChatTranscript, Drawer, DRAWER_QUERY, SidebarToggle, useMediaQuery } from "agentic-ui-kit";
 import type { Part } from "agentic-ui-kit/core";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api, get, post, qs } from "../api";
@@ -16,7 +16,8 @@ import { notify, notifyError } from "../ui/feedback";
 import { ReplyBox } from "./reply-box";
 import { conversationsQuery } from "./queries";
 import { RunsPanel } from "./runs";
-import { applyTranscriptEvent, channelMessage, displayMessages, metaOfPart, runIdsOf, type Meta, type TranscriptEvent } from "./transcript";
+import { ShareChannelDialog } from "./share-channel";
+import { applyTranscriptEvent, channelMessage, displayMessages, foldOfPart, foldUnused, metaOfPart, runIdsOf, type FoldRow, type Meta, type TranscriptEvent } from "./transcript";
 
 const KINDS = ["message", "run.start", "run.delta", "run.tool", "run.end"] as const;
 /** Messages per request. The bot's limit is 100. */
@@ -77,6 +78,9 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
   const [hasMore, setHasMore] = useState(false);
   const [olderBusy, setOlderBusy] = useState(false);
   const [status, setStatus] = useState("");
+  const [sharing, setSharing] = useState(false);
+  const [shownFolds, setShownFolds] = useState<ReadonlySet<string>>(() => new Set());
+  const phone = useMediaQuery(DRAWER_QUERY);
   const scope = ["conversations", serverId, channelId];
   const base = `/api/conversations/${encodeURIComponent(channelId)}`;
 
@@ -143,7 +147,16 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
     return state ? chatMessages(state) : [];
   }, [run, conversation.data, state, user, channelId]);
   const steps = useRunSteps(serverId, channelId, useMemo(() => runIdsOf(shown), [shown]));
-  const messages = useMemo(() => displayMessages(shown, steps), [shown, steps]);
+  const messages = useMemo(() => foldUnused(displayMessages(shown, steps), Object.keys(state?.live ?? {}), shownFolds), [shown, steps, state, shownFolds]);
+  const toggleFold = useCallback((key: string) => {
+    setShownFolds((keys) => {
+      const next = new Set(keys);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+  const renderRow = useCallback((part: Part) => renderPart(part, toggleFold), [toggleFold]);
 
   const oldest = state?.saved[0]?.id;
   const loadOlder = async () => {
@@ -178,12 +191,15 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
       )}
     </div>
   );
+  // Sharing stays on the whole channel, so it is not offered in a conversation (the old console's rule).
   const actions = (
     <div className="flex items-center gap-2">
       {status && <span role="status" className="text-(length:--chat-ui-font-size-sm) text-chat-muted">{status}</span>}
+      {run === undefined && newest.data?.canShare === true && <Button variant="ghost" size="sm" onPress={() => setSharing(true)}>Share</Button>}
       <Button variant="ghost" size="sm" aria-expanded={panel} onPress={() => setPanel((open) => !open)}>Conversations</Button>
     </div>
   );
+  const runs = (className: string) => <RunsPanel server={serverId} channel={channelId} active={run} onClose={() => setPanel(false)} className={className} />;
   return (
     <div className="flex h-full min-h-0 min-w-0">
       <ChatTranscript
@@ -192,10 +208,12 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
         header={<ChatHeader leading={<SidebarToggle drawerOnly />} title={runTitle ? `${name} · ${runTitle}` : name} actions={actions} />}
         notice={notice}
         messages={messages}
-        renderPart={renderPart}
+        renderPart={renderRow}
         footer={canSend ? <ReplyBox server={serverId} channel={channelId} /> : undefined}
       />
-      {panel && <RunsPanel server={serverId} channel={channelId} active={run} onClose={() => setPanel(false)} />}
+      {panel && !phone && runs("w-80 shrink-0 border-l border-chat-border")}
+      <Drawer side="right" isOpen={panel && phone} onOpenChange={setPanel}>{runs("h-full w-80 max-w-full")}</Drawer>
+      <ShareChannelDialog server={serverId} channel={channelId} open={sharing} onClose={() => setSharing(false)} />
     </div>
   );
 }
@@ -213,12 +231,23 @@ function useRunSteps(serverId: string, channelId: string, runIds: string[]): Map
   });
 }
 
-/** The author line above a message. The kit draws the viewer's own messages and their attachments itself. */
-function renderPart(part: Part): ReactNode {
+/** The author line above a message, and the row of a folded run. The kit draws the viewer's own messages and their attachments itself. */
+function renderPart(part: Part, toggleFold: (key: string) => void): ReactNode {
   const meta = metaOfPart(part);
   if (meta) return <AuthorLine meta={meta} />;
+  const fold = foldOfPart(part);
+  if (fold) return <FoldButton fold={fold} onToggle={toggleFold} />;
   if (part.type === "attachment") return <AttachmentCard attachment={part} size="sm" />;
   return undefined;
+}
+
+/** Messages from other people that no reply used, in one muted row. A press shows them, and a second press folds them again. */
+function FoldButton({ fold, onToggle }: { fold: FoldRow; onToggle: (key: string) => void }) {
+  return (
+    <Button variant="ghost" size="sm" aria-expanded={fold.open} onPress={() => onToggle(fold.key)} className="self-start text-chat-muted">
+      {`${fold.count} ${fold.count === 1 ? "message" : "messages"} Slopbot did not read ›`}
+    </Button>
+  );
 }
 
 function AuthorLine({ meta }: { meta: Meta }) {

@@ -1,7 +1,8 @@
+import type { Message } from "agentic-ui-kit/core";
 import { describe, expect, test } from "vitest";
 import type { TranscriptMessage } from "../api-types";
 import { emptyChat, chatMessages, type RunStep } from "../events";
-import { applyTranscriptEvent, channelMessage, displayMessages, metaOf, type TranscriptEvent } from "./transcript";
+import { applyTranscriptEvent, channelMessage, displayMessages, foldOfPart, foldUnused, metaOf, type TranscriptEvent } from "./transcript";
 
 const AT = Date.parse("2026-11-05T10:00:00Z");
 const human: TranscriptMessage = {
@@ -76,5 +77,35 @@ describe("displayMessages", () => {
     const [message] = displayMessages([channelMessage(slopbot, VIEWER, "c1")], new Map([["r1", steps]]));
     expect(message!.parts.map((part) => part.type)).toEqual(["custom", "tool_call", "text"]);
     expect(message!.parts[1]).toMatchObject({ type: "tool_call", name: "web_search", status: "done" });
+  });
+});
+
+describe("foldUnused", () => {
+  const other = (id: string, patch: Partial<TranscriptMessage> = {}): TranscriptMessage => ({ ...human, id, author: "u2", authorName: "Bo", ...patch });
+  const page = (items: TranscriptMessage[]) => displayMessages(items.map((m) => channelMessage(m, VIEWER, "c1")), new Map());
+  /** The rows as the reader sees them: a fold row as "fold <count>", a message as its ID. */
+  const layout = (rows: Message[]) => rows.map((row) => {
+    const fold = foldOfPart(row.parts[0]!);
+    return fold ? `fold ${fold.count}${fold.open ? " open" : ""}` : row.id;
+  });
+
+  test("unused messages from other people fold into one row, and a message a reply used breaks the run", () => {
+    const rows = foldUnused(page([other("a"), other("b"), { ...slopbot, id: "reply", used: false }, other("c"), other("d", { used: true })]), [], new Set());
+    expect(layout(rows)).toEqual(["fold 2", "reply", "fold 1", "d"]);
+  });
+
+  test("the viewer's own messages and Slopbot's never fold", () => {
+    const rows = foldUnused(page([{ ...human, id: "mine", author: VIEWER }, { ...slopbot, id: "bot", used: false }]), [], new Set());
+    expect(layout(rows)).toEqual(["mine", "bot"]);
+  });
+
+  test("a run's messages show after its row when the reader opens it", () => {
+    const rows = foldUnused(page([other("a"), other("b")]), [], new Set(["a"]));
+    expect(layout(rows)).toEqual(["fold 2 open", "a", "b"]);
+  });
+
+  test("nothing folds from the trigger of a live run onward", () => {
+    const rows = foldUnused(page([other("a"), other("trigger"), other("c")]), ["trigger"], new Set());
+    expect(layout(rows)).toEqual(["fold 1", "trigger", "c"]);
   });
 });
