@@ -81,7 +81,9 @@ export interface Usage { plan: string; windows: { kind: string; percent: number 
 export interface McpSnapshot { credentialsEnabled: boolean; connections: McpConnection[] }
 export interface McpTool {
   name: string; registeredName: string; description?: string; schemaHash: string; enabled: boolean;
-  access?: "admin" | "member"; effect?: "read" | "write";
+  access?: "admin" | "member"; effect?: "read" | "write"; needsReview?: boolean;
+  /** The tool's JSON schemas, as the MCP server gave them. */
+  inputSchema?: unknown; outputSchema?: unknown;
 }
 export interface McpConnection {
   id: string; url: string; transport: "http" | "sse"; enabled: boolean; timeoutMs: number; concurrency: number;

@@ -63,7 +63,8 @@ export function TextField({ label, showLabel, value, onChange, type = "text", pl
   return (
     <AriaTextField aria-label={showLabel ? undefined : label} value={value} onChange={onChange} type={type} isDisabled={disabled ?? false} isRequired={required ?? false} className={`flex flex-col gap-1 ${className ?? ""}`}>
       {showLabel && <Label className="text-sm font-medium">{label}</Label>}
-      <Input className={field} placeholder={placeholder} maxLength={maxLength} autoComplete={autoComplete} />
+      <Input className={field} placeholder={placeholder} maxLength={maxLength} autoComplete={autoComplete}
+        onKeyDown={type === "search" ? (event) => { if (event.key === "Escape" && value) { event.stopPropagation(); onChange(""); } } : undefined} />
     </AriaTextField>
   );
 }

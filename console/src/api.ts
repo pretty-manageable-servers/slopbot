@@ -3,8 +3,9 @@
 import type { ChatFile, ChatImage, ChatShare, ChatSummary, Session, Usage } from "./api-types";
 export type { ChatSummary, Session } from "./api-types";
 
+/** A failed call: the bot's error text, the status and the whole error body (for fields such as resetAt). */
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) { super(message); }
+  constructor(message: string, readonly status: number, readonly data: Record<string, unknown> = {}) { super(message); }
 }
 
 let csrf = "";
@@ -18,7 +19,7 @@ export async function call<T>(method: "GET" | "POST" | "PATCH" | "DELETE", path:
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new ApiError(typeof data.error === "string" ? data.error : `Request failed (${response.status}).`, response.status);
+  if (!response.ok) throw new ApiError(typeof data.error === "string" ? data.error : `Request failed (${response.status}).`, response.status, data);
   return data as T;
 }
 
@@ -40,7 +41,7 @@ export async function upload<T>(path: string, file: File): Promise<T> {
     body: file,
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new ApiError(typeof data.error === "string" ? data.error : `Upload failed (${response.status}).`, response.status);
+  if (!response.ok) throw new ApiError(typeof data.error === "string" ? data.error : `Upload failed (${response.status}).`, response.status, data);
   return data as T;
 }
 
