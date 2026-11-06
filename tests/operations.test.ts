@@ -187,6 +187,17 @@ test('GitHub write server failures preserve uncertain outcomes; known permission
   await assert.rejects(rejected.createIssue('title', 'body'), /HTTP 403/);
 });
 
+test('issue searches stay inside the configured repository', async () => {
+  let query = '';
+  const client = new HttpOperationsClient({ servers: ['s'], repository: 'o/r', containers: ['slopbot'] }, async input => {
+    query = new URL(String(input)).searchParams.get('q')!;
+    return Response.json({ total_count: 2, items: [issue(1), { ...issue(2), html_url: 'https://github.com/foreign/r/issues/2' }] });
+  });
+  const result = await client.searchIssues('is:open repo:foreign/r attachment');
+  assert.match(query, /repo:o\/r is:issue/); assert.ok(!query.includes('repo:foreign'));
+  assert.equal(result.items.length, 1);
+});
+
 test('run versions remain the execution version when a later build starts', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const previous = process.env.SLOPBOT_BUILD_SHA;
