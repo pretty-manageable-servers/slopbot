@@ -1,87 +1,49 @@
 import { LocalDiskStorage } from "../web-chat-images.js";
-import { CLASSIFIER_CONTEXT_LIMIT } from '../classifier-input.js';
-import { ChatFileFetcher } from "../web-chat-files.js";
 import { DiscordVoice, voiceTurnSkipped } from './discord-voice.js';
 import { containsSkipMarker, splitSpeak, VOICE_INSTRUCTIONS_KEY, VOICE_NAME_DEFAULT, VOICE_SKIP, voiceInstructions } from "../voice-rules.js";
-import { legacyToolProgress, sourceFingerprint, stableAttachmentUrl, toolProgressFooter } from "../source-context.js";
+import { legacyToolProgress, stableAttachmentUrl, toolProgressFooter } from "../source-context.js";
 import { errorReply, logError } from "../errors.js";
-import { sandboxManageTool, readSandboxFile } from "../sandbox.js";
-import { sandboxFileTools } from "../sandbox-tools.js";
-import { uploadRequestFiles } from "../sandbox-uploads.js";
-import { probeSandboxProfile, sandboxPromptLine, type SandboxProfile } from "../sandbox-profile.js";
-import { objectStorageTools, UserFileStorage, MAX_STORED_FILE_BYTES, fileStorageScope } from '../object-storage.js';
+import { probeSandboxProfile, type SandboxProfile } from "../sandbox-profile.js";
 import { sendStoredFile } from './discord-storage.js';
 import { S3StorageProvider } from './s3-storage.js';
-import { runToolsCodeTool } from '../run-tools-code.js';
-import { McpManager, McpSecrets } from '../mcp.js';
-import { remoteMcpConnector } from './mcp-client.js';
-import { E2BSandboxProvider } from "./e2b-sandbox.js";
 import { requestTimings, savedTimingFooter } from "../request-timing.js";
-import { registerTimingTools, saveRequestTiming } from "../timing-tools.js";
+import { saveRequestTiming } from "../timing-tools.js";
 import {handleDiscordUi} from './discord-ui-interactions.js';
-import {registerTaskTools} from '../productivity/tasks.js';
-import {registerReminderTools,ReminderWorker} from '../productivity/reminders.js';
-import {registerScheduleTool} from '../schedules/schedule-tool.js';
-import {ScheduleWorker} from '../schedules/schedule-worker.js';
-import {SCHEDULE_KIND} from '../schedules/schedule-types.js';
-import {registerReportTools} from '../search/reports.js';
-import {UiRuntime,registerUiTool,registerPollTool} from '../ui/runtime.js';
-import {registerShowUiTool} from '../ui/show-ui.js';
-import {registerShowWidgetTool} from '../ui/show-widget.js';
 import type {UiDocument} from '../ui/schema.js';
 import {discordUi} from './discord-ui.js';
 import { DiscordToolProgress } from './discord-tool-progress.js';
 import { saveToolTrace } from '../tool-trace.js';
 import { handleToolTrace } from './discord-tool-trace.js';
-import { CONFIRM_RECORD, handleConfirm, postConfirmation, saveConfirmation, showCodeRows, startCodeMaintenance } from './discord-code.js';
+import { CONFIRM_RECORD, handleConfirm, postConfirmation, showCodeRows, startCodeMaintenance } from './discord-code.js';
 import { toolFooter, toolDisplayMode } from '../presentation/tool-activity.js';
 import type { ToolActivity } from '../tool-activity.js';
 import { discordPresentation, suppressLinkPreviews } from '../presentation/discord.js';
-import { registerHistoryTools } from '../search/history-search.js';
-import { registerViewImage } from '../view-image.js';
-import { AttachQueue, fileBatches, registerAttachFile, runKey, startAttachLinkSweep } from '../attach-file.js';
-import { DiscordImageSource } from './discord-image-source.js';
-import { registerWebSearch } from "../web-search.js";
-import { registerWebFetch } from "../web-fetch.js";
-import { FallbackFetch, FallbackSearch, LimiterWebCharge, StoreKeyPool } from "../web-chain.js";
-import { WebKeySecrets } from "../web-keys.js";
-import { TavilySearch } from "./tavily.js";
-import { FirecrawlScrape, FirecrawlSearch } from "./firecrawl.js";
-import { PlainFetch } from "./plain-fetch.js";
-import { SearxNGSearch } from "./searxng.js";
+import { fileBatches, runKey, startAttachLinkSweep } from '../attach-file.js';
 import { ReplyRenderer } from "../reply-renderer.js";
-import { inspectFile } from '../files.js';
 import {
   Client, Events, GatewayIntentBits, Partials, ThreadAutoArchiveDuration, SlashCommandBuilder,
   MessageFlags, PermissionFlagsBits, ChannelType, ActivityType, ActionRowBuilder, ButtonBuilder, ButtonStyle, type ButtonInteraction,
   type ChatInputCommandInteraction, type MessageContextMenuCommandInteraction, type Interaction, type Message as DiscordMessage, type PartialMessage,
 } from "discord.js";
-import { BOT_REPLY_LIMIT_KEY, botReplyLimit } from "../bot-reply-limit.js";
 import { MUTED_USERS_KEY, mutedUsers } from "../muted-users.js";
 import { GLOBAL_SETTINGS_SCOPE } from "../usage-cost.js";
 import { buildFileReportCommand, buildMessageApps, buildStopCommand, CONTINUE_IN_WEB, buildToolCommands, buildUsageCommand, MESSAGE_APPS, messageAppText, setGuildCommands, usageReply } from "./discord-commands.js";
-import { registerProfileTools } from "../profiles.js";
-import { Application } from "../application.js";
-import { Bot, splitReply, type ChatGateway, type Incoming } from "../bot.js";
+import { splitReply, type ChatGateway, type Incoming } from "../bot.js";
 import { PresenceUpdater } from "../presence.js";
 import type { Config } from "../config.js";
-import { parseEffort, type Json, type Message } from "../domain.js";
+import { parseEffort, type Message } from "../domain.js";
 import type { LLM } from "../ports.js";
-import type { LlmMode, LlmRouter } from "../llm-mode.js";
+import { WorkspaceEngine } from "../engine/engine.js";
+import { EngineWorkspace, sandboxProviderFor } from "../engine/workspace.js";
+import type { DegradedRouting, WorkspacePorts } from "../engine/ports.js";
 
-/** Degraded-mode wiring for the server: the router, the live mode and the note window. Absent in mock runs. */
-export interface DegradedRouting { router: LlmRouter; mode: () => LlmMode; statusNoteMinutes: () => number }
+export type { DegradedRouting };
 import type { RuntimeStore } from "../runtime-store.js";
-import { LLMClassifier, ParticipationGate } from "../participation.js";
-import { HistoryImporter } from "../history.js";
-import { DecisionClassifier } from "./decisions.js";
 import { decisionThresholds } from '../participation-history.js';
-import { TaskWorker } from "../queue.js";
-import { UserLimiter, UserLimitError, limitReply, usageView } from "../user-limiter.js";
+import { UserLimitError, limitReply, usageView } from "../user-limiter.js";
 import { createUsageMeter, type UsageMeter } from "../usage-meter.js";
-import { registerUsageTool } from "../usage-tools.js";
-import { configuredChannels, registerServerTools, webTranscriptKey, webTranscriptsEnabled } from "../server-tools.js";
-import { Inbox, INBOX_TTL_MS, type InboxItem } from "../inbox.js";
+import { webTranscriptKey, webTranscriptsEnabled } from "../server-tools.js";
+import { INBOX_TTL_MS, type InboxItem } from "../inbox.js";
 import { pageItems, type ServerListRow, type ServerPage } from "../admin-panel.js";
 import { ChannelAccess } from "../channel-access.js";
 import { TeamAdmins, discordTeamSource } from "../team-admins.js";
@@ -89,15 +51,11 @@ import { publishMessage, publishMessageDelete, publishTool, runEvents } from "..
 import { engineEvents } from "../engine/event-log.js";
 import { ShareService, type ShareRule } from "../shares.js";
 import { discordChannelAccessSource, wireChannelAccessEvents } from "./discord-channel-access.js";
-import { displayToolResult, ToolError, ToolRegistry, UncertainActionError, stableOperationId } from "../tools.js";
+import { displayToolResult, ToolError, UncertainActionError, stableOperationId } from "../tools.js";
 import { WebReplies, asWebUser, webReplyKey } from "../web-replies.js";
 import { MemberDirectory, discordMemberSource } from "../member-directory.js";
 import { discordWebReplies } from "./discord-web-replies.js";
 import { isPrivateChannel, isDirectMessageChannel, directMessageChannel, discordChannelId } from "../private-chat.js";
-import { registerOperationsTools } from '../operations.js';
-import { issueDraftTools } from '../issue-drafts.js';
-import { HttpOperationsClient } from './operations-client.js';
-import { FixWatchWorker } from '../fix-watch-worker.js';
 import { WebChatGateway, type ChatHost } from "../web-chats.js";
 
 /** Slopbot state and services for one Discord server. All servers share one client. */
@@ -136,91 +94,47 @@ function clipText(text: string, max: number): string {
   return max > 1 ? `${text.slice(0, max - 1)}…` : "";
 }
 
-/** The sandbox provider from the operator settings, or undefined when no sandbox key is set. */
-function sandboxProviderFor(config: Config): E2BSandboxProvider | undefined {
-  return config.sandboxApiKey ? new E2BSandboxProvider({ apiKey: config.sandboxApiKey, apiUrl: config.sandboxApiUrl!, sandboxUrl: config.sandboxUrl!, ...(config.sandboxTemplate ? { template: config.sandboxTemplate } : {}) }) : undefined;
-}
-
 export class DiscordServer implements ChatGateway {
   private readonly client: Client;
-  private readonly bot: Bot;
-  private readonly app: Application;
+  readonly workspace: EngineWorkspace;
   private readonly renderer: ReplyRenderer;
-  private readonly reminders: ReminderWorker;
-  private readonly schedules: ScheduleWorker;
-  private readonly fixWatches: FixWatchWorker | undefined;
-  private readonly uiRuntime: UiRuntime;
   private readonly toolProgress = new DiscordToolProgress();
-  private readonly tools: ToolRegistry;
-  private readonly mcp: McpManager;
-  private readonly worker: TaskWorker;
-  private readonly limiter: UserLimiter;
-  private readonly history: HistoryImporter;
-  private readonly webReplies: WebReplies;
+  private webReplies!: WebReplies;
   // Replies in private chats. They are saved in the database and never sent to Discord.
   private readonly chatGateway: WebChatGateway;
-  private channels: string[];
   private historyTimer: ReturnType<typeof setInterval> | undefined;
   private codeMaintenance: (() => void) | undefined;
   private attachSweep: (() => void) | undefined;
   private readonly objectStorage: S3StorageProvider | undefined;
-  /** Files that attach_file queued, taken by the reply of each run. */
-  private readonly attachQueue = new AttachQueue();
-  private readonly voice: DiscordVoice | undefined;
-  private readonly inbox: Inbox;
+  private voice: DiscordVoice | undefined;
+  private get bot() { return this.workspace.bot; }
+  private get reminders() { return this.workspace.reminders; }
+  private get schedules() { return this.workspace.schedules; }
+  private get fixWatches() { return this.workspace.fixWatches; }
+  private get uiRuntime() { return this.workspace.uiRuntime; }
+  private get tools() { return this.workspace.tools; }
+  private get mcp() { return this.workspace.mcp; }
+  private get worker() { return this.workspace.worker; }
+  private get limiter() { return this.workspace.limiter; }
+  private get history() { return this.workspace.history; }
+  private get attachQueue() { return this.workspace.attachQueue; }
+  private get inbox() { return this.workspace.inbox; }
+  private get channels() { return this.workspace.channels; }
 
-  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">, private readonly team?: Pick<TeamAdmins, "canEdit">, private readonly sandboxProfile?: SandboxProfile, private readonly degraded?: DegradedRouting) {
+  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">, team?: Pick<TeamAdmins, "canEdit">, sandboxProfile?: SandboxProfile, private readonly degraded?: DegradedRouting) {
     this.client = client;
     this.objectStorage = objectStorageProvider;
     this.renderer = new ReplyRenderer(store, discordPresentation);
-    this.chatGateway = new WebChatGateway(store, guildId, { queue: this.attachQueue, storage: objectStorageProvider ?? new LocalDiskStorage() });
-    this.inbox = new Inbox(store, access);
-    this.channels = configuredChannels(config, store, guildId);
-    this.history = new HistoryImporter(guildId, store, {
-      fetch: async (channel, before, limit) => {
-        if (!this.channels.includes(channel)) throw new ToolError("Channel is no longer configured");
-        const target = await this.client.channels.fetch(channel);
-        if (!target || target.type !== ChannelType.GuildText || target.guildId !== guildId) throw new ToolError("Text channel unavailable");
-        const batch = await target.messages.fetch({ limit, ...(before ? { before } : {}) });
-        return [...batch.values()].sort((a, b) => a.id === b.id ? 0 : BigInt(a.id) > BigInt(b.id) ? -1 : 1)
-          .map(message => ({ ...this.normalize(message), addressed: false }));
-      },
-    }, config.historyWindowDays);
-    const savedLimit = (key: string, fallback: number, max: number): number => {
-      const value = store.setting(guildId, key);
-      return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= max ? value : fallback;
-    };
-    const savedMonitoring = store.setting(guildId, "monitoring");
-    const participation = new ParticipationGate(new DecisionClassifier({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.jevModel, usage }, store, undefined, new LLMClassifier(llm, store, usage)), {
-      // JEV runs only when a model may answer now. Outages and the mode switch are read on each message.
-      enabled: () => (typeof savedMonitoring === "boolean" ? savedMonitoring : config.jevEnabled) && !config.mock && (this.degraded === undefined || this.degraded.router.select(undefined) !== undefined),
-      thresholds: decisionThresholds(store.setting(guildId, 'participation_thresholds'), config.jevThresholds),
-      reactionFrequency: savedLimit("reaction_frequency", store.setting(guildId, "reactions_enabled") === false ? 0 : 60, 100),
-      contextMessages: Math.min(CLASSIFIER_CONTEXT_LIMIT, savedLimit("classifier_context", config.jevContextMessages, 100)),
-      cooldownMs: savedLimit("cooldown_seconds", config.jevCooldownSeconds, 3600) * 1000,
-      maxUnsolicitedPerHour: savedLimit("max_unsolicited_per_hour", config.jevMaxRepliesPerHour, 1000),
-    }, undefined, store);
-    this.tools = new ToolRegistry(store, async message => {
-      if (message.server !== guildId) return false;
-      const guild = await this.client.guilds.fetch(guildId);
-      const member = await guild.members.fetch({ user: message.author, force: true });
-      return member.permissions.has(PermissionFlagsBits.ManageGuild);
-    }, async context => {
-      // Edits, deletes and new messages never stop a tool. The run tells the model about them in its next round.
-      if (context.source !== "agent") return;
-      const message = context.message;
-      if (!this.bot.accepts(message.server, message.channel)) throw new ToolError("This channel is no longer enabled for Slopbot");
-      // An uncertain action blocks only its own resource (tools.ts), not the channel.
-      if (this.tools.effect(context.toolName, context.arguments) === "write" && context.toolName !== "task_retry") {
-        if (message.taskId && (await store.hasPendingOther(message.server, message.channel, message.id))) throw new ToolError("New contributions are queued; review them before further actions");
-      }
-    });
-    this.mcp = new McpManager(guildId, store, this.tools, remoteMcpConnector({ allowPrivate: process.env.MCP_ALLOW_PRIVATE === 'true' }), new McpSecrets(process.env.MCP_SECRET_KEY), message => this.validateChannel(message, message.channel));
-    registerServerTools(this.tools, {
-      config, server: guildId, store, participation, history: this.history, inbox: this.inbox,
-      isTeamEditor: async user => team ? await team.canEdit(user).catch(() => false) : false,
-      channels: () => this.channels,
-      setChannels: channels => this.setChannels(channels),
+    const ports: WorkspacePorts = {
+      directory: { canManage: async (user, server) => {
+        const guild = await this.client.guilds.fetch(server);
+        const member = await guild.members.fetch({ user, force: true });
+        return member.permissions.has(PermissionFlagsBits.ManageGuild);
+      } },
+      gateway: this,
+      validateChannel: (message, channel, parentOnly) => this.validateChannel(message, channel, parentOnly),
+      reply: async (message, text, id) => { await this.reply(message, text, id); },
+      typing: channel => this.typing(channel),
       findChannels: async (message, query) => {
         const guild = await this.client.guilds.fetch(guildId);
         const channels = await guild.channels.fetch();
@@ -232,207 +146,64 @@ export class DiscordServer implements ChatGateway {
         }
         return found.join("\n") || "No matching channels visible to you and Slopbot.";
       },
-      validateChannel: (message, channel, parentOnly) => this.validateChannel(message, channel, parentOnly),
-      accepts: channel => this.bot.accepts(guildId, channel),
-      setReplyContext: count => this.app.setRecentMessages(count),
-      originMessage: async message => message.id.startsWith("task-seed:") ? (await store.canonicalMessage(message.server, message.id.slice(10))) ?? message : message,
-      startTask: (message, goal) => this.bot.startTask(message, goal),
-      reconcileTask: async message => {
-        const registered = (await store.taskForSource(message.server, message.id));
-        if (registered) { await this.bot.startTask(message, message.text); return registered; }
+      taskThread: async message => {
         const channel = await this.client.channels.fetch(discordChannelId(message.channel));
         if (channel?.type !== ChannelType.GuildText || message.id.startsWith("command:")) return undefined;
         const source = await channel.messages.fetch(message.id);
         if (!source.hasThread) return undefined;
         const thread = (source.thread ?? await channel.threads.fetch(source.id));
         if (!thread || thread.ownerId !== this.client.user?.id) return undefined;
-        (await store.registerTask(guildId, thread.id, message.channel, message.id));
-        await this.bot.startTask(message, message.text);
         return thread.id;
       },
-      wakeWorker: () => this.worker.wake(),
-    });
-    const authorizeFeature = async(message:Message,channel:string) => {
-      if(!this.bot.accepts(message.server,channel))throw new ToolError('Channel is disabled.');
-      await this.validateChannel(message,channel);
-    };
-    this.uiRuntime = new UiRuntime(store,this.tools,authorizeFeature);
-    registerTimingTools(this.tools, { store, authorize: authorizeFeature });
-    if (config.operations) {
-      const client = new HttpOperationsClient(config.operations);
-      const operations = registerOperationsTools(this.tools, { store, config: config.operations, client, authorize: authorizeFeature }, guildId);
-      // Member issue drafts file through the same GitHub client. They exist on every server where GitHub is configured, like github_issue_read; admin diagnostics stay in operations.servers.
-      for (const tool of issueDraftTools({ store, client, authorize: authorizeFeature })) this.tools.register(tool);
-      if (config.operations.servers.includes(guildId)) this.fixWatches = new FixWatchWorker(guildId, operations, async message => {
-        await authorizeFeature(message, message.channel);
-        await this.tools.checkAccess(message, 'fix_watch');
-      }, async (message, text, id) => { await this.reply(message, text, id); });
-    }
-    registerHistoryTools(this.tools,{store,authorize:authorizeFeature});
-    // Images of stored messages, for view_image and model image input. Discord links are re-fetched; web chat images use storage.
-    const imageSource = new DiscordImageSource({ attachments: async (channelId, messageId) => {
-      const channel = await this.client.channels.fetch(channelId);
-      if (!channel || !channel.isTextBased() || !("messages" in channel)) return undefined;
-      const message = await channel.messages.fetch(messageId);
-      return [...message.attachments.values()].map(item => ({ name: item.name ?? "", url: item.url, ...(item.contentType ? { contentType: item.contentType } : {}) }));
-    }, storage: objectStorageProvider ?? new LocalDiskStorage() });
-    registerViewImage(this.tools,{store,images:imageSource,authorize:authorizeFeature});
-    registerReportTools(this.tools,{store,llm,authorize:authorizeFeature,usage});
-    registerPollTool(this.tools);
-    registerTaskTools(this.tools,{store,authorize:authorizeFeature});
-    registerReminderTools(this.tools,{store,authorize:authorizeFeature,reminderChannel:message=>message.source==='voice'?this.voice?.taskParent(message.channel):undefined});
-    registerScheduleTool(this.tools,{store,authorize:authorizeFeature,isTeamEditor:async user=>team?await team.canEdit(user).catch(()=>false):false});
-    this.reminders=new ReminderWorker(guildId,store,async(message,text,id)=>{await this.reply(message,text,id);},authorizeFeature);
-    this.schedules=new ScheduleWorker({
-      server:guildId,store,authorize:authorizeFeature,
-      // deliveryId is schedule:<id>:<slot or note>. The id is hex, so it has no colon. The owner is the mention target.
-      reply:async(channel,text,deliveryId)=>{
-        const record=await store.record(guildId,SCHEDULE_KIND,deliveryId.split(':')[1]??'');
-        const owner=String((record?.value as Record<string,Json>|undefined)?.owner??'');
-        await this.reply({server:guildId,channel,author:owner,id:`command:${deliveryId}`,text:'',addressed:false,timestamp:Date.now()},text,deliveryId);
+      fetchHistory: async (channel, before, limit) => {
+        const target = await this.client.channels.fetch(channel);
+        if (!target || target.type !== ChannelType.GuildText || target.guildId !== guildId) throw new ToolError("Text channel unavailable");
+        const batch = await target.messages.fetch({ limit, ...(before ? { before } : {}) });
+        return [...batch.values()].sort((a, b) => a.id === b.id ? 0 : BigInt(a.id) > BigInt(b.id) ? -1 : 1)
+          .map(message => this.normalize(message));
       },
-      enqueuePrompt:async message=>{await this.worker.enqueue(message);},
-      invokeTool:async(name,input,ctx)=>{
-        const message:Message={server:guildId,channel:ctx.channel,author:ctx.author,id:ctx.id,text:`/slopbot ${name} ${JSON.stringify(input)}`,addressed:false,timestamp:Date.now()};
-        return displayToolResult(await this.tools.invokeResult(message,name,input,ctx.id,ctx.source));
+      fetchMessage: async (channelId, id) => {
+        const channel = await this.client.channels.fetch(discordChannelId(channelId));
+        if (!channel || !channel.isTextBased() || !("messages" in channel)) throw new ToolError("Source channel unavailable");
+        return this.normalize(await channel.messages.fetch(id));
       },
-      overGrace:who=>usage.overGrace(who),
-      now:()=>new Date(),
-      llmMode:()=>this.degraded?.mode()??"normal",
-    });
-    registerUiTool(this.tools);
-    registerShowUiTool(this.tools);
-    registerShowWidgetTool(this.tools);
-    registerProfileTools(this.tools, store);
-    // Free steps first. Team keys from the admin panel are used only when the free step fails.
-    const webKeys = new WebKeySecrets();
-    const pool = webKeys.enabled ? new StoreKeyPool(store, row => webKeys.open(row.secretEncrypted, row.id)) : undefined;
-    const charge = new LimiterWebCharge(usage.limiter, store);
-    registerWebSearch(this.tools, new FallbackSearch({ ...(config.searxngUrl ? { searxng: new SearxNGSearch(config.searxngUrl, fetch, Date.now, config.searxngAccess) } : {}), ...(pool ? { pool, tavily: new TavilySearch(), firecrawl: new FirecrawlSearch() } : {}), charge }));
-    registerWebFetch(this.tools, new FallbackFetch({ plain: new PlainFetch(), ...(pool ? { pool, firecrawl: new FirecrawlScrape() } : {}), charge }));
-    const resolveAttachment = async (request: Message, requestedId: string | undefined, allowParent = false): Promise<Message> => {
-      const id = requestedId ?? (request.attachments?.length ? request.id : request.replyTo);
-      if (!id) throw new ToolError("Reply to a message with a file attached.");
-      const known = (await store.canonicalMessage(request.server, id));
-      const parent = allowParent ? store.taskThreads(request.server).find(task => task.thread === request.channel)?.parent : undefined;
-      if (!known || (known.channel !== request.channel && known.channel !== parent) || !this.bot.accepts(request.server, known.channel)) throw new ToolError("File source must be in this permitted channel or the task's permitted parent channel.");
-      if (isPrivateChannel(known.channel) && !isDirectMessageChannel(known.channel)) throw new ToolError("Files in private chats are not available yet.");
-      await this.validateChannel(request, known.channel);
-      const channel = await this.client.channels.fetch(discordChannelId(known.channel));
-      if (!channel || !channel.isTextBased() || !("messages" in channel)) throw new ToolError("Source channel unavailable");
-      const fresh = this.normalize(await channel.messages.fetch(id));
-      // A changed source is saved and used as it is now. The run does not stop for it.
-      if (sourceFingerprint(fresh) !== sourceFingerprint(known)) await this.store.revise(fresh);
-      return fresh;
-    };
-    const chatFiles = new ChatFileFetcher(objectStorageProvider ?? new LocalDiskStorage());
-    const sandboxProvider = sandboxProviderFor(config);
-    const storage = new UserFileStorage(store, objectStorageProvider);
-    registerAttachFile(this.tools, { store, queue: this.attachQueue, storage, ...(objectStorageProvider ? { provider: objectStorageProvider } : {}), ...(sandboxProvider ? { sandbox: { provider: sandboxProvider, ...(this.sandboxProfile ? { profile: this.sandboxProfile } : {}) } } : {}), authorize: message => authorizeFeature(message, message.channel) });
-    this.tools.register(sandboxManageTool(store, sandboxProvider));
-    for (const tool of sandboxFileTools(store, sandboxProvider, this.sandboxProfile)) this.tools.register(tool);
-    for (const tool of objectStorageTools({
-      storage,
-      fetcher: chatFiles,
-      authorize: message => authorizeFeature(message, message.channel),
-      resolveAttachment: (request, id) => resolveAttachment(request, id, true),
-      inspect: (context, file, bytes, question) => inspectFile({ store, llm, usage, assertCurrent: async () => { const current = await storage.entry(context.message.server, context.message.author, file.owner, file.path, false, fileStorageScope(file), context.isAdmin); if (current.file.key !== file.key) throw new ToolError('Stored file changed during inspection. Read its current version.'); } }, context, file.path, file.contentType, bytes, question),
-      send: async (context, file, bytes) => {
-        const current = await storage.entry(context.message.server, context.message.author, file.owner, file.path, false, fileStorageScope(file), context.isAdmin);
-        if (current.file.key !== file.key) throw new ToolError('Stored file changed before sending. Request its current version.');
-        await sendStoredFile(this.client, context, file, bytes);
+      imageAttachments: async (channelId, messageId) => {
+        const channel = await this.client.channels.fetch(channelId);
+        if (!channel || !channel.isTextBased() || !("messages" in channel)) return undefined;
+        const message = await channel.messages.fetch(messageId);
+        return [...message.attachments.values()].map(item => ({ name: item.name ?? "", url: item.url, ...(item.contentType ? { contentType: item.contentType } : {}) }));
       },
-      // to_sandbox and save_sandbox need the sandbox. Without a provider, both report that it is not configured.
-      ...(sandboxProvider ? { store, provider: sandboxProvider, ...(this.sandboxProfile ? { profile: this.sandboxProfile } : {}), sandbox: {
-        read: (context, path) => readSandboxFile(store, sandboxProvider, context, path, MAX_STORED_FILE_BYTES, this.sandboxProfile?.home),
-      } } : {}),
-    })) this.tools.register(tool);
-    this.limiter = usage.limiter;
-    this.webReplies = new WebReplies({
-      store, discord: discordWebReplies(client), access, limiter: this.limiter, secret: webReplyKey(),
-      enabled: parent => webTranscriptsEnabled(store, guildId, parent),
-      accepts: channel => this.bot.accepts(guildId, channel),
-    });
-    // Voice posts transcripts through webReplies, so it is made after webReplies.
-    if (config.voice) {
-      this.voice = new DiscordVoice(client, guildId, config, this.webReplies, usage, user => Boolean(mutedUsers(store.setting(guildId, MUTED_USERS_KEY))[user]), () => voiceInstructions(store.setting(guildId, VOICE_INSTRUCTIONS_KEY) as string | undefined, config.voice?.instructions, (config.voice?.voice ?? VOICE_NAME_DEFAULT) !== VOICE_NAME_DEFAULT), value => store.setSetting(guildId, VOICE_INSTRUCTIONS_KEY, value), undefined, undefined, this.degraded?.router);
-      this.voice.register(this.tools);
-      this.voice.onSession = (channel, previous) => { if (previous) this.bot.closeVoiceChannel(previous); if (channel) this.bot.openVoiceChannel(guildId, channel); };
-    }
-    registerUsageTool(this.tools, this.limiter);
-    // Registered last: run_tools_code lists the tools registered before it in its description.
-    this.tools.register(runToolsCodeTool(this.tools, { store, ...(this.sandboxProfile ? { profile: this.sandboxProfile } : {}), ...(sandboxProvider ? { sandbox: sandboxProvider } : {}), confirmations: {
-      record: async (server, operationId) => (await store.record(server, CONFIRM_RECORD, operationId))?.value,
-      save: (server, operationId, value) => saveConfirmation(store, server, operationId, value),
-    } }));
-    const sandboxPrompt = sandboxPromptLine(this.sandboxProfile);
-    this.app = new Application(store, llm, {
-      allowedChannels: this.channels.map(channel => ({ server: guildId, channel })),
-      recentMessages: savedLimit("reply_context", config.replyContextMessages, 100),
-      maxContextTokens: config.contextTokens, maxInputChars: config.contextTokens,
-      maxOutputTokens: config.outputTokens, checkpointTokens: config.checkpointTokens, maxToolRounds: config.maxToolRounds,
-    }, store, { usage, onToolActivity: async (message, activity) => {
-      if (message.source === "voice" && activity.status === "running") this.voice?.toolStarted(message.channel, activity.name);
-      if (!this.bot.accepts(message.server, message.channel)) return;
-      publishTool(message, activity);
-      // Web chats show tool progress in their own stream. DMs use Discord status messages.
-      if (isPrivateChannel(message.channel) && !isDirectMessageChannel(message.channel)) return;
-      // A run_tools_code program stopped at a call that needs Confirm. Its pending record is already saved.
-      if (activity.parentId && activity.status === "rejected" && activity.reason?.includes("confirmation_required")) void this.postCodeConfirmation(message, activity);
-      await this.toolProgress.update(JSON.stringify([message.server,message.channel,message.id]), activity, async content => {
-        const channel = await this.client.channels.fetch(discordChannelId(message.channel));
-        if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Status channel unavailable");
-        const sent = await channel.send({content,embeds:[{footer:{text:toolProgressFooter}}],...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? {reply:{messageReference:message.id,failIfNotExists:false}} : {}),allowedMentions:{parse:[],repliedUser:false}});
-        return sent;
+      sendStoredFile: (context, file, bytes) => sendStoredFile(this.client, context, file, bytes),
+      reminderChannel: message => message.source === 'voice' ? this.voice?.taskParent(message.channel) : undefined,
+      registerTools: tools => {
+      this.webReplies = new WebReplies({
+        store, discord: discordWebReplies(client), access, limiter: usage.limiter, secret: webReplyKey(),
+        enabled: parent => webTranscriptsEnabled(store, guildId, parent),
+        accepts: channel => this.bot.accepts(guildId, channel),
       });
-    }, presentation: discordPresentation, ...(sandboxPrompt ? { sandboxPrompt } : {}), profiles: store, harness: store, images: imageSource, tools: {
-      catalog: message => this.tools.catalog(message), schemas: message => this.tools.schemas(message), suggest: message => this.tools.suggest(message),
-      execute: (message, call, id, version, invocation) => this.bot.executeTool(message, call, id, version, invocation),
-      snapshot: () => {
-        const selected = this.tools.capture();
-        return { catalog: selected.catalog, schemas: selected.schemas, suggest: selected.suggest, execute: (message, call, id, version, invocation) => {
-          selected.assertCurrent(call.name);
-          return this.bot.executeTool(message, call, id, version, { ...invocation, assertTool: selected.assertCurrent });
-        } };
-      },
-    } });
-    this.worker = new TaskWorker(guildId, store, this.limiter, async message => {
-      const source = (await store.canonicalMessage(message.server, message.id));
-      if (!source || source.text !== message.text || source.author !== message.author) throw new Error("Source changed while queued; submit a new request");
-      if (!message.taskId && /^!task(?:\s|$)/i.test(message.text)) {
-        const goal = message.text.replace(/^!task\s*/i, "").trim();
-        if (!goal) throw new ToolError("Use !task followed by the task goal");
-        const operationId = `task-start:${message.server}:${message.id}`;
-        const result = await this.tools.invoke(message, "task_start", { goal }, operationId, "command");
-        return { runId: operationId, text: result, contextVersion: await store.contextVersion(message.server, message.channel) };
+      // Voice posts transcripts through webReplies, so it is made after webReplies.
+      if (config.voice) {
+        this.voice = new DiscordVoice(client, guildId, config, this.webReplies, usage, user => Boolean(mutedUsers(store.setting(guildId, MUTED_USERS_KEY))[user]), () => voiceInstructions(store.setting(guildId, VOICE_INSTRUCTIONS_KEY) as string | undefined, config.voice?.instructions, (config.voice?.voice ?? VOICE_NAME_DEFAULT) !== VOICE_NAME_DEFAULT), value => store.setSetting(guildId, VOICE_INSTRUCTIONS_KEY, value), undefined, undefined, this.degraded?.router);
+        this.voice.register(tools);
+        this.voice.onSession = (channel, previous) => { if (previous) this.bot.closeVoiceChannel(previous); if (channel) this.bot.openVoiceChannel(guildId, channel); };
       }
-      const stop = this.typing(message.channel);
-      try {
-        // A request copies its non-image files to the sandbox before the run. A failure does not stop the run.
-        const uploads = message.uploadFiles && sandboxProvider ? await uploadRequestFiles({ store, provider: sandboxProvider, fetcher: chatFiles, ...(this.sandboxProfile ? { profile: this.sandboxProfile } : {}) }, message).catch(error => {
-          logError("sandbox_upload_failed", error, { stage: "sandbox upload", server: message.server, channel: message.channel, messageId: message.id }, true);
-          return undefined;
-        }) : undefined;
-        return await this.app.handle(uploads ? { ...message, uploads } : message, true);
-      } finally { stop(); }
-    }, (message, reply, id) => this.bot.deliver(message, reply, id), message => this.bot.accepts(message.server, message.channel), 3, async (job, error) => {
-      if (!this.bot.accepts(job.message.server, job.message.channel)) return;
-      await this.reply(job.message, errorReply(error, job.id), `job-error:${job.id}`);
-    });
-    this.bot = new Bot(this.app, store, store, this, guildId, this.channels, { profiles: store, knowledge: store, participation, worker: this.worker, tools: this.tools, queueStore: store, botReplyLimit: () => botReplyLimit(store.setting(GLOBAL_SETTINGS_SCOPE, BOT_REPLY_LIMIT_KEY)), mutedUntil: user => mutedUsers(store.setting(guildId, MUTED_USERS_KEY))[user], ...(this.degraded ? { router: this.degraded.router, degraded: { mode: this.degraded.mode, statusNoteMinutes: this.degraded.statusNoteMinutes } } : {}) });
+      },
+      onToolActivity: (message, activity) => this.toolActivity(message, activity),
+    };
+    this.workspace = new EngineWorkspace(config, store, llm, guildId, objectStorageProvider, usage, access, team, sandboxProfile, degraded, ports);
+    this.chatGateway = new WebChatGateway(store, guildId, { queue: this.workspace.attachQueue, storage: objectStorageProvider ?? new LocalDiskStorage() });
   }
   /** Private chats: the chat service opens, closes and hands messages in through these. */
-  openChat(channel: string): void { this.bot.openPrivateChat(this.guildId, channel); }
-  closeChat(channel: string): void { this.bot.closePrivateChat(this.guildId, channel); }
+  openChat(channel: string): void { this.workspace.openChat(channel); }
+  closeChat(channel: string): void { this.workspace.closeChat(channel); }
   async receiveChat(message: Message): Promise<void> {
-    // The chat service saves the message first, so the bot must not save it again.
-    await this.bot.receive({ ...message, botAuthor: false, mentionsBot: false, repliesToBot: false }, { ingested: true });
+    await this.workspace.submit(message, { ingested: true });
   }
   /** Starts work for this server after the client is ready. */
   async ready(botUser: string): Promise<void> {
     await this.store.setSetting(this.guildId, "context_bot_author", botUser);
     if (!this.channels.length) console.warn(`No channels configured for server ${this.guildId}. Use /slopbot channels action:add channel:<channel> to enable replies.`);
-    void this.purgeAndIndex().catch(error => logError("Database startup indexing failed", error, { server: this.guildId }));
+    void this.workspace.purgeAndIndex().catch(error => logError("Database startup indexing failed", error, { server: this.guildId }));
     void this.hydrateAuthors().catch(error => logError("Author-name refresh unavailable; names will fill from new messages.", error, { server: this.guildId }));
     // Reopens the private chats of this server, so a restart keeps them answering.
     for (const channel of await this.store.liveWebChatChannels(this.guildId)) this.bot.openPrivateChat(this.guildId, channel);
@@ -468,6 +239,22 @@ export class DiscordServer implements ChatGateway {
     await this.store.ingest({ ...note, addressed: false });
     await this.worker.enqueue({ ...note, addressed: true });
   }
+  /** Tool progress for a run: voice, the live run events, and Discord status messages. */
+  private async toolActivity(message: Message, activity: ToolActivity): Promise<void> {
+      if (message.source === "voice" && activity.status === "running") this.voice?.toolStarted(message.channel, activity.name);
+      if (!this.bot.accepts(message.server, message.channel)) return;
+      publishTool(message, activity);
+      // Web chats show tool progress in their own stream. DMs use Discord status messages.
+      if (isPrivateChannel(message.channel) && !isDirectMessageChannel(message.channel)) return;
+      // A run_tools_code program stopped at a call that needs Confirm. Its pending record is already saved.
+      if (activity.parentId && activity.status === "rejected" && activity.reason?.includes("confirmation_required")) void this.postCodeConfirmation(message, activity);
+      await this.toolProgress.update(JSON.stringify([message.server,message.channel,message.id]), activity, async content => {
+        const channel = await this.client.channels.fetch(discordChannelId(message.channel));
+        if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Status channel unavailable");
+        const sent = await channel.send({content,embeds:[{footer:{text:toolProgressFooter}}],...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? {reply:{messageReference:message.id,failIfNotExists:false}} : {}),allowedMentions:{parse:[],repliedUser:false}});
+        return sent;
+      });
+  }
   /** Posts Confirm and Cancel for a stopped run_tools_code call. Only the pending record of that call is read. */
   private async postCodeConfirmation(message: Message, activity: ToolActivity): Promise<void> {
     try {
@@ -492,18 +279,6 @@ export class DiscordServer implements ChatGateway {
   messageDelete(message: { guildId: string | null; channelId: string; id: string }): void {
     const server = message.guildId ?? this.guildId, channel = message.guildId ? message.channelId : directMessageChannel(message.channelId);
     if (this.bot.accepts(server, channel)) void this.store.remove(server, channel, message.id).then(() => publishMessageDelete(server, channel, message.id)).catch(error => logError("discord_message_delete_failed", error, { messageId: message.id }));
-  }
-  private async purgeAndIndex(): Promise<void> {
-    const children = this.store.taskThreads(this.guildId).filter(task => this.channels.includes(task.parent)).map(task => task.thread);
-    const scopes = [...this.channels, ...children];
-    await this.store.purgeUnconfigured(this.guildId, scopes); await this.store.reindex(this.guildId, scopes);
-  }
-  private async setChannels(channels: string[]): Promise<void> {
-    const previous = this.channels;
-    this.channels = [...channels]; this.bot.setChannels(channels);
-    for (const channel of previous) if (!channels.includes(channel)) await this.history.exclude(channel);
-    await this.purgeAndIndex();
-    for (const channel of channels) if (!previous.includes(channel)) await this.history.include(channel);
   }
   private async validateChannel(message: Message, channelId: string, parentOnly = false): Promise<void> {
     // A private chat may use only its own channel. A Discord message may never use a private chat.
@@ -576,18 +351,13 @@ export class DiscordServer implements ChatGateway {
   }
   /** Set by discord-main when the website runs. Makes a private web chat from a message and gives its link. */
   webChat: { continueMessage(user: string, server: string, source: Message): Promise<string> } | undefined;
-  /** True for Manage Server in this server or a Slopbot team editor. They stop and continue any response. */
-  private async stopAdmin(user: string, manager: boolean): Promise<boolean> {
-    return manager || (this.team ? await this.team.canEdit(user).catch(() => false) : false);
-  }
   /** Runs a card button in a private chat for its owner. The card uses this server's UI runtime and tools, as a command. */
   async act(channel: string, user: string, id: string, revision: number, index: number, interactionId: string): Promise<{ document: UiDocument; revision: number }> {
-    const message: Message = { server: this.guildId, channel, author: user, id: `chat-ui:${interactionId}`, text: "UI action", timestamp: Date.now() };
-    return this.uiRuntime.act(message, id, revision, index, interactionId);
+    return this.workspace.act(channel, user, id, revision, index, interactionId);
   }
   /** Stops responses in a channel. The web console calls it too. Returns the stopped job IDs. */
   async stopResponses(channel: string, user: string, manager: boolean): Promise<string[]> {
-    return this.bot.stop(this.guildId, channel, user, await this.stopAdmin(user, manager));
+    return this.workspace.stop(channel, user, manager);
   }
   /** The /stop command. A public reply; a stop shows a Continue button. */
   private async stopCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -610,7 +380,7 @@ export class DiscordServer implements ChatGateway {
     if (interaction.guildId !== this.guildId) return;
     const jobId = interaction.customId.slice("slopstop:".length);
     const manager = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? false;
-    const resumed = await this.bot.resume(this.guildId, interaction.channelId, jobId, interaction.user.id, await this.stopAdmin(interaction.user.id, manager));
+    const resumed = await this.bot.resume(this.guildId, interaction.channelId, jobId, interaction.user.id, await this.workspace.stopAdmin(interaction.user.id, manager));
     if (!resumed) { await interaction.reply({ content: "This response cannot continue. You can continue only the responses that you started.", flags: MessageFlags.Ephemeral }); return; }
     await interaction.update({ content: "Slopbot's response was interrupted. Continued.", components: [] });
   }
@@ -1040,6 +810,8 @@ export class DiscordAdapter {
   private readonly memberCache = new Map<string, { at: number; servers: { id: string; name: string; icon: string | null; admin: boolean }[] }>();
   private readonly client: Client;
   private readonly servers = new Map<string, Promise<DiscordServer>>();
+  /** The Workspace of each server that is open. Same lifetime as servers. */
+  readonly engine = new WorkspaceEngine();
   private readonly objectStorageProvider: S3StorageProvider | undefined;
   // One meter for the process. Its limiter is shared by every server, and discord-main attaches it to the embeddings.
   readonly usage: UsageMeter;
@@ -1109,6 +881,7 @@ export class DiscordAdapter {
       return server;
     })();
     this.servers.set(guildId, opening);
+    this.engine.add(guildId, opening.then(server => server.workspace));
     opening.catch(() => { if (this.servers.get(guildId) === opening) this.servers.delete(guildId); });
     return opening;
   }
@@ -1116,6 +889,7 @@ export class DiscordAdapter {
     const server = this.servers.get(guildId);
     if (!server) return;
     this.servers.delete(guildId);
+    this.engine.remove(guildId);
     await (await server).stop();
   }
   private async route(guildId: string, handle: (server: DiscordServer) => void): Promise<void> {
