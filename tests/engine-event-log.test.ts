@@ -75,7 +75,7 @@ test("after returns saved events in publish order, and turn returns only that tu
   assert.deepEqual(all.map(envelope => envelope.event.type), ["turn.start", "round.start", "text.delta", "turn.end", "turn.start", "turn.end"]);
   const rest = await log.after(conversation, all[3]!.seq!, 100);
   assert.deepEqual(rest.map(envelope => envelope.seq), all.slice(4).map(envelope => envelope.seq));
-  assert.deepEqual(await log.turn(conversation, "m1"), all.slice(0, 4).map(envelope => envelope.event));
+  assert.deepEqual(await log.turn(conversation, "m1"), all.slice(0, 4).map(envelope => ({ event: envelope.event, at: envelope.at })));
 });
 
 test("latest is the highest saved seq of the conversation, so after(latest) holds only newer events", async t => {
@@ -125,7 +125,7 @@ test("tool.status keeps the full arguments and run fields, and keys the call by 
   publishTool(request, { id: "m1:1", name: "write_file", status: "completed", arguments: {} });
   publishTool(request, { id: "m1:2", name: "run_tools_code", status: "failed", arguments: {}, reason: "why", code: "return 1", parentId: "m1:0", durationMs: 12 });
   await engineEvents.idle();
-  assert.deepEqual(await engineEvents.turn({ server, channel: switchedOn }, "m1"), [
+  assert.deepEqual((await engineEvents.turn({ server, channel: switchedOn }, "m1")).map(item => item.event), [
     { type: "tool.status", turn: "m1", call: "call_1", name: "write_file", status: "completed", input: { content } },
     { type: "tool.status", turn: "m1", call: "m1:1", name: "write_file", status: "completed", input: {} },
     { type: "tool.status", turn: "m1", call: "m1:2", name: "run_tools_code", status: "failed", input: {}, reason: "why", code: "return 1", parent: "m1:0", durationMs: 12 },
@@ -141,7 +141,7 @@ test("a finished reply logs its turn start, its text, and a done turn end", asyn
   const app = new Application(store, llm, policy, undefined, { harness: store });
   await app.handle(request);
   await engineEvents.idle();
-  const events = await engineEvents.turn({ server, channel: switchedOn }, "m1");
+  const events = (await engineEvents.turn({ server, channel: switchedOn }, "m1")).map(item => item.event);
   assert.equal(events[0]?.type, "turn.start");
   assert.ok(events.some(event => event.type === "text.delta" && event.text === "Hello"));
   assert.deepEqual(events.at(-1), { type: "turn.end", turn: "m1", status: "done" });
@@ -166,6 +166,6 @@ test("an interrupted run ends its turn as interrupted in the engine log", async 
   assert.equal(await app.interrupt(server, "m1"), true);
   await assert.rejects(pending, HarnessInterrupted);
   await engineEvents.idle();
-  const events = await engineEvents.turn({ server, channel: switchedOn }, "m1");
+  const events = (await engineEvents.turn({ server, channel: switchedOn }, "m1")).map(item => item.event);
   assert.deepEqual(events.at(-1), { type: "turn.end", turn: "m1", status: "interrupted" });
 });

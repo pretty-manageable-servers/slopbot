@@ -1,4 +1,4 @@
-import { EngineEvent, type EngineEnvelope } from "@slopbot/contracts";
+import { EngineEvent, type EngineEnvelope, type TimedEngineEvent } from "@slopbot/contracts";
 import { logError } from "../errors.js";
 import { isDirectMessageChannel, isPrivateChannel } from "../private-chat.js";
 import { transcriptSwitchOn } from "../server-tools.js";
@@ -24,7 +24,7 @@ export interface EngineEventStore {
   taskThreads(server: string): { thread: string; parent: string }[];
   appendEngineEvent(row: EngineEventRow): Promise<number>;
   engineEventsAfter(server: string, channel: string, after: number, limit: number): Promise<EngineEnvelope[]>;
-  engineTurnEvents(server: string, channel: string, turn: string): Promise<EngineEvent[]>;
+  engineTurnEvents(server: string, channel: string, turn: string): Promise<TimedEngineEvent[]>;
   /** The highest seq saved for the conversation, 0 when there is none. */
   latestEngineSeq(server: string, channel: string): Promise<number>;
 }
@@ -107,7 +107,7 @@ export class EventLog implements EngineEventLog {
     return this.store ? this.store.latestEngineSeq(conversation.server, conversation.channel) : 0;
   }
 
-  async turn(conversation: Conversation, turn: string): Promise<EngineEvent[]> {
+  async turn(conversation: Conversation, turn: string): Promise<TimedEngineEvent[]> {
     return this.store ? this.store.engineTurnEvents(conversation.server, conversation.channel, turn) : [];
   }
 

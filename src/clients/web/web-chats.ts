@@ -12,7 +12,7 @@ import { PRIVATE_CHANNEL_PREFIX, PRIVATE_CHAT_MAX_CHARS, PRIVATE_CHAT_TITLE_CHAR
 import { fileLabel, publishMessage, slopbotId, withoutFileLabelText } from "../../run-events.js";
 import type { EngineEvent } from "@slopbot/contracts";
 import { engineEvents } from "../../engine/event-log.js";
-import { messageViews, openEngineStream, streamCursor, turnEventsOf, type TranscriptStore } from "./web-transcripts.js";
+import { messageViews, openEngineStream, streamCursor, turnBody, turnEventsOf, type TranscriptStore } from "./web-transcripts.js";
 import type { WebChatRow } from "./web-chat-store.js";
 import { CHAT_IMAGE_ID, CHAT_IMAGE_MAX_BYTES, CHAT_IMAGE_MAX_COUNT, CHAT_IMAGE_SCHEME, LocalDiskStorage, chatImageContentType, chatImageKey, imageAttachments, imageName, newChatImageId, sniffImage } from "../../web-chat-images.js";
 import { CHAT_FILE_ID, CHAT_FILE_MAX_BYTES, CHAT_ATTACHMENT_MAX_COUNT, chatFileKey, fileAttachments, fileContentType, fileName, fileUrl, newChatFileId, type ChatFileView } from "../../web-chat-files.js";
@@ -387,11 +387,11 @@ export class WebChatService {
   }
 
   /** The saved engine events of one turn of a chat. */
-  async turnEvents(user: string, id: string, turn: string): Promise<{ events: EngineEvent[] }> {
+  async turnEvents(user: string, id: string, turn: string): Promise<{ events: EngineEvent[]; at: (number | null)[] }> {
     const chat = await this.owned(user, id);
     const events = /^[\w:.-]{1,200}$/.test(turn) ? await turnEventsOf(this.store, engineEvents, chat.server, privateChannel(chat.id), turn) : undefined;
     if (!events) throw new ChatError(404, "Not found.");
-    return { events };
+    return turnBody(events);
   }
 
   /** True when the user owns the private chat in this channel, and the chat is in this server. Errors count as no. */

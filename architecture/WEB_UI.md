@@ -65,7 +65,7 @@ Both live streams send server-sent events with the name `engine`. The `id` is th
 
 ## One turn view for live and saved events
 
-The console turns engine events into chat messages in `console/src/events.ts`. Each request is one `TurnView`, built by `reduceTurn` in `packages/contracts/src/reduce.ts`. Text and thinking deltas join their part. Tool input and status join the tool call with the same `call` ID. `message.upsert` and `message.delete` change the saved messages instead.
+The console turns engine events into chat messages in `console/src/events.ts`. Each request is one `TurnView`, built by `reduceTurn` in `packages/contracts/src/reduce.ts`. Text and thinking deltas join their part. Tool input and status join the tool call with the same `call` ID. `message.upsert` and `message.delete` change the saved messages instead. With the event times (the envelope `at`, and `at` in `/turns/:turn/events`), a thinking part gets `durationMs` from its first delta to the next part or the turn end; the kit shows it as "Thought for <time>".
 
 A turn is built the same way whether its events arrive live or are loaded from `/turns/:turn/events`. The chat page (`console/src/chat.tsx`) and the Discord conversation view (`console/src/servers/channel.tsx`) both subscribe to the `engine` event. Both load a turn's saved events through the turn route when they need it.
 

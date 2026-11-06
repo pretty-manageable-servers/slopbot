@@ -2,7 +2,7 @@
 // shared reduceTurn from the live events or from the saved ones (/turns/:turn/events). The kit message is made from
 // that view in one place (turnParts), so a reply looks the same live and loaded. A saved reply (message.upsert)
 // replaces its turn's live message and keeps the turn's thinking and tool parts before its text.
-import { reduceTurn, type EngineEnvelope, type EngineEvent, type TurnView } from "@slopbot/contracts";
+import { reduceTurn, type EngineEnvelope, type EngineEvent, type TimedEngineEvent, type TurnView } from "@slopbot/contracts";
 import { parsePartialJson, type Message, type Part, type ToolCallPart } from "agentic-ui-kit/core";
 
 /** One saved message as the bot sends it (the message of a message.upsert event). */
@@ -85,7 +85,8 @@ export function turnParts(view: TurnView): Part[] {
       return;
     }
     const last = index === view.parts.length - 1;
-    out.push({ type: part.kind, id: `${view.turn}:${index}`, text: part.text, status: open && last ? "streaming" : "done" });
+    const durationMs = part.kind === "thinking" ? part.durationMs : undefined;
+    out.push({ type: part.kind, id: `${view.turn}:${index}`, text: part.text, status: open && last ? "streaming" : "done", ...(durationMs !== undefined ? { durationMs } : {}) });
   });
   return out;
 }
@@ -146,13 +147,20 @@ export function applyEngineEvent(state: ChatState, envelope: EngineEnvelope, cha
   // Any event of a round names its run, so a page that joined mid-turn still knows the turn.
   const runs = "run" in event && state.runs[event.run] !== event.turn ? { ...state.runs, [event.run]: event.turn } : state.runs;
   const begun = event.type === "turn.start" ? { ...state.begun, [event.turn]: true as const } : state.begun;
-  return { ...state, seen, runs, begun, live: { ...state.live, [event.turn]: reduceTurn(state.live[event.turn], event) } };
+  return { ...state, seen, runs, begun, live: { ...state.live, [event.turn]: reduceTurn(state.live[event.turn], event, envelope.at) } };
 }
 
 /** Where a loaded page gets the events of a reply: the turn's saved events. The turn is on the saved reply (state.runs). */
 export interface TurnSource {
-  turnEvents(turn: string): Promise<EngineEvent[]>;
+  turnEvents(turn: string): Promise<TimedEngineEvent[]>;
 }
+
+/** The events of a turn's events route, each with its time when the route gives one. */
+export const timedEvents = ({ events, at }: { events: EngineEvent[]; at?: (number | null)[] }): TimedEngineEvent[] =>
+  events.map((event, index) => {
+    const time = at?.[index];
+    return time == null ? { event } : { event, at: time };
+  });
 
 /** The saved replies that have no turn view yet, by message id. */
 export const unloadedReplies = (state: ChatState): string[] =>
@@ -168,7 +176,7 @@ export async function loadTurns(state: ChatState, ids: readonly string[], source
         if (turn === undefined) continue;
         runs[run] = turn;
         if (!completeView(state, turn) && !loaded[turn]) {
-          const view = (await source.turnEvents(turn)).reduce<TurnView | undefined>(reduceTurn, undefined);
+          const view = (await source.turnEvents(turn)).reduce<TurnView | undefined>((v, item) => reduceTurn(v, item.event, item.at), undefined);
           if (view) loaded[turn] = view;
         }
         return;

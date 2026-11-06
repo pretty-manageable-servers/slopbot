@@ -85,7 +85,7 @@ export const api = {
   logout: () => call<unknown>("POST", "/api/logout", {}),
   stop: (id: string) => call<{ stopped: number }>("POST", `${chat(id)}/stop`, {}),
   /** The request (turn) of a run. A saved reply names its runs, not its turn. */
-  turnEvents: (id: string, turn: string) => call<{ events: EngineEvent[] }>("GET", `${chat(id)}/turns/${encodeURIComponent(turn)}/events`),
+  turnEvents: (id: string, turn: string) => call<{ events: EngineEvent[]; at?: (number | null)[] }>("GET", `${chat(id)}/turns/${encodeURIComponent(turn)}/events`),
   /** The live engine events of a chat. No position: the stream starts at the newest event. */
   eventsUrl: (id: string) => `${chat(id)}/events`,
 };

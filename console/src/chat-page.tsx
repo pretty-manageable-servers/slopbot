@@ -3,7 +3,7 @@
 // in the hash (#ask=<text>) and a shared chat to continue.
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "./api";
 import { Chat, linkedAsks } from "./chat";
 import { chatsQuery, useServer } from "./data";
@@ -48,6 +48,14 @@ export function ChatPage({ id }: { id?: string }) {
   const { data: chats } = useSuspenseQuery(chatsQuery);
   // The effort for a chat that does not exist yet. It is saved on the chat when the chat is made.
   const [draftEffort, setDraftEffort] = useState("medium");
+  // The chat this composer made, once the first file or message made it. The page still has no id until the send
+  // finishes, so a pick in that time goes to this chat, not only to the draft.
+  const madeId = useRef<string | null>(null);
+  const draftRef = useRef(draftEffort);
+  // Leaving a chat for a new one: picks there are for the next chat.
+  useEffect(() => {
+    if (!id) madeId.current = null;
+  }, [id]);
   const current = chats.find((c) => c.id === id);
   const refresh = () => void client.invalidateQueries({ queryKey: chatsQuery.queryKey });
   const open = (chatId: string) => void navigate({ to: "/chat/$chatId", params: { chatId }, replace: true });
@@ -89,7 +97,9 @@ export function ChatPage({ id }: { id?: string }) {
 
   const create = async () => {
     const { id: made } = await api.createChat(server.id);
-    if (draftEffort !== "medium") await api.update(made, { effort: draftEffort }).catch(() => {});
+    madeId.current = made;
+    // The ref, not the state: the pick can change while the chat is made.
+    if (draftRef.current !== "medium") await api.update(made, { effort: draftRef.current }).catch(() => {});
     refresh();
     return made;
   };
@@ -98,9 +108,14 @@ export function ChatPage({ id }: { id?: string }) {
     refresh();
   };
   const setEffort = (effort: string) => {
-    if (!id) return setDraftEffort(effort);
-    client.setQueryData(chatsQuery.queryKey, (list) => list?.map((c) => (c.id === id ? { ...c, effort: effort as typeof c.effort } : c)));
-    api.update(id, { effort }).catch(refresh);
+    if (!id) {
+      draftRef.current = effort;
+      setDraftEffort(effort);
+    }
+    const chatId = id ?? madeId.current;
+    if (!chatId) return;
+    client.setQueryData(chatsQuery.queryKey, (list) => list?.map((c) => (c.id === chatId ? { ...c, effort: effort as typeof c.effort } : c)));
+    api.update(chatId, { effort }).catch(refresh);
   };
 
   return <Chat key={id ?? "new"} id={id} title={current?.title ?? ""} effort={id ? current?.effort ?? "medium" : draftEffort} onEffort={setEffort} onCreate={create} onSent={sent} />;
