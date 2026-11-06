@@ -32,7 +32,7 @@ export function CommandPalette() {
   }, []);
   return (
     <Modal isOpen={open} onOpenChange={setOpen} aria-label="Command palette"
-      className="self-start mt-[12vh] w-[min(640px,calc(100vw-2rem))] max-w-none overflow-hidden p-0">
+      className="self-start mt-[12vh] w-[min(640px,calc(100vw-2rem))]! max-w-none! overflow-hidden p-0">
       {open && <Palette onDone={() => setOpen(false)} />}
     </Modal>
   );
