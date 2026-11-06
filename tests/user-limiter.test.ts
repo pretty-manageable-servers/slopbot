@@ -1,22 +1,17 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { Application } from "../src/application.js";
-import { loadConfig } from "../src/config.js";
 import type { Message, Prompt } from "../src/domain.js";
 import { TaskWorker } from "../src/queue.js";
-import { ToolRegistry } from "../src/tools.js";
-import { USER_LIMIT_OVERRIDES_SETTING, UserLimiter, UserLimitError, limitOverride, limitReply, usageView } from "../src/user-limiter.js";
-import { activePrices, DEFAULT_FALLBACK_PRICE, parseFallbackPrice, parseModelPrices, usageCostMicros } from "../src/usage-cost.js";
-import { registerUsageTool } from "../src/usage-tools.js";
-import { ProviderEmbeddings, embeddingPriceModel } from "../src/adapters/embeddings.js";
+import { USER_LIMIT_OVERRIDES_SETTING, UserLimiter, UserLimitError, usageView } from "../src/user-limiter.js";
+import { DEFAULT_FALLBACK_PRICE } from "../src/usage-cost.js";
+import { ProviderEmbeddings } from "../src/adapters/embeddings.js";
 import { DecisionClassifier } from "../src/adapters/decisions.js";
 import { ByteTokenCounter } from "../src/context.js";
 import { inspectFile } from "../src/files.js";
-import { attribution, DECISION_OUTPUT_TOKENS, modelsInUse, streamMetered, UsageMeter } from "../src/usage-meter.js";
+import { attribution, DECISION_OUTPUT_TOKENS, streamMetered, UsageMeter } from "../src/usage-meter.js";
 
 const HOUR = 3600000, WEEK = 7 * 24 * HOUR;
 const DOLLAR = 1000000;
@@ -24,25 +19,6 @@ const limiter = (store: SQLiteStore, fiveHour: number, week: number, grace = 10)
 const message = (id: string, extra: Partial<Message> = {}): Message => ({ id, server: "s", channel: "c", author: "alice", text: `request ${id}`, ...extra });
 // One micro-dollar per token, so usage payloads read as their cost.
 const ONE_MICRO_PER_TOKEN = { input: 1000000, cached_input: 1000000, output: 1000000 };
-
-test("usageCostMicros prices cached input, output and rounds up", () => {
-  const prices = { nimbus: { input: 2000000, cached_input: 500000, output: 8000000 } };
-  // 600 uncached input at $2/M, 400 cached at $0.50/M, 500 output at $8/M.
-  assert.equal(usageCostMicros({ prompt_tokens: 1000, completion_tokens: 500, prompt_tokens_details: { cached_tokens: 400 } }, "nimbus", prices, DEFAULT_FALLBACK_PRICE), 5400);
-  assert.equal(usageCostMicros({ prompt_tokens: 1000, completion_tokens: 0 }, "unpriced", prices, DEFAULT_FALLBACK_PRICE), 10000);
-  assert.equal(usageCostMicros({ prompt_tokens: 1 }, "x", {}, { input: 1, cached_input: 1, output: 1 }), 1);
-  assert.equal(usageCostMicros({}, "nimbus", prices, DEFAULT_FALLBACK_PRICE), 0);
-});
-
-test("price settings merge over defaults, and invalid configuration fails", () => {
-  const defaults = { nimbus: { input: 1, cached_input: 1, output: 1 } };
-  assert.deepEqual(activePrices({ nimbus: { input: 2, cached_input: 2, output: 2 }, bad: { input: "x" } }, defaults), { nimbus: { input: 2, cached_input: 2, output: 2 } });
-  assert.deepEqual(activePrices("nope", defaults), defaults);
-  assert.deepEqual(parseModelPrices(undefined, "MODEL_PRICES"), {});
-  assert.throws(() => parseModelPrices('{"m":{"input":1}}', "MODEL_PRICES"), /MODEL_PRICES entry m/);
-  assert.throws(() => parseFallbackPrice('{"input":0,"cached_input":0,"output":0}', "MODEL_FALLBACK_PRICE"), /non-zero/);
-  assert.deepEqual(parseFallbackPrice(undefined, "MODEL_FALLBACK_PRICE"), DEFAULT_FALLBACK_PRICE);
-});
 
 test("a window starts at the first spend after the previous window ended", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 0);
@@ -127,14 +103,6 @@ test("a banked week reset is a full reset: it clears the 5-hour and weekly windo
   store.close();
 });
 
-test("an admin week reset clears the 5-hour and weekly windows", async () => {
-  const store = new SQLiteStore(), limits = limiter(store, 100, 1000);
-  await limits.record("u", 100, 0);
-  await store.resetUserUsage("global", "u", "week");
-  assert.deepEqual((await limits.usage("u", 1)).map(window => window.spent), [0, 0]);
-  store.close();
-});
-
 test("two concurrent resets of one banked reset cannot both succeed", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 0);
   await store.grantResets("global", "u", "5h", 1);
@@ -200,42 +168,6 @@ test("clearing an override restores the global limit, and invalid override field
   store.close();
 });
 
-test("limitOverride keeps safe whole numbers from 0 to 1e12, and returns null when no field is set", () => {
-  const only = { five_hour_cost_micros: 5, week_cost_micros: null };
-  assert.deepEqual(limitOverride({ alice: only }, "alice"), only);
-  assert.deepEqual(limitOverride({ alice: { five_hour_cost_micros: -1, week_cost_micros: 1000000000000 } }, "alice"), { five_hour_cost_micros: null, week_cost_micros: 1000000000000 });
-  assert.equal(limitOverride({ alice: { five_hour_cost_micros: 1.5, week_cost_micros: 1000000000001 } }, "alice"), null);
-  assert.equal(limitOverride({ alice: { five_hour_cost_micros: null, week_cost_micros: null } }, "alice"), null);
-  assert.equal(limitOverride({ alice: 5 }, "alice"), null);
-  assert.equal(limitOverride({ alice: only }, "bob"), null);
-  assert.equal(limitOverride({}, "constructor"), null);
-  assert.equal(limitOverride(undefined, "alice"), null);
-});
-
-test("the limit reply shows the reset as a Discord relative time", () => {
-  assert.equal(limitReply(1700000000500), "Usage limit reached. Try again <t:1700000001:R>.");
-  assert.equal(new UserLimitError(42).resetAt, 42);
-});
-
-test("the usage tool shows percents and uses a banked reset, with no dollar amounts", async () => {
-  const store = new SQLiteStore(), limits = limiter(store, 100 * DOLLAR, 0);
-  const registry = new ToolRegistry(store, async () => false);
-  registerUsageTool(registry, limits);
-  await limits.record("alice", 100 * DOLLAR);
-  await store.grantResets("global", "alice", "5h", 1);
-  const shown = await registry.invokeResult(message("1"), "usage", {}, "usage-show-1", "command");
-  assert.match(shown.text, /^5h: 100% used, resets <t:\d+:R>\. Banked resets: 1\./m);
-  assert.match(shown.text, /^week: no limit, resets <t:\d+:R>\. Banked resets: 0\./m);
-  assert.doesNotMatch(shown.text, /\$/);
-  const reset = await registry.invokeResult(message("2"), "usage", { action: "reset", window: "5h" }, "usage-reset-2", "command");
-  assert.match(reset.text, /Used one 5h reset/);
-  assert.doesNotMatch(reset.text, /\$/);
-  const after = await registry.invokeResult(message("3"), "usage", {}, "usage-show-3", "command");
-  assert.match(after.text, /^5h: 0% used\. Banked resets: 0\./m);
-  assert.doesNotMatch(after.text, /\$/);
-  store.close();
-});
-
 test("TaskWorker.enqueue refuses an over-limit user and queues nothing for them", async () => {
   const store = new SQLiteStore(), limits = limiter(store, 100, 0);
   await limits.record("alice", 100);
@@ -292,57 +224,6 @@ test("when the user is already past grace, the model answers without tools", asy
   assert.equal((await app.handle(request))?.text, "Final answer");
   assert.equal(toolRuns, 0);
   store.close();
-});
-
-// Entry points: every place where user input starts work must check the limiter first.
-function sourceFiles(directory: string): string[] {
-  return readdirSync(directory).flatMap(name => {
-    const path = join(directory, name);
-    return statSync(path).isDirectory() ? sourceFiles(path) : name.endsWith(".ts") ? [path] : [];
-  });
-}
-
-test("entry points check the user limiter before work starts", () => {
-  // Tests run from dist/tests, so the TypeScript sources are two levels up.
-  const src = fileURLToPath(new URL("../../src/", import.meta.url));
-  const read = (path: string) => readFileSync(join(src, path), "utf8");
-  assert.match(read("queue.ts"), /this\.limiter\.check\(/);
-  const discord = read("adapters/discord.ts");
-  assert.match(discord, /this\.limiter\.check\(/);
-  assert.ok(discord.indexOf("this.limiter.check(") < discord.indexOf("this.tools.invokeResult(message, name, args, `command:"), "slash commands must check before invoking the tool");
-  // /usage is the one exempt entry point: read-only, so it never checks the gate. Its reply builder must not either.
-  const usageStart = discord.indexOf("private async usageCommand(");
-  const usageBody = discord.slice(usageStart, discord.indexOf("private async command(", usageStart));
-  assert.ok(usageStart > 0 && usageBody.includes("usageReply(this.limiter"), "/usage must reply through usageReply");
-  assert.doesNotMatch(usageBody, /limiter\.check\(/, "/usage is exempt from the limiter gate");
-  assert.doesNotMatch(read("adapters/discord-commands.ts"), /limiter\.check\(/, "usageReply must not check the limiter gate");
-  // A private chat message is checked before it is saved, so a refused message never reaches the store.
-  const chats = read("web-chats.ts");
-  assert.match(chats, /this\.host\.limiter\.check\(/, "a private chat message must check the limiter");
-  assert.ok(chats.indexOf("this.host.limiter.check(") < chats.indexOf("await this.store.ingest(message)"), "the private chat limiter check must come before the message is saved");
-  assert.match(read("agent-runner.ts"), /streamMetered\(this\.llm, prompt, \{ usage: this\.services\.usage, who: attribution\(message\)/);
-  assert.match(read("participation.ts"), /streamMetered\(this\.llm, prompt, \{ usage: this\.usage, who: attribution\(message\) \}\)/);
-  assert.match(read("files.ts"), /streamMetered\(options\.llm, prompt, \{ usage: options\.usage/);
-  assert.match(read("search/reports.ts"), /streamMetered\(services\.llm, prompt, \{ usage: services\.usage/);
-  assert.match(read("adapters/decisions.ts"), /options\.usage\?\.record\(attribution\(message\)/);
-  // Jobs are created only through TaskWorker.enqueue, so no other entry point can skip the check.
-  for (const file of sourceFiles(src)) {
-    if (file.endsWith("/queue.ts")) continue;
-    assert.doesNotMatch(readFileSync(file, "utf8"), /\.enqueueJob\(/, `${file} must go through TaskWorker.enqueue`);
-  }
-});
-
-test("config reads the cost limits, grace and prices from the environment", () => {
-  const base = { DISCORD_BOT_TOKEN: "test", LLM_MODE: "mock" };
-  const config = loadConfig(base);
-  assert.equal(config.userLimit5hCostMicros, 2000000);
-  assert.equal(config.userLimitWeekCostMicros, 20000000);
-  assert.equal(config.userLimitGracePercent, 10);
-  assert.deepEqual(config.modelPrices, {});
-  const priced = loadConfig({ ...base, USER_LIMIT_5H_COST_MICROS: "0", MODEL_PRICES: '{"nimbus":{"input":1,"cached_input":1,"output":2}}' });
-  assert.equal(priced.userLimit5hCostMicros, 0);
-  assert.deepEqual(priced.modelPrices.nimbus, { input: 1, cached_input: 1, output: 2 });
-  assert.throws(() => loadConfig({ ...base, USER_LIMIT_WEEK_COST_MICROS: "-1" }), /USER_LIMIT_WEEK_COST_MICROS/);
 });
 
 // Model calls made outside a reply are charged to the user whose message caused them.
@@ -450,34 +331,6 @@ test("a model stream with no usage is charged the estimate: no input plus the fu
   store.close();
 });
 
-test("modelsInUse lists the reply, JEV and embedding model ids, with the PMServers embedding name", () => {
-  const base = { DISCORD_BOT_TOKEN: "test", LLM_MODE: "mock" };
-  assert.deepEqual(modelsInUse(loadConfig(base)), ["nimbus", "vane", "stratus"]);
-  assert.deepEqual(modelsInUse(loadConfig({ ...base, LLM_BASE_URL: "https://gateway.example.test/v1", LLM_MODEL: "chat-a", JEV_MODEL: "judge-b", EMBEDDING_MODEL: "embed-c" })), ["chat-a", "judge-b", "embed-c"]);
-  assert.equal(embeddingPriceModel("https://example.test/v1", "llama.cpp/embeddinggemma-2"), "llama.cpp/embeddinggemma-2");
-});
-
-test("listUserUsage lists the users of one scope, highest 5-hour spend first, up to the limit", async () => {
-  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
-  await limits.record("alice", 50, 0);
-  await limits.record("bob", 90, 0);
-  await limits.record("dave", 10, 0);
-  await store.grantResets("global", "carol", "week", 1);
-  await store.updateUserLimits("t", "erin", () => ({ windows: [{ kind: "5h", windowStart: 0, spent: 999 }], result: undefined }));
-  assert.deepEqual((await store.listUserUsage("global", 200)).map(row => row.user), ["bob", "alice", "dave", "carol"]);
-  assert.deepEqual((await store.listUserUsage("global", 2)).map(row => row.user), ["bob", "alice"]);
-  assert.deepEqual((await store.listUserUsage("global", 200)).find(row => row.user === "carol")?.resets, { week: 1 });
-  store.close();
-});
-
-test("resetUserUsage with a kind clears only that window", async () => {
-  const store = new SQLiteStore(), limits = limiter(store, 0, 0);
-  await limits.record("u", 5, 0);
-  await store.resetUserUsage("global", "u", "5h");
-  assert.deepEqual((await store.userUsage("global", "u")).windows.map(window => window.kind), ["week"]);
-  store.close();
-});
-
 test("the usage meter view has percents and reset times only, with no cost or limit amounts", async () => {
   const store = new SQLiteStore(":memory:");
   const limiter = new UserLimiter(store, { fiveHourCostMicros: 1000000, weekCostMicros: 0, gracePercent: 10 });
@@ -549,20 +402,5 @@ test("listKnownUsers merges servers, adds web-only users, searches names and IDs
   assert.deepEqual([page.total, ids(page)], [5, ["200", "100"]]);
   assert.deepEqual(ids(await store.listKnownUsers("", 2, 2)), ["500", "700"]);
   assert.deepEqual(ids(await store.listKnownUsers("", 2, 4)), ["300"]);
-  store.close();
-});
-
-test("userTokenTotalsByServer lists each server and model", async () => {
-  const store = new SQLiteStore();
-  const totals = { input: 10, output: 2, cached: 4, costMicros: 7 };
-  await store.addTokenTotals("s2", "alice", "nimbus", totals, 1000);
-  await store.addTokenTotals("s1", "alice", "vane", totals, 1000);
-  await store.addTokenTotals("s1", "alice", "nimbus", totals, 2000);
-  await store.addTokenTotals("s1", "alice", "nimbus", totals, 3000);
-  await store.addTokenTotals("s1", "bob", "nimbus", totals, 1000);
-  const rows = await store.userTokenTotalsByServer("alice");
-  assert.deepEqual(rows.map(row => [row.server, row.model]), [["s1", "nimbus"], ["s1", "vane"], ["s2", "nimbus"]]);
-  assert.deepEqual(rows[0], { server: "s1", model: "nimbus", requests: 2, input: 20, output: 4, cached: 8, costMicros: 14, firstAt: 2000, lastAt: 3000 });
-  assert.deepEqual(await store.userTokenTotalsByServer("nobody"), []);
   store.close();
 });

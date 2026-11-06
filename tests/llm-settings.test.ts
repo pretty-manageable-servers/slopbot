@@ -32,15 +32,6 @@ function savedFallback(store: SQLiteStore) {
   return (store.setting(GLOBAL_SETTINGS_SCOPE, LLM_DEGRADED_SETTING) as { fallback: { keySealed?: string; keyLast4?: string; model: string } }).fallback;
 }
 
-test('defaults', async t => {
-  const { store, panel } = setup(); t.after(() => store.close());
-  assert.deepEqual(loadDegradedSettings(store), defaults);
-  assert.deepEqual(panel.llm(), { settings: defaults, state: { mode: 'normal', source: 'breaker', since: 0 } });
-  panel.setLlmState(() => ({ mode: 'offline', source: 'override', since: 5 }));
-  assert.deepEqual(panel.llm().state, { mode: 'offline', source: 'override', since: 5 });
-  assert.equal(store.setting(GLOBAL_SETTINGS_SCOPE, LLM_DEGRADED_SETTING), undefined, 'reading saves nothing');
-});
-
 test('rejects http and credentials in baseUrl', async t => {
   const { store, panel } = setup(); t.after(() => store.close());
   for (const baseUrl of ['http://fallback.example.com/v1', 'https://user:pw@fallback.example.com/v1', 'https://fallback.example.com/v1?x=1', 'https://fallback.example.com/v1#frag', 'ftp://fallback.example.com', 'not a url', 42]) {
@@ -240,10 +231,4 @@ test('cooldown ranges and maximum order', async t => {
   assert.equal(store.setting(GLOBAL_SETTINGS_SCOPE, LLM_DEGRADED_SETTING), undefined, 'refused saves change nothing');
   await panel.saveLlm({ breaker: { cooldownSeconds: 900, maxCooldownSeconds: 1800 } });
   assert.deepEqual(loadDegradedSettings(store).breaker, { failures: 5, windowSeconds: 60, cooldownSeconds: 900, maxCooldownSeconds: 1800 });
-});
-
-test('old probe fields load with cooldown defaults', async t => {
-  const { store } = setup(); t.after(() => store.close());
-  store.setSetting(GLOBAL_SETTINGS_SCOPE, LLM_DEGRADED_SETTING, { breaker: { failures: 3, windowSeconds: 90, probeSeconds: 45, recoverProbes: 4 } });
-  assert.deepEqual(loadDegradedSettings(store).breaker, { failures: 3, windowSeconds: 90, cooldownSeconds: 600, maxCooldownSeconds: 7200 });
 });

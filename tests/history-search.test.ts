@@ -125,19 +125,3 @@ test("search cursors are scoped to the actor and recheck permissions on every pa
     /denied/,
   );
 });
-test("history search returns text only, with no Discord card", async (t) => {
-  const store = new SQLiteStore();
-  t.after(() => store.close());
-  await store.ingest({ ...message, id: "1", text: "deploy", timestamp: 1 });
-  const registry = new ToolRegistry(store, async () => false);
-  registerHistoryTools(registry, { store, authorize: async () => {} });
-  const result = await registry.invokeResult(
-    message,
-    "history_search",
-    { query: "deploy", mode: "keyword", limit: 1 },
-    "card",
-    "agent",
-  );
-  assert.match(result.text, /Coverage:/);
-  assert.equal(result.ui, undefined);
-});

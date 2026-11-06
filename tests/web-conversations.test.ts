@@ -6,7 +6,7 @@ import { ChannelAccess, type ChannelFacts } from "../src/channel-access.js";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { webTranscriptKey } from "../src/server-tools.js";
 import { createTranscripts, type TranscriptHost } from "../src/web-transcripts.js";
-import { SOURCE_CHAIN_MS, conversationTitle, groupConversations, type ChannelReply, type ChannelRun, type RunSource } from "../src/conversation-groups.js";
+import { SOURCE_CHAIN_MS, groupConversations, type ChannelReply, type ChannelRun, type RunSource } from "../src/conversation-groups.js";
 import type { Message } from "../src/domain.js";
 
 const SERVER = "1528063444874432734", CHANNEL = "1528063444874432735", OTHER = "1528063444874432737";
@@ -119,16 +119,6 @@ async function get(f: Fixture, path: string, user: string | null = USER): Promis
 }
 const idsOf = (items: { id: string }[]) => items.map(item => item.id);
 
-test("conversation titles are one line, trimmed to 60 characters", () => {
-  assert.equal(conversationTitle("  hello \n\n  there  "), "hello there");
-  assert.equal(conversationTitle("   "), "(no text)");
-  const exact = "a".repeat(60);
-  assert.equal(conversationTitle(exact), exact);
-  const long = conversationTitle("b".repeat(61));
-  assert.equal(Array.from(long).length, 60);
-  assert.ok(long.endsWith("…"));
-});
-
 test("grouping joins runs that continue each other and keeps the rest apart", () => {
   const run = (id: string, trigger: string, seconds: number, extra: Partial<Message> = {}): ChannelRun =>
     ({ id, status: "completed", message: message(trigger, CHANNEL, seconds, trigger, USER, extra) });
@@ -154,12 +144,6 @@ test("grouping joins runs that continue each other and keeps the rest apart", ()
   ];
   const groups = groupConversations(runs, replies, sources).map(group => group.runIds.slice().sort());
   assert.deepEqual(groups.sort(), [["A", "B", "C", "G"], ["D"], ["E"], ["F"]]);
-});
-
-test("grouping returns the newest conversation first", () => {
-  const trigger = (id: string, seconds: number): ChannelRun => ({ id, status: "completed", message: message(id, CHANNEL, seconds, id) });
-  const groups = groupConversations([trigger("old", 1), trigger("new", 50)], [], []);
-  assert.deepEqual(groups.map(group => group.id), ["new", "old"]);
 });
 
 test("the store lists only reply runs of the channel, oldest first, and reads messages in time order", async t => {

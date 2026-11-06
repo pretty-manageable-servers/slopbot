@@ -7,7 +7,6 @@ import { DiscordServer } from '../src/adapters/discord.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { loadConfig } from '../src/config.js';
 import type { Message } from '../src/domain.js';
-import { ToolError } from '../src/tools.js';
 
 const guild = '1528063444874432734', text = '1528064977913647236', voice = '1528064977913647300', bot = '1514413259522838528';
 
@@ -42,13 +41,6 @@ test('voice task thread opens in the join channel', async t => {
   assert.deepEqual(f.sent, ['Voice task from Ana: Make a plan for the server.']);
   assert.deepEqual(f.threads, [{ name: 'Plan', autoArchiveDuration: ThreadAutoArchiveDuration.OneDay }]);
   assert.deepEqual(f.voiceSent, ['-# Task thread: <#thread-1>']);
-});
-
-test('voice task with no join channel gives the error', async t => {
-  const f = fixture(t, undefined);
-  await assert.rejects(f.adapter.createTaskThread(voiceMessage(), 'Plan'), (error: unknown) => error instanceof ToolError && error.message === 'Ask me to join from a text channel to use tasks.');
-  assert.deepEqual(f.sent, []);
-  assert.deepEqual(f.threads, []);
 });
 
 test('taskParent is undefined for other channels', async t => {

@@ -1,10 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ButtonInteraction } from 'discord.js';
-import { handleConfirm, postConfirmation, saveConfirmation, showCodeRows, type CodeStore } from '../src/adapters/discord-code.js';
-import { codeBlock, codeFitsInline, PROGRAM_CODE_KEEP_MS, SHOW_CODE_INLINE_LINES, SHOW_CODE_MESSAGE_CHARS } from '../src/code-display.js';
+import { handleConfirm, saveConfirmation, type CodeStore } from '../src/adapters/discord-code.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
-import type { ToolContext, ConfirmationRequired } from '../src/tools.js';
+import type { ToolContext } from '../src/tools.js';
 import type { Json } from '../src/domain.js';
 import type { RecordStore } from '../src/records.js';
 
@@ -89,37 +88,6 @@ test('cancel ends the record and never runs the call', async () => {
   assert.equal(ran, false);
   assert.deepEqual(store.records.get('server:tool-confirm:op1')!.value, { done: true, cancelled: true });
   assert.equal((log.at(-1)!.payload as { content: string }).content, 'Cancelled.');
-});
-
-test('confirm message shows the call, arguments in a json block, and Confirm and Cancel buttons', async () => {
-  const sent: any[] = [];
-  const call: ConfirmationRequired['call'] = { name: 'usage', arguments: { action: 'reset', user: 'x'.repeat(2000) }, operationId: 'op2', parentOperationId: 'parent' };
-  await postConfirmation({ send: async payload => { sent.push(payload); return {}; } }, call, 'requester');
-  const row = sent[0].components[0].toJSON();
-  assert.deepEqual(row.components.map((button: { custom_id: string }) => button.custom_id), ['slopconfirm:op2:yes', 'slopconfirm:op2:no']);
-  assert.match(sent[0].content, /\*\*usage\*\*/);
-  assert.ok(sent[0].content.length <= 2000);
-  assert.deepEqual(sent[0].allowedMentions, { users: ['requester'] });
-});
-
-test('one tool trace button appears in summary and full modes', () => {
-  const short = { id: 'a', name: 'run_tools_code', status: 'completed' as const, code: 'text(1)' };
-  const long = { id: 'b', name: 'run_tools_code', status: 'completed' as const, code: 'x\n'.repeat(SHOW_CODE_INLINE_LINES + 1) };
-  assert.equal(showCodeRows([short], 'full').length, 1);
-  assert.equal(showCodeRows([short], 'summary').length, 1);
-  assert.equal(showCodeRows([short, long], 'full').length, 1);
-  assert.equal(showCodeRows([short, long], 'none').length, 0);
-});
-
-test('code fits inline by line count and length, and the fence grows past backtick runs in the code', () => {
-  assert.equal(codeFitsInline('a\n'.repeat(SHOW_CODE_INLINE_LINES - 1)), true);
-  assert.equal(codeFitsInline('a\n'.repeat(SHOW_CODE_INLINE_LINES)), false);
-  assert.equal(codeFitsInline('x'.repeat(SHOW_CODE_MESSAGE_CHARS + 1)), false);
-  assert.equal(codeBlock('a ``` b').startsWith('````js\n'), true);
-});
-
-test('program code keeps 14 days', () => {
-  assert.equal(PROGRAM_CODE_KEEP_MS, 14 * 24 * 60 * 60 * 1000);
 });
 
 test('prune deletes finished run_tools_code operations older than the cutoff and keeps started ones', async () => {

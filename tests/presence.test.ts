@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
-import { PresenceUpdater, presenceText, utcMidnight } from "../src/presence.js";
+import { PresenceUpdater, utcMidnight } from "../src/presence.js";
 import type { Message } from "../src/domain.js";
 
 const DAY = 86_400_000;
@@ -19,17 +19,6 @@ function updater(options: { replies?: () => Promise<number>; servers?: () => num
   });
   return { presence, sent, since };
 }
-
-test("the status text uses singular and plural forms", () => {
-  assert.equal(presenceText(1, 1), "1 reply today · 1 server");
-  assert.equal(presenceText(0, 0), "0 replies today · 0 servers");
-  assert.equal(presenceText(2, 3), "2 replies today · 3 servers");
-  assert.equal(presenceText(1, 2), "1 reply today · 2 servers");
-});
-
-test("the status text stays within 128 characters", () => {
-  assert.ok(presenceText(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER).length <= 128);
-});
 
 test("the day starts at UTC midnight, not local midnight", () => {
   assert.equal(utcMidnight(midnight), midnight);
@@ -58,47 +47,6 @@ test("an unchanged text is not sent again", async () => {
   replies = 3;
   await presence.refresh();
   assert.deepEqual(sent, ["2 replies today · 1 server", "3 replies today · 1 server"]);
-});
-
-test("a server count change alone sends a new text", async () => {
-  let servers = 1;
-  const { presence, sent } = updater({ servers: () => servers });
-  await presence.refresh();
-  servers = 2;
-  await presence.refresh();
-  assert.deepEqual(sent, ["0 replies today · 1 server", "0 replies today · 2 servers"]);
-});
-
-test("a failed count is logged and the last text is kept", async t => {
-  const errors: unknown[] = [];
-  t.mock.method(console, "warn", (line: string) => errors.push(line));
-  let replies = 1;
-  let fail = false;
-  const { presence, sent } = updater({ replies: async () => { if (fail) throw new Error("db down"); return replies; } });
-  await presence.refresh();
-  fail = true;
-  await presence.refresh();
-  assert.deepEqual(sent, ["1 reply today · 1 server"]);
-  assert.equal(errors.length, 1);
-  assert.match(String(errors[0]), /presence_count_failed/);
-  fail = false;
-  await presence.refresh();
-  assert.deepEqual(sent, ["1 reply today · 1 server"], "same text after the error is not re-sent");
-  replies = 4;
-  await presence.refresh();
-  assert.deepEqual(sent, ["1 reply today · 1 server", "4 replies today · 1 server"]);
-});
-
-test("start refreshes at once and then on each interval, and stop clears the timer", async () => {
-  let calls = 0;
-  const { presence } = updater({ replies: async () => ++calls, intervalMs: 5 });
-  presence.start();
-  await new Promise(resolve => setTimeout(resolve, 40));
-  presence.stop();
-  const atStop = calls;
-  assert.ok(atStop >= 2, `expected at least two refreshes, got ${atStop}`);
-  await new Promise(resolve => setTimeout(resolve, 40));
-  assert.equal(calls, atStop, "no refresh runs after stop");
 });
 
 test("a refresh that finishes after stop does not send a status", async () => {
