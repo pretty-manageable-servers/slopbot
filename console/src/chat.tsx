@@ -7,6 +7,8 @@ import { Loader, Logo } from "./logo";
 import { uiComponents } from "./ui-components";
 
 const KINDS = ["message", "run.start", "run.delta", "run.tool", "run.end"] as const;
+/** show_widget frames load the bot's frame page (WIDGET_FRAME_PATH in src/web-console.ts), outside the page CSP. */
+const WIDGETS = { frameUrl: "/console/widget-frame.html" };
 const toolViews = { ...defaultToolViews, show_ui: uiMarkupToolView(), show_widget: widgetToolView() };
 
 /** The one model for now. Its effort levels are the bot's (EFFORTS in src/domain.ts). */
@@ -84,6 +86,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
     <UiComponentsProvider components={uiComponents}>
     <ToolViewsProvider tools={toolViews}>
     <ChatView
+      widgets={WIDGETS}
       messages={messages}
       busy={busy}
       onSend={(text) => {

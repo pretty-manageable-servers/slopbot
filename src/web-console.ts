@@ -18,6 +18,7 @@ import { runtimeVersion } from './operations-config.js';
 import type { InboxItem } from './inbox.js';
 import { SERVER_NON_ZDR_SETTING, USER_NON_ZDR_SETTING, type LlmMode } from './llm-mode.js';
 import { GLOBAL_SETTINGS_SCOPE } from './usage-cost.js';
+import { widgetFrameLoader } from 'agentic-ui-kit/core';
 import type { Json } from './domain.js';
 
 /** Team admin backend. Roles come from the Developer Portal team; panel holds the limits, prices and usage. */
@@ -155,6 +156,12 @@ const consoleCsp = "default-src 'self'; script-src 'self'; style-src 'self'; fon
 const landingCsp = consoleCsp.replace("script-src 'self'", "script-src 'self' 'unsafe-inline'");
 // The new console (agentic-ui-kit) needs two more rules. Shiki highlights code with a WebAssembly regex engine,
 // and the kit sets style attributes (code tokens, the composer height). No inline or eval'd script is allowed.
+/**
+ * The page the kit's show_widget frames load (WidgetHost.frameUrl). The kit posts the model's HTML into it, so
+ * its scripts run in an opaque-origin sandbox and the console's own CSP keeps 'self' scripts only.
+ */
+export const WIDGET_FRAME_PATH = '/console/widget-frame.html';
+const widgetFrameCsp = "default-src 'none'; script-src 'unsafe-inline' https:; style-src 'unsafe-inline' https:; img-src data: blob: https:; font-src data: https:; connect-src https:; frame-ancestors 'self'; base-uri 'none'";
 const nextCsp = consoleCsp.replace("script-src 'self'", "script-src 'self' 'wasm-unsafe-eval'").replace("style-src 'self'", "style-src 'self' 'unsafe-inline'");
 /** Console file for a /console path, or undefined. Only these names are served. */
 const consoleFile = (path: string) => {
@@ -464,6 +471,12 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         return send(res, 200, await backend.invoke(session.user, input.server, input.channel, input.name, input.args || {}));
       }
       if (req.method !== 'GET') return send(res, 405, { error: 'Method not allowed.' });
+      if (routePath === WIDGET_FRAME_PATH) {
+        res.setHeader('Content-Security-Policy', widgetFrameCsp);
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache');
+        return void res.end(widgetFrameLoader);
+      }
       const consoleName = consoleFile(routePath);
       if (consoleName) return sendFile(res, await readInside('web', consoleName));
       const nextName = nextFile(routePath);

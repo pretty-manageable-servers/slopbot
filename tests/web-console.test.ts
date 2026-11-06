@@ -137,6 +137,9 @@ test('landing serves the static export, console serves under /console, and trave
   assert.equal((await fetch(base+'/console/next/assets/missing.js')).status,404);
   assert.equal((await fetch(base+'/console/next/assets/..%2f..%2f..%2fsecret.txt')).status,404);
   assert.equal((await fetch(base+'/console/next/secret.txt')).status,404);
+  // The widget frame page lets inline scripts run, inside the sandboxed frame only.
+  const frame=await fetch(base+'/console/widget-frame.html');assert.equal(frame.status,200);assert.match(frame.headers.get('content-type')||'',/text\/html/);
+  assert.match(frame.headers.get('content-security-policy')||'',/script-src 'unsafe-inline'.*frame-ancestors 'self'/);assert.match(await frame.text(),/<script/i);
 });
 test('serves katex files',async t=>{
   const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:'site/out'},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});
