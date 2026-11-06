@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {HarnessMachine, restoreHarness, HarnessInterrupted} from '../src/harness-state.js';
+import {HarnessMachine, restoreHarness, HarnessInterrupted, nextStep, type HarnessState} from '../src/harness-state.js';
 import {Application} from '../src/application.js';
 import {SQLiteStore} from '../src/adapters/sqlite.js';
 import {ToolError,ToolRegistry} from '../src/tools.js';
@@ -123,4 +123,19 @@ test('restart between tool completion and turn commit reuses the journaled resul
  const resumed=new Application(store,{async *stream(){yield {kind:'text',payload:{text:'finished'}};}},policy,undefined,{harness:store,tools:{schemas: () => [], catalog:()=>tools.catalog(),execute:(m,c,id)=>tools.invokeResult(m,c.name,c.arguments,id,'agent')}});
  assert.equal((await resumed.handle(message,true))?.text,'finished');assert.equal(writes,1);
  assert.equal((await store.harnessState('s','m'))?.kind,'WaitingForUserMessage');
+});
+
+test('nextStep names what the run loop does in each state',()=>{
+ const call=(id:string,state:'Undecided'|'Running'|'DoneContinue')=>({id,state,denied:false});
+ const cases:Array<[HarnessState,string]>=[
+  [{kind:'Streaming'},'stream'],
+  [{kind:'ToolPhase',queuedMessage:false,calls:[call('a','Running'),call('b','Undecided')]},'decide'],
+  [{kind:'ToolPhase',queuedMessage:false,calls:[call('a','DoneContinue'),call('b','Running')]},'wait'],
+  [{kind:'ToolResultsHeld',queuedMessage:false,calls:[call('a','DoneContinue')]},'hold'],
+  [{kind:'WaitingForUserMessage'},'done'],
+  [{kind:'StreamingFailed'},'failed'],
+  [{kind:'StreamingInterrupted'},'interrupted'],
+ ];
+ for(const [state,kind] of cases) assert.equal(nextStep(state).kind,kind);
+ assert.deepEqual(nextStep(cases[1]![0]),{kind:'decide',call:call('b','Undecided')});
 });

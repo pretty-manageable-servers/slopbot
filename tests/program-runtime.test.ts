@@ -12,6 +12,9 @@ async function failed(run: Promise<ProgramResult>, pattern: RegExp): Promise<Pro
 
 test('programs await parallel reads, derive arguments, and return only reduced outputs', async () => {
   let active = 0, peak = 0;
+  // A read finishes only after two have started, so parallelism is proved without depending on speed.
+  let bothStarted!: () => void;
+  const barrier = new Promise<void>(resolve => { bothStarted = resolve; });
   const runtime = new ProgramRuntime({ ...programLimits, concurrency: 2 });
   const result = await runtime.run(`
     const values = await Promise.all([1,2,3,4].map(n => tools.read({n})));
@@ -20,7 +23,8 @@ test('programs await parallel reads, derive arguments, and return only reduced o
     text({sum:total, doubled:doubled.value});
   `, ['read'], async (_name, args) => {
     active++; peak = Math.max(peak, active);
-    await new Promise(resolve => setImmediate(resolve)); active--;
+    if (active === 2) bothStarted();
+    await barrier; active--;
     return { value: Number((args as { n: number }).n) * 2, intermediate: 'not emitted' };
   });
   assert.deepEqual(result.outputs, [{ sum: 20, doubled: 40 }]);

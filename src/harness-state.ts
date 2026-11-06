@@ -62,6 +62,30 @@ export function transition(state: HarnessState, event: HarnessEvent): HarnessSta
   throw new Error(`Invalid harness transition: ${state.kind} / ${event.type}`);
 }
 
+/** What the run loop does next. The machine only checks; the loop decides and acts. */
+export type HarnessStep =
+  | { kind: 'stream' }
+  | { kind: 'decide'; call: HarnessCall }
+  | { kind: 'wait' }
+  | { kind: 'hold' }
+  | { kind: 'done' }
+  | { kind: 'failed' }
+  | { kind: 'interrupted' };
+/** Pure: the next step for a state. A stream being interrupted counts as interrupted. */
+export function nextStep(state: HarnessState): HarnessStep {
+  switch (state.kind) {
+    case 'Streaming': return { kind: 'stream' };
+    case 'ToolPhase': {
+      const undecided = state.calls.find(call => call.state === 'Undecided');
+      return undecided ? { kind: 'decide', call: undecided } : { kind: 'wait' };
+    }
+    case 'ToolResultsHeld': return { kind: 'hold' };
+    case 'WaitingForUserMessage': return { kind: 'done' };
+    case 'StreamingFailed': return { kind: 'failed' };
+    case 'StreamingInterrupted': case 'InterruptingStream': return { kind: 'interrupted' };
+  }
+}
+
 // Reconstruct only execution state. Original model/tool events remain in their journals.
 // Running calls become undecided and MUST pass the operation journal's reconciliation.
 export function restoreHarness(state?: HarnessState): HarnessState {
