@@ -454,3 +454,33 @@ test('StoreKeyPool saves key errors in the global setting and clears them', asyn
   await pool.clearError('k1');
   assert.equal(store.settingWrites.length, 2, 'clearError writes nothing when the key has no saved error');
 });
+
+test('provider logs never contain a key secret, the search query or a URL path or query', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'log', (line: string) => { lines.push(line); });
+  const search = new FallbackSearch({
+    searxng: new FakeWebSearch(() => { throw new ProviderFailed('searxng', 'SearXNG failed at https://searx.example/search?q=private+words', false, {status: '500'}); }),
+    tavily: new FakeKeyedSearch(found => {
+      if (found.id === 't1') throw new ProviderFailed('tavily', 'quota', true, {status: '432'});
+      return [];
+    }),
+    firecrawl: new FakeKeyedSearch(() => [hit('f')]),
+    pool: new FakePool([
+      {id: 't1', provider: 'tavily', secret: 'tvly-secret-value-xyz', last4: '9876'},
+      {id: 't2', provider: 'tavily', secret: 'other-secret-abc', last4: '1111'},
+      {id: 'f1', provider: 'firecrawl', secret: 'fc-secret-qq', last4: '2222'},
+    ]),
+  });
+  await search.search('private search words', 3, who);
+  const fetch = new FallbackFetch({
+    plain: new FakePlainFetch(() => { throw new ProviderFailed('plain_fetch', 'No text at https://page.example/private/path?token=abc', false, {status: 'empty'}); }),
+    firecrawl: new FakeKeyedFetch(() => page('scraped')),
+    pool: new FakePool([{id: 'f1', provider: 'firecrawl', secret: 'fc-secret-zz', last4: '3333'}]),
+  });
+  await fetch.fetch('https://page.example/private/path?token=abc', who);
+  assert.ok(lines.length > 0);
+  const text = lines.join('\n');
+  for (const leak of ['tvly-secret-value-xyz', 'other-secret-abc', 'fc-secret-qq', 'fc-secret-zz', 'private', 'searx.example', '/search', '/private/path', 'token=abc']) {
+    assert.equal(text.includes(leak), false, leak);
+  }
+});
