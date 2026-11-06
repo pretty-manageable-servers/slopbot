@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { toolFooter, toolProgress } from '../src/presentation/tool-activity.js';
-import { DiscordToolProgress } from '../src/adapters/discord-tool-progress.js';
+import { DiscordToolProgress } from '../src/clients/discord/discord-tool-progress.js';
 import { Application } from '../src/application.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { ToolError } from '../src/tools.js';

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
-import { usageReply } from "../src/adapters/discord-commands.js";
+import { usageReply } from "../src/clients/discord/discord-commands.js";
 import { UserLimiter } from "../src/user-limiter.js";
 
 const limiter = (store: SQLiteStore, fiveHour: number, week: number) => new UserLimiter(store, { fiveHourCostMicros: fiveHour, weekCostMicros: week, gracePercent: 10 });

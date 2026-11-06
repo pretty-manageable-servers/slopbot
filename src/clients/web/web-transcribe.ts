@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { logError } from './errors.js';
-import type { PmAudio } from './adapters/audio.js';
+import { logError } from '../../errors.js';
+import type { PmAudio } from '../../adapters/audio.js';
 
 export const TRANSCRIBE_MAX_BYTES = 10 * 1024 * 1024;
 const PER_MINUTE = 60;

@@ -5,7 +5,7 @@ import { ToolRegistry, ToolError } from "../src/tools.js";
 import { configuredChannels, registerServerTools } from "../src/server-tools.js";
 import { loadConfig } from "../src/config.js";
 import { HistoryImporter } from "../src/history.js";
-import { buildToolCommands } from "../src/adapters/discord-commands.js";
+import { buildToolCommands } from "../src/clients/discord/discord-commands.js";
 import type { Message } from "../src/domain.js";
 import type { ParticipationOptions } from '../src/participation.js';
 import { ParticipationGate } from '../src/participation.js';

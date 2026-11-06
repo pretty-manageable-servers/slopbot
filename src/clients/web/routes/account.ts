@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { ToolError, type ToolArgs } from '../../../tools.js';
 import { WebReplyError } from '../../../web-replies.js';
-import { handleTranscribe, transcribeLimits } from '../../../web-transcribe.js';
+import { handleTranscribe, transcribeLimits } from '../web-transcribe.js';
 import { SNOWFLAKE, check, looseBody, readInput, readJson, snowflakeField } from '../body.js';
 import { alreadySent, applyOut, json, notFound, userOf, type WebApp, type WebContext, type WebDeps } from '../env.js';
 import { endSession } from './auth.js';

@@ -1,64 +1,64 @@
-import { LocalDiskStorage } from "../web-chat-images.js";
+import { LocalDiskStorage } from "../../web-chat-images.js";
 import { DiscordVoice, voiceTurnSkipped } from './discord-voice.js';
-import { containsSkipMarker, splitSpeak, VOICE_INSTRUCTIONS_KEY, VOICE_NAME_DEFAULT, VOICE_SKIP, voiceInstructions } from "../voice-rules.js";
-import { legacyToolProgress, stableAttachmentUrl, toolProgressFooter } from "../source-context.js";
-import { errorReply, logError } from "../errors.js";
-import { probeSandboxProfile, type SandboxProfile } from "../sandbox-profile.js";
+import { containsSkipMarker, splitSpeak, VOICE_INSTRUCTIONS_KEY, VOICE_NAME_DEFAULT, VOICE_SKIP, voiceInstructions } from "../../voice-rules.js";
+import { legacyToolProgress, stableAttachmentUrl, toolProgressFooter } from "../../source-context.js";
+import { errorReply, logError } from "../../errors.js";
+import { probeSandboxProfile, type SandboxProfile } from "../../sandbox-profile.js";
 import { sendStoredFile } from './discord-storage.js';
-import { S3StorageProvider } from './s3-storage.js';
-import { requestTimings, savedTimingFooter } from "../request-timing.js";
-import { saveRequestTiming } from "../timing-tools.js";
+import { S3StorageProvider } from '../../adapters/s3-storage.js';
+import { requestTimings, savedTimingFooter } from "../../request-timing.js";
+import { saveRequestTiming } from "../../timing-tools.js";
 import {handleDiscordUi} from './discord-ui-interactions.js';
-import type {UiDocument} from '../ui/schema.js';
+import type {UiDocument} from '../../ui/schema.js';
 import {discordUi} from './discord-ui.js';
 import { DiscordToolProgress } from './discord-tool-progress.js';
-import { saveToolTrace } from '../tool-trace.js';
+import { saveToolTrace } from '../../tool-trace.js';
 import { handleToolTrace } from './discord-tool-trace.js';
-import { CONFIRM_RECORD, handleConfirm, postConfirmation, showCodeRows, startCodeMaintenance } from './discord-code.js';
-import { toolFooter, toolDisplayMode } from '../presentation/tool-activity.js';
-import type { ToolActivity } from '../tool-activity.js';
-import { discordPresentation, suppressLinkPreviews } from '../presentation/discord.js';
-import { fileBatches, runKey, startAttachLinkSweep } from '../attach-file.js';
-import { ReplyRenderer } from "../reply-renderer.js";
+import { CONFIRM_RECORD, handleConfirm, postConfirmation, showCodeRows, startCodeMaintenance } from '../../adapters/discord-code.js';
+import { toolFooter, toolDisplayMode } from '../../presentation/tool-activity.js';
+import type { ToolActivity } from '../../tool-activity.js';
+import { discordPresentation, suppressLinkPreviews } from '../../presentation/discord.js';
+import { fileBatches, runKey, startAttachLinkSweep } from '../../attach-file.js';
+import { ReplyRenderer } from "../../reply-renderer.js";
 import {
   Client, Events, GatewayIntentBits, Partials, ThreadAutoArchiveDuration, SlashCommandBuilder,
   MessageFlags, PermissionFlagsBits, ChannelType, ActivityType, ActionRowBuilder, ButtonBuilder, ButtonStyle, type ButtonInteraction,
   type ChatInputCommandInteraction, type MessageContextMenuCommandInteraction, type Interaction, type Message as DiscordMessage, type PartialMessage,
 } from "discord.js";
-import { MUTED_USERS_KEY, mutedUsers } from "../muted-users.js";
-import { GLOBAL_SETTINGS_SCOPE } from "../usage-cost.js";
+import { MUTED_USERS_KEY, mutedUsers } from "../../muted-users.js";
+import { GLOBAL_SETTINGS_SCOPE } from "../../usage-cost.js";
 import { buildFileReportCommand, buildMessageApps, buildStopCommand, CONTINUE_IN_WEB, buildToolCommands, buildUsageCommand, MESSAGE_APPS, messageAppText, setGuildCommands, usageReply } from "./discord-commands.js";
-import { splitReply, type ChatGateway, type Incoming } from "../bot.js";
-import { PresenceUpdater } from "../presence.js";
-import type { Config } from "../config.js";
-import { parseEffort, type Message } from "../domain.js";
-import type { LLM } from "../ports.js";
-import { WorkspaceEngine } from "../engine/engine.js";
-import { EngineWorkspace, sandboxProviderFor } from "../engine/workspace.js";
-import type { DegradedRouting, WorkspacePorts } from "../engine/ports.js";
+import { splitReply, type ChatGateway, type Incoming } from "../../bot.js";
+import { PresenceUpdater } from "../../presence.js";
+import type { Config } from "../../config.js";
+import { parseEffort, type Message } from "../../domain.js";
+import type { LLM } from "../../ports.js";
+import { WorkspaceEngine } from "../../engine/engine.js";
+import { EngineWorkspace, sandboxProviderFor } from "../../engine/workspace.js";
+import type { DegradedRouting, WorkspacePorts } from "../../engine/ports.js";
 
 export type { DegradedRouting };
-import type { RuntimeStore } from "../runtime-store.js";
-import { decisionThresholds } from '../participation-history.js';
-import { UserLimitError, limitReply, usageView } from "../user-limiter.js";
-import { createUsageMeter, type UsageMeter } from "../usage-meter.js";
-import { webTranscriptKey, webTranscriptsEnabled } from "../server-tools.js";
-import { INBOX_TTL_MS, type InboxItem } from "../inbox.js";
-import { pageItems, type ServerListRow, type ServerPage } from "../admin-panel.js";
-import { ChannelAccess } from "../channel-access.js";
-import { TeamAdmins, discordTeamSource } from "../team-admins.js";
-import { publishMessage, publishMessageDelete, runEvents } from "../run-events.js";
-import { engineEvents } from "../engine/event-log.js";
+import type { RuntimeStore } from "../../runtime-store.js";
+import { decisionThresholds } from '../../participation-history.js';
+import { UserLimitError, limitReply, usageView } from "../../user-limiter.js";
+import { createUsageMeter, type UsageMeter } from "../../usage-meter.js";
+import { webTranscriptKey, webTranscriptsEnabled } from "../../server-tools.js";
+import { INBOX_TTL_MS, type InboxItem } from "../../inbox.js";
+import { pageItems, type ServerListRow, type ServerPage } from "../../admin-panel.js";
+import { ChannelAccess } from "../../channel-access.js";
+import { TeamAdmins, discordTeamSource } from "../../team-admins.js";
+import { publishMessage, publishMessageDelete, runEvents } from "../../run-events.js";
+import { engineEvents } from "../../engine/event-log.js";
 import type { EngineEnvelope } from "@slopbot/contracts";
-import { ShareService, type ShareRule } from "../shares.js";
+import { ShareService, type ShareRule } from "../../shares.js";
 import { discordChannelAccessSource, wireChannelAccessEvents } from "./discord-channel-access.js";
-import { displayToolResult, type ToolArgs, ToolError, UncertainActionError, stableOperationId } from "../tools.js";
-import { WebReplies, asWebUser, webReplyKey } from "../web-replies.js";
-import { MemberDirectory, discordMemberSource } from "../member-directory.js";
+import { displayToolResult, type ToolArgs, ToolError, UncertainActionError, stableOperationId } from "../../tools.js";
+import { WebReplies, asWebUser, webReplyKey } from "../../web-replies.js";
+import { MemberDirectory, discordMemberSource } from "../../member-directory.js";
 import { discordWebReplies } from "./discord-web-replies.js";
-import { isPrivateChannel, isDirectMessageChannel, directMessageChannel, discordChannelId } from "../private-chat.js";
-import { WebChatGateway } from "../web-chats.js";
-import type { Directory } from "../engine/api.js";
+import { isPrivateChannel, isDirectMessageChannel, directMessageChannel, discordChannelId } from "../../private-chat.js";
+import { WebChatGateway } from "../web/web-chats.js";
+import type { Directory } from "../../engine/api.js";
 
 /** Slopbot state and services for one Discord server. All servers share one client. */
 interface TranscriptChannel { id: string; name: string; enabled: boolean }
@@ -494,7 +494,7 @@ export class DiscordServer implements ChatGateway {
   private normalize(message: DiscordMessage): Message {
     const id = this.client.user?.id;
     const text = id ? message.content.replace(new RegExp(`<@!?${id}>`, "g"), "").trim() : message.content;
-    const attachments: import("../domain.js").Attachment[] = [...message.attachments.values()].map(item => ({ name: item.name ?? "file", url: item.url, size: item.size, ...(item.contentType ? { contentType: item.contentType } : {}) }));
+    const attachments: import("../../domain.js").Attachment[] = [...message.attachments.values()].map(item => ({ name: item.name ?? "file", url: item.url, size: item.size, ...(item.contentType ? { contentType: item.contentType } : {}) }));
     for (const embed of message.embeds) {
       const media = embed.image ?? embed.thumbnail;
       const url = media?.url ?? media?.proxyURL;
@@ -731,7 +731,7 @@ export class DiscordServer implements ChatGateway {
         mock: this.config.mock,
       } : null };
   }
-  async consoleInvoke(user: string, channel: string, name: string, args: import('../tools.js').ToolArgs): Promise<unknown> {
+  async consoleInvoke(user: string, channel: string, name: string, args: import('../../tools.js').ToolArgs): Promise<unknown> {
     if (isPrivateChannel(channel)) throw new ToolError('Choose a text channel in this server.');
     const message: Message = { id: `command:web:${crypto.randomUUID()}`, server: this.guildId, channel, author: user, text: '' };
     await this.validateChannel(message, channel, true);
@@ -1013,7 +1013,7 @@ export class DiscordAdapter {
     const snapshot = await (await this.server(user, guildId)).consoleSnapshot(user) as Record<string, unknown>;
     return { ...snapshot, servers };
   }
-  async consoleInvoke(user: string, guildId: string | undefined, channel: string, name: string, args: import('../tools.js').ToolArgs): Promise<unknown> {
+  async consoleInvoke(user: string, guildId: string | undefined, channel: string, name: string, args: import('../../tools.js').ToolArgs): Promise<unknown> {
     return (await this.server(user, guildId)).consoleInvoke(user, channel, name, args);
   }
   async consoleMcp(user: string, guildId: string | undefined, input: unknown): Promise<unknown> {

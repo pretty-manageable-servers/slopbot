@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { ToolError } from '../../../tools.js';
 import { AdminInputError, serverPage, snowflake } from '../../../admin-panel.js';
-import type { ConsoleAdmin } from '../../../web-console.js';
+import type { ConsoleAdmin } from '../web-console.js';
 import { GLOBAL_SETTINGS_SCOPE } from '../../../usage-cost.js';
 import { SERVER_NON_ZDR_SETTING, USER_NON_ZDR_SETTING } from '../../../llm-mode.js';
 import { looseBody, readInput } from '../body.js';

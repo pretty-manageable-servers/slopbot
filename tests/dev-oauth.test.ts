@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { createServer, type AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
-import { consoleOptions, createConsole } from '../src/web-console.js';
+import { consoleOptions, createConsole } from '../src/clients/web/web-console.js';
 
 const ALICE = '100000000000000005', OUTSIDER = '100000000000000009';
 const script = fileURLToPath(new URL('../../scripts/development/dev-oauth.mjs', import.meta.url));

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ButtonInteraction } from 'discord.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
-import { handleToolTrace } from '../src/adapters/discord-tool-trace.js';
+import { handleToolTrace } from '../src/clients/discord/discord-tool-trace.js';
 import { TOOL_TRACE_KIND, TOOL_TRACE_CURSOR_KIND, saveToolTrace, pruneToolTraces, type ToolTrace } from '../src/tool-trace.js';
 import { ToolRegistry } from '../src/tools.js';
 import type { Json } from '../src/domain.js';

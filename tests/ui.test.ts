@@ -4,7 +4,7 @@ import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { ToolRegistry } from "../src/tools.js";
 import { UiRuntime } from "../src/ui/runtime.js";
 import { validateUi } from "../src/ui/schema.js";
-import { discordUi } from "../src/adapters/discord-ui.js";
+import { discordUi } from "../src/clients/discord/discord-ui.js";
 const message = { server: "s", channel: "c", author: "u", id: "m", text: "UI" };
 test("UI rejects executable content and invalid poll specifications", () => {
   assert.throws(

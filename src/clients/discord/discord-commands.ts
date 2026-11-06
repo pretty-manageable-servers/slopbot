@@ -1,6 +1,6 @@
 import { SlashCommandBuilder, SlashCommandSubcommandBuilder, ContextMenuCommandBuilder, ApplicationCommandType, ChannelType, type APIEmbed, type ApplicationCommandDataResolvable } from "discord.js";
-import type { ToolDefinition, ToolRegistry } from "../tools.js";
-import { usageView, type UsageView, type UserLimiter } from "../user-limiter.js";
+import type { ToolDefinition, ToolRegistry } from "../../tools.js";
+import { usageView, type UsageView, type UserLimiter } from "../../user-limiter.js";
 
 const WINDOW_LABELS: Record<string, string> = { "5h": "5-hour", week: "weekly" };
 const BAR_BLOCKS = 10;

@@ -31,10 +31,10 @@ const CONVERSATION_PRUNE_BATCH = 10000;
 import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
 import type { InboxItem } from '../inbox.js';
 import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, listChatShares, revokeShare, revokeAllShares, deleteChatShares } from '../share-store.js';
-import { getWebSession, saveWebSession, deleteWebSession, deleteExpiredWebSessions } from '../web-session-store.js';
-import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatEffort, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../web-chat-store.js';
+import { getWebSession, saveWebSession, deleteWebSession, deleteExpiredWebSessions } from '../clients/web/web-session-store.js';
+import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatEffort, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../clients/web/web-chat-store.js';
 import { isPrivateChannel } from '../private-chat.js';
-import type { WebSessionRow } from '../web-session-store.js';
+import type { WebSessionRow } from '../clients/web/web-session-store.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
 import { promptInventory, saveRunRuntime } from '../run-diagnostics.js';
 function inboxItemFromRow(row: Record<string, any>): InboxItem {
@@ -785,7 +785,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     return this.db.prepare("SELECT id FROM runs WHERE json_extract(message,'$.server')=? AND json_extract(message,'$.id')=? AND COALESCE(json_extract(prompt,'$.purpose'),'reply')='reply' ORDER BY rowid")
       .all(server, requestId).map(row => String(row.id));
   }
-  async runRecord(runId: string): Promise<import('../web-transcripts.js').TranscriptRun | undefined> {
+  async runRecord(runId: string): Promise<import('../clients/web/web-transcripts.js').TranscriptRun | undefined> {
     const row = this.db.prepare("SELECT id,message,prompt,status,result FROM runs WHERE id=?").get(runId);
     if (!row) return undefined;
     return { id: String(row.id), message: parseMessage(JSON.parse(String(row.message))), purpose: String(JSON.parse(String(row.prompt)).purpose ?? "reply"), status: String(row.status), result: row.result === null ? null : String(row.result), context: promptInventory(JSON.parse(String(row.prompt))) };

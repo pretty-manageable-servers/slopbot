@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { request } from 'node:http';
 import { Hono } from 'hono';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
-import { createConsole, type ConsoleBackend } from '../src/web-console.js';
+import { createConsole, type ConsoleBackend } from '../src/clients/web/web-console.js';
 import type { WebEnv } from '../src/clients/web/env.js';
 
 const USER = '100000000000000001', ORIGIN = 'http://localhost:3000', SESSION = 'cookie-value', CSRF = 'csrf-token';

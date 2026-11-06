@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { ChannelAccess } from "../src/channel-access.js";
-import { ChatError, WebChatService } from "../src/web-chats.js";
+import { ChatError, WebChatService } from "../src/clients/web/web-chats.js";
 import { chatDeps } from "./chat-deps.js";
 
 test("Continue in Slopbot web makes a private chat that starts with the message", async t => {

@@ -1,4 +1,4 @@
-import type { ChatDeps } from "../src/web-chats.js";
+import type { ChatDeps } from "../src/clients/web/web-chats.js";
 import type { Workspace } from "../src/engine/api.js";
 import { engineEvents } from "../src/engine/event-log.js";
 

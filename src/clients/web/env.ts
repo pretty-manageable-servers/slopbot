@@ -38,8 +38,8 @@ export function failure(c: WebContext, answer: () => Response): Response {
 
 /** What every route group needs from the console. */
 export interface WebDeps {
-  options: import('../../web-console.js').ConsoleOptions;
-  backend: import('../../web-console.js').ConsoleBackend;
+  options: import('./web-console.js').ConsoleOptions;
+  backend: import('./web-console.js').ConsoleBackend;
   /** A Set-Cookie value with the console's attributes (Secure on https). */
   cookie(name: string, value: string, age: number): string;
   /** Middleware for writes: 403 unless the method is in `methods` and the Origin and X-CSRF-Token match the login. */

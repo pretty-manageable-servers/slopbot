@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { Events, type Client, type Interaction } from 'discord.js';
-import { DiscordAdapter } from '../src/adapters/discord.js';
+import { DiscordAdapter } from '../src/clients/discord/discord.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { loadConfig } from '../src/config.js';
 

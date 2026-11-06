@@ -1,5 +1,5 @@
 import { ChannelType, PermissionFlagsBits, WebhookClient, type Client } from "discord.js";
-import { MissingWebhookPermissionError, UnknownWebhookError, WEBHOOK_NAME, type WebHook, type WebReplyDiscord } from "../web-replies.js";
+import { MissingWebhookPermissionError, UnknownWebhookError, WEBHOOK_NAME, type WebHook, type WebReplyDiscord } from "../../web-replies.js";
 
 const UNKNOWN_CHANNEL = 10003, UNKNOWN_WEBHOOK = 10015, MISSING_PERMISSIONS = 50013;
 

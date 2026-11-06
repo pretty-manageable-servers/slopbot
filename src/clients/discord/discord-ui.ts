@@ -1,7 +1,7 @@
 import {
   suppressLinkPreviews,
   tablesToLists,
-} from "../presentation/discord.js";
+} from "../../presentation/discord.js";
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -11,7 +11,7 @@ import {
   StringSelectMenuBuilder,
   type APIMessageTopLevelComponent,
 } from "discord.js";
-import type { UiDocument } from "../ui/schema.js";
+import type { UiDocument } from "../../ui/schema.js";
 export function discordUi(
   document: UiDocument,
   id: string,

@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { ChannelType, type Client, type Message as DiscordMessage } from 'discord.js';
-import { DiscordServer } from '../src/adapters/discord.js';
+import { DiscordServer } from '../src/clients/discord/discord.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { loadConfig } from '../src/config.js';
 
@@ -41,9 +41,47 @@ test('an automatic image preview does not invalidate unchanged human instruction
 });
 
 
-test('the engine imports neither discord.js nor node:http', () => {
-  const dir = new URL('../../src/engine/', import.meta.url);
-  const files = readdirSync(dir).filter(name => name.endsWith('.ts'));
-  assert.ok(files.length > 0);
-  for (const name of files) assert.doesNotMatch(readFileSync(new URL(name, dir), 'utf8'), /from\s+['"](?:discord\.js|node:http|http)['"]/, name);
+const srcRoot = new URL('../../src/', import.meta.url);
+
+/** Every import/export/dynamic-import specifier in the .ts files under src/<dir>, as [file, specifier]. */
+function specifiers(dir: string): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  for (const entry of readdirSync(new URL(dir, srcRoot), { recursive: true, encoding: 'utf8' })) {
+    if (!entry.endsWith('.ts')) continue;
+    const file = `${dir}${entry}`;
+    const text = readFileSync(new URL(file, srcRoot), 'utf8');
+    for (const m of text.matchAll(/(?:from\s+|import\s*\(\s*|import\s+)['"]([^'"]+)['"]/g)) out.push([file, m[1]!]);
+  }
+  return out;
+}
+
+/** Repo-relative path (under src/) a relative specifier points at, or undefined for packages. */
+function target(file: string, specifier: string): string | undefined {
+  if (!specifier.startsWith('.')) return undefined;
+  return new URL(specifier, new URL(file, srcRoot)).href.slice(srcRoot.href.length);
+}
+
+test('the engine imports nothing from the clients, discord.js or node:http', () => {
+  const imports = specifiers('engine/');
+  assert.ok(imports.length > 0);
+  for (const [file, spec] of imports) {
+    assert.doesNotMatch(spec, /^(?:discord\.js|node:http|http)$/, `${file} imports ${spec}`);
+    assert.ok(!target(file, spec)?.startsWith('clients/'), `${file} imports ${spec}`);
+  }
+});
+
+// Imports one client has on the other today. WP11 removes them; nothing new may be added.
+const allowedCrossClientImports = new Set([
+  'clients/discord/discord.ts -> clients/web/web-chats.js', // WebChatGateway
+]);
+
+test('the Discord and web clients do not import each other', () => {
+  const found = new Set<string>();
+  for (const [from, other] of [['clients/discord/', 'clients/web/'], ['clients/web/', 'clients/discord/']] as const) {
+    for (const [file, spec] of specifiers(from)) {
+      const to = target(file, spec);
+      if (to?.startsWith(other)) found.add(`${file} -> ${to}`);
+    }
+  }
+  assert.deepEqual([...found].sort(), [...allowedCrossClientImports].sort());
 });

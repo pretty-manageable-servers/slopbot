@@ -5,7 +5,7 @@ import { ChannelType, Collection, type Client } from 'discord.js';
 import { VoiceConnectionStatus, type joinVoiceChannel } from '@discordjs/voice';
 import OpusScript from 'opusscript';
 import { pcmWav } from '../src/adapters/audio.js';
-import { DiscordVoice, type VoicePoster } from '../src/adapters/discord-voice.js';
+import { DiscordVoice, type VoicePoster } from '../src/clients/discord/discord-voice.js';
 import { DEGRADED_NOTE, type LlmCaller, type LlmRouter } from '../src/llm-mode.js';
 import type { LLM } from '../src/ports.js';
 import { UsageMeter } from '../src/usage-meter.js';

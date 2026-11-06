@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import { getRequestListener } from "@hono/node-server";
 import { Hono } from "hono";
 import type { WebEnv } from "../src/clients/web/env.js";
-import type { TranscriptRoutes } from "../src/web-transcripts.js";
+import type { TranscriptRoutes } from "../src/clients/web/web-transcripts.js";
 
 /** Serves the transcript routes on their own. The signed-in user comes from the x-user header, as if a login had been found. */
 export function transcriptServer(routes: TranscriptRoutes): Server {

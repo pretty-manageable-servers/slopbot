@@ -1,6 +1,6 @@
 import { ChannelType, Events, PermissionFlagsBits, type Client } from "discord.js";
-import type { ChannelAccess, ChannelAccessSource } from "../channel-access.js";
-import { isPrivateChannel } from "../private-chat.js";
+import type { ChannelAccess, ChannelAccessSource } from "../../channel-access.js";
+import { isPrivateChannel } from "../../private-chat.js";
 
 /** Reads live permissions through the bot's discord.js client: guild member, then channel.permissionsFor(member). */
 export function discordChannelAccessSource(client: Client): ChannelAccessSource {

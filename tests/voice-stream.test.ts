@@ -6,7 +6,7 @@ import { ChannelType, Collection, type Client } from 'discord.js';
 import { VoiceConnectionStatus, type AudioPlayer, type joinVoiceChannel } from '@discordjs/voice';
 import OpusScript from 'opusscript';
 import { PmAudio, pcmWav, speechPcm } from '../src/adapters/audio.js';
-import { DiscordVoice, type VoicePoster } from '../src/adapters/discord-voice.js';
+import { DiscordVoice, type VoicePoster } from '../src/clients/discord/discord-voice.js';
 import { liveText } from '../src/live-text.js';
 import type { Message } from '../src/domain.js';
 import { UsageMeter } from '../src/usage-meter.js';

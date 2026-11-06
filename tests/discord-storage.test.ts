@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Client } from 'discord.js';
-import { sendStoredFile } from '../src/adapters/discord-storage.js';
+import { sendStoredFile } from '../src/clients/discord/discord-storage.js';
 import type { ToolContext } from '../src/tools.js';
 const file = { owner: 'owner', path: 'reports/file.bin', key: 'hidden', size: 3, contentType: 'application/octet-stream', public: true, updatedAt: 0 };
 const context: ToolContext = { message: { server: 'server', channel: 'thread', id: 'request', author: 'requester', text: 'send it' }, operationId: 'operation', isAdmin: false, source: 'agent', toolName: 'file_store', arguments: { action: 'send' }, resource: null, assertActive: async () => {} };

@@ -1,7 +1,7 @@
-import { logError } from "../errors.js";
-import type { ToolActivity } from '../tool-activity.js';
-import { toolProgress } from '../presentation/tool-activity.js';
-import { funLines } from '../presentation/tool-labels.js';
+import { logError } from "../../errors.js";
+import type { ToolActivity } from '../../tool-activity.js';
+import { toolProgress } from '../../presentation/tool-activity.js';
+import { funLines } from '../../presentation/tool-labels.js';
 interface StatusMessage { edit(content: string): Promise<unknown>; delete(): Promise<unknown>; }
 export class DiscordToolProgress {
   private readonly requests = new Map<string, {steps: ToolActivity[]; message?: StatusMessage; fun: number}>();

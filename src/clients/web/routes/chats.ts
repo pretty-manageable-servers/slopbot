@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { logError } from '../../../errors.js';
 import { ShareError } from '../../../shares.js';
-import { ChatError, type WebChatService } from '../../../web-chats.js';
+import { ChatError, type WebChatService } from '../web-chats.js';
 import { CHAT_FILE_MAX_BYTES } from '../../../web-chat-files.js';
 import { declaredTooLarge, looseBody, readBytes, readJson } from '../body.js';
 import { alreadySent, applyOut, failure, json, notFound, userOf, type WebEnv } from '../env.js';

@@ -5,7 +5,7 @@ import { transcriptServer } from "./transcript-server.js";
 import { ChannelAccess, type ChannelFacts } from "../src/channel-access.js";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { webTranscriptKey } from "../src/server-tools.js";
-import { createTranscripts, type TranscriptHost } from "../src/web-transcripts.js";
+import { createTranscripts, type TranscriptHost } from "../src/clients/web/web-transcripts.js";
 import { SOURCE_CHAIN_MS, groupConversations, type ChannelReply, type ChannelRun, type RunSource } from "../src/conversation-groups.js";
 import type { Message } from "../src/domain.js";
 

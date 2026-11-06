@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { Server } from 'node:http';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
-import { createConsole, type ConsoleOptions } from '../src/web-console.js';
+import { createConsole, type ConsoleOptions } from '../src/clients/web/web-console.js';
 
 const DAY = 86_400_000;
 const options: ConsoleOptions = { origin: 'http://localhost:3000', host: '127.0.0.1', port: 0, clientId: 'id', clientSecret: 'secret' };

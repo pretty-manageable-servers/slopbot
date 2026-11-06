@@ -11,7 +11,7 @@ import type { ShareData } from '@slopbot/contracts';
 import { parseMessage, type Message } from '../src/domain.js';
 import { webTranscriptKey } from '../src/server-tools.js';
 import { ShareError, ShareService, buildMessages, canCreateShare, isShareId, renderSharePage, scrubText, toolLine, type ShareSnapshot } from '../src/shares.js';
-import { createConsole } from '../src/web-console.js';
+import { createConsole } from '../src/clients/web/web-console.js';
 import { TeamAdmins } from '../src/team-admins.js';
 
 /** A share page template, as console/share.html builds it. */

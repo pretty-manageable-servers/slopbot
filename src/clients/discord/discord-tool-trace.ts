@@ -1,8 +1,8 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags, type ButtonInteraction } from 'discord.js';
-import type { Json, Message } from '../domain.js';
-import type { RecordStore } from '../records.js';
-import { uiKey } from '../ui/runtime.js';
-import { TOOL_TRACE_KIND, TOOL_TRACE_CURSOR_KIND, tracePage, type ToolTrace, type TraceCursor } from '../tool-trace.js';
+import type { Json, Message } from '../../domain.js';
+import type { RecordStore } from '../../records.js';
+import { uiKey } from '../../ui/runtime.js';
+import { TOOL_TRACE_KIND, TOOL_TRACE_CURSOR_KIND, tracePage, type ToolTrace, type TraceCursor } from '../../tool-trace.js';
 
 export function toolTraceRows(id: string): ActionRowBuilder<ButtonBuilder>[] {
   return [new ActionRowBuilder<ButtonBuilder>().addComponents(

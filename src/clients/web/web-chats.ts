@@ -1,31 +1,31 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { chatRoutes } from "./clients/web/routes/chats.js";
-import { logError } from "./errors.js";
-import type { ChatGateway } from "./bot.js";
-import { parseEffort, type Effort, type Message } from "./domain.js";
-import type { ToolActivity } from "./tool-activity.js";
-import type { UiDocument } from "./ui/schema.js";
-import { prepareUi } from "./ui/runtime.js";
-import type { RecordStore } from "./records.js";
-import type { ChannelAccess } from "./channel-access.js";
-import type { Directory, Engine, Workspace } from "./engine/api.js";
-import type { UserLimiter } from "./user-limiter.js";
-import { ToolError, stableOperationId } from "./tools.js";
-import { requestTimings } from "./request-timing.js";
-import { PRIVATE_CHANNEL_PREFIX, PRIVATE_CHAT_MAX_CHARS, PRIVATE_CHAT_TITLE_CHARS, isPrivateChannel, newPrivateChatId, privateChannel, privateChatTitle } from "./private-chat.js";
-import { fileLabel, publishMessage, runEvents, slopbotId, withoutFileLabelText, type ConversationEventStore, type RunEvents } from "./run-events.js";
+import { chatRoutes } from "./routes/chats.js";
+import { logError } from "../../errors.js";
+import type { ChatGateway } from "../../bot.js";
+import { parseEffort, type Effort, type Message } from "../../domain.js";
+import type { ToolActivity } from "../../tool-activity.js";
+import type { UiDocument } from "../../ui/schema.js";
+import { prepareUi } from "../../ui/runtime.js";
+import type { RecordStore } from "../../records.js";
+import type { ChannelAccess } from "../../channel-access.js";
+import type { Directory, Engine, Workspace } from "../../engine/api.js";
+import type { UserLimiter } from "../../user-limiter.js";
+import { ToolError, stableOperationId } from "../../tools.js";
+import { requestTimings } from "../../request-timing.js";
+import { PRIVATE_CHANNEL_PREFIX, PRIVATE_CHAT_MAX_CHARS, PRIVATE_CHAT_TITLE_CHARS, isPrivateChannel, newPrivateChatId, privateChannel, privateChatTitle } from "../../private-chat.js";
+import { fileLabel, publishMessage, runEvents, slopbotId, withoutFileLabelText, type ConversationEventStore, type RunEvents } from "../../run-events.js";
 import type { EngineEvent } from "@slopbot/contracts";
-import { engineEvents } from "./engine/event-log.js";
+import { engineEvents } from "../../engine/event-log.js";
 import { messageViews, openEngineStream, openStream, streamCursor, turnEventsOf, type TranscriptStore } from "./web-transcripts.js";
 import type { WebChatRow } from "./web-chat-store.js";
-import { CHAT_IMAGE_ID, CHAT_IMAGE_MAX_BYTES, CHAT_IMAGE_MAX_COUNT, CHAT_IMAGE_SCHEME, LocalDiskStorage, chatImageContentType, chatImageKey, imageAttachments, imageName, newChatImageId, sniffImage } from "./web-chat-images.js";
-import { CHAT_FILE_ID, CHAT_FILE_MAX_BYTES, CHAT_ATTACHMENT_MAX_COUNT, chatFileKey, fileAttachments, fileContentType, fileName, fileUrl, newChatFileId, type ChatFileView } from "./web-chat-files.js";
-import type { Attachment } from "./domain.js";
-import type { ObjectStorageProvider } from "./object-storage.js";
-import { AttachQueue, runKey, type QueuedFile } from "./attach-file.js";
+import { CHAT_IMAGE_ID, CHAT_IMAGE_MAX_BYTES, CHAT_IMAGE_MAX_COUNT, CHAT_IMAGE_SCHEME, LocalDiskStorage, chatImageContentType, chatImageKey, imageAttachments, imageName, newChatImageId, sniffImage } from "../../web-chat-images.js";
+import { CHAT_FILE_ID, CHAT_FILE_MAX_BYTES, CHAT_ATTACHMENT_MAX_COUNT, chatFileKey, fileAttachments, fileContentType, fileName, fileUrl, newChatFileId, type ChatFileView } from "../../web-chat-files.js";
+import type { Attachment } from "../../domain.js";
+import type { ObjectStorageProvider } from "../../object-storage.js";
+import { AttachQueue, runKey, type QueuedFile } from "../../attach-file.js";
 const IMAGE_EXTENSIONS: Record<string, "png" | "jpg" | "gif" | "webp"> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
-import { ChatShareService, type ShareService, type ShareStore } from "./shares.js";
+import { ChatShareService, type ShareService, type ShareStore } from "../../shares.js";
 
 /** Store calls for private chats. SQLite and Postgres implement them. */
 export interface ChatStore extends TranscriptStore, ConversationEventStore, ShareStore {
@@ -503,6 +503,6 @@ export class WebChatService {
   }
 }
 
-export type { ChatRoutes } from "./clients/web/routes/chats.js";
+export type { ChatRoutes } from "./routes/chats.js";
 /** The Hono routes of /api/chats (see clients/web/routes/chats.ts). */
 export const createChatRoutes = chatRoutes;

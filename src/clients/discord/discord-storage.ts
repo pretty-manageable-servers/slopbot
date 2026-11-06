@@ -1,6 +1,6 @@
 import type { Client } from 'discord.js';
-import type { StoredFile } from '../object-storage.js';
-import { stableOperationId, ToolError, type ToolContext } from '../tools.js';
+import type { StoredFile } from '../../object-storage.js';
+import { stableOperationId, ToolError, type ToolContext } from '../../tools.js';
 
 export async function sendStoredFile(client: Client, context: ToolContext, file: StoredFile, bytes: Uint8Array): Promise<void> {
   await context.assertActive();

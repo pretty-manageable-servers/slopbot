@@ -5,7 +5,7 @@ import type { RecordStore } from "../records.js";
 import type { ConfirmationRequired, ToolArgs, ToolJournal, ToolRegistry } from "../tools.js";
 import { displayToolResult, ToolError, toolFailed } from "../tools.js";
 import type { ToolActivity } from "../tool-activity.js";
-import { toolTraceRows } from "./discord-tool-trace.js";
+import { toolTraceRows } from "../clients/discord/discord-tool-trace.js";
 import { pruneToolTraces } from "../tool-trace.js";
 import { codeBlock, PROGRAM_CODE_KEEP_MS } from "../code-display.js";
 

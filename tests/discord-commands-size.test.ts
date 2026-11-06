@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ApplicationCommandDataResolvable } from "discord.js";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
-import { buildToolCommands, buildUsageCommand, commandTextSize, DISCORD_COMMAND_TEXT_LIMIT, setGuildCommands } from "../src/adapters/discord-commands.js";
+import { buildToolCommands, buildUsageCommand, commandTextSize, DISCORD_COMMAND_TEXT_LIMIT, setGuildCommands } from "../src/clients/discord/discord-commands.js";
 import { ToolRegistry } from "../src/tools.js";
 
 /** A registry of tools with long descriptions, long option descriptions and 25-choice enums. */

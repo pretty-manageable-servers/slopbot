@@ -1,24 +1,24 @@
 import { createServer, type Server } from 'node:http';
 import { getRequestListener } from '@hono/node-server';
-import { logError } from "./errors.js";
-import type { ToolArgs } from './tools.js';
-import type { ChannelAccess } from './channel-access.js';
-import type { AdminPanel, ServerInfo, ServerPage } from './admin-panel.js';
-import type { TeamRole } from './team-admins.js';
+import { logError } from "../../errors.js";
+import type { ToolArgs } from '../../tools.js';
+import type { ChannelAccess } from '../../channel-access.js';
+import type { AdminPanel, ServerInfo, ServerPage } from '../../admin-panel.js';
+import type { TeamRole } from '../../team-admins.js';
 import type { TranscriptRoutes } from './web-transcripts.js';
-import type { ShareService } from './shares.js';
+import type { ShareService } from '../../shares.js';
 import type { WebSessionStore } from './web-session-store.js';
 import type { ChatRoutes } from './web-chats.js';
-import type { PmAudio } from './adapters/audio.js';
-import type { InboxItem } from './inbox.js';
-import type { LlmMode } from './llm-mode.js';
+import type { PmAudio } from '../../adapters/audio.js';
+import type { InboxItem } from '../../inbox.js';
+import type { LlmMode } from '../../llm-mode.js';
 import { widgetFrameLoader } from 'agentic-ui-kit/visuals/core';
-import type { Json } from './domain.js';
-import { createApp } from './clients/web/app.js';
-import { SESSION_SWEEP_MS } from './clients/web/routes/auth.js';
+import type { Json } from '../../domain.js';
+import { createApp } from './app.js';
+import { SESSION_SWEEP_MS } from './routes/auth.js';
 
-export { consoleVersion } from './clients/web/routes/version.js';
-export { WIDGET_FRAME_PATH, movedPath } from './clients/web/routes/static.js';
+export { consoleVersion } from './routes/version.js';
+export { WIDGET_FRAME_PATH, movedPath } from './routes/static.js';
 
 /** Team admin backend. Roles come from the Developer Portal team; panel holds the limits, prices and usage. */
 export interface ConsoleAdmin {

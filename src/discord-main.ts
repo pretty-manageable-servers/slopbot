@@ -3,7 +3,7 @@ import { logError } from "./errors.js";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { loadConfig } from "./config.js";
-import { DiscordAdapter } from "./adapters/discord.js";
+import { DiscordAdapter } from "./clients/discord/discord.js";
 import { PmAudio } from "./adapters/audio.js";
 import { PostgresStore } from "./adapters/postgres.js";
 import { SQLiteStore } from "./adapters/sqlite.js";
@@ -15,13 +15,13 @@ import { loadDegradedSettings, openFallbackKey } from "./llm-settings.js";
 import { WebKeySecrets } from "./web-keys.js";
 import { discordStartupError } from "./startup-error.js";
 import { ProviderEmbeddings } from "./adapters/embeddings.js";
-import { consoleOptions, createConsole, type ConsoleAdmin, type ConsoleBackend } from './web-console.js';
+import { consoleOptions, createConsole, type ConsoleAdmin, type ConsoleBackend } from './clients/web/web-console.js';
 import { AdminPanel } from './admin-panel.js';
 import { discordPresentation } from './presentation/discord.js';
-import { createTranscripts } from './web-transcripts.js';
+import { createTranscripts } from './clients/web/web-transcripts.js';
 import { configuredChannels } from './server-tools.js';
 import { startConversationEventRetention } from './run-events.js';
-import { createChatRoutes, WebChatService } from './web-chats.js';
+import { createChatRoutes, WebChatService } from './clients/web/web-chats.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();

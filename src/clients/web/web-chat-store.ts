@@ -4,7 +4,7 @@ export interface ChatDb {
   prepare(sql: string): { all(...values: any[]): any; get(...values: any[]): any; run(...values: any[]): any };
 }
 
-import { parseEffort, type Effort } from "./domain.js";
+import { parseEffort, type Effort } from "../../domain.js";
 
 /** One private chat. `channel` is `web:<id>`. */
 export interface WebChatRow { id: string; server: string; owner: string; title: string; created: number; updated: number; deleted: boolean; effort?: Effort }

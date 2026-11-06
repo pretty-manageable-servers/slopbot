@@ -1,12 +1,12 @@
-import { errorReply, logError } from "../errors.js";
+import { errorReply, logError } from "../../errors.js";
 import {
   MessageFlags,
   type ButtonInteraction,
   type StringSelectMenuInteraction,
 } from "discord.js";
-import type { Message } from "../domain.js";
-import { ToolError } from "../tools.js";
-import type { UiRuntime } from "../ui/runtime.js";
+import type { Message } from "../../domain.js";
+import { ToolError } from "../../tools.js";
+import type { UiRuntime } from "../../ui/runtime.js";
 import { discordUi } from "./discord-ui.js";
 export async function handleDiscordUi(
   interaction: ButtonInteraction | StringSelectMenuInteraction,

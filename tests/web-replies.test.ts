@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { ChannelType, PermissionFlagsBits, WebhookClient, type Client, type Message as DiscordMessage } from "discord.js";
 import { test, type TestContext } from "node:test";
-import { DiscordServer } from "../src/adapters/discord.js";
+import { DiscordServer } from "../src/clients/discord/discord.js";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { FakeLLM } from "../src/adapters/fake-llm.js";
 import { Application } from "../src/application.js";
@@ -11,7 +11,7 @@ import { ChannelAccess, type ChannelFacts } from "../src/channel-access.js";
 import { loadConfig } from "../src/config.js";
 import { parseMessage } from "../src/domain.js";
 import type { ParticipationGate } from "../src/participation.js";
-import { createConsole } from "../src/web-console.js";
+import { createConsole } from "../src/clients/web/web-console.js";
 import { asWebUser, botWebContent, escapeMarkdown, MANAGE_WEBHOOKS_TTL_MS, MissingWebhookPermissionError, openToken, sealToken, stripBotWebPrefix, UnknownWebhookError, WebReplies, WebReplyError, webReplyKey, type WebAuthor, type WebHook, type WebOrigin, type WebReplyDiscord } from "../src/web-replies.js";
 import { UserLimiter } from "../src/user-limiter.js";
 

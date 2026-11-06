@@ -5,7 +5,7 @@ import { Readable } from 'node:stream';
 import { ChannelType, Collection, type Client } from 'discord.js';
 import { AudioPlayerStatus, VoiceConnectionStatus, type AudioPlayer, type joinVoiceChannel } from '@discordjs/voice';
 import OpusScript from 'opusscript';
-import { DiscordVoice, voiceTurnSkipped, type VoicePoster } from '../src/adapters/discord-voice.js';
+import { DiscordVoice, voiceTurnSkipped, type VoicePoster } from '../src/clients/discord/discord-voice.js';
 import { pcmWav } from '../src/adapters/audio.js';
 import { liveText } from '../src/live-text.js';
 import type { Message } from '../src/domain.js';

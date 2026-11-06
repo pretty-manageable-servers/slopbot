@@ -1,22 +1,22 @@
 import type { EngineEnvelope, EngineEvent } from "@slopbot/contracts";
-import { engineEvents } from "./engine/event-log.js";
-import type { EngineEventLog } from "./engine/api.js";
-import { applyOut, json, type WebContext } from "./clients/web/env.js";
-import { conversationRoutes, type TranscriptRoutes } from "./clients/web/routes/conversations.js";
-import { logError } from "./errors.js";
-import type { Json, Message, ModelEvent } from "./domain.js";
-import type { ChannelAccess, ChannelAccessResult } from "./channel-access.js";
-import { parseToolCalls, toolResult, type ToolCall, type ToolOutput } from "./tools.js";
-import type { HistoryPage, HistoryQuery } from "./search/history-search.js";
-import type { FuzzyHit, FuzzyQuery } from "./search/fuzzy.js";
-import { LIVE_INPUT_TOOLS, reasoningText, runEvents, shortArgs, showsProfile, slopbotId, transcriptMessage, type ChatCard, type ConversationEvent, type ConversationEventStore, type RunEvents, type TranscriptMessage } from "./run-events.js";
-import { uiKey, type UiState } from "./ui/runtime.js";
-import type { RecordStore } from "./records.js";
-import type { MemberDirectory } from "./member-directory.js";
-import { transcriptSwitchOn } from "./server-tools.js";
-import { canCreateShare, type ShareRule } from "./shares.js";
-import { isPrivateChannel } from "./private-chat.js";
-import { conversationSummary, groupConversations, type ChannelReply, type ChannelRun, type ConversationGroup, type RunSource } from "./conversation-groups.js";
+import { engineEvents } from "../../engine/event-log.js";
+import type { EngineEventLog } from "../../engine/api.js";
+import { applyOut, json, type WebContext } from "./env.js";
+import { conversationRoutes, type TranscriptRoutes } from "./routes/conversations.js";
+import { logError } from "../../errors.js";
+import type { Json, Message, ModelEvent } from "../../domain.js";
+import type { ChannelAccess, ChannelAccessResult } from "../../channel-access.js";
+import { parseToolCalls, toolResult, type ToolCall, type ToolOutput } from "../../tools.js";
+import type { HistoryPage, HistoryQuery } from "../../search/history-search.js";
+import type { FuzzyHit, FuzzyQuery } from "../../search/fuzzy.js";
+import { LIVE_INPUT_TOOLS, reasoningText, runEvents, shortArgs, showsProfile, slopbotId, transcriptMessage, type ChatCard, type ConversationEvent, type ConversationEventStore, type RunEvents, type TranscriptMessage } from "../../run-events.js";
+import { uiKey, type UiState } from "../../ui/runtime.js";
+import type { RecordStore } from "../../records.js";
+import type { MemberDirectory } from "../../member-directory.js";
+import { transcriptSwitchOn } from "../../server-tools.js";
+import { canCreateShare, type ShareRule } from "../../shares.js";
+import { isPrivateChannel } from "../../private-chat.js";
+import { conversationSummary, groupConversations, type ChannelReply, type ChannelRun, type ConversationGroup, type RunSource } from "../../conversation-groups.js";
 
 export interface TranscriptRun { id: string; message: Message; purpose: string; status: string; result: string | null; context?: Json }
 export interface ToolTurn { calls: ToolCall[]; results: Record<string, ToolOutput>; diagnosticArgs?: Json[] | null }

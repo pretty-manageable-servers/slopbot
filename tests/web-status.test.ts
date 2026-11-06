@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { AdminPanel, type AdminConfig } from '../src/admin-panel.js';
-import { createConsole, type ConsoleAdmin, type ConsoleOptions } from '../src/web-console.js';
+import { createConsole, type ConsoleAdmin, type ConsoleOptions } from '../src/clients/web/web-console.js';
 import { TeamAdmins, type TeamSnapshot } from '../src/team-admins.js';
 import { UserLimiter } from '../src/user-limiter.js';
 import { MemberDirectory } from '../src/member-directory.js';
