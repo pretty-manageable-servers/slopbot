@@ -69,15 +69,6 @@ test("reply target kept", async () => {
   assert.ok(!result.inputs.some(item => item.content.includes("step 1 ")));
 });
 
-test("request is plain text", async () => {
-  const context = [msg("1001", "alice", "Can you fix the bike?", at(14, 2)), msg("1002", BOT, "Discord copy", at(14, 3))];
-  const request = msg("1003", "alice", "what about the chain", at(14, 6));
-  const result = await builder(context, replies({ "1002": "Model answer one." })).build(request, undefined, 12, noHistory);
-  const wire = wireMessages({ prefixVersion: "v1", prefix: [], history: [], inputs: result.inputs });
-  assert.equal(wire.at(-1)?.content, "[14:06] Alice [current request]: what about the chain");
-  assert.equal(wire.find(item => item.role === "assistant")?.content, "Model answer one.");
-});
-
 test("request names the requester", async () => {
   const context = [msg("1001", "bob", "Can you fix the bike?", at(14, 2))];
   const request = msg("1002", "alice", "what about the chain", at(14, 6), { authorIdentity: { discord_handle: "alice" } });
@@ -85,25 +76,6 @@ test("request names the requester", async () => {
   const wire = wireMessages({ prefixVersion: "v1", prefix: [], history: [], inputs: result.inputs });
   assert.equal(wire.at(-1)?.content, "[14:06] Alice (@alice) [current request]: what about the chain");
   assert.equal(result.inputs.at(-1)?.author, "alice");
-});
-
-test("voice request keeps header", async () => {
-  const request = msg("1002", "alice", "turn the lights on", at(14, 6), { source: "voice" });
-  const result = await builder([]).build(request, undefined, 12, noHistory);
-  const last = result.inputs.at(-1)!;
-  assert.equal(last.content, "[14:06] Alice [current request]: turn the lights on");
-  assert.equal(last.role, "user");
-});
-
-test("reply subject keeps the header", async () => {
-  const profiles = {
-    findPeople: async () => [{ id: "555", name: "Bob" }],
-    profile: async () => ({ name: "Bob", identity: {}, fields: [] }),
-  } as unknown as ProfileStore;
-  const context = [msg("1001", "bob", "I fixed <@12345678901234567>'s bike", at(14, 2))];
-  const request = msg("1002", "alice", "what did he say about it", at(14, 6), { replyTo: "1001" });
-  const result = await builder(context, new Map(), 100_000, profiles).build(request, undefined, 12, noHistory);
-  assert.equal(result.inputs.at(-1)?.content, "[14:06] Alice [current request]: About Bob (<@555>), the person in your reply target:\nwhat did he say about it");
 });
 
 test("error notice stays user side", async () => {

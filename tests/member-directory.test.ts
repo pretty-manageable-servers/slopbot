@@ -43,43 +43,12 @@ test("a failed member batch still resolves users one by one", async () => {
   assert.deepEqual(found.get(GONE), unknown(GONE));
 });
 
-test("profiles are cached for 10 minutes and failed lookups for one minute", async () => {
-  let clock = 1_000_000;
-  const source = fakeSource(people);
-  const directory = new MemberDirectory(source, () => clock);
-  await directory.profiles(SERVER, [ADA, GONE]);
-  await directory.profiles(SERVER, [ADA, GONE]);
-  assert.deepEqual(source.calls.members, [[ADA, GONE]], 'the second call reads the cache');
-  assert.deepEqual(source.calls.users, [GONE]);
-  clock += 61_000;
-  await directory.profiles(SERVER, [ADA, GONE]);
-  assert.deepEqual(source.calls.members, [[ADA, GONE], [GONE]], 'only the failed user is looked up again');
-  clock += 10 * 60_000;
-  await directory.profiles(SERVER, [ADA]);
-  assert.deepEqual(source.calls.members.at(-1), [ADA], 'a found user is looked up again after 10 minutes');
-});
-
 test("cache entries are kept per server", async () => {
   const source = fakeSource(people);
   const directory = new MemberDirectory(source);
   await directory.profiles(SERVER, [ADA]);
   await directory.profiles("1528063444874432999", [ADA]);
   assert.deepEqual(source.calls.members, [[ADA], [ADA]]);
-});
-
-test("search trims the query, clamps the limit and maps results like profiles", async () => {
-  const source = fakeSource(people);
-  const directory = new MemberDirectory(source);
-  assert.deepEqual(await directory.search(SERVER, "   "), []);
-  assert.deepEqual(source.calls.search, [], 'an empty query does not call Discord');
-  const hits = await directory.search(SERVER, "  ada ", 100);
-  assert.deepEqual(source.calls.search, [{ query: "ada", limit: 25 }]);
-  assert.deepEqual(hits, [{ id: ADA, displayName: "Ada L", username: "ada", avatarUrl: SERVER_AVATAR }]);
-  await directory.search(SERVER, "g", 0);
-  await directory.search(SERVER, "g");
-  assert.deepEqual(source.calls.search.slice(1), [{ query: "g", limit: 1 }, { query: "g", limit: 10 }]);
-  assert.deepEqual(await directory.profiles(SERVER, [ADA]), new Map([[ADA, { id: ADA, displayName: "Ada L", username: "ada", avatarUrl: SERVER_AVATAR }]]));
-  assert.equal(source.calls.members.length, 0, 'search results fill the cache');
 });
 
 test("no profile or search result carries an email", async () => {

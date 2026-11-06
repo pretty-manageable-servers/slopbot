@@ -16,9 +16,10 @@ const tunnel=await startDatabaseTunnel(env);
 const options={stdio:'inherit',env:{...process.env,...env,NODE_ENV:'development'}};
 const compiler=spawn(process.execPath,['node_modules/typescript/bin/tsc','-p','tsconfig.json','--watch','--preserveWatchOutput'],options);
 const bot=spawn(process.execPath,['--watch','dist/src/discord-main.js'],options);
+const oauth=env.WEB_OAUTH_BASE?spawn(process.execPath,['scripts/development/dev-oauth.mjs'],options):null;
 let stopping=false;
-function stop(){if(stopping)return;stopping=true;compiler.kill('SIGTERM');bot.kill('SIGTERM');tunnel.stop();}
+function stop(){if(stopping)return;stopping=true;compiler.kill('SIGTERM');bot.kill('SIGTERM');oauth?.kill('SIGTERM');tunnel.stop();}
 process.on('SIGINT',stop);process.on('SIGTERM',stop);
-for(const child of [compiler,bot]) {child.on('error',error=>{console.error(error.message);process.exitCode=1;stop();});child.on('exit',code=>{if(!stopping){process.exitCode=code||0;stop();}});}
+for(const child of [compiler,bot,oauth].filter(Boolean)) {child.on('error',error=>{console.error(error.message);process.exitCode=1;stop();});child.on('exit',code=>{if(!stopping){process.exitCode=code||0;stop();}});}
 
 if(tunnel.child) tunnel.child.on('exit',()=>{if(!stopping){console.error('Database tunnel closed; stopping development bot.');process.exitCode=1;stop();}});

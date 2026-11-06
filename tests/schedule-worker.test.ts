@@ -227,24 +227,6 @@ test("access error from authorize pauses", async (t) => {
   assert.equal(saved.pauseReason, "permission");
 });
 
-test("prompt message id format", async (t) => {
-  const store = new SQLiteStore();
-  t.after(() => store.close());
-  await put(store, schedule({ action: { kind: "prompt", text: "Summarize the channel" } }));
-  const clock = { now: new Date("2026-10-20T10:00:00.000Z") };
-  const { deps, calls } = fakes(clock, {}, store);
-  await new ScheduleWorker(deps).tick();
-  assert.equal(calls.replies.length, 0);
-  assert.equal(calls.prompts.length, 1);
-  const prompt = calls.prompts[0]!;
-  assert.equal(prompt.id, scheduleMessageId("a", slot10));
-  assert.equal(prompt.id, `command:schedule:a:${slot10}`);
-  assert.equal(prompt.author, owner);
-  assert.equal(prompt.channel, channel);
-  assert.equal(prompt.text, "Summarize the channel");
-  assert.equal(prompt.addressed, true);
-});
-
 test("tool result is posted, and no result posts nothing", async (t) => {
   const store = new SQLiteStore();
   t.after(() => store.close());

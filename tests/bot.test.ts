@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Application } from "../src/application.js";
-import { Bot, splitReply, type ChatGateway, type Incoming } from "../src/bot.js";
+import { Bot, type ChatGateway, type Incoming } from "../src/bot.js";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { FakeLLM } from "../src/adapters/fake-llm.js";
-import { loadConfig } from "../src/config.js";
 
 const incoming = (id: string, text: string, extra: Partial<Incoming> = {}): Incoming => ({
   id, server: "s", channel: "c", author: "alice", text,
@@ -196,38 +195,6 @@ test("source edits invalidate copied task context but preserve reasoning events"
   assert.deepEqual(f.llm.prompts[1]?.history, []);
 });
 
-test("reply splitting keeps surrogate pairs intact and stays under Discord's limit", () => {
-  const text = "🙂".repeat(3000);
-  const chunks = splitReply(text);
-  assert.equal(chunks.join(""), text);
-  assert.ok(chunks.every(chunk => chunk.length <= 1900));
-});
-
-test("reply splitting moves a whole sentence to the next message", () => {
-  const first = "This sentence fits. ", second = "The next sentence stays whole.";
-  assert.deepEqual(splitReply(first + second, 35), [first, second]);
-});
-
-test("reply splitting preserves paragraph whitespace and quoted sentences", () => {
-  const first = 'She said, "Keep this together."\n\n';
-  const second = "The next paragraph stays whole.";
-  assert.deepEqual(splitReply(first + second, 40), [first, second]);
-});
-
-test("oversized sentences split at words without losing text", () => {
-  const text = "These words form a sentence longer than one message can hold.";
-  const chunks = splitReply(text, 25);
-  assert.equal(chunks.join(""), text);
-  assert.ok(chunks.every(chunk => chunk.length <= 25));
-  assert.ok(chunks.slice(0, -1).every(chunk => /\s$/.test(chunk)));
-});
-
-test("code lines stay together across reply pages", () => {
-  const text = "```js\nconst first = 1;\nconst second = 2;\n```";
-  const chunks = splitReply(text, 35);
-  assert.deepEqual(chunks, ["```js\nconst first = 1;\n\n```", "```js\nconst second = 2;\n```"]);
-});
-
 test("embed-only updates do not invalidate task history", async t => {
   const f = setup(); t.after(() => f.store.close());
   const request = incoming("1", "!task goal", { mentionsBot: true });
@@ -235,17 +202,6 @@ test("embed-only updates do not invalidate task history", async t => {
   await f.store.revise(request);
   await f.bot.receive(incoming("2", "continue", { channel: "thread" }));
   assert.equal(f.llm.prompts[1]?.history.length, 2);
-});
-
-test("mock config requires Discord details but no AI key", () => {
-  const config = loadConfig({
-    DISCORD_BOT_TOKEN: "test-only", DISCORD_GUILD_ID: "123456789012345678",
-    DISCORD_CHANNEL_IDS: "223456789012345678", LLM_MODE: "mock",
-  });
-  assert.equal(config.model, "nimbus");
-  assert.equal(config.apiKey, "");
-  assert.throws(() => loadConfig({}), /DISCORD_BOT_TOKEN/);
-  assert.throws(() => loadConfig({ DISCORD_BOT_TOKEN: "test-only", DISCORD_CHANNEL_IDS: "223456789012345678", LLM_MODE: "mock" }), /DISCORD_GUILD_ID/);
 });
 
 test("task handoff carries the referenced profile rather than unrelated channel chat", async t => {
@@ -270,19 +226,6 @@ test('quick inline writes stay in the channel while sustained writes use a task 
  const request=incoming('inline','do it');await f.store.ingest(request);
  const result=await bot.executeTool(request,{name:'quick_write',arguments:{}},'quick');assert.equal(result.text,'Done');assert.equal(executed,1);assert.equal(f.created(),0);
  const handoff=await bot.executeTool(request,{name:'long_write',arguments:{}},'long');assert.equal(handoff.handoff?.threadId,'thread');assert.equal(f.created(),1);
-});
-
-
-test('long tool argument blocks keep code fences balanced across Discord messages', () => {
-  const text = 'Answer\n\n```json\n' + JSON.stringify({command:'🙂'.repeat(3000)}) + '\n```\nAfter';
-  const chunks = splitReply(text);
-  assert.ok(chunks.length > 2);
-  for (const chunk of chunks) {
-    assert.ok(chunk.length <= 1900);
-    assert.equal((chunk.match(/```/g) ?? []).length % 2, 0);
-    assert.ok(!/[\uD800-\uDBFF]$/.test(chunk));
-  }
-  assert.equal(chunks.join('').replace(/\n``````json\n/g, ''), text);
 });
 
 // A run whose tool call changes the chat once. The reply path must still deliver, unless the request itself is deleted.

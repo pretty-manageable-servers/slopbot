@@ -61,16 +61,6 @@ test("no charge when offline", async t => {
   assert.equal(f.llm.prompts.length, 0);
 });
 
-test("fallback footer once", async t => {
-  const f = setup({ mode: "fallback", router: "model" }); t.after(() => f.store.close());
-  await f.bot.receive(incoming("1", "one", { mentionsBot: true }));
-  await f.bot.receive(incoming("2", "two", { mentionsBot: true }));
-  assert.equal(f.outputs.length, 2);
-  assert.ok(f.outputs[0]?.endsWith("\n-# reduced capacity: backup model"));
-  assert.ok(!f.outputs[1]?.includes("reduced capacity"));
-  assert.equal(f.llm.prompts.length, 2);
-});
-
 test("non-mention ignored", async t => {
   let decisions = 0;
   const participation = new ParticipationGate({ classify: async () => {

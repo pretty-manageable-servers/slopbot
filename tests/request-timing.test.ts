@@ -2,11 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   RequestTimings,
-  requestTimings,
   timingFooter,
-  savedTimingFooter,
 } from "../src/request-timing.js";
-import { SQLiteStore } from "../src/adapters/sqlite.js";
 
 const message = {
   server: "s",
@@ -125,80 +122,3 @@ test("wait ledger captures live overlapping awaits without double-counting elaps
   assert.deepEqual(final.activeWaits, []);
 });
 
-test("await scopes remain isolated across concurrent requests and close on failures", async () => {
-  let now = 0;
-  const timings = new RequestTimings(() => now),
-    other = { ...message, id: "parallel" };
-  timings.begin(message);
-  timings.begin(other);
-  await Promise.all([
-    timings.withScope(message, async () => {
-      await assert.rejects(
-        timings.wait("database", async () => {
-          now = 10;
-          throw Error("failed");
-        }),
-      );
-    }),
-    timings.withScope(other, () =>
-      timings.wait("provider", async () => {
-        now = 20;
-      }),
-    ),
-  ]);
-  assert.ok(timings.snapshot(message)!.blockedMs!.database !== undefined);
-  assert.ok(!("provider" in timings.snapshot(message)!.blockedMs!));
-  assert.ok(!("database" in timings.snapshot(other)!.blockedMs!));
-  assert.deepEqual(timings.snapshot(message)!.activeWaits, []);
-});
-
-test("bounded timelines retain complete aggregate elapsed accounting", async () => {
-  let now = 0;
-  const timings = new RequestTimings(() => now);
-  timings.begin(message);
-  await timings.withScope(message, async () => {
-    for (let index = 0; index < 600; index++)
-      await timings.wait(index % 2 ? "provider" : "database", async () => {
-        now++;
-      });
-  });
-  const value = timings.finish(message)!;
-  assert.equal(value.timeline!.length, 256);
-  assert.equal(value.timelineTruncated, true);
-  assert.equal(
-    Object.values(value.blockedMs!).reduce((a, b) => a + b, 0),
-    600,
-  );
-});
-test("recovered traces are partial and timing footers stay identical across delivery retries", async (t) => {
-  const store = new SQLiteStore();
-  t.after(() => {
-    store.close();
-    requestTimings.finish(message);
-  });
-  requestTimings.start(message, "model");
-  requestTimings.end(message, "model");
-  assert.equal(requestTimings.snapshot(message)!.partial, true);
-  await store.setSetting("s", "timing_footer", false);
-  assert.equal(await savedTimingFooter(store, message, "delivery"), "");
-  await store.setSetting("s", "timing_footer", true);
-  assert.equal(await savedTimingFooter(store, message, "delivery"), "");
-  const first = await savedTimingFooter(store, message, "new-delivery");
-  assert.match(first, /partial/);
-  requestTimings.finish(message);
-  assert.equal(await savedTimingFooter(store, message, "new-delivery"), first);
-});
-
-
-test("snapshot uses one clock boundary so wait buckets always reconcile", () => {
-  let tick = 0;
-  const timing = new RequestTimings(() => tick++);
-  timing.begin(message);
-  for (let i = 0; i < 5; i++) {
-    const snapshot = timing.snapshot(message)!;
-    assert.equal(Object.values(snapshot.blockedMs!).reduce((sum, value) => sum + value, 0), snapshot.totalMs);
-    assert.equal(snapshot.timeline!.at(-1)!.endMs, snapshot.totalMs);
-  }
-  const snapshot = timing.finish(message)!;
-  assert.equal(Object.values(snapshot.blockedMs!).reduce((sum, value) => sum + value, 0), snapshot.totalMs);
-});

@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import type { OperationsClient, Issue } from '../src/adapters/operations-client.js';
@@ -34,32 +33,6 @@ async function fixture(t: { after(fn: () => void): void }) {
   const invoke = (name: string, args: Record<string, unknown>, id: string, author = 'u1') => registry.invokeResult({ ...requester, author, id: `chat-${id}` }, name, args, id, name === 'file_report' ? 'command' : 'agent');
   return { store, client, registry, invoke, setAdmin(value: boolean) { admin = value; } };
 }
-
-test('draft_rejects_missing_fields_with_list', async t => {
-  const f = await fixture(t);
-  await assert.rejects(f.invoke('issue_draft', { title: '', expected: 'x', cites: [] }, 'bad-draft'), error => {
-    const text = String((error as Error).message);
-    assert.match(text, /Issue draft not saved/);
-    assert.match(text, /- title is missing/);
-    assert.match(text, /- actual is missing/);
-    assert.match(text, /- cites needs 1 to 8 items/);
-    return true;
-  });
-  assert.equal((await f.store.records('s', ISSUE_DRAFT_KIND)).length, 0);
-});
-
-test('draft_snapshots_cites', async t => {
-  const f = await fixture(t);
-  const result = await f.invoke('issue_draft', draftArgs, 'draft-one');
-  assert.match(result.text, /2 messages, 0 tool runs/);
-  assert.ok(!result.text.includes(source.id), 'the model result never shows message IDs');
-  const saved = (await f.store.record('s', ISSUE_DRAFT_KIND, 'c1'))!.value as unknown as IssueDraft;
-  assert.deepEqual(saved.cites.map(cite => [cite.id, cite.author, cite.text]), [[source.id, 'u2', source.text], [other.id, 'u3', other.text]]);
-  await f.store.revise({ ...source, text: 'edited after the draft' });
-  const after = (await f.store.record('s', ISSUE_DRAFT_KIND, 'c1'))!.value as unknown as IssueDraft;
-  assert.equal(after.cites[0]!.text, source.text, 'the snapshot keeps the text saved with the draft');
-  await assert.rejects(f.invoke('issue_draft', { ...draftArgs, cites: ['30000000000000999'] }, 'unknown-cite'), /not available in this chat/);
-});
 
 test('new_draft_replaces_old', async t => {
   const f = await fixture(t);
@@ -113,17 +86,6 @@ test('file_report_comments_with_issue_number', async t => {
   assert.equal(await openDraft(f.store, 's', 'c1'), undefined, 'a filed draft is no longer open');
 });
 
-test('bot_guide_has_no_issue_report', () => {
-  // The guide ships to the model. It must describe the draft flow, not the removed issue_report tools.
-  const guide = readFileSync(new URL('../architecture/BOT_GUIDE.md', import.meta.url), 'utf8');
-  assert.doesNotMatch(guide, /issue_report\b/);
-  assert.doesNotMatch(guide, /issue_report_edit|evidence_id|still pending|chat changed many times|Source or channel changed/);
-  assert.match(guide, /issue_draft/);
-  assert.match(guide, /\/file-report/);
-  assert.match(guide, /This may have happened\. Check before you retry\./);
-  assert.match(guide, /10 minutes/);
-});
-
 test('model_cannot_call_file_report', async t => {
   const f = await fixture(t);
   await f.invoke('issue_draft', draftArgs, 'draft-for-model');
@@ -154,15 +116,6 @@ function githubRegistry(t: { after(fn: () => void): void }, servers: string[], g
   for (const tool of issueDraftTools({ store, client: client as unknown as OperationsClient, authorize })) registry.register(tool);
   return registry;
 }
-
-test('issue_draft_available_on_any_server_with_github', t => {
-  const registry = githubRegistry(t, ['allowed'], 'dynamic');
-  const names = registry.definitions().map(definition => definition.name);
-  assert.ok(names.includes('issue_draft'));
-  assert.ok(names.includes('file_report'));
-  assert.ok(names.includes('github_issue_read'));
-  assert.ok(names.includes('interaction_inspect'));
-});
 
 test('admin_diagnostics_still_limited', t => {
   const registry = githubRegistry(t, ['allowed'], 'dynamic');

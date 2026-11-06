@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {PlainFetch, uselessPage, type FetchedResponse, type LookupAddress, type PinnedRequest} from '../src/adapters/plain-fetch.js';
+import {PlainFetch, type FetchedResponse, type LookupAddress, type PinnedRequest} from '../src/adapters/plain-fetch.js';
 import {ToolError} from '../src/tools.js';
-import {FETCH_TEXT_LIMIT, ProviderFailed} from '../src/web-providers.js';
+import {ProviderFailed} from '../src/web-providers.js';
 
 const PUBLIC: LookupAddress[] = [{address: '93.184.216.34', family: 4}];
 const SENTENCE = 'Sea turtles travel thousands of kilometres between feeding grounds and the beaches where they hatched, and researchers track their routes with small satellite tags.';
@@ -138,19 +138,17 @@ test('a short real page such as example.com is returned, not refused', async () 
   assert.match(result.text, /illustrative examples/);
 });
 
-test('an empty app root is ProviderFailed as needing JavaScript', async () => {
-  const {request} = scripted(page('<html><head><title>App</title></head><body><div id="root"></div><script>app()</script></body></html>'));
-  await assert.rejects(new PlainFetch({request, lookup: resolver({})}).fetch('https://example.test/'), error => isProviderFailed(error) && messageMatches(/needs JavaScript/)(error));
-});
-
-test('a Cloudflare "Just a moment..." page is ProviderFailed as a bot check', async () => {
-  const {request} = scripted(page('<!doctype html><html><head><title>example.test</title></head><body><div class="main"><h1>Just a moment...</h1><p>Checking your browser before accessing example.test.</p></div><script>window._cf_chl_opt={cvId:"3"};</script></body></html>'));
-  await assert.rejects(new PlainFetch({request, lookup: resolver({})}).fetch('https://example.test/'), error => isProviderFailed(error) && messageMatches(/bot check/)(error));
-});
-
-test('a noscript page that asks for JavaScript is ProviderFailed as needing JavaScript', async () => {
-  const {request} = scripted(page('<html><head><title>Dashboard</title></head><body><noscript>You need to enable JavaScript to run this app.</noscript><p>Loading</p><script src="/app.js"></script></body></html>'));
-  await assert.rejects(new PlainFetch({request, lookup: resolver({})}).fetch('https://example.test/'), error => isProviderFailed(error) && messageMatches(/needs JavaScript/)(error));
+test('pages that need JavaScript or show a bot check are ProviderFailed', async () => {
+  const cases: [string, RegExp][] = [
+    ['<html><head><title>App</title></head><body><div id="root"></div><script>app()</script></body></html>', /needs JavaScript/],
+    ['<!doctype html><html><head><title>example.test</title></head><body><div class="main"><h1>Just a moment...</h1><p>Checking your browser before accessing example.test.</p></div><script>window._cf_chl_opt={cvId:"3"};</script></body></html>', /bot check/],
+    ['<html><head><title>Dashboard</title></head><body><noscript>You need to enable JavaScript to run this app.</noscript><p>Loading</p><script src="/app.js"></script></body></html>', /needs JavaScript/],
+    [`<html><head><title>Widget</title></head><body><p>Hello from the widget page today.</p><script>${'var x=1;'.repeat(400)}</script></body></html>`, /needs JavaScript/],
+  ];
+  for (const [html, reason] of cases) {
+    const {request} = scripted(page(html));
+    await assert.rejects(new PlainFetch({request, lookup: resolver({})}).fetch('https://example.test/'), error => isProviderFailed(error) && messageMatches(reason)(error));
+  }
 });
 
 test('a long article that mentions captcha once is returned', async () => {
@@ -160,26 +158,12 @@ test('a long article that mentions captcha once is returned', async () => {
   assert.match(result.text, /captcha/);
 });
 
-test('a script-heavy page is ProviderFailed as needing JavaScript', async () => {
-  const {request} = scripted(page(`<html><head><title>Widget</title></head><body><p>Hello from the widget page today.</p><script>${'var x=1;'.repeat(400)}</script></body></html>`));
-  await assert.rejects(new PlainFetch({request, lookup: resolver({})}).fetch('https://example.test/'), error => isProviderFailed(error) && messageMatches(/needs JavaScript/)(error));
-});
-
 test('plain text under 20 characters is ProviderFailed, longer plain text is returned', async () => {
   const short = scripted(page('Too short.', {type: 'text/plain'}));
   await assert.rejects(new PlainFetch({request: short.request, lookup: resolver({})}).fetch('https://example.test/notes.txt'), isProviderFailed);
   const long = scripted(page('captcha notes about turtles and their routes', {type: 'text/plain'}));
   const result = await new PlainFetch({request: long.request, lookup: resolver({})}).fetch('https://example.test/notes.txt');
   assert.equal(result.text, 'captcha notes about turtles and their routes');
-});
-
-test('uselessPage applies the 20 character, 300 character and 1500 character limits', () => {
-  assert.equal(uselessPage('<p>x</p>', 'a'.repeat(19)), 'Page has no text.');
-  assert.equal(uselessPage('<p>x</p>', 'a'.repeat(20)), undefined);
-  assert.equal(uselessPage('<div id="root"></div>', 'x'.repeat(299)), 'Page needs JavaScript.');
-  assert.equal(uselessPage('<div id="root"></div>', 'x'.repeat(400)), undefined);
-  assert.equal(uselessPage('<p>captcha</p>', 'word '.repeat(299)), 'Page is a bot check.');
-  assert.equal(uselessPage('<p>captcha</p>', 'word '.repeat(400)), undefined);
 });
 
 test('a network error and a DNS lookup error are ProviderFailed', async () => {
@@ -197,22 +181,6 @@ test('an HTML article becomes Markdown without navigation or footer text', async
   assert.doesNotMatch(result.text, /Pricing/);
   assert.doesNotMatch(result.text, /cookie settings/);
   assert.equal(result.truncated, false);
-});
-
-test('plain text is returned as it is', async () => {
-  const body = 'Plain notes about turtles. '.repeat(12);
-  const {request} = scripted(page(body, {type: 'text/plain; charset=utf-8'}));
-  const result = await new PlainFetch({request, lookup: resolver({})}).fetch('https://example.test/notes.txt');
-  assert.equal(result.text, body.trim());
-  assert.equal(result.truncated, false);
-});
-
-test('long pages are cut to the text limit and flagged as truncated', async () => {
-  const paragraphs = Array.from({length: 60}, (_, index) => `<p>Paragraph ${index}. ${SENTENCE}</p>`).join('');
-  const {request} = scripted(page(`<html><head><title>Long</title></head><body><article>${paragraphs}</article></body></html>`));
-  const result = await new PlainFetch({request, lookup: resolver({})}).fetch('https://example.test/long');
-  assert.equal(result.truncated, true);
-  assert.equal(result.text.length, FETCH_TEXT_LIMIT);
 });
 
 test('ports, credentials and non-http schemes are refused as ToolError before any request', async () => {

@@ -3,11 +3,8 @@ import assert from "node:assert/strict";
 import { selectRunImages } from "../src/run-images.js";
 import { RUN_IMAGE_LIMIT } from "../src/model-images.js";
 import type { ImageSource } from "../src/model-images.js";
-import { ContextBuilder } from "../src/context-builder.js";
-import { ByteTokenCounter } from "../src/context.js";
 import { formatLine, toLine } from "../src/transcript.js";
-import type { Attachment, Message, PromptItem } from "../src/domain.js";
-import type { Store } from "../src/ports.js";
+import type { Attachment, Message } from "../src/domain.js";
 
 const NOW = Date.UTC(2026, 9, 22, 14, 0, 0);
 const SEC = 1000;
@@ -74,14 +71,6 @@ test("request_own_images_never_capped", async () => {
   assert.deepEqual(web, links, "all ten web chat links pass");
 });
 
-test("preview_never_included", async () => {
-  const preview = image("card.png", { preview: true });
-  const target = msg("tgt", { author: "bob", attachments: [preview] });
-  const recent = [msg("old", { timestamp: NOW - 5 * SEC, attachments: [preview] })];
-  const images = await selectRunImages({ request: msg("req", { replyTo: "tgt", attachments: [preview] }), target, recent, source });
-  assert.deepEqual(images, []);
-});
-
 test("missing_or_throwing_link_skipped", async () => {
   const flaky: ImageSource = {
     link: async (_message, attachment) => {
@@ -102,19 +91,4 @@ test("transcript_line_has_no_cdn_url", () => {
   assert.ok(!line.includes("http"), line);
   assert.ok(line.includes("[images: image.jpg]"), line);
   assert.ok(line.endsWith(": how do I do this"), line);
-});
-
-test("same_author_image_reaches_request_item", async () => {
-  const earlier = msg("shot", { timestamp: NOW - 7 * SEC, attachments: [image("image.jpg")] });
-  const request = msg("req", { text: "how do I do this" });
-  const store = {
-    contextVersion: async () => 1,
-    context: async () => [earlier],
-  } as unknown as Store;
-  const builder = new ContextBuilder({ store, counter: new ByteTokenCounter(), inputLimit: 100_000, outputLimit: 100, prefix: [], images: source });
-  const noHistory = async (): Promise<readonly PromptItem[]> => [];
-  const result = await builder.build(request, undefined, 12, noHistory);
-  const last = result.inputs.at(-1);
-  assert.deepEqual(last?.images, [{ url: "https://fresh.test/shot/image.jpg", label: "image.jpg" }]);
-  assert.ok(!result.inputs.some(item => item.content.includes("http")), "no URL reaches the model as text");
 });

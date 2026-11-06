@@ -16,6 +16,7 @@ test("closeWeb finishes while an event stream is open", async () => {
   const [res] = await once(req, "response");
   res.on("error", () => undefined);
   await once(res, "data");
-  const closed = Promise.race([closeWeb(server).then(() => "closed"), new Promise(resolve => setTimeout(() => resolve("hung"), 3000))]);
-  assert.equal(await closed, "closed");
+  let timer: NodeJS.Timeout | undefined;
+  const hung = new Promise(resolve => { timer = setTimeout(() => resolve("hung"), 3000); });
+  try { assert.equal(await Promise.race([closeWeb(server).then(() => "closed"), hung]), "closed"); } finally { clearTimeout(timer); }
 });

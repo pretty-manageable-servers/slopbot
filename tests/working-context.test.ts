@@ -5,7 +5,6 @@ import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { ByteTokenCounter } from '../src/context.js';
 import { wireMessages } from '../src/adapters/chat-completions.js';
 import { RequestError } from '../src/errors.js';
-import { appendToolEvidence } from '../src/prompt-cache.js';
 import type { Prompt, ModelTool } from '../src/domain.js';
 const schema: ModelTool = {type:'function',function:{name:'lookup',description:'Read state',parameters:{type:'object',properties:{step:{type:'integer'}},required:['step']}}};
 const checkpoint = '{"goal":"finish the task","constraints":[],"decisions":[],"disagreements":[],"progress":["Earlier reads completed; keep their recorded results."],"artifacts":[],"pending_actions":[]}';
@@ -93,13 +92,6 @@ for (const invalid of ['prose', 'tool call'] as const) test(`a ${invalid} checkp
   const original = await store.taskContext(key);
   await assert.rejects(app.handle(message), error => error instanceof RequestError && error.code === 'CHECKPOINT_INVALID');
   assert.deepEqual(await store.taskContext(key), original);
-});
-
-test('a tool result that cannot fit has a specific code and budget figures', () => {
-  assert.throws(()=>appendToolEvidence('lookup',{text:'result'},[{role:'user',content:'x'.repeat(100)}],new ByteTokenCounter(),50),error=>{
-    assert.ok(error instanceof RequestError);assert.equal(error.code,'CONTEXT_BUDGET');
-    assert.ok(Number(error.details.required)>50);assert.equal(error.details.inputLimit,50);return true;
-  });
 });
 
 

@@ -45,19 +45,14 @@ test("user id becomes mention", () => {
   assert.equal(linkRefs("Thanks 223456789012345678.", refs, place, users), "Thanks 223456789012345678.");
 });
 
-test("unknown ref unchanged", () => {
-  assert.equal(linkRefs("See m9 and s4.", refs, place, users), "See m9 and s4.");
-});
-
 test("code block unchanged", () => {
   const text = "Code:\n```\nm3 and 123456789012345678\n```\nInline `m3` too, but m3 is a ref.";
   assert.equal(linkRefs(text, refs, place, users), `Code:\n\`\`\`\nm3 and 123456789012345678\n\`\`\`\nInline \`m3\` too, but [↗](${linkOf("c", "100000000000000001")}) is a ref.`);
 });
 
-test("word with m3 unchanged", () => {
-  assert.equal(linkRefs("gm3x and m3u8 are words.", refs, place, users), "gm3x and m3u8 are words.");
+test("unknown refs and look-alike words stay unchanged", () => {
+  for (const text of ["See m9 and s4.", "gm3x and m3u8 are words."]) assert.equal(linkRefs(text, refs, place, users), text);
 });
-
 test("task s ref links to source channel", async () => {
   const values = new Map<string, unknown>();
   const settings: SettingsPort = { setting: (_server, key) => values.get(key), setSetting: (_server, key, value) => { values.set(key, value); } };

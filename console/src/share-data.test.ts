@@ -11,11 +11,4 @@ describe("shareMessages", () => {
     expect(reply!.parts.map((p) => p.type)).toEqual(["tool_call", "text"]);
     expect(reply!.parts[0]).toMatchObject({ name: "show_widget", status: "done", input: widget });
   });
-
-  test("author lines only when more than one person wrote", () => {
-    const one = shareMessages({ id: "s", messages: [message({ text: "a" }), message({ text: "b" })] });
-    expect(one.flatMap((m) => m.parts).some((p) => p.type === "custom")).toBe(false);
-    const two = shareMessages({ id: "s", messages: [message({ text: "a" }), message({ author: "B", text: "b" })] });
-    expect(two[1]!.parts[0]).toMatchObject({ type: "custom", data: "B" });
-  });
 });

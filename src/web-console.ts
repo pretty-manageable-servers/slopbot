@@ -73,8 +73,8 @@ export interface ConsoleBackend {
   /** Login sessions. The database is the source of truth, so logins survive restarts. */
   sessions: WebSessionStore;
 }
-/** siteDir is the landing page export. It defaults to site/out. nextDir is the Vite build of the console (console/dist). llmStatus gives the signed-in user's LLM mode; without it the mode is normal. settings holds the non-ZDR switches. */
-export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string; siteDir?: string; nextDir?: string; llmStatus?: (user: string) => { mode: LlmMode; canChat: boolean }; settings?: ConsoleSettings }
+/** siteDir is the landing page export. It defaults to site/out. nextDir is the Vite build of the console (console/dist). llmStatus gives the signed-in user's LLM mode; without it the mode is normal. settings holds the non-ZDR switches. oauthBase replaces https://discord.com for local development only (see scripts/development/dev-oauth.mjs). */
+export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string; siteDir?: string; nextDir?: string; llmStatus?: (user: string) => { mode: LlmMode; canChat: boolean }; settings?: ConsoleSettings; oauthBase?: string }
 /** Reads and writes of the non-ZDR switches. Users use the global scope; each server uses its own scope. */
 export interface ConsoleSettings { setting(server: string, key: string): unknown; setSetting(server: string, key: string, value: Json): void | Promise<void> }
 export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOptions | undefined {
@@ -82,10 +82,13 @@ export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOpt
   const origin = new URL(env.WEB_ORIGIN || 'http://localhost:3000');
   if (origin.pathname !== '/' || origin.search || origin.hash || origin.username || origin.password || !['http:', 'https:'].includes(origin.protocol)) throw new Error('WEB_ORIGIN must be an HTTP(S) origin without a path, query, or fragment');
   if (origin.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(origin.hostname)) throw new Error('Public WEB_ORIGIN must use HTTPS');
+  const oauthBase = env.WEB_OAUTH_BASE ? new URL(env.WEB_OAUTH_BASE) : undefined;
+  if (oauthBase && (env.NODE_ENV === 'production' || !['localhost', '127.0.0.1'].includes(origin.hostname))) throw new Error('WEB_OAUTH_BASE is for local development only');
+  if (oauthBase && (!['http:', 'https:'].includes(oauthBase.protocol) || !['localhost', '127.0.0.1'].includes(oauthBase.hostname))) throw new Error('WEB_OAUTH_BASE must be an HTTP(S) URL on localhost or 127.0.0.1');
   const port = Number(env.WEB_PORT || 3000);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid WEB_PORT');
   if (!env.DISCORD_CLIENT_ID || !env.DISCORD_CLIENT_SECRET) throw new Error('Set DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET for web login');
-  return { origin: origin.origin, port, host: env.WEB_HOST || '127.0.0.1', clientId: env.DISCORD_CLIENT_ID, clientSecret: env.DISCORD_CLIENT_SECRET };
+  return { origin: origin.origin, port, host: env.WEB_HOST || '127.0.0.1', clientId: env.DISCORD_CLIENT_ID, clientSecret: env.DISCORD_CLIENT_SECRET, ...(oauthBase ? { oauthBase: oauthBase.origin } : {}) };
 }
 /** Build version for the console footer. The sha is null unless the image set a valid full git sha. */
 export function consoleVersion(env: NodeJS.ProcessEnv = process.env) {
@@ -208,6 +211,7 @@ async function teamAccess(admin: ConsoleAdmin, user: string, editor: boolean): P
 }
 export function createConsole(options: ConsoleOptions, backend: ConsoleBackend): Server {
   const sessions = backend.sessions;
+  const discord = options.oauthBase ?? 'https://discord.com';
   const transcribeState = transcribeLimits();
   const states = new Map<string, number>();
   const cookie = (name: string, value: string, age: number) => `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${options.origin.startsWith('https:') ? '; Secure' : ''}`;
@@ -248,7 +252,7 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
       if (req.method === 'GET' && routePath === '/auth/login') {
         if (states.size >= 1000) return send(res, 429, { error: 'Try again later.' });
         const state = token(); states.set(state, now + 600_000);
-        const auth = new URL('https://discord.com/oauth2/authorize');
+        const auth = new URL(`${discord}/oauth2/authorize`);
         auth.search = new URLSearchParams({ client_id: options.clientId, redirect_uri: `${options.origin}/auth/callback`, response_type: 'code', scope: 'identify', state }).toString();
         res.writeHead(302, { Location: auth.href, 'Set-Cookie': cookie('slopbot_state', state, 600) }); res.end(); return;
       }
@@ -258,10 +262,10 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         states.delete(state);
         const code = url.searchParams.get('code');
         if (!code) return send(res, 400, { error: 'Discord login was cancelled.' });
-        const response = await fetch('https://discord.com/api/oauth2/token', { method: 'POST', body: new URLSearchParams({ client_id: options.clientId, client_secret: options.clientSecret, grant_type: 'authorization_code', code, redirect_uri: `${options.origin}/auth/callback` }), signal: AbortSignal.timeout(15000) });
+        const response = await fetch(`${discord}/api/oauth2/token`, { method: 'POST', body: new URLSearchParams({ client_id: options.clientId, client_secret: options.clientSecret, grant_type: 'authorization_code', code, redirect_uri: `${options.origin}/auth/callback` }), signal: AbortSignal.timeout(15000) });
         if (!response.ok) throw new Error('OAuth exchange failed');
         const data = await response.json() as { access_token: string };
-        const identity = await fetch('https://discord.com/api/users/@me', { headers: { Authorization: `Bearer ${data.access_token}` }, signal: AbortSignal.timeout(15000) });
+        const identity = await fetch(`${discord}/api/users/@me`, { headers: { Authorization: `Bearer ${data.access_token}` }, signal: AbortSignal.timeout(15000) });
         if (!identity.ok) throw new Error('Identity lookup failed');
         const user = await identity.json() as { id: string };
         if (!/^\d{17,20}$/.test(user.id)) throw new Error('Invalid identity');

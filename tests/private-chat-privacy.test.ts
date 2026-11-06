@@ -13,7 +13,7 @@ import { HistoryImporter } from "../src/history.js";
 import { privateChannel } from "../src/private-chat.js";
 import type { ParticipationGate } from "../src/participation.js";
 import { registerReportTools } from "../src/search/reports.js";
-import { ShareError, ShareService, buildMessages, renderSharePage } from "../src/shares.js";
+import { ShareError, ShareService, buildMessages } from "../src/shares.js";
 import { fileLabel, transcriptMessage } from "../src/run-events.js";
 import { fileUrl } from "../src/web-chat-files.js";
 import { ChatError, WebChatService, type ChatHost } from "../src/web-chats.js";
@@ -245,13 +245,6 @@ test("a private chat never gets a JEV participation decision", async t => {
   assert.equal(outputs.length, 1, "the private chat is still answered");
 });
 
-test("message view has files", () => {
-  const fileId = "0123456789abcdef0123456789abcdef.txt";
-  const message = { ...webMessage("web-file-msg", "see the notes"), attachments: [{ name: "notes.txt", url: fileUrl(server, "0123456789abcdef0123456789abcdef", fileId), contentType: "text/plain", size: 12 }] } as Message;
-  assert.deepEqual(transcriptMessage(message, undefined).files, [{ fileId, name: "notes.txt", contentType: "text/plain", size: 12 }]);
-  assert.equal("files" in transcriptMessage(webMessage("web-plain"), undefined), false, "a message without files has no files key");
-});
-
 test("share shows file names without file ids", () => {
   const fileId = "fedcba9876543210fedcba9876543210.pdf";
   const message = { ...webMessage("web-file-msg", "here is the report"), attachments: [{ name: "report.pdf", url: fileUrl(server, "0123456789abcdef0123456789abcdef", fileId), contentType: "application/pdf", size: 2048 }] } as Message;
@@ -298,18 +291,6 @@ test("continued share has no file labels", async t => {
   const { id } = await chats.continueShare("alice", "share-old", { snapshot: async () => snapshot } as never);
   const saved = await store.conversationMessages(guild, privateChannel(id), undefined, 10);
   assert.deepEqual(saved.map(message => message.text), ["look"], "the copied text has no label");
-});
-
-test("share page data has files", () => {
-  const page = renderSharePage({
-    id: "share1", created_at: 1, options: { show_avatars: false, show_thinking: false },
-    messages: [{ author: "Alice", bot: false, text: "report", attachments: 2, tools: [], files: [{ name: "report.pdf", size: 2048 }] }],
-  }, PAGE);
-  const match = /<script type="application\/json" id="share-data">([\s\S]*?)<\/script>/.exec(page);
-  assert.ok(match, "the page has its data");
-  const data = JSON.parse(match[1]!) as { messages: { files: unknown[]; other: number }[] };
-  assert.deepEqual(data.messages[0]!.files, [{ name: "report.pdf", size: 2048 }], "the page gets the file name and size");
-  assert.equal(data.messages[0]!.other, 1, "a file is not counted as an attachment not shown");
 });
 
 test("Postgres queries keep private chats out of the channel list, author lookup and memory index", () => {

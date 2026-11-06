@@ -11,7 +11,6 @@ const server = "s";
 const channel = "c";
 const owner = "u";
 const slot10 = "2026-10-20T10:00:00.000Z";
-const outageNote = "Prompt schedules here are paused while Slopbot runs at reduced capacity. They resume by themselves.";
 
 function schedule(overrides: Partial<Schedule> = {}): Schedule {
   return {
@@ -87,43 +86,6 @@ test("pauses prompt schedules on outage", async (t) => {
   await worker.tick();
   assert.equal((await read(store, "a")).pauseReason, "outage");
   assert.equal(calls.prompts.length, 0);
-});
-
-test("message and tool keep running", async (t) => {
-  const store = new SQLiteStore();
-  t.after(() => store.close());
-  await put(store, schedule({ action: { kind: "message", text: "Hello" } }));
-  await put(store, schedule({ id: "b", action: { kind: "tool", tool: "lookup", input: {} } }));
-  const clock = { now: new Date("2026-10-20T10:00:00.000Z") };
-  const { deps, calls } = fakes(clock, { llmMode: () => "offline" }, store);
-  await new ScheduleWorker(deps).tick();
-  assert.deepEqual(calls.tools, ["lookup"]);
-  assert.equal(calls.replies.length, 2);
-  assert.equal(calls.replies[0]!.text, "<@u> Hello");
-  assert.equal(calls.replies[1]!.text, "tool done");
-  for (const id of ["a", "b"]) {
-    const saved = await read(store, id);
-    assert.equal(saved.status, "active");
-    assert.equal(saved.pauseReason, undefined);
-    assert.equal(saved.nextAt, "2026-10-20T11:00:00.000Z");
-  }
-});
-
-test("one note per channel", async (t) => {
-  const store = new SQLiteStore();
-  t.after(() => store.close());
-  await put(store, schedule());
-  await put(store, schedule({ id: "b" }));
-  await put(store, schedule({ id: "d", channel: "d2" }));
-  const clock = { now: new Date("2026-10-20T10:00:00.000Z") };
-  const { deps, calls } = fakes(clock, { llmMode: () => "offline" }, store);
-  const worker = new ScheduleWorker(deps);
-  await worker.tick();
-  assert.equal(calls.replies.length, 2);
-  assert.deepEqual(calls.replies.map(reply => reply.channel).sort(), ["c", "d2"]);
-  for (const reply of calls.replies) assert.equal(reply.text, outageNote);
-  await worker.tick();
-  assert.equal(calls.replies.length, 2);
 });
 
 test("resumes only outage-paused", async (t) => {

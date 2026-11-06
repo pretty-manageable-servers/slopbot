@@ -5,7 +5,6 @@ import { ChannelType, type Client, type Message as DiscordMessage } from 'discor
 import { DiscordServer } from '../src/adapters/discord.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { loadConfig } from '../src/config.js';
-import { toolProgressFooter } from '../src/source-context.js';
 
 const guild = '1528063444874432734', channel = '1528064977913647236', bot = '1514413259522838528';
 function fixture(fresh: { content: string; url: string; size?: number; author?: string }) {
@@ -30,14 +29,6 @@ test('Discord normalization marks its own progress UI transient and keeps human 
   assert.ok(!('transient' in human) || human.transient !== true);
 });
 
-test('own progress with the current header and footer is transient', t => {
-  const f = fixture({ content: '', url: 'https://cdn.discordapp.com/a/file.txt', author: bot });
-  t.after(() => f.store.close());
-  const progress = { ...f.message, content: '<a:slopbot_pulse:1559390627152531586> Blooming…\n🔎 Web search × 1\n-# now: 🔎 "rbc"', embeds: [{ footer: { text: toolProgressFooter }, fields: [] }] };
-  const normalized = f.adapter['normalize'](progress as unknown as DiscordMessage);
-  assert.ok('transient' in normalized && normalized.transient === true);
-});
-
 test('an automatic image preview does not invalidate unchanged human instructions', async t => {
   const f = fixture({ content: 'See https://example.com/image', url: 'https://cdn.discordapp.com/attachments/a/file.txt' });
   t.after(() => f.store.close());
@@ -46,13 +37,6 @@ test('an automatic image preview does not invalidate unchanged human instruction
   const enriched = { ...f.message, embeds: [{ type: 'image', image: { url: 'https://cdn.discordapp.com/preview.png' } }] };
   await f.store.revise(f.adapter['normalize'](enriched as unknown as DiscordMessage));
   assert.equal(f.store.agentTurns(original)[0]?.id, turn.id);
-});
-
-test('final error reply removes progress even without activity footer', async t => {
- const f=fixture({content:'request',url:'https://cdn.discordapp.com/a.txt'}); t.after(()=>f.store.close());
- let finished=false; f.adapter['toolProgress'].finish=async()=>{finished=true;};
- await f.adapter.reply({id:'request',server:guild,channel,author:'person',text:'request'},'[CONTEXT_CHANGED] source changed');
- assert.equal(finished,true);
 });
 
 

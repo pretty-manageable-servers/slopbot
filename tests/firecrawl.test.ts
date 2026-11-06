@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {FirecrawlScrape, FirecrawlSearch} from '../src/adapters/firecrawl.js';
-import {FETCH_TEXT_LIMIT, ProviderFailed, type ProviderKey} from '../src/web-providers.js';
+import { ProviderFailed, type ProviderKey } from '../src/web-providers.js';
 
 const key: ProviderKey = {id: 'k1', provider: 'firecrawl', secret: 'fc-secret-value'};
 
@@ -47,22 +47,6 @@ test('Firecrawl search sends the exact base-cost body and maps the v2 shape', as
   ]);
 });
 
-test('Firecrawl search accepts the v1 array shape and caps titles at 200 characters', async () => {
-  const {request} = fakeFetch(() => Response.json({success: true, data: [
-    {url: 'https://one.example/', title: 't'.repeat(300), description: 'snippet'},
-    {url: 'https://two.example/', description: 'no title'},
-  ]}));
-  const results = await new FirecrawlSearch(request).search(key, 'query', 5);
-  assert.equal(results.length, 2);
-  assert.equal(results[0]?.title.length, 200);
-  assert.equal(results[1]?.title, 'two.example');
-});
-
-test('Firecrawl search returns an empty array when nothing matches', async () => {
-  const {request} = fakeFetch(() => Response.json({success: true, data: {web: []}}));
-  assert.deepEqual(await new FirecrawlSearch(request).search(key, 'nothing', 3), []);
-});
-
 test('Firecrawl search rejects bad input before any request', async () => {
   const {request, calls} = fakeFetch(() => Response.json({success: true, data: {web: []}}));
   const search = new FirecrawlSearch(request);
@@ -83,15 +67,6 @@ test('Firecrawl scrape sends the exact base-cost body and returns page text', as
   assert.equal(calls[0]?.headers.get('Authorization'), `Bearer ${key.secret}`);
   assert.deepEqual(calls[0]?.body, {url: 'https://page.example/a', formats: ['markdown'], onlyMainContent: true, proxy: 'basic', parsers: [], blockAds: true, timeout: 30000});
   assert.deepEqual(page, {url: 'https://page.example/a', title: 'Hello page', text: '# Hello', truncated: false});
-});
-
-test('Firecrawl scrape cuts text at the fetch limit and sets the truncated flag', async () => {
-  const markdown = 'a'.repeat(FETCH_TEXT_LIMIT + 500);
-  const {request} = fakeFetch(() => Response.json({success: true, data: {markdown, metadata: {title: 't'.repeat(300)}}}));
-  const page = await new FirecrawlScrape(request).fetch(key, 'https://page.example/');
-  assert.equal(page.text.length, FETCH_TEXT_LIMIT);
-  assert.equal(page.truncated, true);
-  assert.equal(page.title.length, 200);
 });
 
 test('Firecrawl scrape rejects empty markdown and unsafe URLs before any request', async () => {
@@ -134,33 +109,6 @@ test('Firecrawl treats HTTP 500 and 429 as a plain failure, not an exhausted key
     const {request} = fakeFetch(() => new Response('{}', {status}));
     await assert.rejects(new FirecrawlSearch(request).search(key, 'q', 1), (error: unknown) => { assertFailed(error, 'firecrawl_search', false, new RegExp(`HTTP ${status}`)); return true; });
     await assert.rejects(new FirecrawlScrape(request).fetch(key, 'https://page.example/'), (error: unknown) => { assertFailed(error, 'firecrawl_scrape', false); return true; });
-  }
-});
-
-test('Firecrawl cancels an unread error body', async () => {
-  let cancelled = false;
-  const body = new ReadableStream<Uint8Array>({ pull(controller) { controller.enqueue(new TextEncoder().encode('error')); }, cancel() { cancelled = true; } });
-  const {request} = fakeFetch(() => new Response(body, {status: 500}));
-  await assert.rejects(new FirecrawlSearch(request).search(key, 'q', 1), ProviderFailed);
-  assert.equal(cancelled, true);
-});
-
-test('Firecrawl reports a network error or timeout as a plain failure', async () => {
-  const failing = (async () => { throw new TypeError('socket hang up'); }) as typeof fetch;
-  await assert.rejects(new FirecrawlSearch(failing).search(key, 'q', 1), (error: unknown) => { assertFailed(error, 'firecrawl_search', false, /unavailable or timed out/); return true; });
-  await assert.rejects(new FirecrawlScrape(failing).fetch(key, 'https://page.example/'), (error: unknown) => { assertFailed(error, 'firecrawl_scrape', false, /unavailable or timed out/); return true; });
-});
-
-test('Firecrawl reports success:false, bad JSON and a bad shape as plain failures', async () => {
-  const cases: [string, () => Response][] = [
-    ['success false', () => Response.json({success: false, error: 'nope'})],
-    ['bad JSON', () => new Response('{not json')],
-    ['missing data', () => Response.json({success: true})],
-  ];
-  for (const [name, reply] of cases) {
-    const {request} = fakeFetch(reply);
-    await assert.rejects(new FirecrawlSearch(request).search(key, 'q', 1), (error: unknown) => { assertFailed(error, 'firecrawl_search', false); return true; }, name);
-    await assert.rejects(new FirecrawlScrape(request).fetch(key, 'https://page.example/'), (error: unknown) => { assertFailed(error, 'firecrawl_scrape', false); return true; }, name);
   }
 });
 

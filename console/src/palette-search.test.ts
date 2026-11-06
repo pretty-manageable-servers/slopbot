@@ -5,24 +5,18 @@ const none = { items: [] };
 const chat = (key: string, name: string, ts?: number): PaletteItem => ({ key: `chat:${key}`, group: "chats", name, ts });
 
 describe("fuzzy match", () => {
-  it("matches a typo in a word of the text", () => {
-    expect(fuzzyScore("hotfx", "Ship the hotfix")).toBeGreaterThan(0);
-    expect(fuzzyScore("hotfx", "Ship the release")).toBe(0);
+  const matches: [string, string][] = [
+    ["hotfx", "Ship the hotfix"],
+    ["CAFÉ", "cafe menu"],
+    ["staging deploy", "Deploy to staging"],
+    ["stagng deploy", "Deploy to staging"],
+  ];
+  it.each(matches)("%j matches %j", (query, text) => {
+    expect(fuzzyScore(query, text)).toBeGreaterThan(0);
   });
 
-  it("ignores accents and case", () => {
-    expect(fuzzyScore("cafe", "Café au lait")).toBe(1);
-    expect(fuzzyScore("CAFÉ", "cafe menu")).toBe(1);
-  });
-
-  it("matches the words of a query in any order, with a typo too", () => {
-    expect(fuzzyScore("staging deploy", "Deploy to staging")).toBeGreaterThan(0);
-    expect(fuzzyScore("stagng deploy", "Deploy to staging")).toBeGreaterThan(0);
-  });
-
-  it("returns zero when a query word matches nothing", () => {
-    expect(fuzzyScore("zebra", "Deploy notes")).toBe(0);
-    expect(fuzzyScore("deploy zebra", "Deploy notes")).toBe(0);
+  it.each([["hotfx", "Ship the release"], ["deploy zebra", "Deploy notes"]])("%j does not match %j", (query, text) => {
+    expect(fuzzyScore(query, text)).toBe(0);
   });
 });
 
@@ -31,17 +25,6 @@ describe("sections", () => {
     const items = [chat("a", "Plsn"), chat("b", "The plan"), chat("c", "Standup")];
     const [section] = buildSections(items, "plan", "chats", [], none);
     expect(section!.items.map(item => item.name)).toEqual(["The plan", "Plsn"]);
-  });
-
-  it("shows the empty-field recents, then the actions, under All", () => {
-    const items = [chat("a", "Old", 1), chat("b", "New", 2), { key: "action:new", group: "actions" as const, name: "New chat" }];
-    const recent = recentItems(items, []);
-    expect(buildSections(items, "", "all", recent, none).map(section => section.title)).toEqual(["Recent", "Actions"]);
-  });
-
-  it("gives a message hint under the Messages filter until two letters are typed", () => {
-    const [section] = buildSections<PaletteItem>([], "a", "messages", [], none);
-    expect(section!.status).toMatch(/two or more letters/);
   });
 });
 

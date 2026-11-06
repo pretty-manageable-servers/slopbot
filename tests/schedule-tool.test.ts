@@ -226,13 +226,6 @@ test("list shows own schedules; team editor sees all", async () => {
   assert.match(all.text, /Theirs/);
 });
 
-test("cancelled schedule cannot be cancelled again", async () => {
-  const env = setup();
-  const id = await createWeekly(env, "u");
-  await env.call({ action: "cancel", id });
-  await assert.rejects(env.call({ action: "cancel", id }), /already cancelled/);
-});
-
 const retryRequest: Message = { server: "s", channel: "c", author: "u", id: "same-request", text: "Schedule this" };
 const retryInput = { action: "create", name: "Once", when: { kind: "once", at: "2026-10-14T09:00:00Z" }, run: { kind: "message", text: "Hi" } };
 

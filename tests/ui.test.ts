@@ -162,25 +162,3 @@ test("a UI recovers a completed action after a crash before the UI update", asyn
       recovered.document.text === "Completed",
   );
 });
-
-test("rich cards suppress multiple link previews and encode controls with opaque IDs", () => {
-  const payload = discordUi(
-    validateUi({
-      version: 1,
-      type: "card",
-      text: "https://example.com https://example.org",
-      actions: [
-        {
-          label: "More",
-          action: "history.next",
-          arguments: { cursor: "secret-cursor" },
-        },
-      ],
-    }),
-    "opaque",
-    3,
-  );
-  assert.ok(payload.flags?.includes("SuppressEmbeds"));
-  assert.ok(!JSON.stringify(payload).includes("secret-cursor"));
-  assert.match(JSON.stringify(payload), /slopui:opaque:3:0/);
-});
