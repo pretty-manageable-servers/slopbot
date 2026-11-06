@@ -14,6 +14,7 @@ data/
 .deployment-build/
 
 .env.development
+.env.web
 
 site/node_modules/
 site/out/

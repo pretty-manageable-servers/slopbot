@@ -10,14 +10,15 @@ import { consoleOptions, createConsole } from '../src/clients/web/web-console.js
 const ALICE = '100000000000000005', OUTSIDER = '100000000000000009';
 const script = fileURLToPath(new URL('../../scripts/development/dev-oauth.mjs', import.meta.url));
 const webEnv = { WEB_ENABLED: 'true', DISCORD_CLIENT_ID: 'id', DISCORD_CLIENT_SECRET: 'secret' };
+const localWorld = fileURLToPath(new URL('../../dev/local-world.json', import.meta.url));
 
 /** Starts scripts/development/dev-oauth.mjs on a free port and returns its base URL once it is listening. */
-async function startDevOauth(t: TestContext) {
+async function startDevOauth(t: TestContext, extra: Record<string, string> = {}) {
   const probe = createServer().listen(0, '127.0.0.1');
   await once(probe, 'listening');
   const { port } = probe.address() as AddressInfo;
   await new Promise(resolve => probe.close(resolve));
-  const child = spawn(process.execPath, [script], { env: { ...process.env, DEV_OAUTH_PORT: String(port), DEV_OAUTH_USER: '', DEV_OAUTH_AUTO: '' }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const child = spawn(process.execPath, [script], { env: { ...process.env, DEV_OAUTH_PORT: String(port), DEV_OAUTH_USER: '', DEV_OAUTH_AUTO: '', LOCAL_WORLD: '', ...extra }, stdio: ['ignore', 'pipe', 'inherit'] });
   t.after(() => { child.kill('SIGTERM'); });
   await new Promise<void>((resolve, reject) => {
     child.stdout!.once('data', () => resolve());
@@ -58,6 +59,17 @@ test('dev OAuth sign-in ends with a session for the chosen user', async t => {
   const session = done.headers.getSetCookie()[0]!.split(';')[0]!;
   const status = await fetch(`${base}/api/status`, { headers: { Cookie: session } });
   assert.deepEqual(await status.json(), { mode: 'fallback', canChat: true });
+});
+
+test('dev OAuth page lists the local world users by name and id', async t => {
+  const oauthBase = await startDevOauth(t, { LOCAL_WORLD: localWorld });
+  const page = await fetch(`${oauthBase}/oauth2/authorize?redirect_uri=${encodeURIComponent('http://localhost:3000/auth/callback')}&state=abc`);
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  for (const [name, id] of [['Dev Owner', '200000000000000001'], ['Dev Member', '200000000000000002'], ['Outsider', '200000000000000003']] as const) {
+    assert.ok(html.includes(name), name);
+    assert.ok(html.includes(id), id);
+  }
 });
 
 test('dev OAuth sign-in still needs the bot to find the user in a server', async t => {

@@ -1,13 +1,16 @@
 // Local development only: a stand-in for Discord OAuth so the console can be signed into without a Discord login.
 // Any Discord user id signs in (DEV_OAUTH_USER, or typed into the form). The bot still checks server membership after sign-in.
+// With LOCAL_WORLD set (the local console), the page lists the fixture's users to pick from instead.
 // Set WEB_OAUTH_BASE=http://127.0.0.1:9091 in .env.development to use it. The console refuses that setting in production.
 import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
 
 const port = Number(process.env.DEV_OAUTH_PORT || 9091);
 const defaultUser = process.env.DEV_OAUTH_USER || '';
 const auto = process.env.DEV_OAUTH_AUTO === '1';
 const snowflake = /^\d{17,20}$/;
 const attr = value => String(value).replace(/[&<>"']/g, ch => `&#${ch.charCodeAt(0)};`);
+const localWorld = process.env.LOCAL_WORLD ? JSON.parse(readFileSync(process.env.LOCAL_WORLD, 'utf8')) : null;
 
 function localRedirect(value) {
   let url;
@@ -28,6 +31,14 @@ function send(res, status, body, type = 'text/plain; charset=utf-8') {
 
 const json = (res, status, body) => send(res, status, JSON.stringify(body), 'application/json');
 
+function signInFields(defaultUser) {
+  if (localWorld) return `<p>Local development only. Pick a user. Slopbot still checks that the user is in one of its servers.</p>
+${localWorld.users.map(user => `<button name="user" value="${attr(user.id)}">${attr(user.name)} <small>${attr(user.id)}</small></button>`).join('\n')}`;
+  return `<p>Local development only. Enter any Discord user id. Slopbot still checks that the user is in one of its servers.</p>
+<label>Discord user id <input name="user" value="${attr(defaultUser)}" inputmode="numeric" required></label>
+<button id="sign-in" type="submit">Sign in</button>`;
+}
+
 function signIn(res, redirect, user, state) {
   const back = new URL(redirect);
   back.searchParams.set('code', user);
@@ -45,12 +56,10 @@ const server = createServer(async (req, res) => {
       const state = url.searchParams.get('state') ?? '';
       if (auto && snowflake.test(defaultUser)) return signIn(res, redirect, defaultUser, state);
       return send(res, 200, `<!doctype html><meta charset="utf-8"><title>Dev sign-in</title><h1>Slopbot dev sign-in</h1>
-<p>Local development only. Enter any Discord user id. Slopbot still checks that the user is in one of its servers.</p>
 <form method="POST" action="/oauth2/authorize">
-<label>Discord user id <input name="user" value="${attr(defaultUser)}" inputmode="numeric" required></label>
+${signInFields(defaultUser)}
 <input type="hidden" name="redirect_uri" value="${attr(url.searchParams.get('redirect_uri'))}">
 <input type="hidden" name="state" value="${attr(state)}">
-<button id="sign-in" type="submit">Sign in</button>
 </form>`, 'text/html; charset=utf-8');
     }
     if (req.method === 'POST' && url.pathname === '/oauth2/authorize') {
