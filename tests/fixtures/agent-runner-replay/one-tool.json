@@ -1,0 +1,97 @@
+{
+  "outcome": {
+    "reply": "one tool done",
+    "toolActivity": [
+      {
+        "id": "T:0",
+        "callId": "p1_0",
+        "name": "read",
+        "arguments": {
+          "n": 0
+        },
+        "status": "completed",
+        "reused": false
+      }
+    ]
+  },
+  "activityEvents": [
+    {
+      "id": "T:0",
+      "name": "read",
+      "status": "running",
+      "callId": "p1_0"
+    },
+    {
+      "id": "T:0",
+      "name": "read",
+      "status": "completed",
+      "callId": "p1_0"
+    }
+  ],
+  "harness": [
+    {
+      "event": {
+        "type": "SendMessage"
+      },
+      "state": {
+        "kind": "Streaming"
+      }
+    },
+    {
+      "event": {
+        "type": "ToolsRequested",
+        "ids": [
+          "T:0"
+        ]
+      },
+      "state": {
+        "kind": "ToolPhase",
+        "calls": [
+          {
+            "id": "T:0",
+            "state": "Undecided",
+            "denied": false
+          }
+        ],
+        "queuedMessage": false
+      }
+    },
+    {
+      "event": {
+        "type": "ToolDecision",
+        "id": "T:0",
+        "decision": "approve"
+      },
+      "state": {
+        "kind": "ToolPhase",
+        "calls": [
+          {
+            "id": "T:0",
+            "state": "Running",
+            "denied": false
+          }
+        ],
+        "queuedMessage": false
+      }
+    },
+    {
+      "event": {
+        "type": "ToolResult",
+        "id": "T:0"
+      },
+      "state": {
+        "kind": "Streaming"
+      }
+    },
+    {
+      "event": {
+        "type": "StreamCompleted"
+      },
+      "state": {
+        "kind": "WaitingForUserMessage"
+      }
+    }
+  ],
+  "final": "WaitingForUserMessage",
+  "rounds": 2
+}

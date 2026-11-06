@@ -1,0 +1,93 @@
+{
+  "outcome": {
+    "error": "HarnessInterrupted"
+  },
+  "activityEvents": [
+    {
+      "id": "T:0",
+      "name": "slow",
+      "status": "running",
+      "callId": "p1_0"
+    },
+    {
+      "id": "T:0",
+      "name": "slow",
+      "status": "completed",
+      "callId": "p1_0"
+    }
+  ],
+  "harness": [
+    {
+      "event": {
+        "type": "SendMessage"
+      },
+      "state": {
+        "kind": "Streaming"
+      }
+    },
+    {
+      "event": {
+        "type": "ToolsRequested",
+        "ids": [
+          "T:0"
+        ]
+      },
+      "state": {
+        "kind": "ToolPhase",
+        "calls": [
+          {
+            "id": "T:0",
+            "state": "Undecided",
+            "denied": false
+          }
+        ],
+        "queuedMessage": false
+      }
+    },
+    {
+      "event": {
+        "type": "ToolDecision",
+        "id": "T:0",
+        "decision": "approve"
+      },
+      "state": {
+        "kind": "ToolPhase",
+        "calls": [
+          {
+            "id": "T:0",
+            "state": "Running",
+            "denied": false
+          }
+        ],
+        "queuedMessage": false
+      }
+    },
+    {
+      "event": {
+        "type": "Interrupt"
+      },
+      "state": {
+        "kind": "Streaming"
+      }
+    },
+    {
+      "event": {
+        "type": "Interrupt"
+      },
+      "state": {
+        "kind": "InterruptingStream",
+        "queuedMessage": false
+      }
+    },
+    {
+      "event": {
+        "type": "StreamInterrupted"
+      },
+      "state": {
+        "kind": "StreamingInterrupted"
+      }
+    }
+  ],
+  "final": "StreamingInterrupted",
+  "rounds": 1
+}
