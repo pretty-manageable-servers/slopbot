@@ -291,8 +291,8 @@ test('streamed tool arguments come as tool_input deltas once the name is known, 
   const events = [];
   for await (const event of llm.stream({prefixVersion:'v1',prefix:[],history:[],inputs:[],tools:[{name:'show_ui',description:'d',parameters:{type:'object'}}]} as unknown as Prompt)) events.push(event);
   assert.deepEqual(events.filter(event => event.kind === 'tool_input').map(event => event.payload), [
-    {index:0,name:'show_ui',text:'{"markup":"<Stack>'},
-    {index:0,name:'show_ui',text:'</Stack>"}'},
+    {index:0,name:'show_ui',text:'{"markup":"<Stack>',id:'call_ui'},
+    {index:0,name:'show_ui',text:'</Stack>"}',id:'call_ui'},
   ]);
   assert.deepEqual(events.at(-1), {kind:'tool_call',payload:[{name:'show_ui',arguments:{markup:'<Stack></Stack>'},id:'call_ui'}]});
 });
