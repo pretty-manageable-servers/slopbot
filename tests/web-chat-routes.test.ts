@@ -13,11 +13,17 @@ import type { UserLimit } from "../src/user-limiter.js";
 import type { Message } from "../src/domain.js";
 import type { ObjectStorageProvider } from "../src/object-storage.js";
 import { chatFileKey } from "../src/web-chat-files.js";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const SERVER = "1528063444874432734";
 const ALICE = "1514413259522838529", BOB = "1514413259522838530", CAROL = "1514413259522838531";
 const ORIGIN = "http://localhost:3000";
 const MISSING = "0".repeat(32);
+/** The console build's share page (console/share.html), so the tests do not need console/dist. */
+const NEXT_DIR = mkdtempSync(join(tmpdir(), "slopbot-chat-share-"));
+writeFileSync(join(NEXT_DIR, "share.html"), "<!doctype html><html><body><div id=\"root\"></div><!--share-data--></body></html>");
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("rest of png")]);
 
 /** Chat storage in memory, so the tests never write to disk. */
@@ -79,7 +85,7 @@ const shareService = new ShareService({
       return server === SERVER && members.has(user);
     },
 } as never);
-  const web = createConsole({ origin: ORIGIN, host: "127.0.0.1", port: 3000, clientId: "id", clientSecret: "secret" }, {
+  const web = createConsole({ origin: ORIGIN, host: "127.0.0.1", port: 3000, clientId: "id", clientSecret: "secret", nextDir: NEXT_DIR }, {
     sessions: store, async canSignIn() { return true; },
     async snapshot() { return {}; },
     async invoke() { return {}; },
