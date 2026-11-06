@@ -9,7 +9,7 @@ import type { Store } from "./ports.js";
 import type { Knowledge } from "./memory.js";
 import type { TaskWorker, QueueStore } from "./queue.js";
 import { DEFAULT_BOT_REPLY_LIMIT, type BotReplyLimit } from "./bot-reply-limit.js";
-import { ToolError, discordOnlyMessage, webOnlyMessage, type ToolCall, type ToolRegistry, type ToolResult } from "./tools.js";
+import { ToolError, discordOnlyMessage, type ToolCall, type ToolRegistry, type ToolResult } from "./tools.js";
 import type { ParticipationGate } from "./participation.js";
 import { UserLimitError, limitReply } from "./user-limiter.js";
 import { isPrivateChannel } from "./private-chat.js";
@@ -377,8 +377,8 @@ export class Bot {
     await registry.checkAccess(message, call.name);
     // Checked before the thread rule. A private chat has no task threads, so its writes run in the chat itself.
     const privateChat = isPrivateChannel(message.channel);
-    if (privateChat && registry.scopeOf(call.name) === "discord") throw new ToolError(discordOnlyMessage);
-    if (!privateChat && registry.scopeOf(call.name) === "web") throw new ToolError(webOnlyMessage);
+    const refusal = registry.refusal(message, call.name);
+    if (refusal) throw new ToolError(refusal);
     if (!privateChat && registry.requiresThread(call.name, call.arguments) && !this.tasks.has(message.channel) && call.name !== "task_start") {
       const thread = await this.startTask(message, message.text);
       return { text: `Task started in <#${thread}>. Updates will appear there.`, handoff: { threadId: thread } };

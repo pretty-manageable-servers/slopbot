@@ -48,7 +48,7 @@ test('list_tools_filters_access', async t => {
   registry.register(readTool('member_read', async () => ({ text: 'm' })));
   registry.register(readTool('admin_read', async () => ({ text: 'a' }), { access: 'admin' }));
   registry.register(readTool('discovery_read', async () => ({ text: 'd' }), { surface: 'discovery', provider: 'mcp:github' }));
-  registry.register(readTool('discord_read', async () => ({ text: 'x' }), { scope: 'discord' }));
+  registry.register(readTool('discord_read', async () => ({ text: 'x' }), { needs: ['discord_actions'] }));
   registry.register(runToolsCodeTool(registry));
   const code = 'text((await list_tools()).map(tool => tool.name));';
   assert.deepEqual(outputs(await registry.invokeResult(request, 'run_tools_code', { code }, 'member-list', 'agent')), [['discord_read', 'discovery_read', 'member_read']]);
@@ -182,7 +182,7 @@ test('discord_scope_blocks_private_chat', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const registry = new ToolRegistry(store, async () => true);
   let ran = 0;
-  registry.register(readTool('discord_write', async () => { ran++; return { text: 'ran', data: {} }; }, { scope: 'discord', effect: 'write' }));
+  registry.register(readTool('discord_write', async () => { ran++; return { text: 'ran', data: {} }; }, { needs: ['discord_actions'], effect: 'write' }));
   registry.register(runToolsCodeTool(registry));
   const result = await registry.invokeResult(privateRequest, 'run_tools_code', { code: 'await tools.discord_write({});text("done");' }, 'private', 'agent');
   assert.match(result.text, /Program failed: .*only available in Discord/);

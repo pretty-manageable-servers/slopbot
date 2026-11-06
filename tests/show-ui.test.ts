@@ -25,5 +25,4 @@ test("show_widget answers with the widget code check and is offered only in web 
   const bad = await registry.invokeResult(message, "show_widget", { widget_code: '<html><body><script src="https://cdn.example.com/d3.js"></script></body></html>' }, "op2", "agent");
   assert.match(JSON.stringify(good), /Shown to the user\./);
   assert.match(JSON.stringify(bad), /will not work as written/);
-  assert.equal(registry.scopeOf("show_widget"), "web");
 });

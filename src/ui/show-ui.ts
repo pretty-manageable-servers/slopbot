@@ -13,7 +13,7 @@ export function registerShowUiTool(registry: ToolRegistry): void {
   registry.register({
     name: tool.name,
     surface: "top",
-    scope: "web",
+    needs: ["web_visuals"],
     description: tool.description,
     fields: { markup: { type: "string", description: tool.inputSchema.properties.markup.description, required: true, max: 20000 } },
     access: "member",

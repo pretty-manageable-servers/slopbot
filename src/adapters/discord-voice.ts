@@ -372,7 +372,7 @@ export class DiscordVoice {
   }
 
   register(registry: ToolRegistry): void {
-    registry.register({ name: 'voice_skip', surface: 'top', description: 'Call this when a voice transcript is only noise, a filler word or cut-off speech with no request. Slopbot then says and posts nothing for this turn. Do not write a reply after calling it.', scope: 'discord',
+    registry.register({ name: 'voice_skip', surface: 'top', description: 'Call this when a voice transcript is only noise, a filler word or cut-off speech with no request. Slopbot then says and posts nothing for this turn. Do not write a reply after calling it.', needs: ['discord_actions'],
       fields: {},
       access: 'member', effect: 'read', execution: 'inline', retrySafe: true,
       execute: async ({ message }) => {
@@ -383,7 +383,7 @@ export class DiscordVoice {
       },
     });
 
-    registry.register({ name: 'voice_say', surface: 'top', description: 'Say these words aloud in the voice channel. Plain words only (no markdown, code, emoji or URLs; say numbers as words). For every voice request, call it with the spoken answer: short sentences, up to about 150 words (about one minute); shorter when a short answer is enough. Before a slow tool (search, fetch, code), you may first call it with one short line that tells what you will do. Then write the full answer for the chat with code, links and details as needed; the chat answer is not read aloud.', scope: 'discord',
+    registry.register({ name: 'voice_say', surface: 'top', description: 'Say these words aloud in the voice channel. Plain words only (no markdown, code, emoji or URLs; say numbers as words). For every voice request, call it with the spoken answer: short sentences, up to about 150 words (about one minute); shorter when a short answer is enough. Before a slow tool (search, fetch, code), you may first call it with one short line that tells what you will do. Then write the full answer for the chat with code, links and details as needed; the chat answer is not read aloud.', needs: ['discord_actions'],
       fields: {
         text: { type: 'string', description: 'The words to say aloud. Short spoken sentences in plain words, up to about 150 words.', required: true, max: VOICE_SPOKEN_MAX },
       },
@@ -407,7 +407,7 @@ export class DiscordVoice {
       },
     });
 
-    registry.register({ name: 'voice', description: "Join your voice channel to talk, leave it, or show voice status and the voice style. Use propose when a user asks to change how Slopbot's voice sounds: draft a concrete description (gender, age, pitch, pace, tone) and never name a real person; a server admin then applies it. style sets the voice directly and is for server admins only.", scope: 'discord',
+    registry.register({ name: 'voice', description: "Join your voice channel to talk, leave it, or show voice status and the voice style. Use propose when a user asks to change how Slopbot's voice sounds: draft a concrete description (gender, age, pitch, pace, tone) and never name a real person; a server admin then applies it. style sets the voice directly and is for server admins only.", needs: ['discord_actions'],
       fields: {
         action: { type: 'string', description: 'Voice action. style sets the voice (server admins). propose posts a voice for an admin to apply.', choices: ['join', 'leave', 'status', 'style', 'propose'], required: true },
         instructions: { type: 'string', description: `Voice description for style or propose, for example "A calm adult woman with a warm, medium pitch, a steady pace and a friendly tone." Up to ${VOICE_INSTRUCTIONS_MAX} characters. For style, "default" restores the default voice.`, max: VOICE_INSTRUCTIONS_MAX },

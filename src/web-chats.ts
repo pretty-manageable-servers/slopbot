@@ -309,7 +309,7 @@ export class WebChatService {
     ];
     // Each file gets one label line in the saved text, so the model knows the file exists. Images go by modelImages instead.
     const labels = files.map(item => fileLabel(item.name, item.contentType, item.url));
-    const message: Message = { id: `chat-${randomUUID()}`, server: chat.server, channel, author: user, authorName: name, text: [body, ...labels].join("\n"), timestamp: at, addressed: true, source: "web", effort: this.effortOf(chat), ...(attachments.length ? { attachments } : {}) };
+    const message: Message = { id: `chat-${randomUUID()}`, server: chat.server, channel, author: user, authorName: name, text: [body, ...labels].join("\n"), timestamp: at, addressed: true, source: "web", surface: "web", effort: this.effortOf(chat), ...(attachments.length ? { attachments } : {}) };
     // The model gets short-lived signed links, only in memory.
     const modelImages = await Promise.all(images.map(async item => ({ url: await this.storage.link(chatImageKey(chat.server, chat.id, item.imageId), item.name, MODEL_LINK_SECONDS), label: item.name })));
     await this.store.ingest(message);
