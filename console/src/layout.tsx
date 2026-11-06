@@ -128,7 +128,6 @@ function Chats() {
         aria-label="Chats"
         sections={[{ id: "chats", title: "Chats", items: chats.map((c) => ({ id: c.id, title: c.title || "New chat", href: `${BASE}/chat/${c.id}` })) }]}
         {...(activeId && { activeId })}
-        onSelect={(id) => void navigate({ to: "/chat/$chatId", params: { chatId: id } })}
         rowMenu={(chat) => <ChatTitleMenu onRename={() => void rename(chat)} onShare={() => setSharing(chat.id)} onDelete={() => void remove(chat.id)} />}
       />
       <ShareDialog chatId={sharing} onClose={() => setSharing(null)} />

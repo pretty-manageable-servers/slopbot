@@ -36,8 +36,7 @@ export function ServersPane() {
         ? <SectionNote>The channels are not available right now.</SectionNote>
         : conversations.data && !sections.length
           ? <SectionNote>Nothing to show yet.</SectionNote>
-          : <ChatList aria-label="Channels and threads" sections={sections} {...(activeId && { activeId })}
-              onSelect={(id) => void navigate({ to: "/server/$serverId/channel/$channelId", params: { serverId: server.id, channelId: id } })} />}
+          : <ChatList aria-label="Channels and threads" sections={sections} {...(activeId && { activeId })} />}
     </div>
   );
 }
