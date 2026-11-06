@@ -15,7 +15,9 @@ import { ToolError, stableOperationId } from "./tools.js";
 import { requestTimings } from "./request-timing.js";
 import { PRIVATE_CHANNEL_PREFIX, PRIVATE_CHAT_MAX_CHARS, PRIVATE_CHAT_TITLE_CHARS, isPrivateChannel, newPrivateChatId, privateChannel, privateChatTitle } from "./private-chat.js";
 import { fileLabel, publishMessage, runEvents, slopbotId, withoutFileLabelText, type ConversationEventStore, type RunEvents } from "./run-events.js";
-import { messageViews, openStream, type TranscriptStore } from "./web-transcripts.js";
+import type { EngineEvent } from "@slopbot/contracts";
+import { engineEvents } from "./engine/event-log.js";
+import { messageViews, openEngineStream, openStream, streamCursor, turnEventsOf, type TranscriptStore } from "./web-transcripts.js";
 import type { WebChatRow } from "./web-chat-store.js";
 import { CHAT_IMAGE_ID, CHAT_IMAGE_MAX_BYTES, CHAT_IMAGE_MAX_COUNT, CHAT_IMAGE_SCHEME, LocalDiskStorage, chatImageContentType, chatImageKey, imageAttachments, imageName, newChatImageId, sniffImage } from "./web-chat-images.js";
 import { CHAT_FILE_ID, CHAT_FILE_MAX_BYTES, CHAT_ATTACHMENT_MAX_COUNT, chatFileKey, fileAttachments, fileContentType, fileName, fileUrl, newChatFileId, type ChatFileView } from "./web-chat-files.js";
@@ -444,6 +446,30 @@ export class WebChatService {
       end: () => { res.end(); },
     });
     res.on("close", () => stop());
+  }
+
+  /** Opens the engine event stream of a chat (SSE). Without ?after= or Last-Event-ID it starts at the newest event. */
+  async openEvents(req: IncomingMessage, res: ServerResponse, user: string, id: string): Promise<void> {
+    const chat = await this.owned(user, id);
+    const header = req.headers["last-event-id"];
+    const cursor = streamCursor(Array.isArray(header) ? header[0] : header, new URL(req.url || "/", "http://local").searchParams.get("after"));
+    res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
+    res.write("retry: 3000\n\n");
+    const stop = openEngineStream({
+      server: chat.server, channel: privateChannel(chat.id), user, cursor, events: engineEvents, bus: this.bus, access: this.host.access,
+      allowed: async () => { try { await this.owned(user, id); return true; } catch { return false; } },
+      write: text => { res.write(text); },
+      end: () => { res.end(); },
+    });
+    res.on("close", () => stop());
+  }
+
+  /** The saved engine events of one turn of a chat. */
+  async turnEvents(user: string, id: string, turn: string): Promise<{ events: EngineEvent[] }> {
+    const chat = await this.owned(user, id);
+    const events = /^[\w:.-]{1,200}$/.test(turn) ? await turnEventsOf(this.store, engineEvents, chat.server, privateChannel(chat.id), turn) : undefined;
+    if (!events) throw new ChatError(404, "Not found.");
+    return { events };
   }
 
   /** True when the user owns the private chat in this channel, and the chat is in this server. Errors count as no. */

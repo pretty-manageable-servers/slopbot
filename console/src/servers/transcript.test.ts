@@ -1,8 +1,9 @@
 import type { Message } from "agentic-ui-kit/core";
 import { describe, expect, test } from "vitest";
 import type { TranscriptMessage } from "../api-types";
-import { emptyChat, chatMessages, type RunStep } from "../events";
-import { applyTranscriptEvent, channelMessage, displayMessages, foldOfPart, foldUnused, markUsed, metaOf, unusedIds, type TranscriptEvent } from "./transcript";
+import type { EngineEnvelope } from "@slopbot/contracts";
+import { emptyChat, chatMessages } from "../events";
+import { applyTranscriptEvent, channelMessage, displayMessages, foldOfPart, foldUnused, markUsed, metaOf, unusedIds } from "./transcript";
 
 const AT = Date.parse("2026-11-05T10:00:00Z");
 const human: TranscriptMessage = {
@@ -11,6 +12,7 @@ const human: TranscriptMessage = {
 };
 const slopbot: TranscriptMessage = { ...human, id: "m2", author: "bot", authorName: "Slopbot", username: "slopbot", avatarUrl: null, text: "Hello", timestamp: AT + 1000, slopbot: true, runIds: ["r1"], used: true };
 const VIEWER = "viewer";
+const conversation = { server: "s1", channel: "c1" };
 
 describe("channelMessage", () => {
   test("an avatar outside Discord's CDN is dropped, and the name falls back to the author id", () => {
@@ -30,8 +32,8 @@ describe("channelMessage", () => {
 describe("applyTranscriptEvent", () => {
   test("a message event adds the message with its author and images, and an edit does not repeat the image", () => {
     const image = { src: "https://cdn.discordapp.com/attachments/1/2/cat.png", name: "cat.png", size: 2048 };
-    const created: TranscriptEvent = { type: "message", id: 1, data: { action: "upsert", message: { ...human, remoteImages: [image] } } };
-    const edited: TranscriptEvent = { type: "message", id: 2, data: { action: "upsert", message: { ...human, text: "hi again", editedAt: AT + 5000, remoteImages: [image] } } };
+    const created: EngineEnvelope = { seq: 1, at: 1, conversation, event: { type: "message.upsert", message: { ...human, remoteImages: [image] } } };
+    const edited: EngineEnvelope = { seq: 2, at: 2, conversation, event: { type: "message.upsert", message: { ...human, text: "hi again", editedAt: AT + 5000, remoteImages: [image] } } };
     const once = applyTranscriptEvent(emptyChat(), created, "c1", VIEWER);
     const twice = applyTranscriptEvent(once, edited, "c1", VIEWER);
     const [message] = chatMessages(twice);
@@ -44,7 +46,7 @@ describe("applyTranscriptEvent", () => {
 
 describe("foldUnused", () => {
   const other = (id: string, patch: Partial<TranscriptMessage> = {}): TranscriptMessage => ({ ...human, id, author: "u2", authorName: "Bo", ...patch });
-  const page = (items: TranscriptMessage[]) => displayMessages(items.map((m) => channelMessage(m, VIEWER, "c1")), new Map());
+  const page = (items: TranscriptMessage[]) => displayMessages(items.map((m) => channelMessage(m, VIEWER, "c1")));
   /** The rows as the reader sees them: a fold row as "fold <count>", a message as its ID. A fold rides on the message under it. */
   const layout = (rows: Message[]) => rows.flatMap((row) => {
     const fold = foldOfPart(row.parts[0]!);

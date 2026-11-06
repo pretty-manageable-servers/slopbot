@@ -15,6 +15,7 @@ import { parseEffort, type Effort, type Json, type Message, type Prompt, type Pr
 import { loadTaskSeed, refListParts, resolveRefs, type SettingsPort } from "./transcript.js";
 import { linkRefs } from "./reply-refs.js";
 import type { AgentTurn, LLM, Store } from "./ports.js";
+import { fallbackCallId } from "./run-events.js";
 import type { Recall } from "./memory.js";
 import { attribution, streamMetered, type UsageMeter } from "./usage-meter.js";
 import { GLOBAL_SETTINGS_SCOPE } from "./usage-cost.js";
@@ -328,11 +329,11 @@ export class AgentRunner {
       console.log(JSON.stringify({ type: "working_context_checkpoint", server: message.server, channel: message.channel, messageId: message.id, runId, before: used, after, inputLimit, schemaBudget }));
     };
     let failedToolRounds = 0;
-    const appendTurn = async (turn: AgentTurn): Promise<void> => {
+    const appendTurn = async (turn: AgentTurn, runId?: string): Promise<void> => {
       if (signal.aborted) throw new HarnessInterrupted("Request interrupted");
       await step({ type: "ToolsRequested", ids: turn.calls.map((_, index) => `${turn.id}:${index}`) });
       const latestBatchStart = trace.length;
-      const callIds = turn.calls.map((call, index) => call.id ?? `call_${stableOperationId(turn.id, String(index))}`);
+      const callIds = turn.calls.map((call, index) => call.id ?? fallbackCallId(runId ?? turn.id, index));
       trace.push({ role: "assistant", content: native && turn.calls.every(call => !call.id) ? "" : turn.text, ...(native ? { toolCalls: turn.calls.map((call, index) => ({ id: callIds[index]!, name: call.name, arguments: call.arguments })) } : {}) });
       let batchFailed = false;
       // Auger drives the batch: approve the next undecided call, run it, send its result.
@@ -424,7 +425,7 @@ export class AgentRunner {
           if (round === maxRounds) throw new RequestError("TOOL_ROUND_LIMIT", `Reached the limit of ${maxRounds} tool rounds for this attempt. Completed progress is retained.`, "Continue the task in a new message, or retry this job to resume with a fresh round allowance. Set MAX_TOOL_ROUNDS to change the limit.", { limit: maxRounds, savedRounds: turns.length, completedRounds: round, nextTools: calls.map(call => call.name).join(", ") });
           const turn = await this.store.addAgentTurn(message, text, calls);
           await this.store.finishToolRun(runId, text);
-          await appendTurn(turn);
+          await appendTurn(turn, runId);
           continue;
         }
         if (signal.aborted) throw new HarnessInterrupted("Request interrupted before completion");

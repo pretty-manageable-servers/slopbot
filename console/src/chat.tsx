@@ -7,14 +7,15 @@ import { useServer } from "./data";
 import { attachmentIds, attachmentKind, attachmentProblem } from "./chat/attachments";
 import { ShareDialog } from "./chat/share-dialog";
 import { UsageMeter } from "./chat/usage-meter";
-import { applyBotEvent, chatMessages, emptyChat, pendingSend, toKitMessage, withPending, withRunSteps, type BotEvent, type PendingSend, type BotMessage, type ChatState, type RunStep } from "./events";
+import type { EngineEnvelope } from "@slopbot/contracts";
+import { applyEngineEvent, chatMessages, emptyChat, pendingSend, repliesOf, toKitMessage, withPending, type PendingSend, type BotMessage, type ChatState, type TurnSource } from "./events";
+import { useTurns } from "./use-turns";
 import { Loader, Logo } from "./logo";
 import { useConsoleDictation } from "./ui/dictation";
 import { usePausedComposer } from "./llm-status";
 import { notify, notifyError } from "./ui/feedback";
 import { uiComponents } from "./ui-components";
 
-const KINDS = ["message", "run.start", "run.delta", "run.tool", "run.end"] as const;
 /** show_widget frames load the bot's frame page (WIDGET_FRAME_PATH in src/web-console.ts), outside the page CSP. */
 const WIDGET_HOST = { frameUrl: "/console/widget-frame.html" };
 const toolViews = { ...defaultToolViews, show_ui: uiMarkupToolView(), show_widget: widgetToolView() };
@@ -25,6 +26,9 @@ export const linkedAsks = new Map<string, string>();
 /** The send that is not on the page yet, by chat. A new chat's page reads it when it opens. */
 const pendingSends = new Map<string, PendingSend>();
 
+/** A new chat has no turns to load. */
+const NO_TURNS: TurnSource = { turnOfRun: async () => undefined, turnEvents: async () => [] };
+
 /** The one model for now. Its effort levels are the bot's (EFFORTS in src/domain.ts). */
 const MODELS = [{
   id: "pangaea",
@@ -33,16 +37,6 @@ const MODELS = [{
   efforts: [{ id: "low", label: "Low" }, { id: "medium", label: "Medium", recommended: true }, { id: "xhigh", label: "Extra" }],
   defaultEffort: "medium",
 }];
-
-/** The thinking and tool steps of each reply on the page, from its runs. A run that fails to load is left out. */
-async function replySteps(messages: BotMessage[]): Promise<Map<string, RunStep[]>> {
-  const replies = messages.filter((m) => m.slopbot && m.runIds.length);
-  const loaded = await Promise.all(replies.map(async (m) => {
-    const runs = await Promise.all(m.runIds.map((runId) => api.run(runId).then((run) => run.steps as RunStep[], () => [])));
-    return [m.id, runs.flat()] as const;
-  }));
-  return new Map(loaded);
-}
 
 /** Uploads one file to the route of its kind. Resolves to the id the message sends. */
 const uploadAttachment = (chat: string, file: File) => (attachmentKind(file.type) === "image"
@@ -89,23 +83,14 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
       const page = await api.messages(id);
       if (closed) return;
       const messages = page.messages as BotMessage[];
-      setState(emptyChat(messages.map((m) => toKitMessage(m, id)), page.streamId));
-      // Tool rows and show_ui of earlier replies come from their runs, after the text shows.
-      void replySteps(messages).then((steps) => {
-        if (!closed) setState((s) => s && { ...s, saved: s.saved.map((m) => (steps.get(m.id) ? withRunSteps(m, steps.get(m.id)!) : m)) });
+      setState(emptyChat(messages.map((m) => toKitMessage(m, id)), repliesOf(messages)));
+      // Live engine events from the newest on. The steps of earlier replies are loaded by useTurns.
+      source = new EventSource(api.eventsUrl(id));
+      source.addEventListener("engine", (event) => {
+        let envelope: EngineEnvelope;
+        try { envelope = JSON.parse((event as MessageEvent<string>).data) as EngineEnvelope; } catch { return; }
+        setState((s) => (s ? applyEngineEvent(s, envelope, id) : s));
       });
-      source = new EventSource(api.streamUrl(id, page.streamId));
-      for (const type of KINDS) {
-        source.addEventListener(type, (event) => {
-          const message = event as MessageEvent<string>;
-          let data: unknown;
-          try { data = JSON.parse(message.data); } catch { return; }
-          const bot = { type, id: Number(message.lastEventId) || 0, data } as BotEvent;
-          setState((s) => (s ? applyBotEvent(s, bot, id) : s));
-        });
-      }
-      // The server pruned events after this position: load the newest page again.
-      source.addEventListener("reset", () => { source?.close(); void open().catch((e: Error) => setError(e.message)); });
       source.addEventListener("closed", () => { source?.close(); setStatus("Live updates stopped. Reload to check again."); });
       source.onopen = () => setStatus("");
       source.onerror = () => setStatus(source?.readyState === EventSource.CLOSED ? "Disconnected." : "Reconnecting…");
@@ -113,6 +98,12 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
     open().catch((e: Error) => setError(e.message));
     return () => { closed = true; source?.close(); };
   }, [id]);
+
+  const turnSource = useMemo<TurnSource | undefined>(() => (id ? {
+    turnOfRun: (run) => api.run(run).then((found) => found.requestId),
+    turnEvents: (turn) => api.turnEvents(id, turn).then((found) => found.events),
+  } : undefined), [id]);
+  useTurns(state, setState, turnSource ?? NO_TURNS);
 
   const saved = useMemo(() => (state ? chatMessages(state) : []), [state]);
   const shown = useMemo(() => withPending(saved, pending), [saved, pending]);

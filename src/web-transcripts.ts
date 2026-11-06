@@ -1,3 +1,6 @@
+import type { EngineEnvelope, EngineEvent } from "@slopbot/contracts";
+import { engineEvents } from "./engine/event-log.js";
+import type { EngineEventLog } from "./engine/api.js";
 import { applyOut, json, type WebContext } from "./clients/web/env.js";
 import { conversationRoutes, type TranscriptRoutes } from "./clients/web/routes/conversations.js";
 import { logError } from "./errors.js";
@@ -56,6 +59,8 @@ export interface TranscriptHost {
   members?: Pick<MemberDirectory, "profiles">;
   /** True when the user owns this private chat and is in its server. A private chat has no Discord channel, so only its run view uses this. */
   ownsPrivateChat?(server: string, channel: string, user: string): Promise<boolean>;
+  /** The engine event log the events routes read. Defaults to the process-wide log. */
+  events?: EngineEventLog;
 }
 
 export type { TranscriptRoutes };
@@ -176,6 +181,62 @@ function callsOf(payload: Json): ToolCall[] {
   try { return parseToolCalls(JSON.stringify({ tool_calls: payload })) ?? []; } catch { return []; }
 }
 
+/**
+ * Engine events for a turn saved before the engine log existed, made from its saved runs. A tool step with no saved
+ * result counts as completed. A run_tools_code step's children name it as their parent.
+ */
+export function legacyTurnEvents(turn: string, runs: readonly { id: string; steps: readonly RunStep[]; failed?: boolean }[]): EngineEvent[] {
+  const events: EngineEvent[] = [{ type: "turn.start", turn }];
+  for (const { id: run, steps } of runs) {
+    events.push({ type: "round.start", turn, run });
+    const tool = (step: ToolStep, call: string, parent?: string) => {
+      const status = (["running", "completed", "rejected", "failed", "delegated"] as const).find(item => item === step.status) ?? "completed";
+      const failed = status === "failed" || status === "rejected";
+      const input = step.input ?? (step.args ? parseJson(step.args) : undefined);
+      events.push({
+        type: "tool.status", turn, call, name: step.name, status,
+        ...(input !== undefined ? { input } : {}),
+        ...(step.result !== undefined ? (failed ? { reason: step.result } : { result: step.result }) : {}),
+        ...(step.code !== undefined ? { code: step.code } : {}),
+        ...(parent !== undefined ? { parent } : {}),
+      });
+    };
+    steps.forEach((step, index) => {
+      if (step.type === "text") events.push({ type: "text.delta", turn, run, text: step.text });
+      else if (step.type === "thinking") events.push({ type: "thinking.delta", turn, run, text: step.text });
+      else {
+        const call = `${run}:${index}`;
+        tool(step, call);
+        step.children?.forEach((child, i) => tool(child, `${call}:${i}`, call));
+      }
+    });
+  }
+  events.push({ type: "turn.end", turn, status: runs.some(run => run.failed) ? "failed" : "done" });
+  return events;
+}
+
+/** Tool arguments are cut after 300 characters in a saved step, so a cut text gives no input. */
+function parseJson(text: string): unknown {
+  try { return JSON.parse(text); } catch { return undefined; }
+}
+
+/**
+ * The events of one turn: the saved log rows, or for an older turn with none, events made from its saved runs.
+ * Returns undefined for a turn that has neither, or whose runs belong to another conversation.
+ */
+export async function turnEventsOf(store: TranscriptStore, events: Pick<EngineEventLog, "turn">, server: string, channel: string, turn: string): Promise<EngineEvent[] | undefined> {
+  const saved = await events.turn({ server, channel }, turn);
+  if (saved.length) return saved;
+  const runs: { id: string; steps: RunStep[]; failed: boolean }[] = [];
+  const turns = await store.toolTurns(server, turn);
+  for (const id of await store.requestRunIds(server, turn)) {
+    const record = await store.runRecord(id);
+    if (!record || record.message.channel !== channel) continue;
+    runs.push({ id, steps: runSteps(await store.events(id), turns, record.status === "tool_calls" ? textCalls(record.result) : []), failed: record.status === "failed" });
+  }
+  return runs.length ? legacyTurnEvents(turn, runs) : undefined;
+}
+
 export function textCalls(text: string | null): ToolCall[] {
   if (!text) return [];
   try { return parseToolCalls(text) ?? []; } catch { return []; }
@@ -196,6 +257,89 @@ export interface StreamOptions {
   end(): void;
   heartbeatMs?: number;
   recheckMs?: number;
+}
+
+export interface EngineStreamOptions {
+  server: string;
+  channel: string;
+  user: string;
+  /** Saved events after this seq are sent first. Without it the stream starts at the newest event. */
+  cursor: number | undefined;
+  events: Pick<EngineEventLog, "after" | "subscribe">;
+  bus: Pick<RunEvents, "onChange">;
+  access: ChannelAccess;
+  /** True while the switch is on and the user can view the channel. */
+  allowed(): Promise<boolean>;
+  write(text: string): void;
+  end(): void;
+  heartbeatMs?: number;
+  recheckMs?: number;
+}
+
+/**
+ * Sends the engine events of one conversation as SSE text: `event: engine`, `id` = seq, data = the envelope. A live
+ * event that arrives during the backlog read is kept and sent after it. Events with no seq are not saved and are not sent.
+ * Deltas saved as one row share its seq, so a live delta is dropped only when the backlog already held its row.
+ */
+export function openEngineStream(options: EngineStreamOptions): () => void {
+  const { server, channel, user, events, bus, access } = options;
+  let backlogEnd = options.cursor ?? 0, live = options.cursor === undefined, closed = false;
+  const buffer: EngineEnvelope[] = [];
+  const timers: ReturnType<typeof setInterval>[] = [];
+  const offs: (() => void)[] = [];
+  const send = (envelope: EngineEnvelope) => {
+    if (closed || envelope.seq === undefined) return;
+    options.write(`id: ${envelope.seq}\nevent: engine\ndata: ${JSON.stringify(envelope)}\n\n`);
+  };
+  const stop = (reason?: string) => {
+    if (closed) return;
+    closed = true;
+    for (const timer of timers) clearInterval(timer);
+    for (const off of offs) off();
+    if (reason) options.write(`event: closed\ndata: ${JSON.stringify({ reason })}\n\n`);
+    options.end();
+  };
+  const recheck = async () => {
+    if (closed) return;
+    try { if (!(await options.allowed())) stop("access"); }
+    catch (error) { logError("web_stream_check_failed", error, { server, channel }); stop("error"); }
+  };
+  const matchesClear = (change: { server?: string; channel?: string; user?: string }) =>
+    (change.server === undefined || change.server === server) && (change.user === undefined || change.user === user) && (change.channel === undefined || change.channel === channel);
+  offs.push(events.subscribe({ server, channel }, envelope => {
+    if (envelope.seq === undefined) return;
+    if (live) send(envelope); else buffer.push(envelope);
+  }));
+  offs.push(bus.onChange(server, () => void recheck()));
+  offs.push(access.onClear(change => { if (matchesClear(change)) void recheck(); }));
+  const heartbeat = setInterval(() => { if (!closed) options.write(": ping\n\n"); }, options.heartbeatMs ?? 15000);
+  const recheckTimer = setInterval(() => void recheck(), options.recheckMs ?? 30000);
+  heartbeat.unref(); recheckTimer.unref();
+  timers.push(heartbeat, recheckTimer);
+  if (!live) void (async () => {
+    try {
+      for (;;) {
+        const rows = await events.after({ server, channel }, backlogEnd, BACKLOG_PAGE);
+        if (closed) return;
+        for (const row of rows) { send(row); backlogEnd = row.seq ?? backlogEnd; }
+        if (rows.length < BACKLOG_PAGE) break;
+      }
+      for (const envelope of buffer.splice(0)) if ((envelope.seq ?? 0) > backlogEnd) send(envelope);
+      live = true;
+    } catch (error) {
+      logError("web_stream_failed", error, { server, channel });
+      stop("error");
+    }
+  })();
+  return () => stop();
+}
+
+/** The stream position of a request: Last-Event-ID on a reconnect, else ?after=. Undefined when it has neither. */
+export function streamCursor(lastEventId: string | undefined, after: string | null): number | undefined {
+  const raw = lastEventId ?? after;
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
 /**
@@ -431,7 +575,32 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
     res.on("close", () => stop());
   }
 
+  async function engineStream(c: WebContext, server: string, channel: string, user: string): Promise<Response | undefined> {
+    if (!(await granted(host, server, channel, user))) return json(403, { error: "You cannot view this conversation." });
+    const { incoming: req, outgoing: res } = c.env;
+    const header = req.headers["last-event-id"];
+    const cursor = streamCursor(Array.isArray(header) ? header[0] : header, new URL(c.req.url).searchParams.get("after"));
+    applyOut(c);
+    res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
+    res.write("retry: 3000\n\n");
+    const stop = openEngineStream({
+      server, channel, user, cursor, events: host.events ?? engineEvents, bus: runEvents, access: host.access,
+      allowed: async () => (await granted(host, server, channel, user)) !== undefined,
+      write: text => { res.write(text); },
+      end: () => { res.end(); },
+    });
+    res.on("close", () => stop());
+  }
+
+  async function turnEvents(server: string, channel: string, turn: string, user: string): Promise<Response> {
+    if (!RUN_ID.test(turn)) return json(400, { error: "Invalid turn." });
+    if (!(await granted(host, server, channel, user))) return json(403, { error: "You cannot view this conversation." });
+    const events = await turnEventsOf(store, host.events ?? engineEvents, server, channel, turn);
+    return events ? json(200, { events }) : json(404, { error: "Turn not found." });
+  }
+
   return conversationRoutes({
+    events: engineStream, turnEvents,
     list: async (server, user) => json(200, { conversations: await visibleConversations(host, server, user) }),
     search, messages, used, stream, runs: conversationList, conversation, run: runRoute,
   });

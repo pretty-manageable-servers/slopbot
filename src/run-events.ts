@@ -8,6 +8,7 @@ import { fileAttachments, parseFileUrl, type ChatFileView } from "./web-chat-fil
 import { LEGACY_FILE_NOTE } from "./source-context.js";
 import type { UiDocument } from "./ui/schema.js";
 import { engineEvents } from "./engine/event-log.js";
+import { stableOperationId } from "./tools.js";
 
 /** Kinds of events a web transcript stream sends. */
 export type ConversationKind = "message" | "run.start" | "run.delta" | "run.tool" | "run.end";
@@ -310,12 +311,15 @@ export function publishModelEvent(message: Message, runId: string, event: ModelE
   }
   if (event.kind === "tool_input") {
     const { index, name, text, id } = event.payload;
-    // Input without a provider call ID cannot be keyed to its call, so it is not sent.
-    if (id) engineEvents.publish(conversation, { type: "tool.input", turn: message.id, run: runId, call: id, name, text });
+    // Without a provider call ID the call gets the ID the agent runner will give it (fallbackCallId).
+    engineEvents.publish(conversation, { type: "tool.input", turn: message.id, run: runId, call: id ?? fallbackCallId(runId, index), name, text });
     // Only tools whose input the web view draws while it streams. Other tool input is not sent.
     if (LIVE_INPUT_TOOLS.has(name)) runEvents.publish(message.server, message.channel, "run.delta", runId, { part: "tool", index, name, text });
   }
 }
+
+/** The call ID of a tool call whose provider sent none. Keyed by the model round, which is known while the input streams. */
+export const fallbackCallId = (runId: string, index: number): string => `call_${stableOperationId(runId, String(index))}`;
 
 /** Tools whose arguments stream to the web view: show_ui markup is drawn as it is written. */
 export const LIVE_INPUT_TOOLS: ReadonlySet<string> = new Set(["show_ui", "show_widget"]);
@@ -324,6 +328,11 @@ export const LIVE_INPUT_TOOLS: ReadonlySet<string> = new Set(["show_ui", "show_w
 export function publishRunEnd(message: Message, runId: string, status: "done" | "failed"): void {
   runEvents.publish(message.server, message.channel, "run.end", runId, { status });
 }
+
+// The call ID of each running tool activity. A child (run_tools_code program call) names its parent by activity ID,
+// but tool.status events key a call by its call ID, so the parent is looked up here.
+const callOfActivity = new Map<string, string>();
+const MAX_TRACKED_ACTIVITIES = 500;
 
 /** Called by the tool progress observer. The ref is the request message, which the run belongs to. */
 export function publishTool(message: Message, activity: ToolActivity): void {
@@ -335,12 +344,17 @@ export function publishTool(message: Message, activity: ToolActivity): void {
     args: shortArgs(activity.arguments),
     ...(activity.reason ? { reason: activity.reason.slice(0, 300) } : {}),
   });
+  const call = activity.callId ?? activity.id;
+  if (activity.status === "running" && activity.callId) {
+    callOfActivity.set(activity.id, activity.callId);
+    if (callOfActivity.size > MAX_TRACKED_ACTIVITIES) callOfActivity.delete(callOfActivity.keys().next().value!);
+  } else if (activity.status !== "running") callOfActivity.delete(activity.id);
   engineEvents.publish({ server: message.server, channel: message.channel }, {
-    type: "tool.status", turn: message.id, call: activity.callId ?? activity.id, name: activity.name, status: activity.status,
+    type: "tool.status", turn: message.id, call, name: activity.name, status: activity.status,
     input: activity.arguments,
     ...(activity.reason ? { reason: activity.reason.slice(0, 2000) } : {}),
     ...(activity.code !== undefined ? { code: activity.code } : {}),
-    ...(activity.parentId !== undefined ? { parent: activity.parentId } : {}),
+    ...(activity.parentId !== undefined ? { parent: callOfActivity.get(activity.parentId) ?? activity.parentId } : {}),
     ...(activity.durationMs !== undefined ? { durationMs: activity.durationMs } : {}),
   });
 }

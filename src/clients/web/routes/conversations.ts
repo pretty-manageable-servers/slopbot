@@ -15,6 +15,10 @@ export interface TranscriptOps {
   runs(url: URL, server: string, channel: string, user: string): Promise<Response>;
   conversation(server: string, channel: string, runId: string, user: string): Promise<Response>;
   run(runId: string, user: string): Promise<Response>;
+  /** Opens the engine event stream on the raw response (SSE, event name `engine`). Gives a response only when it refused before the stream started. */
+  events(c: WebContext, server: string, channel: string, user: string): Promise<Response | undefined>;
+  /** The saved engine events of one turn: `{ events }`. */
+  turnEvents(server: string, channel: string, turn: string, user: string): Promise<Response>;
   /** Opens the live stream on the raw response. Gives a response only when it refused before the stream started. */
   stream(c: WebContext, server: string, channel: string, user: string): Promise<Response | undefined>;
 }
@@ -42,6 +46,8 @@ export function conversationRoutes(ops: TranscriptOps): TranscriptRoutes {
   app.get('/conversations/:channel/messages', c => ops.messages(url(c), serverOf(c), c.req.param('channel'), user(c)));
   app.get('/conversations/:channel/used', c => ops.used(url(c), serverOf(c), c.req.param('channel'), user(c)));
   app.get('/conversations/:channel/stream', async c => await ops.stream(c, serverOf(c), c.req.param('channel'), user(c)) ?? alreadySent());
+  app.get('/conversations/:channel/events', async c => await ops.events(c, serverOf(c), c.req.param('channel'), user(c)) ?? alreadySent());
+  app.get('/conversations/:channel/turns/:turn/events', c => ops.turnEvents(serverOf(c), c.req.param('channel'), c.req.param('turn'), user(c)));
   app.get('/conversations/:channel/runs', c => ops.runs(url(c), serverOf(c), c.req.param('channel'), user(c)));
   app.get('/conversations/:channel/runs/:run', c => ops.conversation(serverOf(c), c.req.param('channel'), c.req.param('run'), user(c)));
   app.get('/conversations/*', () => notFound());
