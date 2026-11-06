@@ -27,3 +27,4 @@ services:
 
 volumes:
   slopbot-local-pg:
+    name: slopbot-local-pg
