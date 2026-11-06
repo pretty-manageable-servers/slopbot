@@ -5,7 +5,7 @@ import { useMutation, useQueries, useQuery, useQueryClient, useSuspenseQuery } f
 import { useNavigate } from "@tanstack/react-router";
 import { AttachmentCard, Button, ChatHeader, ChatTranscript, Drawer, DRAWER_QUERY, SidebarToggle, useMediaQuery } from "agentic-ui-kit";
 import type { Part } from "agentic-ui-kit/core";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, get, post, qs } from "../api";
 import type { ChannelHeader, Conversation, ConversationSummary, TranscriptMessage, TranscriptPage } from "../api-types";
 import { chatMessages, emptyChat, type ChatState, type RunStep } from "../events";
@@ -17,7 +17,7 @@ import { ReplyBox } from "./reply-box";
 import { conversationsQuery } from "./queries";
 import { RunsPanel } from "./runs";
 import { ShareChannelDialog } from "./share-channel";
-import { applyTranscriptEvent, channelMessage, displayMessages, foldOfPart, foldUnused, metaOfPart, runIdsOf, type FoldRow, type Meta, type TranscriptEvent } from "./transcript";
+import { applyTranscriptEvent, channelMessage, displayMessages, foldOfPart, foldUnused, markUsed, metaOfPart, unusedIds, runIdsOf, type FoldRow, type Meta, type TranscriptEvent } from "./transcript";
 
 const KINDS = ["message", "run.start", "run.delta", "run.tool", "run.end"] as const;
 /** Messages per request. The bot's limit is 100. */
@@ -108,6 +108,16 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
   // Live events from after the page. A reloaded page (after a reset) reopens the stream.
   const after = newest.data?.streamId;
   const loaded = newest.dataUpdatedAt;
+  // After a run ends, other people's messages are checked again: a reply run may have used them now.
+  const refreshUsed = () => {
+    const ids = unusedIds(stateRef.current?.saved ?? []);
+    if (!ids.length) return;
+    get<{ used: string[] }>(`${base}/used${qs({ server: serverId, ids: ids.join(",") })}`)
+      .then(({ used }) => setState((s) => s && { ...s, saved: markUsed(s.saved, new Set(used)) }))
+      .catch(() => { /* the folds stay as they are */ });
+  };
+  const stateRef = useRef(state);
+  stateRef.current = state;
   useEffect(() => {
     if (after === undefined) return;
     const source = new EventSource(`${base}/stream${qs({ server: serverId, after })}`);
@@ -120,6 +130,7 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
         setState((s) => (s ? applyTranscriptEvent(s, bot, channelId, user) : s));
         // A new message or a finished run can change the conversations and the open conversation.
         if (type === "message" || type === "run.end") {
+          if (type === "run.end" || (data as { message?: { slopbot?: boolean } }).message?.slopbot) refreshUsed();
           void client.invalidateQueries({ queryKey: [...scope, "runs"] });
           void client.invalidateQueries({ queryKey: [...scope, "run"] });
         }

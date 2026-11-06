@@ -2,7 +2,7 @@ import type { Message } from "agentic-ui-kit/core";
 import { describe, expect, test } from "vitest";
 import type { TranscriptMessage } from "../api-types";
 import { emptyChat, chatMessages, type RunStep } from "../events";
-import { applyTranscriptEvent, channelMessage, displayMessages, foldOfPart, foldUnused, metaOf, type TranscriptEvent } from "./transcript";
+import { applyTranscriptEvent, channelMessage, displayMessages, foldOfPart, foldUnused, markUsed, metaOf, unusedIds, type TranscriptEvent } from "./transcript";
 
 const AT = Date.parse("2026-11-05T10:00:00Z");
 const human: TranscriptMessage = {
@@ -83,10 +83,11 @@ describe("displayMessages", () => {
 describe("foldUnused", () => {
   const other = (id: string, patch: Partial<TranscriptMessage> = {}): TranscriptMessage => ({ ...human, id, author: "u2", authorName: "Bo", ...patch });
   const page = (items: TranscriptMessage[]) => displayMessages(items.map((m) => channelMessage(m, VIEWER, "c1")), new Map());
-  /** The rows as the reader sees them: a fold row as "fold <count>", a message as its ID. */
-  const layout = (rows: Message[]) => rows.map((row) => {
+  /** The rows as the reader sees them: a fold row as "fold <count>", a message as its ID. A fold rides on the message under it. */
+  const layout = (rows: Message[]) => rows.flatMap((row) => {
     const fold = foldOfPart(row.parts[0]!);
-    return fold ? `fold ${fold.count}${fold.open ? " open" : ""}` : row.id;
+    const label = fold ? [`fold ${fold.count}${fold.open ? " open" : ""}`] : [];
+    return row.id.startsWith("fold:") ? label : [...label, row.id];
   });
 
   test("unused messages from other people fold into one row, and a message a reply used breaks the run", () => {
@@ -107,5 +108,32 @@ describe("foldUnused", () => {
   test("nothing folds from the trigger of a live run onward", () => {
     const rows = foldUnused(page([other("a"), other("trigger"), other("c")]), ["trigger"], new Set());
     expect(layout(rows)).toEqual(["fold 1", "trigger", "c"]);
+  });
+});
+
+describe("used refresh", () => {
+  test("asks only about other people's unused messages, and a used one stops folding", () => {
+    const other = channelMessage(human, VIEWER, "c1");
+    const mine = channelMessage({ ...human, id: "m3", author: VIEWER }, VIEWER, "c1");
+    const reply = channelMessage(slopbot, VIEWER, "c1");
+    const list = [other, mine, reply];
+    expect(unusedIds(list)).toEqual(["m1"]);
+    const marked = markUsed(list, new Set(["m1"]));
+    expect(metaOf(marked[0]!)?.used).toBe(true);
+    expect(unusedIds(marked)).toEqual([]);
+    expect(marked[1]).toBe(mine);
+  });
+});
+
+describe("fold row placement", () => {
+  test("the fold rides on the next message from someone else, so it gets no copy button and time of its own", () => {
+    const other = (id: string, used = false): TranscriptMessage => ({ ...human, id, author: "u2", authorName: "Bo", used });
+    const rows = foldUnused(displayMessages([other("a"), other("b", true)].map((m) => channelMessage(m, VIEWER, "c1")), new Map()), [], new Set());
+    expect(rows.map((row) => row.id)).toEqual(["b"]);
+    expect(foldOfPart(rows[0]!.parts[0]!)?.count).toBe(1);
+  });
+  test("before the viewer's own message the fold is a row of its own", () => {
+    const rows = foldUnused(displayMessages([{ ...human, id: "a", author: "u2" }, { ...human, id: "m", author: VIEWER, used: true }].map((m) => channelMessage(m, VIEWER, "c1")), new Map()), [], new Set());
+    expect(rows.map((row) => row.id)).toEqual(["fold:a:row", "m"]);
   });
 });

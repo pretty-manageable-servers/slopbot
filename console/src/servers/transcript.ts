@@ -146,22 +146,49 @@ function unusedByOthers(message: Message): boolean {
 export function foldUnused(messages: readonly Message[], live: readonly string[], shown: ReadonlySet<string>): Message[] {
   const guard = Math.min(messages.length, ...live.map((id) => Math.max(0, messages.findIndex((message) => message.id === id))));
   const rows: Message[] = [];
+  // The fold row rides on top of a message from someone else (the open run's first one, or the next one), so the kit
+  // draws no copy button and time for it. Only the viewer's own next message, or none, needs a row of its own.
+  let carry: Part | null = null;
+  const withCarry = (message: Message): Message => {
+    const part = carry;
+    carry = null;
+    return { ...message, parts: [part!, ...message.parts] };
+  };
+  const push = (message: Message) => {
+    if (carry && message.role !== "assistant") rows.push({ id: carry.id, parentId: null, role: "assistant", status: "done", createdAt: message.createdAt, parts: [carry] }), carry = null;
+    rows.push(carry ? withCarry(message) : message);
+  };
   let run: Message[] = [];
   const flush = () => {
     const first = run[0];
     if (!first) return;
     const row: FoldRow = { key: first.id, count: run.length, open: shown.has(first.id) };
-    rows.push({ id: `fold:${first.id}`, parentId: null, role: "assistant", status: "done", createdAt: first.createdAt, parts: [{ type: "custom", id: `fold:${first.id}:row`, status: "done", kind: FOLD, data: row }] });
-    if (row.open) rows.push(...run);
+    carry = { type: "custom", id: `fold:${first.id}:row`, status: "done", kind: FOLD, data: row };
+    if (row.open) for (const message of run) push(message);
     run = [];
   };
   messages.forEach((message, index) => {
     if (index < guard && unusedByOthers(message)) run.push(message);
     else {
       flush();
-      rows.push(message);
+      push(message);
     }
   });
   flush();
+  if (carry) rows.push({ id: (carry as Part).id, parentId: null, role: "assistant", status: "done", createdAt: rows.at(-1)?.createdAt ?? new Date(0).toISOString(), parts: [carry] });
   return rows;
+}
+
+/** The ids of other people's messages no reply used yet, newest 200: the ones a finished run may have used now. */
+export function unusedIds(messages: Message[]): string[] {
+  return messages.filter(unusedByOthers).slice(-200).map((message) => message.id);
+}
+
+/** Marks the given messages as used by a reply, so they stop folding. */
+export function markUsed(messages: Message[], used: ReadonlySet<string>): Message[] {
+  if (!used.size) return messages;
+  return messages.map((message) => {
+    if (!used.has(message.id)) return message;
+    return { ...message, parts: message.parts.map((part) => { const meta = metaOfPart(part); return meta ? { ...part, data: { ...meta, used: true } } as Part : part; }) };
+  });
 }
