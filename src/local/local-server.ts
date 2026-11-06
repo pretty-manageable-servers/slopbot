@@ -6,6 +6,7 @@ import type { DegradedRouting, WorkspacePorts } from "../engine/ports.js";
 import { WebChatGateway } from "../engine/web-chat-gateway.js";
 import { EngineWorkspace } from "../engine/workspace.js";
 import { startAttachLinkSweep, type AttachQueue } from "../attach-file.js";
+import { startCodeMaintenance } from "../code-maintenance.js";
 import { ToolError, logError } from "../errors.js";
 import { isPrivateChannel } from "../private-chat.js";
 import { LocalDiskStorage } from "../web-chat-images.js";
@@ -26,6 +27,7 @@ export class LocalServer {
   /** What the workspace calls back into; public so tests can exercise the port rules directly. */
   readonly ports: WorkspacePorts;
   private gateway: WebChatGateway | undefined;
+  private codeMaintenance: (() => void) | undefined;
   private attachSweep: (() => void) | undefined;
 
   constructor(private readonly deps: LocalServerDeps) {
@@ -61,7 +63,7 @@ export class LocalServer {
     void workspace.purgeAndIndex().catch(error => logError("Database startup indexing failed", error, { server }));
     for (const channel of await store.liveWebChatChannels(server)) workspace.openChat(channel);
     workspace.worker.start();
-    // startCodeMaintenance lives in adapters/discord-code.ts, which imports discord.js, so local mode skips it.
+    this.codeMaintenance = startCodeMaintenance(store, server);
     this.attachSweep = startAttachLinkSweep(store, this.deps.images, server);
     workspace.reminders.start();
     workspace.schedules.start();
@@ -70,6 +72,7 @@ export class LocalServer {
 
   async stop(): Promise<void> {
     const workspace = this.workspace;
+    this.codeMaintenance?.();
     this.attachSweep?.();
     await workspace.reminders.stop();
     await workspace.schedules.stop();
