@@ -25,6 +25,8 @@ export interface EngineEventStore {
   appendEngineEvent(row: EngineEventRow): Promise<number>;
   engineEventsAfter(server: string, channel: string, after: number, limit: number): Promise<EngineEnvelope[]>;
   engineTurnEvents(server: string, channel: string, turn: string): Promise<EngineEvent[]>;
+  /** The highest seq saved for the conversation, 0 when there is none. */
+  latestEngineSeq(server: string, channel: string): Promise<number>;
 }
 
 /** An event waiting to be saved and sent. `save` is false for a conversation whose switch is off. */
@@ -99,6 +101,10 @@ export class EventLog implements EngineEventLog {
 
   async after(conversation: Conversation, seq: number, limit: number): Promise<EngineEnvelope[]> {
     return this.store ? this.store.engineEventsAfter(conversation.server, conversation.channel, seq, limit) : [];
+  }
+
+  async latest(conversation: Conversation): Promise<number> {
+    return this.store ? this.store.latestEngineSeq(conversation.server, conversation.channel) : 0;
   }
 
   async turn(conversation: Conversation, turn: string): Promise<EngineEvent[]> {

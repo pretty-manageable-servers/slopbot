@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { api, get, post, qs } from "../api";
 import type { ChannelHeader, Conversation, ConversationSummary, TranscriptMessage, TranscriptPage } from "../api-types";
 import type { EngineEnvelope, EngineEvent } from "@slopbot/contracts";
-import { chatMessages, emptyChat, repliesOf, type ChatState, type TurnSource } from "../events";
+import { chatMessages, emptyChat, repliesOf, runTurnsOf, type ChatState, type TurnSource } from "../events";
 import { useTurns } from "../use-turns";
 import { sessionQuery } from "../data";
 import { Loader, Logo } from "../logo";
@@ -102,7 +102,7 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
   // The newest page starts the page. A reload of it starts over.
   useEffect(() => {
     if (!newest.data) return;
-    setState(emptyChat(newest.data.messages.map((message) => channelMessage(message, user, channelId)), repliesOf(newest.data.messages)));
+    setState(emptyChat(newest.data.messages.map((message) => channelMessage(message, user, channelId)), repliesOf(newest.data.messages), runTurnsOf(newest.data.messages)));
     setHasMore(newest.data.hasMore);
   }, [newest.data, user, channelId]);
 
@@ -150,10 +150,9 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
   const [convState, setConvState] = useState<ChatState | null>(null);
   useEffect(() => {
     const found = conversation.data?.messages;
-    setConvState(found ? emptyChat(found.map((message) => channelMessage(message, user, channelId)), repliesOf(found)) : null);
+    setConvState(found ? emptyChat(found.map((message) => channelMessage(message, user, channelId)), repliesOf(found), runTurnsOf(found)) : null);
   }, [conversation.data, user, channelId]);
   const source = useMemo<TurnSource>(() => ({
-    turnOfRun: (id) => api.run(id).then((found) => found.requestId),
     turnEvents: (turn) => get<{ events: EngineEvent[] }>(`${base}/turns/${encodeURIComponent(turn)}/events${qs({ server: serverId })}`).then((found) => found.events),
   }), [base, serverId]);
   useTurns(state, setState, source);

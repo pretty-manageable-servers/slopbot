@@ -9,10 +9,11 @@ import type { Message } from "../src/domain.js";
 import type { ObjectStorageProvider } from "../src/object-storage.js";
 import { issueDraftTools } from "../src/issue-drafts.js";
 import { createConsole } from "../src/clients/web/web-console.js";
-import { createChatRoutes, WebChatGateway, WebChatService } from "../src/clients/web/web-chats.js";
+import { createChatRoutes, WebChatService } from "../src/clients/web/web-chats.js";
+import { WebChatGateway } from "../src/engine/web-chat-gateway.js";
 import { chatDeps } from "./chat-deps.js";
 import { privateChannel } from "../src/private-chat.js";
-import { runEvents } from "../src/run-events.js";
+import { engineEvents } from "../src/engine/event-log.js";
 import { ToolRegistry } from "../src/tools.js";
 import { UiRuntime } from "../src/ui/runtime.js";
 import type { UiDocument } from "../src/ui/schema.js";
@@ -56,7 +57,7 @@ interface Fixture {
 async function setup(t: TestContext): Promise<Fixture> {
   const store = new SQLiteStore(":memory:");
   t.after(() => store.close());
-  runEvents.attach(store);
+  engineEvents.attach(store);
   const client = new FakeClient();
   const tools = new ToolRegistry(store, async () => true);
   for (const tool of issueDraftTools({ store, client: client as unknown as OperationsClient, authorize: async () => {} })) tools.register(tool);
@@ -87,7 +88,7 @@ async function setup(t: TestContext): Promise<Fixture> {
     access: new ChannelAccess({ async facts() { return undefined; } }),
     images: new MemoryStorage(),
   });
-  const service = new WebChatService(store, host, undefined, () => ++clock);
+  const service = new WebChatService(store, host, () => ++clock);
   const gateway = new WebChatGateway(store, SERVER);
 
   const logins: Record<string, { cookie: string; csrf: string }> = {};

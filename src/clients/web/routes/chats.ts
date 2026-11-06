@@ -87,12 +87,6 @@ export function chatRoutes(service: WebChatService): ChatRoutes {
   });
   app.post('/:id/stop', async c => json(200, await service.stop(userOf(c), c.req.param('id'))));
   app.post('/:id/ui/:card/act', async c => json(200, await service.act(userOf(c), c.req.param('id'), c.req.param('card'), record.parse(looseBody(c.get('body'))))));
-  app.get('/:id/stream', async c => {
-    applyOut(c);
-    await service.openStream(c.env.incoming, c.env.outgoing, userOf(c), c.req.param('id'));
-    return alreadySent();
-  });
-
   app.get('/:id/events', async c => {
     applyOut(c);
     await service.openEvents(c.env.incoming, c.env.outgoing, userOf(c), c.req.param('id'));

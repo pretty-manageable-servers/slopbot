@@ -12,6 +12,7 @@ export const ChatMessage = z.object({            // the same fields as Transcrip
   username: z.string().nullable(), avatarUrl: z.string().nullable(), text: z.string(),
   timestamp: z.number().nullable(), editedAt: z.number().nullable(), slopbot: z.boolean(),
   runIds: z.array(z.string()), used: z.boolean(),
+  turn: z.string().optional(),                   // the turn of a saved reply; set on a page load, not on a live upsert
   images: z.array(z.object({ imageId: z.string(), name: z.string(), contentType: z.string(), size: z.number() })).optional(),
   remoteImages: z.array(z.object({ src: z.string(), name: z.string(), size: z.number() })).optional(),
   files: z.array(z.unknown()).optional(),        // ChatFileView, src/web-chat-files.ts:19

@@ -78,6 +78,24 @@ test("after returns saved events in publish order, and turn returns only that tu
   assert.deepEqual(await log.turn(conversation, "m1"), all.slice(0, 4).map(envelope => envelope.event));
 });
 
+test("latest is the highest saved seq of the conversation, so after(latest) holds only newer events", async t => {
+  const store = setup(t);
+  const log = new EventLog();
+  log.attach(store);
+  const conversation = { server, channel: switchedOn };
+  assert.equal(await log.latest(conversation), 0);
+  log.publish(conversation, { type: "turn.start", turn: "m1" });
+  log.publish(conversation, { type: "turn.end", turn: "m1", status: "done" });
+  log.publish({ server, channel: "other-channel" }, { type: "turn.start", turn: "x" });
+  await log.idle();
+  const seen = await log.latest(conversation);
+  assert.deepEqual(await log.after(conversation, seen, 100), []);
+  log.publish(conversation, { type: "turn.start", turn: "m2" });
+  await log.idle();
+  assert.deepEqual((await log.after(conversation, seen, 100)).map(envelope => envelope.event), [{ type: "turn.start", turn: "m2" }]);
+  assert.ok(await log.latest(conversation) > seen);
+});
+
 test("retention deletes rows older than the cutoff, then the oldest rows beyond maxRows", async t => {
   t.mock.timers.enable({ apis: ["Date"], now: 1_000 });
   const store = setup(t);

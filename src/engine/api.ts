@@ -16,9 +16,11 @@ export interface Workspace {
 }
 
 export interface EngineEventLog {
-  /** Every listener gets every event. A row is saved only when the transcript switch is on (the RunEvents.switchOn rule), or for a web chat. */
+  /** Every listener gets every event. A row is saved only when the transcript switch is on, or for a web chat. */
   publish(conversation: { server: string; channel: string }, event: EngineEvent): void;
   after(conversation: { server: string; channel: string }, seq: number, limit: number): Promise<EngineEnvelope[]>;
+  /** The highest saved seq of the conversation, 0 when none. A page that opens /events?after=<seq> from it misses and repeats nothing. */
+  latest(conversation: { server: string; channel: string }): Promise<number>;
   turn(conversation: { server: string; channel: string }, turn: string): Promise<EngineEvent[]>;
   subscribe(conversation: { server: string; channel: string }, listener: (envelope: EngineEnvelope) => void): () => void;
 }

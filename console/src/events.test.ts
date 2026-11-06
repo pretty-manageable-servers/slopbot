@@ -1,6 +1,6 @@
 import type { EngineEnvelope, EngineEvent } from "@slopbot/contracts";
 import { describe, expect, test } from "vitest";
-import { applyEngineEvent, chatMessages, emptyChat, loadTurns, pendingSend, repliesOf, toKitMessage, unloadedReplies, withLoadedTurns, withPending, type BotMessage, type ChatState } from "./events";
+import { applyEngineEvent, chatMessages, emptyChat, loadTurns, pendingSend, repliesOf, runTurnsOf, toKitMessage, unloadedReplies, withLoadedTurns, withPending, type BotMessage, type ChatState } from "./events";
 
 const conversation = { server: "s1", channel: "c1" };
 let seq = 0;
@@ -12,7 +12,7 @@ const message = (patch: Partial<BotMessage>): BotMessage => ({
   editedAt: null, slopbot: false, runIds: [], used: false, ...patch,
 });
 const request = message({});
-const reply = message({ id: "m2", text: "Done.", slopbot: true, runIds: ["r1"], timestamp: 2000 });
+const reply = message({ id: "m2", text: "Done.", slopbot: true, runIds: ["r1"], turn: "m1", timestamp: 2000 });
 
 const markup = '{"markup":"<Stack />"}';
 /** One turn: thinking, a streamed show_ui call, a second show_ui call, text, and the saved reply. */
@@ -35,9 +35,9 @@ const toolCalls = (messages: ReturnType<typeof chatMessages>) => messages.flatMa
 describe("a turn as kit messages", () => {
   test("the same events give the same message live and loaded", async () => {
     const live = foldEvents(turn);
-    const page = emptyChat([toKitMessage(reply, "c1")], repliesOf([reply]));
+    const page = emptyChat([toKitMessage(reply, "c1")], repliesOf([reply]), runTurnsOf([reply]));
     const reloaded = withLoadedTurns(page, await loadTurns(page, ["m2"], {
-      turnOfRun: async () => "m1", turnEvents: async () => turn.filter((e) => e.type !== "message.upsert"),
+      turnEvents: async () => turn.filter((e) => e.type !== "message.upsert"),
     }));
     const shown = chatMessages(live);
     expect(shown.map((m) => m.id)).toEqual(["m2"]);
@@ -90,15 +90,15 @@ describe("loading a reply", () => {
     const saved = foldEvents([turn[10]!, turn[11]!], joined);
     expect(chatMessages(saved).map((m) => m.id)).toEqual(["m2"]);
     expect(unloadedReplies(saved)).toEqual(["m2"]);
-    const full = withLoadedTurns(saved, await loadTurns(saved, ["m2"], { turnOfRun: async () => "m1", turnEvents: async () => turn.slice(0, 11) }));
+    const full = withLoadedTurns(saved, await loadTurns(saved, ["m2"], { turnEvents: async () => turn.slice(0, 11) }));
     expect(chatMessages(full)[0]!.parts.map((p) => p.type)).toEqual(["thinking", "tool_call", "tool_call", "text"]);
   });
 
   test("a reply with no live events asks for its turn once, and a failed load leaves it as it is", async () => {
-    const state = emptyChat([], repliesOf([reply]));
+    const state = emptyChat([], repliesOf([reply]), runTurnsOf([reply]));
     const saved = fold([envelope({ type: "message.upsert", message: reply })], state);
     expect(unloadedReplies(saved)).toEqual(["m2"]);
-    const found = await loadTurns(saved, ["m2"], { turnOfRun: async () => "m1", turnEvents: async () => { throw new Error("offline"); } });
+    const found = await loadTurns(saved, ["m2"], { turnEvents: async () => { throw new Error("offline"); } });
     expect(found.loaded).toEqual({});
     expect(chatMessages(withLoadedTurns(saved, found))[0]!.parts.map((p) => p.type)).toEqual(["text"]);
   });

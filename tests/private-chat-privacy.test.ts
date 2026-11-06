@@ -183,7 +183,7 @@ test("a private chat is shared by its owner only, as a snapshot, and deleting it
     workspace: serverId => serverId === guild ? {} : undefined,
     access: new ChannelAccess({ async facts() { return undefined; } }),
   });
-  const chats = new WebChatService(store, host, { changed() { /* no live streams here */ } } as never, () => 2_000);
+  const chats = new WebChatService(store, host, () => 2_000);
   const chat = "0123456789abcdef0123456789abcdef";
   const shares = new ShareService({ store, access: { check: async () => ({ view: true }) }, rule: { manager: async (user: string) => user === "manager" }, member: async (user: string, serverId: string) => serverId === guild && members.has(user) } as never);
 
@@ -285,7 +285,7 @@ test("continued share has no file labels", async t => {
     member: () => true,
     access: new ChannelAccess({ async facts() { return undefined; } }),
   });
-  const chats = new WebChatService(store, host, { changed() { /* no live streams here */ } } as never, () => 2_000);
+  const chats = new WebChatService(store, host, () => 2_000);
   const { id } = await chats.continueShare("alice", "share-old", { snapshot: async () => snapshot } as never);
   const saved = await store.conversationMessages(guild, privateChannel(id), undefined, 10);
   assert.deepEqual(saved.map(message => message.text), ["look"], "the copied text has no label");

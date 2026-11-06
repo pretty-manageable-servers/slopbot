@@ -8,7 +8,7 @@ import { attachmentIds, attachmentKind, attachmentProblem } from "./chat/attachm
 import { ShareDialog } from "./chat/share-dialog";
 import { UsageMeter } from "./chat/usage-meter";
 import type { EngineEnvelope } from "@slopbot/contracts";
-import { applyEngineEvent, chatMessages, emptyChat, pendingSend, repliesOf, toKitMessage, withPending, type PendingSend, type BotMessage, type ChatState, type TurnSource } from "./events";
+import { applyEngineEvent, chatMessages, emptyChat, pendingSend, repliesOf, runTurnsOf, toKitMessage, withPending, type PendingSend, type BotMessage, type ChatState, type TurnSource } from "./events";
 import { useTurns } from "./use-turns";
 import { Loader, Logo } from "./logo";
 import { useConsoleDictation } from "./ui/dictation";
@@ -27,7 +27,7 @@ export const linkedAsks = new Map<string, string>();
 const pendingSends = new Map<string, PendingSend>();
 
 /** A new chat has no turns to load. */
-const NO_TURNS: TurnSource = { turnOfRun: async () => undefined, turnEvents: async () => [] };
+const NO_TURNS: TurnSource = { turnEvents: async () => [] };
 
 /** The one model for now. Its effort levels are the bot's (EFFORTS in src/domain.ts). */
 const MODELS = [{
@@ -83,7 +83,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
       const page = await api.messages(id);
       if (closed) return;
       const messages = page.messages as BotMessage[];
-      setState(emptyChat(messages.map((m) => toKitMessage(m, id)), repliesOf(messages)));
+      setState(emptyChat(messages.map((m) => toKitMessage(m, id)), repliesOf(messages), runTurnsOf(messages)));
       // Live engine events from the newest on. The steps of earlier replies are loaded by useTurns.
       source = new EventSource(api.eventsUrl(id));
       source.addEventListener("engine", (event) => {
@@ -100,7 +100,6 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
   }, [id]);
 
   const turnSource = useMemo<TurnSource | undefined>(() => (id ? {
-    turnOfRun: (run) => api.run(run).then((found) => found.requestId),
     turnEvents: (turn) => api.turnEvents(id, turn).then((found) => found.events),
   } : undefined), [id]);
   useTurns(state, setState, turnSource ?? NO_TURNS);

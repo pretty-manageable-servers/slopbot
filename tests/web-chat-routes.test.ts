@@ -8,7 +8,7 @@ import { createConsole } from "../src/clients/web/web-console.js";
 import { createChatRoutes, WebChatService } from "../src/clients/web/web-chats.js";
 import { chatDeps } from "./chat-deps.js";
 import { privateChannel } from "../src/private-chat.js";
-import { runEvents } from "../src/run-events.js";
+import { engineEvents } from "../src/engine/event-log.js";
 import { createTranscripts } from "../src/clients/web/web-transcripts.js";
 import { ShareService } from "../src/shares.js";
 import type { UserLimit } from "../src/user-limiter.js";
@@ -59,7 +59,7 @@ async function setup(t: TestContext): Promise<Fixture> {
   const store = new SQLiteStore(":memory:");
   t.after(() => store.close());
   // Live events are saved and sent only once the global bus has a store, as in production.
-  runEvents.attach(store);
+  engineEvents.attach(store);
   const members = new Set([ALICE, BOB]);
   const membership = { fail: false };
   const shareNow = { now: Date.now() };
@@ -74,7 +74,7 @@ async function setup(t: TestContext): Promise<Fixture> {
     access: new ChannelAccess({ async facts() { return undefined; } }),
     images: storage,
   });
-  const service = new WebChatService(store, host, undefined, () => ++clock);
+  const service = new WebChatService(store, host, () => ++clock);
   const logins: Record<string, { cookie: string; csrf: string }> = {};
   for (const user of [ALICE, BOB, CAROL]) {
     const id = randomBytes(32).toString("hex"), csrf = `csrf-${user}`;
@@ -185,7 +185,7 @@ test("the messages route returns a page with hasMore and streamId, and pages bac
   assert.deepEqual(Object.keys(newest.json).sort(), ["hasMore", "messages", "streamId"]);
   assert.deepEqual(newest.json.messages.map((item: { text: string }) => item.text), ["two", "three"], "messages are oldest first within the page");
   assert.equal(newest.json.hasMore, true);
-  assert.equal(typeof newest.json.streamId, "number");
+  assert.ok(newest.json.streamId > 0, "the newest saved engine seq");
 
   const older = await f.call(ALICE, "GET", `/api/chats/${id}/messages?limit=2&before=${newest.json.messages[0].id}`);
   assert.deepEqual(older.json.messages.map((item: { text: string }) => item.text), ["one"]);
@@ -203,31 +203,6 @@ test("the messages route returns a page with hasMore and streamId, and pages bac
   }
 });
 
-test("the stream route sends the saved message as an event after the cursor", async t => {
-  const f = await setup(t);
-  const id = await newChat(f);
-  const controller = new AbortController();
-  t.after(() => controller.abort());
-  const stream = await fetch(`${f.base}/api/chats/${id}/stream?after=0`, { headers: { Cookie: f.cookie(ALICE) }, signal: controller.signal });
-  assert.equal(stream.status, 200);
-  assert.match(stream.headers.get("content-type") ?? "", /^text\/event-stream/);
-  const reader = stream.body!.getReader();
-  const decoder = new TextDecoder();
-  let seen = "";
-  const until = async (pattern: RegExp) => {
-    while (!pattern.test(seen)) {
-      const chunk = await reader.read();
-      if (chunk.done) throw new Error("stream ended early");
-      seen += decoder.decode(chunk.value, { stream: true });
-    }
-  };
-  await until(/retry: 3000/);
-  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "streamed hello" })).status, 201);
-  await until(/event: message\ndata: .*streamed hello/);
-  assert.match(seen, /id: \d+\nevent: message/, "events carry stream IDs");
-  controller.abort();
-});
-
 test("only the owner can read, send, rename, delete or stream a chat; others get 404", async t => {
   const f = await setup(t);
   const id = await newChat(f);
@@ -238,7 +213,7 @@ test("only the owner can read, send, rename, delete or stream a chat; others get
   assert.equal((await f.call(BOB, "POST", `/api/chats/${id}/messages`, { text: "intrude" })).status, 404);
   assert.equal((await f.call(BOB, "PATCH", `/api/chats/${id}`, { title: "Stolen" })).status, 404);
   assert.equal((await f.call(BOB, "DELETE", `/api/chats/${id}`)).status, 404);
-  const blocked = await fetch(`${f.base}/api/chats/${id}/stream`, { headers: { Cookie: f.cookie(BOB) } });
+  const blocked = await fetch(`${f.base}/api/chats/${id}/events`, { headers: { Cookie: f.cookie(BOB) } });
   assert.equal(blocked.status, 404);
   assert.equal(f.received.length, 1, "only Alice's message reached the bot");
 
@@ -278,7 +253,7 @@ test("a usage limit refuses the message before it is saved, with the reset time"
   assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "after the reset" })).status, 201);
 });
 
-test("a reply run of a private chat opens for its owner only", async t => {
+test("the turn of a private chat reply opens for its owner only", async t => {
   const f = await setup(t);
   const id = await newChat(f);
   const sent = await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "what is the plan?" });
@@ -288,13 +263,12 @@ test("a reply run of a private chat opens for its owner only", async t => {
   await f.store.appendEvent("run-private-1", 0, { kind: "text", payload: { text: "The plan is ready." } });
   await f.store.complete("run-private-1", undefined, [], "The plan is ready.");
 
-  const own = await f.call(ALICE, "GET", "/api/runs/run-private-1");
+  const own = await f.call(ALICE, "GET", `/api/chats/${id}/turns/${request.id}/events`);
   assert.equal(own.status, 200);
-  assert.equal(own.json.channel, `web:${id}`);
-  assert.deepEqual(own.json.steps, [{ type: "text", text: "The plan is ready." }]);
-  assert.equal((await f.call(BOB, "GET", "/api/runs/run-private-1")).status, 403, "another member cannot read the run");
-  assert.equal((await f.call(CAROL, "GET", "/api/runs/run-private-1")).status, 403, "a non-member cannot read the run");
-  assert.equal((await f.call(null, "GET", "/api/runs/run-private-1")).status, 403, "no session");
+  assert.ok(own.json.events.some((event: { type: string; text?: string }) => event.type === "text.delta" && event.text === "The plan is ready."));
+  assert.equal((await f.call(BOB, "GET", `/api/chats/${id}/turns/${request.id}/events`)).status, 404, "another member cannot read the turn");
+  assert.equal((await f.call(CAROL, "GET", `/api/chats/${id}/turns/${request.id}/events`)).status, 404, "a non-member cannot read the turn");
+  assert.equal((await f.call(null, "GET", `/api/chats/${id}/turns/${request.id}/events`)).status, 401, "no session");
   assert.equal((await f.call(ALICE, "GET", `/api/conversations/${id}/messages?server=${SERVER}`)).status, 400, "the transcript routes do not serve private chats");
 });
 

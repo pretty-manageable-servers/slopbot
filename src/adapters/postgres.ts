@@ -21,7 +21,6 @@ import type { BlockingOperation, ToolArgs, ToolCall, ToolContext, ToolOperation 
 import type { HistoryQuery, HistoryPage } from '../search/history-search.js';
 import { FUZZY_SCAN, FUZZY_TERMS, fuzzyWords, likePattern, rankFuzzy, type FuzzyHit, type FuzzyQuery } from '../search/fuzzy.js';
 import type { AppRecord } from '../records.js';
-import type { ConversationEvent } from '../run-events.js';
 import type { EngineEventRow } from '../engine/event-log.js';
 import type { EngineEnvelope, EngineEvent } from '@slopbot/contracts';
 import type { ChannelReply, ChannelRun, RunSource } from '../conversation-groups.js';
@@ -634,21 +633,8 @@ export class PostgresStore {
         return (await this.db.prepare("SELECT calls,results,diagnostic_args FROM agent_turns WHERE server=? AND message_id=? AND valid=1 ORDER BY sequence")
             .all(server, messageId)).map(row => ({ calls: JSON.parse(String(row.calls)), results: JSON.parse(String(row.results)), diagnosticArgs: row.diagnostic_args === null ? null : JSON.parse(String(row.diagnostic_args)) }));
     }
-    async appendConversationEvent(row: { server: string; channel: string; kind: string; ref: string; data: Json; createdAt: number }): Promise<number> {
-        const saved = await this.db.prepare("INSERT INTO conversation_events(server,channel,kind,ref,data,created_at) VALUES(?,?,?,?,?,?) RETURNING stream_id")
-            .get(row.server, row.channel, row.kind, row.ref, JSON.stringify(row.data), row.createdAt);
-        return Number(saved!.stream_id);
-    }
-    async latestStreamId(server: string, channel: string): Promise<number> {
-        return Number((await this.db.prepare("SELECT COALESCE(MAX(stream_id),0) AS id FROM conversation_events WHERE server=? AND channel=?").get(server, channel))!.id);
-    }
-    async conversationEventsAfter(server: string, channel: string, after: number, limit: number): Promise<ConversationEvent[]> {
-        return (await this.db.prepare("SELECT stream_id,server,channel,kind,ref,data,created_at FROM conversation_events WHERE server=? AND channel=? AND stream_id>? ORDER BY stream_id LIMIT ?")
-            .all(server, channel, after, limit)).map(row => ({ streamId: Number(row.stream_id), server: String(row.server), channel: String(row.channel), kind: String(row.kind) as ConversationEvent["kind"], ref: String(row.ref), data: JSON.parse(String(row.data)) as Json, createdAt: Number(row.created_at) }));
-    }
-    async oldestStreamId(server: string, channel: string): Promise<number | undefined> {
-        const row = (await this.db.prepare("SELECT MIN(stream_id) AS id FROM conversation_events WHERE server=? AND channel=?").get(server, channel))!;
-        return row.id === null ? undefined : Number(row.id);
+    async latestEngineSeq(server: string, channel: string): Promise<number> {
+        return Number((await this.db.prepare("SELECT COALESCE(MAX(seq),0) AS id FROM engine_events WHERE server=? AND channel=?").get(server, channel))!.id);
     }
     async appendEngineEvent(row: EngineEventRow): Promise<number> {
         const saved = await this.db.prepare("INSERT INTO engine_events(server,channel,turn,type,data,created_at) VALUES(?,?,?,?,?,?) RETURNING seq")

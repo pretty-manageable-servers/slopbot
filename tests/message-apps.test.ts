@@ -14,7 +14,7 @@ test("Continue in Slopbot web makes a private chat that starts with the message"
     workspace: server => server === guild ? { openChat(channel) { opened.push(channel); } } : undefined,
     access: new ChannelAccess({ async facts() { return undefined; } }),
   });
-  const chats = new WebChatService(store, host, { changed() { /* none */ } } as never, () => 2_000);
+  const chats = new WebChatService(store, host, () => 2_000);
   const source = { id: "900", server: guild, channel: "100000000000000001", author: "bob", authorName: "Bob", text: "the build is broken", timestamp: 1_000 };
 
   await assert.rejects(chats.continueMessage("carol", guild, source), (error: unknown) => error instanceof ChatError, "a non-member gets no chat");

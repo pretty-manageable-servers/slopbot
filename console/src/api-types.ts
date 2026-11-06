@@ -114,7 +114,7 @@ export interface Conversation { id: string; name: string; kind: "channel" | "thr
 export interface ChannelHeader { channel: { id: string; name: string; parent: string | null }; canSend: boolean; canShare: boolean }
 export interface TranscriptMessage {
   id: string; channel: string; author: string; authorName: string; username: string | null; avatarUrl: string | null;
-  text: string; timestamp: number | null; editedAt: number | null; slopbot: boolean; runIds: string[];
+  text: string; timestamp: number | null; editedAt: number | null; slopbot: boolean; runIds: string[]; turn?: string;
   images?: { imageId: string; name: string; contentType: string; size: number }[];
   remoteImages?: { src: string; name: string; size: number }[];
   files?: ChatFile[]; used: boolean;

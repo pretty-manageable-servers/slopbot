@@ -14,7 +14,7 @@ import type { ParticipationGate } from "./participation.js";
 import { UserLimitError, limitReply } from "./user-limiter.js";
 import { isPrivateChannel } from "./private-chat.js";
 import { renderTranscript, saveTaskRefs, type SettingsPort } from "./transcript.js";
-import { slopbotId, type ConversationEventStore } from "./run-events.js";
+import { slopbotId, type SettingReader } from "./run-events.js";
 import { DEFAULT_STATUS_NOTE_MINUTES, DEGRADED_NOTE, type LlmMode, type LlmRouter } from "./llm-mode.js";
 import { DegradedNotes } from "./degraded-notes.js";
 
@@ -350,7 +350,7 @@ export class Bot {
       reference = available.find(item => item.id === reference)?.replyTo;
     }
     const context = message.replyTo ? available.filter(item => referenceIds.has(item.id)) : available;
-    const selfId = "setting" in this.store ? slopbotId(this.store as Pick<ConversationEventStore, "setting">, message.server) : undefined;
+    const selfId = "setting" in this.store ? slopbotId(this.store as SettingReader, message.server) : undefined;
     const replies = (await this.store.modelReplies?.(message.server, context.map(item => item.id))) ?? new Map<string, { runId: string; text: string }>();
     const { items, refs: seedRefs } = renderTranscript(context, selfId, replies, message.replyTo, "s");
     // Model text is a labelled quote here. The seed is one user message, so an assistant turn cannot be sent as a real role.

@@ -72,5 +72,7 @@ export async function deleteChatRows(db: ChatDb, server: string, channel: string
   await db.prepare("DELETE FROM jobs WHERE server=? AND channel=?").run(server, channel);
   await db.prepare("DELETE FROM tool_operations WHERE server=? AND channel=?").run(server, channel);
   await db.prepare("DELETE FROM deliveries WHERE json_extract(message,'$.server')=? AND json_extract(message,'$.channel')=?").run(server, channel);
+  // Rows of the removed live stream stay until they expire, so they go with the chat too.
   await db.prepare("DELETE FROM conversation_events WHERE server=? AND channel=?").run(server, channel);
+  await db.prepare("DELETE FROM engine_events WHERE server=? AND channel=?").run(server, channel);
 }

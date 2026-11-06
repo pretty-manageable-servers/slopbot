@@ -7,7 +7,7 @@ import { ChannelAccess } from "../src/channel-access.js";
 import { createConsole } from "../src/clients/web/web-console.js";
 import { createChatRoutes, WebChatService } from "../src/clients/web/web-chats.js";
 import { chatDeps } from "./chat-deps.js";
-import { runEvents } from "../src/run-events.js";
+import { engineEvents } from "../src/engine/event-log.js";
 import { createTranscripts } from "../src/clients/web/web-transcripts.js";
 import { ShareService } from "../src/shares.js";
 import { ContextBuilder } from "../src/context-builder.js";
@@ -37,7 +37,7 @@ class FakeStorage implements ObjectStorageProvider {
 async function setup(t: TestContext) {
   const store = new SQLiteStore(":memory:");
   t.after(() => store.close());
-  runEvents.attach(store);
+  engineEvents.attach(store);
   const storage = new FakeStorage(), received: Message[] = [];
   const limit = { allowed: true } as { allowed: boolean };
   const host = chatDeps({

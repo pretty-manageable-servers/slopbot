@@ -9,7 +9,7 @@ import type { ChannelAccess, ChannelAccessResult } from "../../channel-access.js
 import { parseToolCalls, toolResult, type ToolCall, type ToolOutput } from "../../tools.js";
 import type { HistoryPage, HistoryQuery } from "../../search/history-search.js";
 import type { FuzzyHit, FuzzyQuery } from "../../search/fuzzy.js";
-import { LIVE_INPUT_TOOLS, reasoningText, runEvents, shortArgs, showsProfile, slopbotId, transcriptMessage, type ChatCard, type ConversationEvent, type ConversationEventStore, type RunEvents, type TranscriptMessage } from "../../run-events.js";
+import { LIVE_INPUT_TOOLS, reasoningText, shortArgs, showsProfile, slopbotId, transcriptMessage, type ChatCard, type TranscriptMessage } from "../../run-events.js";
 import { uiKey, type UiState } from "../../ui/runtime.js";
 import type { RecordStore } from "../../records.js";
 import type { MemberDirectory } from "../../member-directory.js";
@@ -22,11 +22,12 @@ export interface TranscriptRun { id: string; message: Message; purpose: string; 
 export interface ToolTurn { calls: ToolCall[]; results: Record<string, ToolOutput>; diagnosticArgs?: Json[] | null }
 
 /** Everything the web transcript routes read. Both SQLite and PostgreSQL stores implement it. */
-export interface TranscriptStore extends ConversationEventStore, Pick<RecordStore, "record"> {
+export interface TranscriptStore extends Pick<RecordStore, "record"> {
+  setting(server: string, key: string): unknown;
+  taskThreads(server: string): { thread: string; parent: string }[];
   canonicalMessage(server: string, id: string): Message | undefined | Promise<Message | undefined>;
   conversationActivity(server: string): Promise<{ channel: string; newest: number }[]>;
   conversationMessages(server: string, channel: string, before: { time: number; id: string } | undefined, limit: number): Promise<Message[]>;
-  latestStreamId(server: string, channel: string): Promise<number>;
   replyRunIds(server: string, messageId: string): Promise<string[]>;
   /** Which of these messages of one channel a reply run used. Participation runs do not count. */
   usedSourceIds(server: string, channel: string, messageIds: readonly string[]): Promise<string[]>;
@@ -242,23 +243,6 @@ export function textCalls(text: string | null): ToolCall[] {
   try { return parseToolCalls(text) ?? []; } catch { return []; }
 }
 
-export interface StreamOptions {
-  server: string;
-  channel: string;
-  user: string;
-  /** The last stream ID the client has. Events after it are sent first. */
-  cursor: number;
-  store: Pick<TranscriptStore, "conversationEventsAfter" | "oldestStreamId" | "latestStreamId">;
-  bus: RunEvents;
-  access: ChannelAccess;
-  /** True while the switch is on and the user can view the channel. */
-  allowed(): Promise<boolean>;
-  write(text: string): void;
-  end(): void;
-  heartbeatMs?: number;
-  recheckMs?: number;
-}
-
 export interface EngineStreamOptions {
   server: string;
   channel: string;
@@ -266,7 +250,6 @@ export interface EngineStreamOptions {
   /** Saved events after this seq are sent first. Without it the stream starts at the newest event. */
   cursor: number | undefined;
   events: Pick<EngineEventLog, "after" | "subscribe">;
-  bus: Pick<RunEvents, "onChange">;
   access: ChannelAccess;
   /** True while the switch is on and the user can view the channel. */
   allowed(): Promise<boolean>;
@@ -282,7 +265,7 @@ export interface EngineStreamOptions {
  * Deltas saved as one row share its seq, so a live delta is dropped only when the backlog already held its row.
  */
 export function openEngineStream(options: EngineStreamOptions): () => void {
-  const { server, channel, user, events, bus, access } = options;
+  const { server, channel, user, events, access } = options;
   let backlogEnd = options.cursor ?? 0, live = options.cursor === undefined, closed = false;
   const buffer: EngineEnvelope[] = [];
   const timers: ReturnType<typeof setInterval>[] = [];
@@ -310,7 +293,6 @@ export function openEngineStream(options: EngineStreamOptions): () => void {
     if (envelope.seq === undefined) return;
     if (live) send(envelope); else buffer.push(envelope);
   }));
-  offs.push(bus.onChange(server, () => void recheck()));
   offs.push(access.onClear(change => { if (matchesClear(change)) void recheck(); }));
   const heartbeat = setInterval(() => { if (!closed) options.write(": ping\n\n"); }, options.heartbeatMs ?? 15000);
   const recheckTimer = setInterval(() => void recheck(), options.recheckMs ?? 30000);
@@ -342,80 +324,6 @@ export function streamCursor(lastEventId: string | undefined, after: string | nu
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
-/**
- * True when the cursor is older than the oldest kept row of the channel, so some events were
- * pruned. A channel with no rows left counts as pruned too, because a cursor only exists for a saved row.
- */
-async function pruned(store: Pick<TranscriptStore, "oldestStreamId">, server: string, channel: string, cursor: number): Promise<boolean> {
-  const oldest = await store.oldestStreamId(server, channel);
-  return oldest === undefined || cursor < oldest;
-}
-
-/**
- * Sends events of one channel as SSE text. It saves nothing itself. A live event that arrives
- * during the backlog read is kept and sent after it, so no event is lost or sent twice.
- * Returns stop(), which the caller uses when the client disconnects.
- */
-export function openStream(options: StreamOptions): () => void {
-  const { server, channel, user, store, bus, access } = options;
-  let lastSent = options.cursor, live = false, closed = false;
-  const buffer: ConversationEvent[] = [];
-  const timers: ReturnType<typeof setInterval>[] = [];
-  const offs: (() => void)[] = [];
-  const send = (event: ConversationEvent) => {
-    if (closed || event.streamId <= lastSent) return;
-    lastSent = event.streamId;
-    options.write(`id: ${event.streamId}\nevent: ${event.kind}\ndata: ${JSON.stringify({ ref: event.ref, ...(event.data as Record<string, Json>) })}\n\n`);
-  };
-  const stop = (reason?: string) => {
-    if (closed) return;
-    closed = true;
-    for (const timer of timers) clearInterval(timer);
-    for (const off of offs) off();
-    if (reason) options.write(`event: closed\ndata: ${JSON.stringify({ reason })}\n\n`);
-    options.end();
-  };
-  const recheck = async () => {
-    if (closed) return;
-    try { if (!(await options.allowed())) stop("access"); }
-    catch (error) { logError("web_stream_check_failed", error, { server, channel }); stop("error"); }
-  };
-  const matchesClear = (change: { server?: string; channel?: string; user?: string }) =>
-    (change.server === undefined || change.server === server) && (change.user === undefined || change.user === user) && (change.channel === undefined || change.channel === channel);
-  offs.push(bus.subscribe(server, channel, event => { if (live) send(event); else buffer.push(event); }));
-  offs.push(bus.onChange(server, () => void recheck()));
-  offs.push(access.onClear(change => { if (matchesClear(change)) void recheck(); }));
-  const heartbeat = setInterval(() => { if (!closed) options.write(": ping\n\n"); }, options.heartbeatMs ?? 15000);
-  const recheckTimer = setInterval(() => void recheck(), options.recheckMs ?? 30000);
-  heartbeat.unref(); recheckTimer.unref();
-  timers.push(heartbeat, recheckTimer);
-  void (async () => {
-    try {
-      let after = lastSent;
-      // A pruned cursor cannot be resumed. The client reloads its messages, and the stream goes on live from the newest row.
-      if (lastSent > 0 && await pruned(store, server, channel, lastSent)) {
-        const latest = await store.latestStreamId(server, channel);
-        if (closed) return;
-        lastSent = Math.max(lastSent, latest);
-        after = lastSent;
-        options.write(`event: reset\ndata: ${JSON.stringify({ reason: "pruned" })}\n\n`);
-      }
-      for (;;) {
-        const rows = await store.conversationEventsAfter(server, channel, after, BACKLOG_PAGE);
-        if (closed) return;
-        for (const row of rows) { send(row); after = row.streamId; }
-        if (rows.length < BACKLOG_PAGE) break;
-      }
-      for (const event of buffer.splice(0)) send(event);
-      live = true;
-    } catch (error) {
-      logError("web_stream_failed", error, { server, channel });
-      stop("error");
-    }
-  })();
-  return () => stop();
-}
-
 export async function messageViews(store: TranscriptStore, members: Pick<MemberDirectory, "profiles"> | undefined, server: string, messages: readonly Message[]): Promise<TranscriptMessage[]> {
   const slopbot = slopbotId(store, server);
   // One directory call per page. The directory caches each user for 10 minutes.
@@ -427,7 +335,20 @@ export async function messageViews(store: TranscriptStore, members: Pick<MemberD
   for (const channel of new Set(people.map(message => message.channel))) {
     for (const id of await store.usedSourceIds(server, channel, people.filter(message => message.channel === channel).map(message => message.id))) used.add(id);
   }
-  return Promise.all(messages.map(async message => transcriptMessage(message, slopbot, message.author === slopbot ? await store.replyRunIds(server, message.id) : [], profiles.get(message.author), used.has(message.id), await cardOf(store, server, message))));
+  return Promise.all(messages.map(async message => {
+    const runIds = message.author === slopbot ? await store.replyRunIds(server, message.id) : [];
+    const turn = await turnOfRuns(store, runIds);
+    return { ...transcriptMessage(message, slopbot, runIds, profiles.get(message.author), used.has(message.id), await cardOf(store, server, message)), ...(turn ? { turn } : {}) };
+  }));
+}
+
+/** The turn of a saved reply: the request message of its reply run, which the engine events name as the turn. Replies from before the engine log have it from the run record too. */
+async function turnOfRuns(store: Pick<TranscriptStore, "runRecord">, runIds: readonly string[]): Promise<string | undefined> {
+  for (const id of runIds) {
+    const record = await store.runRecord(id);
+    if (record?.purpose === "reply") return record.message.id;
+  }
+  return undefined;
 }
 
 /** The card saved with a private chat reply, under the reply's message ID. Read at view time, so a button's result shows after a reload. */
@@ -452,8 +373,8 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
   async function messages(url: URL, server: string, channel: string, user: string): Promise<Response> {
     const access = await granted(host, server, channel, user);
     if (!access) return json(403, { error: "You cannot view this conversation." });
-    // Read the stream position before the page, so a live event after it is never skipped.
-    const streamId = await store.latestStreamId(server, channel);
+    // Read the engine seq before the page, so /events?after=<streamId> misses and repeats no event.
+    const streamId = await (host.events ?? engineEvents).latest({ server, channel });
     const limit = parseLimit(url.searchParams.get("limit"), 50, 100);
     if (limit === undefined) return json(400, { error: "Invalid limit." });
     const beforeId = url.searchParams.get("before");
@@ -509,28 +430,10 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
     const rows = await store.messagesById(server, channel, group.messageIds);
     return json(200, {
       ...(await header(server, channel, access, user)),
-      streamId: await store.latestStreamId(server, channel),
+      streamId: await (host.events ?? engineEvents).latest({ server, channel }),
       conversation: { ...conversationSummary(group), runIds: group.runIds },
       hasMore: false,
       messages: await views(server, rows),
-    });
-  }
-
-  async function runRoute(runId: string, user: string): Promise<Response> {
-    if (!RUN_ID.test(runId)) return json(400, { error: "Invalid run." });
-    const record = await store.runRecord(runId);
-    if (!record || record.purpose !== "reply") return json(404, { error: "Run not found." });
-    const { server, channel } = record.message;
-    // A private chat has no Discord channel, so the owner check replaces the channel access check.
-    const visible = isPrivateChannel(channel) ? await host.ownsPrivateChat?.(server, channel, user) === true : Boolean(await granted(host, server, channel, user));
-    if (!visible) return json(403, { error: "You cannot view this run." });
-    const events = await store.events(runId);
-    const turns = await store.toolTurns(server, record.message.id);
-    const fallback = record.status === "tool_calls" ? textCalls(record.result) : [];
-    return json(200, {
-      runId, requestId: record.message.id, channel, status: record.status,
-      ...(record.status === "failed" && record.result ? { error: record.result.slice(0, 500) } : {}),
-      steps: runSteps(events, turns, fallback),
     });
   }
 
@@ -557,24 +460,6 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
     });
   }
 
-  async function stream(c: WebContext, server: string, channel: string, user: string): Promise<Response | undefined> {
-    if (!(await granted(host, server, channel, user))) return json(403, { error: "You cannot view this conversation." });
-    const { incoming: req, outgoing: res } = c.env;
-    // The browser sends Last-Event-ID on reconnect. A page load passes the stream position as ?after=.
-    const raw = Number(req.headers["last-event-id"] ?? new URL(c.req.url).searchParams.get("after") ?? 0);
-    const cursor = Number.isSafeInteger(raw) && raw >= 0 ? raw : 0;
-    applyOut(c);
-    res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
-    res.write("retry: 3000\n\n");
-    const stop = openStream({
-      server, channel, user, cursor, store, bus: runEvents, access: host.access,
-      allowed: async () => (await granted(host, server, channel, user)) !== undefined,
-      write: text => { res.write(text); },
-      end: () => { res.end(); },
-    });
-    res.on("close", () => stop());
-  }
-
   async function engineStream(c: WebContext, server: string, channel: string, user: string): Promise<Response | undefined> {
     if (!(await granted(host, server, channel, user))) return json(403, { error: "You cannot view this conversation." });
     const { incoming: req, outgoing: res } = c.env;
@@ -584,7 +469,7 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
     res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
     res.write("retry: 3000\n\n");
     const stop = openEngineStream({
-      server, channel, user, cursor, events: host.events ?? engineEvents, bus: runEvents, access: host.access,
+      server, channel, user, cursor, events: host.events ?? engineEvents, access: host.access,
       allowed: async () => (await granted(host, server, channel, user)) !== undefined,
       write: text => { res.write(text); },
       end: () => { res.end(); },
@@ -602,6 +487,6 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
   return conversationRoutes({
     events: engineStream, turnEvents,
     list: async (server, user) => json(200, { conversations: await visibleConversations(host, server, user) }),
-    search, messages, used, stream, runs: conversationList, conversation, run: runRoute,
+    search, messages, used, runs: conversationList, conversation,
   });
 }

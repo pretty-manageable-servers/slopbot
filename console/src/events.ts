@@ -25,11 +25,15 @@ export interface ChatState {
   seen: number;
 }
 
-export const emptyChat = (saved: Message[] = [], replies: Record<string, string[]> = {}): ChatState => ({ saved, replies, live: {}, begun: {}, loaded: {}, runs: {}, seen: 0 });
+export const emptyChat = (saved: Message[] = [], replies: Record<string, string[]> = {}, runs: Record<string, string> = {}): ChatState => ({ saved, replies, live: {}, begun: {}, loaded: {}, runs, seen: 0 });
 
 /** The runs of each Slopbot reply in a page of messages. */
 export const repliesOf = (messages: readonly Pick<BotMessage, "id" | "slopbot" | "runIds">[]): Record<string, string[]> =>
   Object.fromEntries(messages.filter((m) => m.slopbot && m.runIds.length).map((m) => [m.id, m.runIds]));
+
+/** The turn of each run of the saved replies in a page of messages, when the server named it. */
+export const runTurnsOf = (messages: readonly Pick<BotMessage, "slopbot" | "runIds" | "turn">[]): Record<string, string> =>
+  Object.fromEntries(messages.flatMap((m) => (m.slopbot && m.turn ? m.runIds.map((run) => [run, m.turn!] as const) : [])));
 
 const createdAt = (timestamp: number | null) => new Date(timestamp ?? Date.now()).toISOString();
 
@@ -145,9 +149,8 @@ export function applyEngineEvent(state: ChatState, envelope: EngineEnvelope, cha
   return { ...state, seen, runs, begun, live: { ...state.live, [event.turn]: reduceTurn(state.live[event.turn], event) } };
 }
 
-/** Where a loaded page gets the events of a reply: its turn (from a run), then the turn's saved events. */
+/** Where a loaded page gets the events of a reply: the turn's saved events. The turn is on the saved reply (state.runs). */
 export interface TurnSource {
-  turnOfRun(run: string): Promise<string | undefined>;
   turnEvents(turn: string): Promise<EngineEvent[]>;
 }
 
@@ -161,7 +164,7 @@ export async function loadTurns(state: ChatState, ids: readonly string[], source
   await Promise.all(ids.map(async (id) => {
     for (const run of state.replies[id] ?? []) {
       try {
-        const turn = state.runs[run] ?? await source.turnOfRun(run);
+        const turn = state.runs[run];
         if (turn === undefined) continue;
         runs[run] = turn;
         if (!completeView(state, turn) && !loaded[turn]) {

@@ -12,7 +12,7 @@ import { expandReplySubject, shouldRecall, personResponses, suggestRequestTool }
 import { isPrivateChannel, isDirectMessageChannel } from "./private-chat.js";
 import { VOICE_RULE } from "./voice-rules.js";
 import { renderTranscript, requestLine } from "./transcript.js";
-import { slopbotId, type ConversationEventStore } from "./run-events.js";
+import { slopbotId, type SettingReader } from "./run-events.js";
 import { selectRunImages } from "./run-images.js";
 
 const privateChatRule = "This is a private conversation. It has no task threads. Do writes directly in this chat. Never call task_start. This replaces the task thread rule in the tool instructions for this chat.";
@@ -61,7 +61,7 @@ export class ContextBuilder {
     if (budget < 0) throw new RequestError("CONTEXT_BUDGET", "Request and reply subject exceed the context budget.", "Reduce the request or increase CONTEXT_TOKENS.", { inputLimit: this.options.inputLimit, schemaBudget });
     request = headed;
     // Slopbot's own ID comes from the store setting. Without a setting store, no message counts as Slopbot's own.
-    const selfId = "setting" in this.options.store && typeof this.options.store.setting === "function" ? slopbotId(this.options.store as Pick<ConversationEventStore, "setting">, message.server) : undefined;
+    const selfId = "setting" in this.options.store && typeof this.options.store.setting === "function" ? slopbotId(this.options.store as SettingReader, message.server) : undefined;
     // The requester is always in People. Its line is counted here, before history, evidence and other people use the budget.
     let requester: ContextPerson | undefined;
     if (this.options.profiles && message.author !== selfId) {

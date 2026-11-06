@@ -97,11 +97,11 @@ test("deleting a private chat removes its messages, runs and events and keeps ot
   await store.ingest({ ...message, id: "web-other", channel: other, text: "other chat" });
   await store.startRun("run-private", message, { prefixVersion: "test", prefix: [], history: [], inputs: [] });
   await store.appendEvent("run-private", 0, { kind: "text", payload: { text: "secret answer" } });
-  await store.appendConversationEvent({ server: "s", channel: chat, kind: "message", ref: "web-2", data: {}, createdAt: 1 });
+  await store.appendEngineEvent({ server: "s", channel: chat, turn: null, type: "message.delete", data: { type: "message.delete", id: "web-2" }, createdAt: 1 });
   await store.deleteWebChat(privateId, "s", chat, 9);
   assert.equal(await store.canonicalMessage("s", "web-2"), undefined);
   assert.deepEqual(store.events("run-private"), []);
-  assert.equal(await store.latestStreamId("s", chat), 0);
+  assert.equal(await store.latestEngineSeq("s", chat), 0);
   assert.equal((await store.webChat(privateId))?.deleted, true);
   assert.deepEqual((await store.webChats("alice")).map(row => row.id), ["e".repeat(32)]);
   assert.ok(await store.canonicalMessage("s", "web-other"), "other chats are untouched");

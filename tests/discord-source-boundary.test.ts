@@ -70,11 +70,6 @@ test('the engine imports nothing from the clients, discord.js or node:http', () 
   }
 });
 
-// Imports one client has on the other today. WP11 removes them; nothing new may be added.
-const allowedCrossClientImports = new Set([
-  'clients/discord/discord.ts -> clients/web/web-chats.js', // WebChatGateway
-]);
-
 test('the Discord and web clients do not import each other', () => {
   const found = new Set<string>();
   for (const [from, other] of [['clients/discord/', 'clients/web/'], ['clients/web/', 'clients/discord/']] as const) {
@@ -83,5 +78,5 @@ test('the Discord and web clients do not import each other', () => {
       if (to?.startsWith(other)) found.add(`${file} -> ${to}`);
     }
   }
-  assert.deepEqual([...found].sort(), [...allowedCrossClientImports].sort());
+  assert.deepEqual([...found].sort(), []);
 });

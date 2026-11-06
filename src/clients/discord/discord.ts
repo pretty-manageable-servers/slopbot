@@ -47,7 +47,7 @@ import { INBOX_TTL_MS, type InboxItem } from "../../inbox.js";
 import { pageItems, type ServerListRow, type ServerPage } from "../../admin-panel.js";
 import { ChannelAccess } from "../../channel-access.js";
 import { TeamAdmins, discordTeamSource } from "../../team-admins.js";
-import { publishMessage, publishMessageDelete, runEvents } from "../../run-events.js";
+import { publishMessage, publishMessageDelete } from "../../run-events.js";
 import { engineEvents } from "../../engine/event-log.js";
 import type { EngineEnvelope } from "@slopbot/contracts";
 import { ShareService, type ShareRule } from "../../shares.js";
@@ -57,7 +57,7 @@ import { WebReplies, asWebUser, webReplyKey } from "../../web-replies.js";
 import { MemberDirectory, discordMemberSource } from "../../member-directory.js";
 import { discordWebReplies } from "./discord-web-replies.js";
 import { isPrivateChannel, isDirectMessageChannel, directMessageChannel, discordChannelId } from "../../private-chat.js";
-import { WebChatGateway } from "../web/web-chats.js";
+import { WebChatGateway } from "../../engine/web-chat-gateway.js";
 import type { Directory } from "../../engine/api.js";
 
 /** Slopbot state and services for one Discord server. All servers share one client. */
@@ -124,7 +124,7 @@ export class DiscordServer implements ChatGateway {
   private get inbox() { return this.workspace.inbox; }
   private get channels() { return this.workspace.channels; }
 
-  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">, team?: Pick<TeamAdmins, "canEdit">, sandboxProfile?: SandboxProfile, private readonly degraded?: DegradedRouting) {
+  constructor(private readonly config: Config, private readonly store: RuntimeStore, llm: LLM, client: Client, readonly guildId: string, objectStorageProvider: S3StorageProvider | undefined, usage: UsageMeter = createUsageMeter(config, store), private readonly access: ChannelAccess = new ChannelAccess(discordChannelAccessSource(client)), private readonly members?: Pick<MemberDirectory, "profiles">, team?: Pick<TeamAdmins, "canEdit">, sandboxProfile?: SandboxProfile, private readonly degraded?: DegradedRouting) {
     this.client = client;
     this.objectStorage = objectStorageProvider;
     this.renderer = new ReplyRenderer(store, discordPresentation);
@@ -786,7 +786,7 @@ export class DiscordServer implements ChatGateway {
   private async setTranscript(channel: string, enabled: boolean): Promise<unknown> {
     if (!this.channels.includes(channel)) throw new ToolError('Choose a channel that Slopbot serves in this server.');
     await this.store.setSetting(this.guildId, webTranscriptKey(channel), enabled);
-    runEvents.changed(this.guildId);
+    this.access.clearServer(this.guildId);
     return { channel, enabled };
   }
   async start(): Promise<void> { await this.mcp.restore(); }
@@ -851,7 +851,6 @@ export class DiscordAdapter {
       guildCount: () => this.client.guilds.cache.size,
       mode: () => this.degraded?.mode() ?? "normal",
     });
-    runEvents.attach(store);
     engineEvents.attach(store);
     this.shareRule = { manager: (user, server) => this.hasManageServer(user, server), teamAdmin: user => this.team.canEdit(user) };
     this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;

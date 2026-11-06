@@ -2,33 +2,25 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { chatRoutes } from "./routes/chats.js";
 import { logError } from "../../errors.js";
-import type { ChatGateway } from "../../bot.js";
 import { parseEffort, type Effort, type Message } from "../../domain.js";
-import type { ToolActivity } from "../../tool-activity.js";
 import type { UiDocument } from "../../ui/schema.js";
-import { prepareUi } from "../../ui/runtime.js";
-import type { RecordStore } from "../../records.js";
 import type { ChannelAccess } from "../../channel-access.js";
 import type { Directory, Engine, Workspace } from "../../engine/api.js";
 import type { UserLimiter } from "../../user-limiter.js";
-import { ToolError, stableOperationId } from "../../tools.js";
-import { requestTimings } from "../../request-timing.js";
+import { ToolError } from "../../tools.js";
 import { PRIVATE_CHANNEL_PREFIX, PRIVATE_CHAT_MAX_CHARS, PRIVATE_CHAT_TITLE_CHARS, isPrivateChannel, newPrivateChatId, privateChannel, privateChatTitle } from "../../private-chat.js";
-import { fileLabel, publishMessage, runEvents, slopbotId, withoutFileLabelText, type ConversationEventStore, type RunEvents } from "../../run-events.js";
+import { fileLabel, publishMessage, slopbotId, withoutFileLabelText } from "../../run-events.js";
 import type { EngineEvent } from "@slopbot/contracts";
 import { engineEvents } from "../../engine/event-log.js";
-import { messageViews, openEngineStream, openStream, streamCursor, turnEventsOf, type TranscriptStore } from "./web-transcripts.js";
+import { messageViews, openEngineStream, streamCursor, turnEventsOf, type TranscriptStore } from "./web-transcripts.js";
 import type { WebChatRow } from "./web-chat-store.js";
 import { CHAT_IMAGE_ID, CHAT_IMAGE_MAX_BYTES, CHAT_IMAGE_MAX_COUNT, CHAT_IMAGE_SCHEME, LocalDiskStorage, chatImageContentType, chatImageKey, imageAttachments, imageName, newChatImageId, sniffImage } from "../../web-chat-images.js";
 import { CHAT_FILE_ID, CHAT_FILE_MAX_BYTES, CHAT_ATTACHMENT_MAX_COUNT, chatFileKey, fileAttachments, fileContentType, fileName, fileUrl, newChatFileId, type ChatFileView } from "../../web-chat-files.js";
-import type { Attachment } from "../../domain.js";
 import type { ObjectStorageProvider } from "../../object-storage.js";
-import { AttachQueue, runKey, type QueuedFile } from "../../attach-file.js";
-const IMAGE_EXTENSIONS: Record<string, "png" | "jpg" | "gif" | "webp"> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
 import { ChatShareService, type ShareService, type ShareStore } from "../../shares.js";
 
 /** Store calls for private chats. SQLite and Postgres implement them. */
-export interface ChatStore extends TranscriptStore, ConversationEventStore, ShareStore {
+export interface ChatStore extends TranscriptStore, ShareStore {
   ingest(message: Message): Promise<boolean>;
   insertWebChat(row: WebChatRow): Promise<void>;
   webChat(id: string): Promise<WebChatRow | undefined>;
@@ -64,51 +56,6 @@ const PENDING_IMAGE_MS = 60 * 60 * 1000;
 const PENDING_FILE_MS = 60 * 60 * 1000;
 const MESSAGE_ID = /^[\w:.-]{1,64}$/;
 
-/** Replies that Slopbot posts in a private chat. They are saved and published, never sent to Discord. */
-export class WebChatGateway implements ChatGateway {
-  constructor(private readonly store: Pick<ChatStore, "setting" | "taskThreads" | "requestRunIds" | "replyRunIds"> & Pick<RecordStore, "record" | "putRecord">, private readonly server: string, private readonly files?: { queue: AttachQueue; storage: ObjectStorageProvider }) {}
-
-  /** Keeps one queued file in private storage and returns it as a chat attachment. Images show inline; other files are download links. */
-  private async keep(chat: string, file: QueuedFile): Promise<Attachment> {
-    const storage = this.files!.storage, size = file.bytes.length;
-    const extension = IMAGE_EXTENSIONS[file.contentType];
-    if (extension) {
-      const imageId = newChatImageId(extension);
-      await storage.put(chatImageKey(this.server, chat, imageId), file.bytes, file.contentType);
-      return { name: file.name, url: CHAT_IMAGE_SCHEME + imageId, contentType: file.contentType, size };
-    }
-    const fileId = newChatFileId(file.name);
-    await storage.put(chatFileKey(this.server, chat, fileId), file.bytes, file.contentType);
-    return { name: file.name, url: fileUrl(this.server, chat, fileId), contentType: file.contentType, size };
-  }
-
-  /**
-   * Saves the reply text. The web UI shows the tools in the run summary, so the Discord tool footer is not added.
-   * Live tool progress is published by the bot's tool observer. A card is saved as a UI record under the reply ID, so it survives a reload.
-   */
-  async reply(message: Message, text: string, deliveryId?: string, _activity?: readonly ToolActivity[], ui?: UiDocument): Promise<readonly Message[]> {
-    const queued = this.files?.queue.take(runKey(message.server, message.id)) ?? { files: [], links: [] };
-    const chat = message.channel.slice(PRIVATE_CHANNEL_PREFIX.length);
-    const attachments = await Promise.all(queued.files.map(file => this.keep(chat, file)));
-    const links = queued.links.map(link => `[${link.name}](${link.url})${link.description ? ` — ${link.description}` : ""}`);
-    const output: Message = {
-      id: `chat-reply-${deliveryId ? stableOperationId(deliveryId) : randomUUID()}`,
-      server: this.server, channel: message.channel,
-      author: slopbotId(this.store, this.server) ?? "slopbot", authorName: "Slopbot", isBot: true,
-      text: [text, ...links].filter(Boolean).join("\n\n"), timestamp: Date.now(), addressed: false,
-      ...(attachments.length ? { attachments } : {}),
-    };
-    const runIds = await this.store.requestRunIds(this.server, message.id);
-    const saved = ui ? await prepareUi(this.store, message, ui, output.id) : undefined;
-    await publishMessage(this.store, output, runIds, undefined, saved && { id: saved.id, revision: saved.revision, document: saved.state.document });
-    requestTimings.finish(message);
-    return [output];
-  }
-  typing(): () => void { return () => undefined; }
-  async createTaskThread(): Promise<string> { throw new ToolError("Not available in private chats."); }
-  async react(): Promise<void> { /* Private chats have no reactions. */ }
-}
-
 /** The private chat API: list, create, rename, delete, messages, live stream and send. Every call checks the owner and the server membership. */
 export class WebChatService {
   private readonly shares: ChatShareService;
@@ -117,7 +64,7 @@ export class WebChatService {
   private readonly pending = new Map<string, { chat: string; user: string; name: string; contentType: string; size: number; at: number }>();
   /** Files that are uploaded but not sent yet. Same rules as pending. */
   private readonly pendingFiles = new Map<string, { chat: string; user: string; name: string; contentType: string; size: number; at: number }>();
-  constructor(private readonly store: ChatStore, private readonly host: ChatDeps, private readonly bus: RunEvents = runEvents, private readonly now: () => number = Date.now) {
+  constructor(private readonly store: ChatStore, private readonly host: ChatDeps, private readonly now: () => number = Date.now) {
     this.shares = new ChatShareService(store, now);
     this.storage = host.images ?? new LocalDiskStorage();
   }
@@ -177,7 +124,7 @@ export class WebChatService {
     await this.shares.removeChat(chat);
     await this.store.deleteWebChat(chat.id, chat.server, channel, this.now());
     // Wakes open streams, which then see that the chat is gone and close.
-    this.bus.changed(chat.server);
+    this.host.access.clearServer(chat.server);
   }
 
   /** The owner's share links of this chat. Anyone else gets 404. */
@@ -251,7 +198,7 @@ export class WebChatService {
   async messages(user: string, id: string, limit: number, before: string | null): Promise<{ messages: unknown[]; hasMore: boolean; streamId: number }> {
     const chat = await this.owned(user, id);
     const channel = privateChannel(chat.id);
-    const streamId = await this.store.latestStreamId(chat.server, channel);
+    const streamId = await engineEvents.latest({ server: chat.server, channel });
     let cursor: { time: number; id: string } | undefined;
     if (before !== null) {
       if (!MESSAGE_ID.test(before)) throw new ChatError(400, "Invalid cursor.");
@@ -418,23 +365,6 @@ export class WebChatService {
     for (const fileId of fileIds) { await this.storage.delete(chatFileKey(chat.server, chat.id, fileId)); this.pendingFiles.delete(fileId); }
   }
 
-  /** Opens the live stream of one chat. Throws ChatError before the stream starts, so the route can still send an error. */
-  async openStream(req: IncomingMessage, res: ServerResponse, user: string, id: string): Promise<void> {
-    const chat = await this.owned(user, id);
-    const channel = privateChannel(chat.id);
-    const raw = Number(req.headers["last-event-id"] ?? new URL(req.url || "/", "http://local").searchParams.get("after") ?? 0);
-    const cursor = Number.isSafeInteger(raw) && raw >= 0 ? raw : 0;
-    res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
-    res.write("retry: 3000\n\n");
-    const stop = openStream({
-      server: chat.server, channel, user, cursor, store: this.store, bus: this.bus, access: this.host.access,
-      allowed: async () => { try { await this.owned(user, id); return true; } catch { return false; } },
-      write: text => { res.write(text); },
-      end: () => { res.end(); },
-    });
-    res.on("close", () => stop());
-  }
-
   /** Opens the engine event stream of a chat (SSE). Without ?after= or Last-Event-ID it starts at the newest event. */
   async openEvents(req: IncomingMessage, res: ServerResponse, user: string, id: string): Promise<void> {
     const chat = await this.owned(user, id);
@@ -443,7 +373,7 @@ export class WebChatService {
     res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
     res.write("retry: 3000\n\n");
     const stop = openEngineStream({
-      server: chat.server, channel: privateChannel(chat.id), user, cursor, events: engineEvents, bus: this.bus, access: this.host.access,
+      server: chat.server, channel: privateChannel(chat.id), user, cursor, events: engineEvents, access: this.host.access,
       allowed: async () => { try { await this.owned(user, id); return true; } catch { return false; } },
       write: text => { res.write(text); },
       end: () => { res.end(); },

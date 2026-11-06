@@ -11,7 +11,7 @@ import { Application } from "../src/application.js";
 import { ChatCompletionsLLM } from "../src/adapters/chat-completions.js";
 import { ChannelAccess } from "../src/channel-access.js";
 import { engineEvents } from "../src/engine/event-log.js";
-import { runEvents, publishTool } from "../src/run-events.js";
+import { publishTool } from "../src/run-events.js";
 import { webTranscriptKey } from "../src/server-tools.js";
 import { createConsole } from "../src/clients/web/web-console.js";
 import { createChatRoutes, WebChatService } from "../src/clients/web/web-chats.js";
@@ -29,7 +29,6 @@ writeFileSync(join(NEXT_DIR, "share.html"), "<!doctype html><html><body><div id=
 async function setup(t: TestContext) {
   const store = new SQLiteStore(":memory:");
   t.after(() => store.close());
-  runEvents.attach(store);
   engineEvents.attach(store);
   t.after(() => engineEvents.attach(undefined as never));
   store.setSetting(SERVER, webTranscriptKey(CHANNEL), true);
@@ -154,7 +153,6 @@ test("the chat events stream replays saved events after ?after= and sends live o
 test("a provider that sends no call ID: streamed tool input and the tool status share one call ID, and a child names its parent's call ID", async t => {
   const store = new SQLiteStore(":memory:");
   t.after(() => store.close());
-  runEvents.attach(store);
   engineEvents.attach(store);
   t.after(() => engineEvents.attach(undefined as never));
   store.setSetting("s", webTranscriptKey("c"), true);
@@ -182,7 +180,6 @@ test("a provider that sends no call ID: streamed tool input and the tool status 
 test("a child tool.status names its parent by the parent's tool.status call ID", async t => {
   const store = new SQLiteStore(":memory:");
   t.after(() => store.close());
-  runEvents.attach(store);
   engineEvents.attach(store);
   t.after(() => engineEvents.attach(undefined as never));
   store.setSetting("s", webTranscriptKey("c"), true);
