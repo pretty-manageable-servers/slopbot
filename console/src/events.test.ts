@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { applyBotEvent, chatMessages, emptyChat, toKitMessage, withRunSteps, type BotEvent, type BotMessage, type ChatState } from "./events";
+import { applyBotEvent, chatMessages, emptyChat, pendingSend, toKitMessage, withPending, withRunSteps, type BotEvent, type BotMessage, type ChatState } from "./events";
 
 const fold = (events: BotEvent[], state: ChatState = emptyChat()) => events.reduce((s, e) => applyBotEvent(s, e, "c1"), state);
 const request: BotMessage = { id: "m1", text: "hi", timestamp: 1000, slopbot: false, runIds: [] };
@@ -137,5 +137,36 @@ describe("applyBotEvent", () => {
       { type: "text", text: "Done." },
     ]);
     expect(withRunSteps(out, [{ type: "thinking", text: "again" }])).toBe(out);
+  });
+});
+
+describe("withPending", () => {
+  const sent = pendingSend("hi", [], 0);
+  const roles = (r: ReturnType<typeof withPending>) => r.messages.map((m) => `${m.id}:${m.status}`);
+
+  test("shows the sent message and a thinking reply before the bot's events", () => {
+    expect(roles(withPending([], sent))).toEqual(["pending:user:done", "pending:reply:streaming"]);
+  });
+
+  test("keeps the thinking reply after the bot's copy of the message, until the run starts", () => {
+    const state = fold([{ type: "message", id: 1, data: { action: "upsert", message: request } } as BotEvent]);
+    const shown = withPending(chatMessages(state), sent);
+    expect(roles(shown)).toEqual(["m1:done", "pending:reply:streaming"]);
+    expect(shown.done).toBe(false);
+  });
+
+  test("is done once the reply starts", () => {
+    const state = fold([
+      { type: "message", id: 1, data: { action: "upsert", message: request } },
+      { type: "run.start", id: 2, data: { ref: "r1", requestId: "m1" } },
+    ] as BotEvent[]);
+    const shown = withPending(chatMessages(state), sent);
+    expect(shown.done).toBe(true);
+    expect(shown.messages.some((m) => m.id.startsWith("pending:"))).toBe(false);
+  });
+
+  test("counts only messages after the send", () => {
+    const earlier = chatMessages(fold([{ type: "message", id: 1, data: { action: "upsert", message: { ...request, slopbot: true } } } as BotEvent]));
+    expect(withPending(earlier, pendingSend("again", [], 1)).done).toBe(false);
   });
 });

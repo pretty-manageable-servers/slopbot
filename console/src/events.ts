@@ -193,3 +193,27 @@ function keepSteps(old: Message, next: Message): Message {
   const steps = old.parts.filter((part) => part.type === "thinking" || part.type === "tool_call");
   return steps.length ? { ...next, parts: [...steps, ...next.parts] } : next;
 }
+
+/** A sent message before the bot's events show it. `from` is the message count when it was sent. */
+export interface PendingSend { user: Message; from: number }
+
+/** A sent message as a pending user message. Image drafts show their local preview. */
+export function pendingSend(text: string, drafts: { id: string; name: string; mime: string; size: number; fileId?: string; previewUrl?: string }[], from: number): PendingSend {
+  const parts: Part[] = drafts.map((draft) => ({ type: "attachment", id: `pending:${draft.id}`, status: "done", fileId: draft.fileId ?? draft.id, name: draft.name, mime: draft.mime, size: draft.size, ...(draft.previewUrl && { url: draft.previewUrl }) }));
+  if (text) parts.push({ type: "text", id: "pending:text", text, status: "done" });
+  return { from, user: { id: "pending:user", parentId: null, role: "user", status: "done", parts, createdAt: new Date().toISOString() } };
+}
+
+/**
+ * The messages with a pending send at the end: its user message until the bot's copy shows,
+ * and an empty streaming reply (the thinking row) until the bot's reply starts. done: the reply started.
+ */
+export function withPending(messages: Message[], pending: PendingSend | undefined): { messages: Message[]; done: boolean } {
+  if (!pending) return { messages, done: false };
+  const after = messages.slice(pending.from);
+  if (after.some((m) => m.role === "assistant")) return { messages, done: true };
+  const shown = [...messages];
+  if (!after.some((m) => m.role === "user")) shown.push(pending.user);
+  shown.push({ id: "pending:reply", parentId: pending.user.id, role: "assistant", status: "streaming", parts: [], createdAt: pending.user.createdAt });
+  return { messages: shown, done: false };
+}
