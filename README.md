@@ -6,27 +6,29 @@ The optional [web configuration console](architecture/WEB_UI.md) provides Discor
 
 The marketing copy is at `https://pmservers.org/slopbot`. The configuration console is at `https://slopbot.pmservers.org/console` through its dedicated Cloudflare Tunnel. The landing page at `/` serves the static export in `site/out/`.
 
-Requires Node.js 22.13 or later. Test the core without credentials:
+Requires Node.js 22.13 or later and pnpm 11. `corepack enable` picks up the pinned version from `packageManager`. Test the core without credentials:
 
 ```sh
-npm install
-npm test
-npm run demo
+pnpm install --frozen-lockfile
+pnpm test
+pnpm run demo
 ```
+
+`pnpm run check` type-checks the bot. `pnpm -F slopbot-console test` and `pnpm -F slopbot-console build` cover the console. Dependencies are pinned in `pnpm-lock.yaml`. pnpm refuses package versions that were published too recently; when a new version is blocked, add it to `minimumReleaseAgeExclude` in `pnpm-workspace.yaml`.
 
 ## Test on Discord, about 10 minutes
 
-1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications). On its **Bot** page, enable **Message Content Intent** and obtain the bot token. Keep the token in your local .env file.
+1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications). On its **Bot** page, enable **Message Content Intent** and obtain the bot token. Keep the token in your local `.env.development` file.
 2. Use **OAuth2 → URL Generator**, select the **bot** scope, and grant **View Channels**, **Send Messages**, **Read Message History**, **Create Public Threads**, and **Send Messages in Threads**. Open the generated URL to invite it to your test server. Use a normal server text channel for the first test.
-3. Enable Discord **User Settings → Advanced → Developer Mode**. Copy your server ID and test channel ID using their right-click menus. Run `cp .env.example .env`; fill in `DISCORD_BOT_TOKEN`. To limit Slopbot to some servers, set `DISCORD_GUILD_IDS`. To start with channels already monitored, set `DISCORD_GUILD_ID` and `DISCORD_CHANNEL_IDS`. One bot process serves every server it is invited to; each server has its own settings, channels, MCP connections and workers. Leave `LLM_MODE=mock`.
-4. Run `npm start`. Wait for **Slopbot connected**. In the selected channel, send `@Slopbot hello`. Expect **Local reply: hello**. Reply to that bot message without mentioning it; expect another reply. Ordinary unaddressed messages stay silent.
+3. Enable Discord **User Settings → Advanced → Developer Mode**. Copy your server ID and test channel ID using their right-click menus. Run `cp .env.development.example .env.development`; fill in `DISCORD_BOT_TOKEN`, `DATABASE_URL` (PostgreSQL) and `SEARXNG_URL`, and set `LLM_MODE=mock`. The dev stack also requires `DATABASE_SCHEMA=slopbot_dev` and a Discord application separate from production. To limit Slopbot to some servers, set `DISCORD_GUILD_IDS`. To start with channels already monitored, set `DISCORD_GUILD_ID` and `DISCORD_CHANNEL_IDS`. One bot process serves every server it is invited to; each server has its own settings, channels, MCP connections and workers.
+4. Run `pnpm run dev`. Wait for **Slopbot connected**. In the selected channel, send `@Slopbot hello`. Expect **Local reply: hello**. Reply to that bot message without mentioning it; expect another reply. Ordinary unaddressed messages stay silent.
 5. Send `@Slopbot !task plan dinner`. Expect a thread and an answer inside it. Write two contributions there from different accounts without pings. Both should get ordered answers. Restart the bot, then write in that thread again; it should continue the stored history.
 
 Mock mode tests Discord wiring, not model intelligence. Its answers echo the latest input.
 
 ## Enable your AI provider, about 2 minutes
 
-In .env, set:
+In .env.development, set:
 
 ```dotenv
 LLM_MODE=provider
@@ -35,7 +37,7 @@ LLM_API_KEY=your_key_here
 LLM_MODEL=nimbus
 ```
 
-Restart with `npm start`. The adapter sends streaming requests to `/chat/completions`. The configured model is PMServers’ `nimbus`. Use the exact model ID accepted by the provider. Run `npm run models` to list available IDs when changing models.
+Restart with `pnpm run dev`. The adapter sends streaming requests to `/chat/completions`. The configured model is PMServers’ `nimbus`. Use the exact model ID accepted by the provider. Run `pnpm run models` to list available IDs when changing models.
 
 Join a Discord voice channel and use `/voice action:join` to make Slopbot join it. Use `action:leave` to disconnect and `action:status` to check the session. Natural-language requests can also invoke the voice tool. Voice is enabled by default; set `VOICE_ENABLED=false` to disable it or `VOICE_NAME` to choose a Thunder voice, default `alloy`. The AI key needs access to `squall`, the configured chat model, and `thunder`.
 
@@ -48,7 +50,7 @@ Test actual continuity: inside a task thread, say "The budget is $200", then ask
 
 ## Context and memory, about 3 minutes to test
 
-1. Restart with `npm start`. Chat messages are stored and searched in SQL. Saved lessons/memories are embedded in the background using `llama.cpp/embeddinggemma-2`, restricted to the current server and channel.
+1. Restart with `pnpm run dev`. Chat messages are stored and searched in SQL. Saved lessons/memories are embedded in the background using `llama.cpp/embeddinggemma-2`, restricted to the current server and channel.
 2. Send `@Slopbot !remember The dinner budget is $200`. This explicitly saves your statement with its author and source message ID. It does not mark it as a group agreement.
 3. Ask `@Slopbot What is our dinner budget?` in the same channel. Use `@Slopbot !memory` to inspect saved notes and IDs. Only the note's author can use `@Slopbot !forget <id>`.
 4. Edit or delete the source message, then ask again. The saved note and dependent generated messages are removed from future recall. Original reasoning and run logs remain retained as operational records, outside search.
@@ -82,7 +84,7 @@ Admins with Manage Server permission can use `/slopbot monitoring`, `/slopbot co
 
 ## Current implementation limits
 
-`Application` owns context assembly and routing. `LLM`, `Store` and `Transport` are replaceable TypeScript interfaces. `ChatGateway` isolates Discord operations for testing. Storage operations are asynchronous so remote database adapters can be added without changing the core. `SQLiteStore`, `FakeLLM`, `ChatCompletionsLLM` and `DiscordAdapter` are the current adapters. Incoming messages and provider text chunks are validated at runtime.
+The engine (`src/engine/`) runs each server's requests and imports no chat platform or HTTP code. The Discord client (`src/clients/discord/`) and the web client (`src/clients/web/`) connect it to the outside. `LLM` and `Store` are replaceable TypeScript interfaces. `ChatGateway` isolates Discord delivery for testing. Storage operations are asynchronous so remote database adapters can be added without changing the core. `SQLiteStore`, `PostgresStore`, `FakeLLM` and `ChatCompletionsLLM` are the current adapters. Incoming messages and provider text chunks are validated at runtime. [Engine and clients](architecture/ADAPTERS.md) describes the boundaries.
 
 Channel requests use fresh prompts with a stable instruction and tool prefix. Task threads retain attributed history, tool calls and results. SQLite queues inputs durably and processes each channel in order, including delivery. Restart recovery reuses saved answers and completed tool results. Unknown external outcomes pause for reconciliation; they are not blindly repeated. A crashed worker's lease can delay recovery by up to 60 seconds.
 
@@ -112,7 +114,7 @@ Configure unsolicited replies with `/slopbot cooldown seconds:120 per_hour:5` us
 
 History imports run in the background for configured text channels. On startup, Slopbot fills the last `HISTORY_WINDOW_DAYS` days, default 7, then catches up from its last completed scan. New messages save live. Every minute it checks for gaps; unfinished imports resume after restart. Separate thread histories are not imported automatically.
 
-Web transcript live events are kept for `CONVERSATION_EVENTS_RETENTION_DAYS` days, default 14, and at most `CONVERSATION_EVENTS_MAX_ROWS` rows, default 2000000. Slopbot prunes them at startup and every hour. Saved runs stay viewable after their live events are pruned; a browser whose stream position was pruned reloads the conversation.
+Saved engine events, the live stream of Discord and web conversations, are kept for `CONVERSATION_EVENTS_RETENTION_DAYS` days, default 14, and at most `CONVERSATION_EVENTS_MAX_ROWS` rows, default 2000000. Slopbot prunes them at startup and every hour.
 
 - `/slopbot index channel:#chat action:window days:30` sets initial coverage to 30 days.
 - `/slopbot index channel:#chat action:more` imports up to 5000 messages before the oldest imported message. Repeat to reach the beginning.
@@ -153,7 +155,7 @@ To add a format, implement `FileReader` and register it in `defaultFileReaders()
 
 Dependency audit: three moderate findings remain in Mammoth's CLI dependency chain (`argparse` / `sprintf-js`); no patched `sprintf-js` release is available. The bot uses Mammoth's raw-text API in an isolated worker, not its CLI.
 
-The core module boundaries and prioritized follow-up work are documented in [architecture/IMPLEMENTATION.md](architecture/IMPLEMENTATION.md).
+The engine and client boundaries are in [architecture/ADAPTERS.md](architecture/ADAPTERS.md). The module list and prioritized follow-up work are in [architecture/IMPLEMENTATION.md](architecture/IMPLEMENTATION.md).
 
 ### Inbox
 
@@ -174,13 +176,13 @@ Ask `@slop put this in @name's inbox`. Slopbot writes a short summary with links
 
 Tavily and Firecrawl use team keys that team members add in the admin panel (Bot admin, Web search keys). Keys are sealed with `WEB_KEYS_SECRET` (32 bytes, base64) and only the last four characters are shown. Each search picks the key with the most credits left this month, under its cap (default 950). A key that answers "out of credits" or "invalid" is skipped until the month ends. Every call costs the user a fixed amount on their 5-hour and weekly limits (`web_costs_micros` setting): SearXNG and plain fetch $0.001, Tavily and Firecrawl search $0.01, Firecrawl scrape $0.005.
 
-If you already have an instance, set `SEARXNG_URL` in `.env`; enable JSON in its search formats. Without an instance, start Docker Desktop and run:
+If you already have an instance, set `SEARXNG_URL` in `.env.development`; enable JSON in its search formats. Without an instance, start Docker Desktop and run:
 
 ```sh
-npm run search:start
+pnpm run search:start
 ```
 
-This generates local settings with a random secret and starts SearXNG on localhost port 8080. Then add `SEARXNG_URL=http://127.0.0.1:8080` to `.env`, restart with `npm start`, and try `/slopbot web_search query:TypeScript`. Stop the search service with `npm run search:stop`.
+This generates local settings with a random secret and starts SearXNG on localhost port 8080. Then add `SEARXNG_URL=http://127.0.0.1:8080` to `.env.development`, restart with `pnpm run dev`, and try `/slopbot web_search query:TypeScript`. Stop the search service with `npm run search:stop`.
 
 Without `SEARXNG_URL`, the tool reports that configuration is needed. Local startup requires a running Docker daemon; live search has not been verified in this environment because Docker is stopped.
 
