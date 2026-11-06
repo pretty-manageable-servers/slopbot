@@ -6,11 +6,8 @@ import type { ConfirmationRequired, ToolArgs, ToolJournal, ToolRegistry } from "
 import { displayToolResult, ToolError, toolFailed } from "../tools.js";
 import type { ToolActivity } from "../tool-activity.js";
 import { toolTraceRows } from "../clients/discord/discord-tool-trace.js";
-import { pruneToolTraces } from "../tool-trace.js";
-import { codeBlock, PROGRAM_CODE_KEEP_MS } from "../code-display.js";
+import { codeBlock } from "../code-display.js";
 
-const PROGRAM_TOOL = "run_tools_code";
-const CODE_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 const CONFIRM_ARGS_CHARS = 1500;
 export const CONFIRM_RECORD = "tool-confirm";
 /** A pending Confirm record older than this is expired: a click shows Expired and runs nothing. */
@@ -110,13 +107,4 @@ export async function handleConfirm(interaction: ButtonInteraction, store: CodeS
   if (resume) await resume({ id: `confirm-result:${operationId}`, server, channel: pending.channel, author: pending.author, text: note, addressed: true, ...(pending.taskId ? { taskId: pending.taskId } : {}), ...(pending.replyTo ? { replyTo: pending.replyTo } : {}), timestamp: Date.now() });
 }
 
-/** Deletes program code older than PROGRAM_CODE_KEEP_MS, once an hour. Returns a function that stops the timer. */
-export function startCodeMaintenance(store: Pick<CodeStore, "pruneOperations"> & RecordStore, server: string): () => void {
-  const timer = setInterval(() => {
-    void pruneToolTraces(store, server).catch(error => logError("tool_trace_prune_failed", error, {}, true));
-    void Promise.resolve(store.pruneOperations?.(PROGRAM_TOOL, Date.now() - PROGRAM_CODE_KEEP_MS))
-      .catch(error => logError("run_tools_code_prune_failed", error, {}, true));
-  }, CODE_PRUNE_INTERVAL_MS);
-  timer.unref();
-  return () => clearInterval(timer);
-}
+export { startCodeMaintenance } from "../code-maintenance.js";
