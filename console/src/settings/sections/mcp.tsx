@@ -2,17 +2,17 @@
 // Ported from web/app.js renderMcp. Writes go to POST /api/mcp, which answers { text, mcp }. Connections open in a
 // dialog from their table row; the add form is a dialog from the Add button.
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { Badge, Button, Modal } from "agentic-ui-kit";
+import { Badge, Button, Disclosure, Modal } from "agentic-ui-kit";
 import { useState, type ReactNode } from "react";
 import { post } from "../../api";
-import type { McpBody, McpConnection, McpSnapshot, ServerSnapshot } from "../../api-types";
+import type { McpBody, McpConnection, McpSnapshot, McpTool, ServerSnapshot } from "../../api-types";
 import { settingsQuery, useServer } from "../../data";
 import { NumberField, Select, Switch, Table, TextField, type Column, type Option } from "../../ui/controls";
 import { confirmAction, notify, notifyError } from "../../ui/feedback";
 import { SectionNote, SettingsGroup, SettingsRow } from "../../ui/layout";
 import {
   CONCURRENCY, TIMEOUT_MS, connectionReady, draftFromConnection, hostOf, inRange, isConnectionId, newConnectionBody, newConnectionReady,
-  saveConnectionBody, type Access, type ConnectionDraft, type Effect, type NewConnectionDraft, type ReviewTool, type ToolChoice, type Transport,
+  saveConnectionBody, type Access, type ConnectionDraft, type Effect, type NewConnectionDraft, type ToolChoice, type Transport,
 } from "./mcp-form";
 
 interface McpAnswer { text: string; mcp: McpSnapshot }
@@ -140,7 +140,7 @@ function EditForm({ connection, credentialsEnabled, pending, send, close }: {
   const patch = (next: Partial<ConnectionDraft>) => setDraft((d) => ({ ...d, ...next }));
   const setTool = (name: string, choice: ToolChoice) => setDraft((d) => ({ ...d, tools: { ...d.tools, [name]: choice } }));
   const ready = connectionReady(draft);
-  const tools: ReviewTool[] = connection.tools;
+  const tools: McpTool[] = connection.tools;
   const remove = async () => {
     if (!(await confirmAction({ title: "Remove this connection?", body: "Its saved credential is removed too.", confirmLabel: "Remove", danger: true }))) return;
     send({ action: "remove", id: connection.id }, close);
@@ -190,7 +190,7 @@ function EditForm({ connection, credentialsEnabled, pending, send, close }: {
   );
 }
 
-function ToolRow({ tool, choice, onChange }: { tool: ReviewTool; choice: ToolChoice; onChange: (choice: ToolChoice) => void }) {
+function ToolRow({ tool, choice, onChange }: { tool: McpTool; choice: ToolChoice; onChange: (choice: ToolChoice) => void }) {
   return (
     <div className="flex items-start gap-4 py-3">
       <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -208,6 +208,11 @@ function ToolRow({ tool, choice, onChange }: { tool: ReviewTool; choice: ToolCho
             <Select label={`Operation of ${tool.name}`} options={EFFECTS} value={choice.effect} onChange={(effect) => onChange({ ...choice, effect })} />
           </div>
         </div>
+        {tool.inputSchema !== undefined && (
+          <Disclosure summary="Tool schemas" className="mt-1">
+            <pre className="m-0 overflow-x-auto rounded-chat-sm bg-chat-code-bg p-2 text-xs">{JSON.stringify({ input: tool.inputSchema, output: tool.outputSchema ?? null }, null, 2)}</pre>
+          </Disclosure>
+        )}
       </div>
       <Switch label={`Enable ${tool.name}`} checked={choice.enabled} onChange={(enabled) => onChange({ ...choice, enabled })} />
     </div>

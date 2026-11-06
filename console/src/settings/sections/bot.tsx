@@ -2,7 +2,7 @@
 // service (the mode, the circuit breaker and the backup model). Ported from the old console's admin Bot tab. The
 // rules and texts that can be tested are in bot-format.ts.
 import { queryOptions, useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { Badge, Button, Markdown, Modal } from "agentic-ui-kit";
+import { Badge, Button, Markdown, Modal, SegmentedControl } from "agentic-ui-kit";
 import { useState } from "react";
 import { get, post } from "../../api";
 import type { Breaker, KeyedProvider, Llm, LlmOverride, SystemPrompt, WebKey, WebKeys } from "../../api-types";
@@ -43,10 +43,14 @@ export default function Section() {
   );
 }
 
+type PromptView = "write" | "preview";
+const PROMPT_VIEWS: { id: PromptView; label: string }[] = [{ id: "write", label: "Write" }, { id: "preview", label: "Preview" }];
+
 function SystemPromptGroup({ edit }: { edit: boolean }) {
   const client = useQueryClient();
   const { data: prompt } = useSuspenseQuery(promptQuery);
   const [draft, setDraft] = useState(prompt.text ?? prompt.default);
+  const [view, setView] = useState<PromptView>("write");
   const [showFull, setShowFull] = useState(false);
   const full = useQuery({ ...fullPromptQuery, enabled: showFull });
   const save = useMutation({
@@ -70,7 +74,12 @@ function SystemPromptGroup({ edit }: { edit: boolean }) {
       actions={edit && <Button variant="subtle" size="sm" isDisabled={save.isPending} onPress={() => save.mutate(draft.trim())}>Save</Button>}>
       <SettingsRow stack label="Instructions">
         <div className="flex flex-col gap-1">
-          <TextArea label="Instructions" value={draft} onChange={setDraft} maxLength={prompt.max} rows={10} disabled={!edit} />
+          <SegmentedControl label="Editor view" options={PROMPT_VIEWS} value={view} onChange={setView} className="self-start" />
+          {view === "preview"
+            ? <div className="min-h-60 rounded-chat-sm border border-chat-border bg-chat-surface px-2.5 py-1.5 text-sm">
+                <Markdown>{draft.trim() ? draft : prompt.default}</Markdown>
+              </div>
+            : <TextArea label="Instructions" value={draft} onChange={setDraft} maxLength={prompt.max} rows={10} disabled={!edit} />}
           <p className="m-0 text-right text-xs text-chat-muted" aria-live="polite">{draft.length} / {prompt.max}</p>
         </div>
       </SettingsRow>
