@@ -286,3 +286,41 @@ test("a failing prune is logged and the timer keeps going", async t => {
   assert.ok(errors.every(line => line.includes("conversation_events_prune_failed")));
   assert.ok(errors.length >= 2);
 });
+
+test("show_ui input streams live per tool call, other tool input does not, and neither is journaled", async t => {
+  const { store } = setup(t);
+  runEvents.attach(store);
+  t.after(() => runEvents.attach(undefined as never));
+  const request = message("req-2", "plan it");
+  await store.startRun("run-ui", request, { prefixVersion: "v1", prefix: [], history: [], inputs: [], purpose: "reply" });
+  const journal = new EventJournal(store, "run-ui", request, "model");
+  await journal.append({ kind: "tool_input", payload: { index: 0, name: "show_ui", text: '{"markup":"<Sta' } });
+  await journal.append({ kind: "tool_input", payload: { index: 0, name: "show_ui", text: 'ck>' } });
+  await journal.append({ kind: "tool_input", payload: { index: 1, name: "show_ui", text: '{"markup":"' } });
+  await journal.append({ kind: "tool_input", payload: { index: 2, name: "web_search", text: '{"query":"x"}' } });
+  await journal.close();
+  await runEvents.idle();
+  const rows = (await saved(store)).filter(row => row.ref === "run-ui");
+  assert.deepEqual([rows[0]!.kind, rows.at(-1)!.kind], ["run.start", "run.end"]);
+  const input = new Map<number, string>();
+  for (const row of rows.slice(1, -1)) {
+    const data = row.data as { part: string; index: number; name: string; text: string };
+    assert.deepEqual([row.kind, data.part, data.name], ["run.delta", "tool", "show_ui"]);
+    input.set(data.index, (input.get(data.index) ?? "") + data.text);
+  }
+  assert.deepEqual([...input], [[0, '{"markup":"<Stack>'], [1, '{"markup":"']]);
+  assert.equal(store.events("run-ui").length, 0);
+});
+
+test("saved tool input deltas join per tool call only", async t => {
+  const { store, bus } = setup(t);
+  bus.publish(server, channel, "run.start", "run-b", { requestId: "m1" });
+  bus.publish(server, channel, "run.delta", "run-b", { part: "tool", index: 0, name: "show_ui", text: "a" });
+  bus.publish(server, channel, "run.delta", "run-b", { part: "tool", index: 0, name: "show_ui", text: "b" });
+  bus.publish(server, channel, "run.delta", "run-b", { part: "tool", index: 1, name: "show_ui", text: "c" });
+  await bus.idle();
+  assert.deepEqual((await saved(store)).slice(1).map(row => row.data), [
+    { part: "tool", index: 0, name: "show_ui", text: "ab" },
+    { part: "tool", index: 1, name: "show_ui", text: "c" },
+  ]);
+});

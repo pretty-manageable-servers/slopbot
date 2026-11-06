@@ -5,7 +5,7 @@ import type { ChannelAccess, ChannelAccessResult } from "./channel-access.js";
 import { parseToolCalls, toolResult, type ToolCall, type ToolOutput } from "./tools.js";
 import type { HistoryPage, HistoryQuery } from "./search/history-search.js";
 import type { FuzzyHit, FuzzyQuery } from "./search/fuzzy.js";
-import { reasoningText, runEvents, shortArgs, showsProfile, slopbotId, transcriptMessage, type ChatCard, type ConversationEvent, type ConversationEventStore, type RunEvents, type TranscriptMessage } from "./run-events.js";
+import { LIVE_INPUT_TOOLS, reasoningText, runEvents, shortArgs, showsProfile, slopbotId, transcriptMessage, type ChatCard, type ConversationEvent, type ConversationEventStore, type RunEvents, type TranscriptMessage } from "./run-events.js";
 import { uiKey, type UiState } from "./ui/runtime.js";
 import type { RecordStore } from "./records.js";
 import type { MemberDirectory } from "./member-directory.js";
@@ -68,7 +68,7 @@ export type RunStep =
   | { type: "thinking"; text: string }
   | ToolStep;
 /** A tool call. A run_tools_code call has its program code and the calls it made (children, each with parentId). */
-export interface ToolStep { type: "tool"; name: string; status: string; args: string; result?: string; code?: string; parentId?: string; children?: ToolStep[] }
+export interface ToolStep { type: "tool"; name: string; status: string; args: string; result?: string; code?: string; /** Full arguments, for tools the web view draws (LIVE_INPUT_TOOLS). */ input?: Json; parentId?: string; children?: ToolStep[] }
 
 /** enabled is false for a channel whose web transcripts are off. Only channels are listed that way, never threads. */
 export interface Conversation { id: string; name: string; kind: "channel" | "thread"; parent: string | null; newest: number | null; canSend: boolean; enabled: boolean }
@@ -135,6 +135,8 @@ export function runSteps(events: readonly ModelEvent[], turns: readonly ToolTurn
       }
     }
     const step: ToolStep = { type: "tool", name: call.name, status: "pending", args: shortArgs(call.arguments) };
+    // The web view draws these from their full input, so it is kept.
+    if (LIVE_INPUT_TOOLS.has(call.name)) step.input = call.arguments;
     if (output !== undefined) {
       const result = toolResult(output);
       step.status = result.status === "failed" || result.status === "rejected" ? result.status : result.handoff ? "delegated" : "completed";

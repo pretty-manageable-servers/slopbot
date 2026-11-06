@@ -35,6 +35,8 @@ export class EventJournal {
       publishModelEvent(this.message, this.runId, event);
       if (event.kind === "text" && event.payload.text) liveText.emit({ kind: "text", message: this.message, runId: this.runId, text: event.payload.text });
     }
+    // The full arguments are journaled with the tool_call event.
+    if (event.kind === "tool_input") return;
     this.pending.push(event);
     this.bytes += Buffer.byteLength(JSON.stringify(event));
     if (this.pending.length >= 32 || this.bytes >= 65536) await this.flush();

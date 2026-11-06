@@ -565,3 +565,10 @@ test("a run view still works after its live events are pruned, because it reads 
   assert.deepEqual(after.body, before.body);
   assert.equal(after.body.steps[0].type, "thinking");
 });
+
+test("run steps keep the full input of show_ui calls and only short arguments of others", () => {
+  const markup = "<Card title=\"Plan\">" + "x".repeat(400) + "</Card>";
+  const steps = runSteps([{ kind: "tool_call", payload: [{ name: "show_ui", arguments: { markup } }, { name: "web_search", arguments: { query: "y".repeat(400) } }] }], []);
+  assert.deepEqual(steps.map(step => step.type === "tool" ? step.input : undefined), [{ markup }, undefined]);
+  assert.ok(steps.every(step => step.type === "tool" && step.args.length <= 301));
+});

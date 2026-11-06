@@ -195,6 +195,7 @@ export class ChatCompletionsLLM implements LLM {
     let completed = false;
     let fullText = "";
     const nativeCalls = new Map<number, { id?: string; name: string; arguments: string }>();
+    const sentInput = new Map<number, number>();
     for await (const data of sseData(response.body, `${phase} stream read`)) {
       if (data === "[DONE]") { completed = true; break; }
       let chunk: Record<string, unknown>;
@@ -230,6 +231,12 @@ export class ChatCompletionsLLM implements LLM {
             if (fn.arguments !== undefined) { if (typeof fn.arguments !== "string") throw providerProtocol("Native tool argument fragments must be text", "PROVIDER_TOOL_PROTOCOL"); parts.arguments += fn.arguments; }
             if (parts.arguments.length > MAX_TOOL_ARGUMENT_CHARS) throw new RequestError("TOOL_ARGUMENT_LIMIT", `Tool arguments exceed the ${MAX_TOOL_ARGUMENT_CHARS}-character limit.`, "Use smaller arguments or reference a saved artifact. No call from this response was executed.", { limit: MAX_TOOL_ARGUMENT_CHARS, required: parts.arguments.length });
             nativeCalls.set(index, parts);
+            // Arguments that came before the name are sent when the name is known.
+            const sent = sentInput.get(index) ?? 0;
+            if (parts.name && parts.arguments.length > sent) {
+              sentInput.set(index, parts.arguments.length);
+              yield { kind: "tool_input", payload: { index, name: parts.name, text: parts.arguments.slice(sent) } };
+            }
           }
         }
         if (delta.reasoning_content !== undefined || delta.reasoning !== undefined) {

@@ -1,5 +1,4 @@
-import "agentic-ui-kit/styles.css";
-import "./theme.css";
+import "./app.css";
 import { ChatTheme } from "agentic-ui-kit";
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -61,7 +60,7 @@ function App() {
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <ChatTheme className="app">
+    <ChatTheme className="contents">
       <App />
     </ChatTheme>
   </StrictMode>,

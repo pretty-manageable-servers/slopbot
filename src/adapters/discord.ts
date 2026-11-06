@@ -26,6 +26,7 @@ import {ScheduleWorker} from '../schedules/schedule-worker.js';
 import {SCHEDULE_KIND} from '../schedules/schedule-types.js';
 import {registerReportTools} from '../search/reports.js';
 import {UiRuntime,registerUiTool,registerPollTool} from '../ui/runtime.js';
+import {registerShowUiTool} from '../ui/show-ui.js';
 import type {UiDocument} from '../ui/schema.js';
 import {discordUi} from './discord-ui.js';
 import { DiscordToolProgress } from './discord-tool-progress.js';
@@ -298,6 +299,7 @@ export class DiscordServer implements ChatGateway {
       llmMode:()=>this.degraded?.mode()??"normal",
     });
     registerUiTool(this.tools);
+    registerShowUiTool(this.tools);
     registerProfileTools(this.tools, store);
     // Free steps first. Team keys from the admin panel are used only when the free step fails.
     const webKeys = new WebKeySecrets();

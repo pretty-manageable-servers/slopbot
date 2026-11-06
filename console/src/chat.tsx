@@ -1,10 +1,22 @@
 // One private chat on screen: the saved messages, then the bot's live stream folded into kit messages.
-import { ChatHeader, ChatView, EmptyState } from "agentic-ui-kit";
+import { ChatHeader, ChatView, EmptyState, ToolViewsProvider, UiComponentsProvider, defaultToolViews, uiMarkupToolView } from "agentic-ui-kit";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
-import { applyBotEvent, chatMessages, emptyChat, toKitMessage, type BotEvent, type BotMessage, type ChatState } from "./events";
+import { applyBotEvent, chatMessages, emptyChat, toKitMessage, withRunSteps, type BotEvent, type BotMessage, type ChatState, type RunStep } from "./events";
+import { uiComponents } from "./ui-components";
 
 const KINDS = ["message", "run.start", "run.delta", "run.tool", "run.end"] as const;
+const toolViews = { ...defaultToolViews, show_ui: uiMarkupToolView() };
+
+/** The thinking and tool steps of each reply on the page, from its runs. A run that fails to load is left out. */
+async function replySteps(messages: BotMessage[]): Promise<Map<string, RunStep[]>> {
+  const replies = messages.filter((m) => m.slopbot && m.runIds.length);
+  const loaded = await Promise.all(replies.map(async (m) => {
+    const runs = await Promise.all(m.runIds.map((runId) => api.run(runId).then((run) => run.steps as RunStep[], () => [])));
+    return [m.id, runs.flat()] as const;
+  }));
+  return new Map(loaded);
+}
 
 export function Chat({ id, title, onCreate }: { id: string | undefined; title: string; onCreate: () => Promise<string> }) {
   const [state, setState] = useState<ChatState | null>(id ? null : emptyChat());
@@ -17,7 +29,12 @@ export function Chat({ id, title, onCreate }: { id: string | undefined; title: s
     const open = async () => {
       const page = await api.messages(id);
       if (closed) return;
-      setState(emptyChat((page.messages as BotMessage[]).map((m) => toKitMessage(m, id)), page.streamId));
+      const messages = page.messages as BotMessage[];
+      setState(emptyChat(messages.map((m) => toKitMessage(m, id)), page.streamId));
+      // Tool rows and show_ui of earlier replies come from their runs, after the text shows.
+      void replySteps(messages).then((steps) => {
+        if (!closed) setState((s) => s && { ...s, saved: s.saved.map((m) => (steps.get(m.id) ? withRunSteps(m, steps.get(m.id)!) : m)) });
+      });
       source = new EventSource(api.streamUrl(id, page.streamId));
       for (const type of KINDS) {
         source.addEventListener(type, (event) => {
@@ -44,6 +61,8 @@ export function Chat({ id, title, onCreate }: { id: string | undefined; title: s
   if (error) return <div className="page-note"><p>{error}</p></div>;
   if (!state) return <div className="page-note" aria-busy="true" />;
   return (
+    <UiComponentsProvider components={uiComponents}>
+    <ToolViewsProvider tools={toolViews}>
     <ChatView
       messages={messages}
       busy={busy}
@@ -59,5 +78,7 @@ export function Chat({ id, title, onCreate }: { id: string | undefined; title: s
       emptyState={(composer) => <EmptyState greeting="What can Slopbot do for you?">{composer}</EmptyState>}
       disclaimer="Slopbot can make mistakes. Check important answers."
     />
+    </ToolViewsProvider>
+    </UiComponentsProvider>
   );
 }

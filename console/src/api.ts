@@ -40,5 +40,6 @@ export const api = {
   messages: (id: string, limit = 50) => call<{ messages: unknown[]; hasMore: boolean; streamId: number }>("GET", `${chat(id)}/messages?limit=${limit}`),
   send: (id: string, text: string) => call<{ id: string }>("POST", `${chat(id)}/messages`, { text, images: [], files: [] }),
   stop: (id: string) => call<{ stopped: number }>("POST", `${chat(id)}/stop`, {}),
+  run: (runId: string) => call<{ steps: unknown[] }>("GET", `/api/runs/${encodeURIComponent(runId)}`),
   streamUrl: (id: string, after: number) => `${chat(id)}/stream?after=${after}`,
 };

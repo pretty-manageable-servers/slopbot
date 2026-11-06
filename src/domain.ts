@@ -69,6 +69,8 @@ export interface Prompt {
 
 export type ModelEvent =
   | { readonly kind: "text"; readonly payload: { readonly text: string } }
+  /** Part of a native tool call's arguments while they stream. Only for the live web view; it is not journaled. */
+  | { readonly kind: "tool_input"; readonly payload: { readonly index: number; readonly name: string; readonly text: string } }
   | { readonly kind: "reasoning" | "opaque" | "usage" | "tool_call"; readonly payload: Json };
 
 export interface Reply {
