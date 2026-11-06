@@ -7,6 +7,8 @@ packages:
 catalog:
   agentic-ui-kit: 0.8.0 # WP6 changes this one line to 0.9.0
   zod: ^4
+  hono: ^4.13.16
+  "@hono/node-server": ^2.1.6
 
 overrides:
   exceljs>uuid: ^11.1.1
