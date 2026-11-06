@@ -6,6 +6,7 @@ import type { EngineEventLog } from "./api.js";
 
 type Conversation = EngineEnvelope["conversation"];
 type Listener = (envelope: EngineEnvelope) => void;
+type Delta = Extract<EngineEvent, { text: string }>;
 
 /** One engine event before the store gives it a sequence number. `turn` is null for message events. */
 export interface EngineEventRow {
@@ -26,16 +27,47 @@ export interface EngineEventStore {
   engineTurnEvents(server: string, channel: string, turn: string): Promise<EngineEvent[]>;
 }
 
+/** An event waiting to be saved and sent. `save` is false for a conversation whose switch is off. */
+interface Pending { server: string; channel: string; event: EngineEvent; createdAt: number; save: boolean }
+
 const conversationKey = (server: string, channel: string) => JSON.stringify([server, channel]);
 
+/** Consecutive text or thinking deltas of one run, and consecutive tool input of one call, join. */
+function joins(last: EngineEvent, next: EngineEvent): boolean {
+  if (last.type === "tool.input") return next.type === "tool.input" && next.turn === last.turn && next.call === last.call;
+  if (last.type === "text.delta" || last.type === "thinking.delta") {
+    return (next.type === "text.delta" || next.type === "thinking.delta") && next.type === last.type && next.turn === last.turn && next.run === last.run;
+  }
+  return false;
+}
+
+/** Splits a batch into groups. Each group is saved as one row. Events of a group that is not saved stay alone. */
+function groupRows(items: Pending[]): Pending[][] {
+  const groups: Pending[][] = [];
+  for (const item of items) {
+    const group = groups.at(-1), last = group?.at(-1);
+    if (group && last && item.save && last.save && last.server === item.server && last.channel === item.channel && joins(last.event, item.event)) group.push(item);
+    else groups.push([item]);
+  }
+  return groups;
+}
+
+/** The row a group saves: its first delta with the text of every delta in the group. */
+function rowEvent(group: Pending[]): EngineEvent {
+  const head = group[0]!.event;
+  if (group.length === 1) return head;
+  return { ...head, text: group.map(item => (item.event as Delta).text).join("") } as EngineEvent;
+}
+
 /**
- * In-process log of engine events. Each event is checked, saved in publish order with a sequence
- * number, then sent to subscribers. A web chat is always saved; other conversations are saved only
- * while their transcript switch is on.
+ * In-process log of engine events. Each event is checked, then sent to subscribers in publish
+ * order. A web chat is always saved; other conversations are saved only while their transcript
+ * switch is on. A saved event carries its seq. An event that is not saved is sent without one.
+ * Consecutive deltas are saved as one row, but each delta is sent as it was published.
  */
 export class EventLog implements EngineEventLog {
   private store: EngineEventStore | undefined;
-  private queue: EngineEventRow[] = [];
+  private queue: Pending[] = [];
   private running = false;
   private current: Promise<void> = Promise.resolve();
   private readonly listeners = new Map<string, Set<Listener>>();
@@ -47,17 +79,17 @@ export class EventLog implements EngineEventLog {
 
   publish(conversation: Conversation, event: EngineEvent): void {
     const store = this.store;
-    if (!store || !this.saves(store, conversation)) return;
+    if (!store) return;
     const parsed = EngineEvent.safeParse(event);
     if (!parsed.success) {
       logError("engine_event_invalid", parsed.error, { stage: "engine events", server: conversation.server, channel: conversation.channel }, true);
       return;
     }
-    const data = parsed.data;
-    this.queue.push({ server: conversation.server, channel: conversation.channel, turn: "turn" in data ? data.turn : null, type: data.type, data, createdAt: Date.now() });
+    this.queue.push({ server: conversation.server, channel: conversation.channel, event: parsed.data, createdAt: Date.now(), save: this.saves(store, conversation) });
+    // The drain starts after the current tick, so events published together form one batch and their deltas join.
     if (!this.running) {
       this.running = true;
-      this.current = this.drain();
+      this.current = Promise.resolve().then(() => this.drain());
     }
   }
 
@@ -92,14 +124,20 @@ export class EventLog implements EngineEventLog {
   private async drain(): Promise<void> {
     while (this.queue.length) {
       const store = this.store;
-      for (const row of this.queue.splice(0)) {
+      for (const group of groupRows(this.queue.splice(0))) {
         if (!store) break;
-        let seq: number;
-        try { seq = await store.appendEngineEvent(row); }
-        catch (error) { logError("engine_events_save_failed", error, { stage: "engine events", server: row.server, channel: row.channel }, true); continue; }
-        const envelope: EngineEnvelope = { seq, at: row.createdAt, conversation: { server: row.server, channel: row.channel }, event: row.data };
-        for (const listener of this.listeners.get(conversationKey(row.server, row.channel)) ?? []) {
-          try { listener(envelope); } catch (error) { logError("engine_events_listener_failed", error, { server: row.server, channel: row.channel }); }
+        const head = group[0]!;
+        let seq: number | undefined;
+        if (head.save) {
+          const event = rowEvent(group);
+          try { seq = await store.appendEngineEvent({ server: head.server, channel: head.channel, turn: "turn" in event ? event.turn : null, type: event.type, data: event, createdAt: head.createdAt }); }
+          catch (error) { logError("engine_events_save_failed", error, { stage: "engine events", server: head.server, channel: head.channel }, true); continue; }
+        }
+        for (const item of group) {
+          const envelope: EngineEnvelope = { ...(seq === undefined ? {} : { seq }), at: item.createdAt, conversation: { server: item.server, channel: item.channel }, event: item.event };
+          for (const listener of this.listeners.get(conversationKey(item.server, item.channel)) ?? []) {
+            try { listener(envelope); } catch (error) { logError("engine_events_listener_failed", error, { server: item.server, channel: item.channel }); }
+          }
         }
       }
     }

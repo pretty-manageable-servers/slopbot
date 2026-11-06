@@ -337,7 +337,11 @@ export function publishTool(message: Message, activity: ToolActivity): void {
   });
   engineEvents.publish({ server: message.server, channel: message.channel }, {
     type: "tool.status", turn: message.id, call: activity.callId ?? activity.id, name: activity.name, status: activity.status,
-    input: activity.arguments, ...(activity.reason ? { reason: activity.reason.slice(0, 2000) } : {}),
+    input: activity.arguments,
+    ...(activity.reason ? { reason: activity.reason.slice(0, 2000) } : {}),
+    ...(activity.code !== undefined ? { code: activity.code } : {}),
+    ...(activity.parentId !== undefined ? { parent: activity.parentId } : {}),
+    ...(activity.durationMs !== undefined ? { durationMs: activity.durationMs } : {}),
   });
 }
 

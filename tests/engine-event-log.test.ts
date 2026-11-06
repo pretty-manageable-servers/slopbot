@@ -32,6 +32,33 @@ test("a web chat is always saved, and another channel only while its transcript 
   assert.deepEqual(counts, [1, 1, 0]);
 });
 
+test("a switched-off channel reaches listeners without a seq, and saves no row", async t => {
+  const store = setup(t);
+  const log = new EventLog();
+  log.attach(store);
+  const conversation = { server, channel: switchedOff };
+  const seen: (number | undefined)[] = [];
+  log.subscribe(conversation, envelope => seen.push(envelope.seq));
+  log.publish(conversation, { type: "turn.start", turn: "m1" });
+  await log.idle();
+  assert.deepEqual(seen, [undefined]);
+  assert.deepEqual(await log.after(conversation, 0, 100), []);
+});
+
+test("50 text deltas of one run are saved as one row with the joined text, and each reaches listeners", async t => {
+  const store = setup(t);
+  const log = new EventLog();
+  log.attach(store);
+  const conversation = { server, channel: switchedOn };
+  const heard: string[] = [];
+  log.subscribe(conversation, envelope => { if (envelope.event.type === "text.delta") heard.push(envelope.event.text); });
+  for (let index = 0; index < 50; index++) log.publish(conversation, { type: "text.delta", turn: "m1", run: "r1", text: `${index},` });
+  await log.idle();
+  const rows = await log.after(conversation, 0, 100);
+  assert.deepEqual(rows.map(row => row.event), [{ type: "text.delta", turn: "m1", run: "r1", text: Array.from({ length: 50 }, (_, index) => `${index},`).join("") }]);
+  assert.deepEqual(heard, Array.from({ length: 50 }, (_, index) => `${index},`));
+});
+
 test("after returns saved events in publish order, and turn returns only that turn's events", async t => {
   const store = setup(t);
   const log = new EventLog();
@@ -46,7 +73,7 @@ test("after returns saved events in publish order, and turn returns only that tu
   await log.idle();
   const all = await log.after(conversation, 0, 100);
   assert.deepEqual(all.map(envelope => envelope.event.type), ["turn.start", "round.start", "text.delta", "turn.end", "turn.start", "turn.end"]);
-  const rest = await log.after(conversation, all[3]!.seq, 100);
+  const rest = await log.after(conversation, all[3]!.seq!, 100);
   assert.deepEqual(rest.map(envelope => envelope.seq), all.slice(4).map(envelope => envelope.seq));
   assert.deepEqual(await log.turn(conversation, "m1"), all.slice(0, 4).map(envelope => envelope.event));
 });
@@ -70,7 +97,7 @@ test("retention deletes rows older than the cutoff, then the oldest rows beyond 
   assert.deepEqual((await log.after(conversation, 0, 100)).map(envelope => envelope.event), [{ type: "turn.start", turn: "m2" }]);
 });
 
-test("tool.status keeps the full arguments, and keys the call by its provider call ID when it has one", async t => {
+test("tool.status keeps the full arguments and run fields, and keys the call by its provider call ID when it has one", async t => {
   const store = setup(t);
   engineEvents.attach(store);
   t.after(() => engineEvents.attach(undefined as never));
@@ -78,10 +105,12 @@ test("tool.status keeps the full arguments, and keys the call by its provider ca
   const content = "x".repeat(2_000);
   publishTool(request, { id: "m1:0", name: "write_file", status: "completed", arguments: { content }, callId: "call_1" });
   publishTool(request, { id: "m1:1", name: "write_file", status: "completed", arguments: {} });
+  publishTool(request, { id: "m1:2", name: "run_tools_code", status: "failed", arguments: {}, reason: "why", code: "return 1", parentId: "m1:0", durationMs: 12 });
   await engineEvents.idle();
   assert.deepEqual(await engineEvents.turn({ server, channel: switchedOn }, "m1"), [
     { type: "tool.status", turn: "m1", call: "call_1", name: "write_file", status: "completed", input: { content } },
     { type: "tool.status", turn: "m1", call: "m1:1", name: "write_file", status: "completed", input: {} },
+    { type: "tool.status", turn: "m1", call: "m1:2", name: "run_tools_code", status: "failed", input: {}, reason: "why", code: "return 1", parent: "m1:0", durationMs: 12 },
   ]);
 });
 

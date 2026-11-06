@@ -38,7 +38,8 @@ export const EngineEvent = z.discriminatedUnion("type", [
 ]);
 export type EngineEvent = z.infer<typeof EngineEvent>;
 
+/** `seq` is the saved row's sequence number. It is absent for an event that was not saved (a switched-off channel). */
 export const EngineEnvelope = z.object({
-  seq: z.number().int().positive(), at: z.number().int(), conversation: Conversation, event: EngineEvent,
+  seq: z.number().int().positive().optional(), at: z.number().int(), conversation: Conversation, event: EngineEvent,
 });
 export type EngineEnvelope = z.infer<typeof EngineEnvelope>;
