@@ -1,6 +1,6 @@
 // Calls to the bot's console API. Writes need the session's CSRF token, which /api/session gives.
 
-import type { ChatSummary, Session } from "./api-types";
+import type { ChatFile, ChatImage, ChatShare, ChatSummary, Session, Usage } from "./api-types";
 export type { ChatSummary, Session } from "./api-types";
 
 export class ApiError extends Error {
@@ -57,9 +57,19 @@ export const api = {
   chats: () => call<ChatSummary[]>("GET", "/api/chats"),
   createChat: (server: string) => call<{ id: string }>("POST", "/api/chats", { server }),
   messages: (id: string, limit = 50) => call<{ messages: unknown[]; hasMore: boolean; streamId: number }>("GET", `${chat(id)}/messages?limit=${limit}`),
-  send: (id: string, text: string) => call<{ id: string }>("POST", `${chat(id)}/messages`, { text, images: [], files: [] }),
+  send: (id: string, text: string, images: string[] = [], files: string[] = []) => call<{ id: string }>("POST", `${chat(id)}/messages`, { text, images, files }),
   update: (id: string, change: { title?: string; effort?: string }) => call<unknown>("PATCH", chat(id), change),
   remove: (id: string) => call<unknown>("DELETE", chat(id)),
+  uploadImage: (id: string, file: File) => upload<ChatImage>(`${chat(id)}/images`, file),
+  uploadFile: (id: string, file: File) => upload<ChatFile>(`${chat(id)}/files`, file),
+  removeImage: (id: string, imageId: string) => call<unknown>("DELETE", `${chat(id)}/images/${encodeURIComponent(imageId)}`),
+  removeFile: (id: string, fileId: string) => call<unknown>("DELETE", `${chat(id)}/files/${encodeURIComponent(fileId)}`),
+  shares: (id: string) => call<{ shares: ChatShare[] }>("GET", `${chat(id)}/shares`),
+  createShare: (id: string) => call<{ id: string }>("POST", `${chat(id)}/shares`, {}),
+  revokeShare: (id: string, shareId: string) => call<unknown>("POST", `${chat(id)}/shares/${encodeURIComponent(shareId)}/revoke`, {}),
+  continueShare: (shareId: string) => call<{ id: string; title: string }>("POST", `/api/shares/${encodeURIComponent(shareId)}/continue`, {}),
+  usage: (server: string) => get<Usage>(`/api/usage${qs({ server })}`),
+  useReset: (server: string, kind: string) => post<Usage>("/api/usage/reset", { server, kind }),
   logout: () => call<unknown>("POST", "/api/logout", {}),
   stop: (id: string) => call<{ stopped: number }>("POST", `${chat(id)}/stop`, {}),
   run: (runId: string) => call<{ steps: unknown[] }>("GET", `/api/runs/${encodeURIComponent(runId)}`),

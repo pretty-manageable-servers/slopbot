@@ -1,15 +1,24 @@
 // One private chat on screen: the saved messages, then the bot's live stream folded into kit messages.
-import { ChatHeader, ChatView, EmptyState, ModelPicker, SidebarToggle, ToolViewsProvider, UiComponentsProvider, defaultToolViews, uiMarkupToolView, widgetToolView } from "agentic-ui-kit";
-import { useEffect, useMemo, useState } from "react";
+import { AttachButton, AttachmentRow, ChatHeader, ChatTitleMenu, ChatView, EmptyState, Menu, MenuItem, ModelPicker, SidebarToggle, ToolViewsProvider, UiComponentsProvider, defaultToolViews, uiMarkupToolView, useAttachments, widgetToolView } from "agentic-ui-kit";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
+import { useServer } from "./data";
+import { attachmentIds, attachmentKind, attachmentProblem } from "./chat/attachments";
+import { ShareDialog } from "./chat/share-dialog";
+import { UsageMeter } from "./chat/usage-meter";
 import { applyBotEvent, chatMessages, emptyChat, toKitMessage, withRunSteps, type BotEvent, type BotMessage, type ChatState, type RunStep } from "./events";
 import { Loader, Logo } from "./logo";
+import { notify, notifyError } from "./ui/feedback";
 import { uiComponents } from "./ui-components";
 
 const KINDS = ["message", "run.start", "run.delta", "run.tool", "run.end"] as const;
 /** show_widget frames load the bot's frame page (WIDGET_FRAME_PATH in src/web-console.ts), outside the page CSP. */
 const WIDGETS = { frameUrl: "/console/widget-frame.html" };
 const toolViews = { ...defaultToolViews, show_ui: uiMarkupToolView(), show_widget: widgetToolView() };
+const ASK_WARNING = "Only send what you wrote yourself. A prompt from someone else can make Slopbot use tools or read data you did not mean to share.";
+
+/** The question of a link, waiting in its chat's composer until it is sent or cleared. Kept for the page's life. */
+export const linkedAsks = new Map<string, string>();
 
 /** The one model for now. Its effort levels are the bot's (EFFORTS in src/domain.ts). */
 const MODELS = [{
@@ -30,20 +39,37 @@ async function replySteps(messages: BotMessage[]): Promise<Map<string, RunStep[]
   return new Map(loaded);
 }
 
+/** Uploads one file to the route of its kind. Resolves to the id the message sends. */
+const uploadAttachment = (chat: string, file: File) => (attachmentKind(file.type) === "image"
+  ? api.uploadImage(chat, file).then((image) => image.imageId)
+  : api.uploadFile(chat, file).then((saved) => saved.fileId));
+/** Deletes an uploaded attachment on the server. Used when it is removed before the send. */
+const deleteAttachment = (chat: string, mime: string, id: string) => (attachmentKind(mime) === "image"
+  ? api.removeImage(chat, id)
+  : api.removeFile(chat, id));
+
 interface ChatProps {
   id: string | undefined;
   title: string;
   effort: string;
   onEffort: (effort: string) => void;
+  /** Makes the chat for a new composer. It is called once, on the first attachment or the first send. */
   onCreate: () => Promise<string>;
-  /** After a message is sent, so the chat list can show the new title and order. */
-  onSent: () => void;
+  /** After a message is sent. A new chat's page opens on `chatId` then. */
+  onSent: (chatId: string) => void;
 }
 
 export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProps) {
+  const server = useServer();
   const [state, setState] = useState<ChatState | null>(id ? null : emptyChat());
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState("");
+  const [sharing, setSharing] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const [ask, setAsk] = useState(() => (id ? linkedAsks.get(id) : undefined));
+  const [draft, setDraft] = useState(ask ?? "");
+  const fileInput = useRef<HTMLInputElement>(null);
+  const made = useRef<Promise<string> | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -80,6 +106,60 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
   const messages = useMemo(() => (state ? chatMessages(state) : []), [state]);
   const busy = messages.some((m) => m.status === "streaming");
 
+  // A new composer makes its chat once, when the first file uploads or the first message sends.
+  const ensureChat = (): Promise<string> => {
+    if (id) return Promise.resolve(id);
+    if (!made.current) made.current = onCreate().catch((e: unknown) => { made.current = null; throw e; });
+    return made.current;
+  };
+
+  const attachments = useAttachments({
+    upload: async (file, signal) => {
+      const chat = await ensureChat();
+      const fileId = await uploadAttachment(chat, file);
+      // The draft was removed while it uploaded: the file is not wanted.
+      if (signal.aborted) void deleteAttachment(chat, file.type, fileId).catch(() => {});
+      return { fileId };
+    },
+  });
+
+  const addFiles = (files: File[]) => {
+    const accepted: File[] = [];
+    for (const file of files) {
+      const problem = attachmentProblem(file, attachments.attachments.length + accepted.length);
+      if (problem) notify(problem, "error");
+      else accepted.push(file);
+    }
+    attachments.addFiles(accepted);
+  };
+
+  const removeAttachment = (draftId: string) => {
+    const draft = attachments.attachments.find((a) => a.id === draftId);
+    attachments.remove(draftId);
+    if (draft?.fileId) void ensureChat().then((chat) => deleteAttachment(chat, draft.mime, draft.fileId!)).catch(() => {});
+  };
+
+  const clearAsk = () => {
+    if (id) linkedAsks.delete(id);
+    setAsk(undefined);
+  };
+
+  const send = (text: string) => {
+    const { images, files } = attachmentIds(attachments.attachments);
+    clearAsk();
+    setSending(true);
+    void (async () => {
+      const chat = await ensureChat();
+      await api.send(chat, text, images, files);
+      attachments.clear();
+      onSent(chat);
+    })().catch((e: Error) => {
+      // The text comes back when the field is still empty. The attachments stay for a retry.
+      setDraft((current) => current || text);
+      notifyError(e);
+    }).finally(() => setSending(false));
+  };
+
   if (error) return <div className="page-note"><p>{error}</p></div>;
   if (!state) return <div className="page-note" aria-busy="true"><Loader size={56} /></div>;
   return (
@@ -89,22 +169,62 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
       widgets={WIDGETS}
       messages={messages}
       busy={busy}
-      onSend={(text) => {
-        void (async () => {
-          const chat = id ?? (await onCreate());
-          await api.send(chat, text);
-          onSent();
-        })().catch((e: Error) => setError(e.message));
-      }}
+      onSend={send}
       onStop={id ? () => void api.stop(id).catch((e: Error) => setError(e.message)) : undefined}
-      header={<ChatHeader leading={<SidebarToggle drawerOnly />} title={messages.length ? title || "New chat" : ""} actions={status ? <span role="status">{status}</span> : undefined} />}
+      header={
+        <ChatHeader
+          leading={<SidebarToggle drawerOnly />}
+          title={messages.length ? title || "New chat" : ""}
+          menu={id && messages.length ? <ChatTitleMenu onShare={() => setSharing(id)} /> : undefined}
+          actions={status ? <span role="status">{status}</span> : undefined}
+        />
+      }
       composer={{
         placeholder: messages.length ? "Reply to Slopbot…" : "How can I help you today?",
+        value: draft,
+        onChange: (text) => {
+          setDraft(text);
+          if (ask !== undefined && !text.trim()) clearAsk();
+        },
+        allowEmpty: attachments.attachments.length > 0,
+        submitDisabled: attachments.uploading || sending,
+        onFiles: addFiles,
+        leading: (
+          <>
+            <AttachButton label="Attach">
+              <Menu aria-label="Add to this message">
+                <MenuItem id="files" onAction={() => fileInput.current?.click()}>Add images or files</MenuItem>
+              </Menu>
+            </AttachButton>
+            <UsageMeter server={server.id} busy={busy} />
+          </>
+        ),
+        above: (
+          <>
+            {ask !== undefined && (
+              <div role="alert" className="mb-2 rounded-chat-sm bg-chat-warning-bg px-3 py-2 text-sm text-chat-fg">
+                <strong className="font-medium">This question came from a link. Read it before you send it.</strong> {ASK_WARNING}
+              </div>
+            )}
+            <AttachmentRow attachments={attachments.attachments} onRemove={removeAttachment} />
+          </>
+        ),
         trailing: <ModelPicker models={MODELS} model="pangaea" onModelChange={() => {}} effort={effort} onEffortChange={onEffort} effortNote="More effort thinks longer and uses more of your limit." />,
       }}
       emptyState={(composer) => <EmptyState icon={<Logo size={40} />} greeting="What can Slopbot do for you?">{composer}</EmptyState>}
       disclaimer="Slopbot can make mistakes. Check important answers."
     />
+    <input
+      ref={fileInput}
+      type="file"
+      multiple
+      hidden
+      onChange={(event) => {
+        addFiles(Array.from(event.currentTarget.files ?? []));
+        event.currentTarget.value = "";
+      }}
+    />
+    <ShareDialog chatId={sharing} onClose={() => setSharing(null)} />
     </ToolViewsProvider>
     </UiComponentsProvider>
   );
