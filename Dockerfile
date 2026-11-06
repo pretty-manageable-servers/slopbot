@@ -5,7 +5,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
-COPY web ./web
+COPY share ./share
 COPY architecture/BOT_GUIDE.md ./architecture/BOT_GUIDE.md
 # Tests run in the CI test job before deploy, not in the image build.
 RUN npm run build
@@ -33,7 +33,7 @@ COPY --from=build --chown=1000:1000 /app/package.json ./
 COPY --from=build --chown=1000:1000 /app/node_modules ./node_modules
 COPY --from=build --chown=1000:1000 /app/dist/src ./dist/src
 COPY --from=build --chown=1000:1000 /app/dist/architecture ./dist/architecture
-COPY --from=build --chown=1000:1000 /app/web ./web
+COPY --from=build --chown=1000:1000 /app/share ./share
 COPY --from=build --chown=1000:1000 /app/site/out ./site/out
 COPY --from=build --chown=1000:1000 /app/console/dist ./console/dist
 COPY --chown=1000:1000 scripts/deployment ./scripts/deployment

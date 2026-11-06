@@ -69,7 +69,7 @@ export interface ConsoleBackend {
   /** Login sessions. The database is the source of truth, so logins survive restarts. */
   sessions: WebSessionStore;
 }
-/** siteDir is the landing page export. It defaults to site/out. nextDir is the Vite build of the new console (console/dist). llmStatus gives the signed-in user's LLM mode; without it the mode is normal. settings holds the non-ZDR switches. */
+/** siteDir is the landing page export. It defaults to site/out. nextDir is the Vite build of the console (console/dist). llmStatus gives the signed-in user's LLM mode; without it the mode is normal. settings holds the non-ZDR switches. */
 export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string; siteDir?: string; nextDir?: string; llmStatus?: (user: string) => { mode: LlmMode; canChat: boolean }; settings?: ConsoleSettings }
 /** Reads and writes of the non-ZDR switches. Users use the global scope; each server uses its own scope. */
 export interface ConsoleSettings { setting(server: string, key: string): unknown; setSetting(server: string, key: string, value: Json): void | Promise<void> }
@@ -163,20 +163,28 @@ const landingCsp = consoleCsp.replace("script-src 'self'", "script-src 'self' 'u
 export const WIDGET_FRAME_PATH = '/console/widget-frame.html';
 const widgetFrameCsp = "default-src 'none'; script-src 'unsafe-inline' https:; style-src 'unsafe-inline' https:; img-src data: blob: https:; font-src data: https:; connect-src https:; frame-ancestors 'self'; base-uri 'none'";
 const nextCsp = consoleCsp.replace("script-src 'self'", "script-src 'self' 'wasm-unsafe-eval'").replace("style-src 'self'", "style-src 'self' 'unsafe-inline'");
-/** Console file for a /console path, or undefined. Only these names are served. */
-const consoleFile = (path: string) => {
-  if (path === '/console' || path === '/console/') return 'index.html';
-  // Chat and channel addresses: /chat, /chat/<id>, /team, /team/<id> and /team/<id>/run/<runId>. The page reads the path.
-  if (/^\/(chat|team)(\/[^/]+)?\/?$/.test(path) || /^\/team\/[^/]+\/run\/[^/]+\/?$/.test(path)) return 'index.html';
-  const name = path.startsWith('/console/') ? path.slice('/console/'.length) : '';
-  return /^(app\.js|palette\.js|conversations\.js|markdown\.js|highlight\.min\.js|style\.css|chat\.css|console\.css|shares\.js|shares\.css|assets\/(logo-(light|dark)\.svg|favicon\.svg|[a-z0-9-]+\.woff2)|katex\/katex\.min\.js|katex\/katex\.min\.css|katex\/fonts\/KaTeX_[A-Za-z0-9_-]+\.woff2)$/.test(name) ? name : undefined;
+/** File of the public share page (/s/:id) for a /share path, or undefined. Only these names are served. */
+const shareFile = (path: string) => {
+  const name = path.startsWith('/share/') ? path.slice('/share/'.length) : '';
+  return /^(markdown\.js|highlight\.min\.js|style\.css|chat\.css|shares\.js|shares\.css|assets\/(logo-(light|dark)\.svg|favicon\.svg|[a-z0-9-]+\.woff2)|katex\/katex\.min\.js|katex\/katex\.min\.css|katex\/fonts\/KaTeX_[A-Za-z0-9_-]+\.woff2)$/.test(name) ? name : undefined;
 };
-/** File of the new console (the Vite build) for a /console/next path, or undefined. Paths without a file extension are pages of the app. */
-const nextFile = (path: string) => {
-  if (path !== '/console/next' && !path.startsWith('/console/next/')) return undefined;
-  const name = path.slice('/console/next/'.length);
+/** File of the console (the Vite build) for a /console path, or undefined. Paths without a file extension are pages of the app. */
+const consoleFile = (path: string) => {
+  if (path !== '/console' && !path.startsWith('/console/')) return undefined;
+  const name = path.slice('/console/'.length);
   if (/^assets\/[A-Za-z0-9_.-]+$/.test(name)) return name;
   return /^[A-Za-z0-9_/-]*$/.test(name) ? 'index.html' : undefined;
+};
+/**
+ * Old console addresses still in Discord messages and bookmarks: /chat/<id> (the "continue in web" link), /team/...
+ * and /console/next/... (the new console before the swap). Gives the address in the console, or undefined.
+ */
+export const movedPath = (path: string): string | undefined => {
+  const chat = /^\/chat(?:\/([^/]+))?\/?$/.exec(path);
+  if (chat) return chat[1] ? `/console/chat/${chat[1]}` : '/console';
+  if (/^\/team(\/.*)?$/.test(path)) return '/console';
+  if (path === '/console/next' || path.startsWith('/console/next/')) return `/console${path.slice('/console/next'.length)}` || '/console';
+  return undefined;
 };
 /** Landing file for a path: the home page, /_next/ files and top-level files such as /favicon.svg. */
 // A path with no extension is a page of the export, for example /terms gives terms.html.
@@ -188,7 +196,7 @@ async function readInside(root: string, name: string): Promise<StaticFile | unde
   const info = await stat(file).catch(() => undefined);
   return info?.isFile() ? { content: await readFile(file), type } : undefined;
 }
-const noticePage = (title: string, text: string, link: [string, string][]) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><link rel="stylesheet" href="/console/style.css"></head><body><main style="max-width:480px;margin:15vh auto;padding:0 16px;font-family:system-ui,sans-serif"><h1>${title}</h1><p>${text}</p><p>${link.map(([href, label]) => `<a href="${href}">${label}</a>`).join(' &middot; ')}</p></main></body></html>`;
+const noticePage = (title: string, text: string, link: [string, string][]) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><link rel="stylesheet" href="/share/style.css"></head><body><main style="max-width:480px;margin:15vh auto;padding:0 16px;font-family:system-ui,sans-serif"><h1>${title}</h1><p>${text}</p><p>${link.map(([href, label]) => `<a href="${href}">${label}</a>`).join(' &middot; ')}</p></main></body></html>`;
 /** Team routes for the non-ZDR switch. Reading needs membership; writing needs an editor. The errors match adminRoute's. */
 async function teamAccess(admin: ConsoleAdmin, user: string, editor: boolean): Promise<void> {
   if (!await admin.role(user)) throw new ToolError('Team membership is required.');
@@ -477,10 +485,12 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         res.setHeader('Cache-Control', 'no-cache');
         return void res.end(widgetFrameLoader);
       }
+      const moved = movedPath(routePath);
+      if (moved) { res.writeHead(301, { Location: moved + url.search }); res.end(); return; }
+      const shareName = shareFile(routePath);
+      if (shareName) return sendFile(res, await readInside('share', shareName));
       const consoleName = consoleFile(routePath);
-      if (consoleName) return sendFile(res, await readInside('web', consoleName));
-      const nextName = nextFile(routePath);
-      if (nextName) { res.setHeader('Content-Security-Policy', nextCsp); return sendFile(res, await readInside(options.nextDir ?? 'console/dist', nextName)); }
+      if (consoleName) { res.setHeader('Content-Security-Policy', nextCsp); return sendFile(res, await readInside(options.nextDir ?? 'console/dist', consoleName)); }
       const landingName = landingFile(routePath);
       if (!landingName) return send(res, 404, { error: 'Not found.' });
       if (landingName.endsWith('.html')) res.setHeader('Content-Security-Policy', landingCsp);

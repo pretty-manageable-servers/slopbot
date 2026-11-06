@@ -70,7 +70,6 @@ function Shell() {
           menu={
             <Menu aria-label="Account">
               <MenuItem id="settings" onAction={() => openSettings()}>Settings</MenuItem>
-              <MenuItem id="old" href="/console">Old console</MenuItem>
               <MenuSeparator />
               <MenuItem id="logout" onAction={() => void api.logout().then(() => location.reload(), notifyError)}>Log out</MenuItem>
             </Menu>

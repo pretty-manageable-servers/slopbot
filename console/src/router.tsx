@@ -1,4 +1,4 @@
-// The console's pages under /console/next (TanStack Router, routes in code):
+// The console's pages under /console (TanStack Router, routes in code):
 //   /                                     a new chat
 //   /chat/$chatId                         a private chat
 //   /server/$serverId                     the Servers view of one server: its Inbox
@@ -10,7 +10,7 @@ import { Layout } from "./layout";
 import { ChannelPage } from "./servers/channel";
 import { ServerHome } from "./servers/home";
 
-export const BASE = "/console/next";
+export const BASE = "/console";
 
 const optionalString = (value: unknown) => (typeof value === "string" && value ? value : undefined);
 
