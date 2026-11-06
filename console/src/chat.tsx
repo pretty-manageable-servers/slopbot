@@ -1,5 +1,5 @@
 // One private chat on screen: the saved messages, then the bot's live stream folded into kit messages.
-import { AttachButton, AttachmentRow, ChatHeader, ChatTitleMenu, ChatView, EmptyState, Menu, MenuItem, ModelPicker, SidebarToggle, ToolViewsProvider, UiComponentsProvider, defaultToolViews, uiMarkupToolView, useAttachments, widgetToolView } from "agentic-ui-kit";
+import { AttachButton, AttachmentRow, ChatHeader, ChatTitleMenu, ChatView, DictationButton, EmptyState, Menu, MenuItem, ModelPicker, SidebarToggle, ToolViewsProvider, UiComponentsProvider, defaultToolViews, uiMarkupToolView, useAttachments, widgetToolView } from "agentic-ui-kit";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { useServer } from "./data";
@@ -8,6 +8,7 @@ import { ShareDialog } from "./chat/share-dialog";
 import { UsageMeter } from "./chat/usage-meter";
 import { applyBotEvent, chatMessages, emptyChat, toKitMessage, withRunSteps, type BotEvent, type BotMessage, type ChatState, type RunStep } from "./events";
 import { Loader, Logo } from "./logo";
+import { useConsoleDictation } from "./ui/dictation";
 import { notify, notifyError } from "./ui/feedback";
 import { uiComponents } from "./ui-components";
 
@@ -68,6 +69,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
   const [sending, setSending] = useState(false);
   const [ask, setAsk] = useState(() => (id ? linkedAsks.get(id) : undefined));
   const [draft, setDraft] = useState(ask ?? "");
+  const dictation = useConsoleDictation();
   const fileInput = useRef<HTMLInputElement>(null);
   const made = useRef<Promise<string> | null>(null);
 
@@ -209,7 +211,13 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
             <AttachmentRow attachments={attachments.attachments} onRemove={removeAttachment} />
           </>
         ),
-        trailing: <ModelPicker models={MODELS} model="pangaea" onModelChange={() => {}} effort={effort} onEffortChange={onEffort} effortNote="More effort thinks longer and uses more of your limit." />,
+        dictation: dictation.state,
+        trailing: (
+          <>
+            {dictation.supported && <DictationButton onPress={dictation.start} />}
+            <ModelPicker models={MODELS} model="pangaea" onModelChange={() => {}} effort={effort} onEffortChange={onEffort} effortNote="More effort thinks longer and uses more of your limit." />
+          </>
+        ),
       }}
       emptyState={(composer) => <EmptyState icon={<Logo size={40} />} greeting="What can Slopbot do for you?">{composer}</EmptyState>}
       disclaimer="Slopbot can make mistakes. Check important answers."

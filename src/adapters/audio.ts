@@ -52,7 +52,7 @@ function sseEvent(line: string): SseEvent {
 }
 
 export class PmAudio {
-  constructor(private readonly baseUrl: string, private readonly apiKey: string, private readonly voice: string, private readonly fetcher: typeof fetch = fetch) {}
+  constructor(private readonly baseUrl: string, private readonly apiKey: string, private readonly voice: string, private readonly fetcher: typeof fetch = fetch, private readonly sttModel = 'squall') {}
 
   private async request(path: string, body: BodyInit, json: boolean, signal: AbortSignal): Promise<Response> {
     const response = await this.fetcher(`${this.baseUrl.replace(/\/$/, '')}/audio/${path}`, {
@@ -64,9 +64,14 @@ export class PmAudio {
   }
 
   async transcribe(pcm: Buffer, signal: AbortSignal): Promise<string> {
+    return this.transcribeWav(pcmWav(pcm), signal);
+  }
+
+  /** Transcribes a WAV file as is. */
+  async transcribeWav(wav: Uint8Array, signal: AbortSignal): Promise<string> {
     const form = new FormData();
-    form.set('model', 'squall'); form.set('response_format', 'json');
-    form.set('file', new Blob([new Uint8Array(pcmWav(pcm))], { type: 'audio/wav' }), 'voice.wav');
+    form.set('model', this.sttModel); form.set('response_format', 'json');
+    form.set('file', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'voice.wav');
     const result = await (await this.request('transcriptions', form, false, signal)).json() as { text?: unknown };
     if (typeof result.text !== 'string') throw new Error('Transcription response has no text');
     return result.text.trim();
