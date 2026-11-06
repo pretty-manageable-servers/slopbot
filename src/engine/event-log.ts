@@ -70,6 +70,7 @@ export class EventLog implements EngineEventLog {
   private queue: Pending[] = [];
   private running = false;
   private current: Promise<void> = Promise.resolve();
+  private readonly everything = new Set<Listener>();
   private readonly listeners = new Map<string, Set<Listener>>();
   // Every model token is published, so the switch is read at most once a second per conversation.
   private readonly switches = new Map<string, { on: boolean; until: number }>();
@@ -112,6 +113,12 @@ export class EventLog implements EngineEventLog {
     return () => { set.delete(listener); if (!set.size) this.listeners.delete(id); };
   }
 
+  /** Every envelope of every conversation, for a client that shows all of them (Discord tool status). */
+  listen(listener: Listener): () => void {
+    this.everything.add(listener);
+    return () => { this.everything.delete(listener); };
+  }
+
   private saves(store: EngineEventStore, conversation: Conversation): boolean {
     if (isPrivateChannel(conversation.channel) && !isDirectMessageChannel(conversation.channel)) return true;
     const id = conversationKey(conversation.server, conversation.channel), now = Date.now(), hit = this.switches.get(id);
@@ -135,7 +142,7 @@ export class EventLog implements EngineEventLog {
         }
         for (const item of group) {
           const envelope: EngineEnvelope = { ...(seq === undefined ? {} : { seq }), at: item.createdAt, conversation: { server: item.server, channel: item.channel }, event: item.event };
-          for (const listener of this.listeners.get(conversationKey(item.server, item.channel)) ?? []) {
+          for (const listener of [...this.everything, ...this.listeners.get(conversationKey(item.server, item.channel)) ?? []]) {
             try { listener(envelope); } catch (error) { logError("engine_events_listener_failed", error, { server: item.server, channel: item.channel }); }
           }
         }

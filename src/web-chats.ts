@@ -9,7 +9,7 @@ import type { UiDocument } from "./ui/schema.js";
 import { prepareUi } from "./ui/runtime.js";
 import type { RecordStore } from "./records.js";
 import type { ChannelAccess } from "./channel-access.js";
-import type { MemberDirectory } from "./member-directory.js";
+import type { Directory, Engine, Workspace } from "./engine/api.js";
 import type { UserLimiter } from "./user-limiter.js";
 import { ToolError, stableOperationId } from "./tools.js";
 import { requestTimings } from "./request-timing.js";
@@ -40,25 +40,12 @@ export interface ChatStore extends TranscriptStore, ConversationEventStore, Shar
   setting(server: string, key: string): unknown;
 }
 
-/** What the Discord side gives the chat service for one server. */
-export interface PrivateChatHandle {
-  openChat(channel: string): void;
-  closeChat(channel: string): void;
-  /** Hands a message that is already saved to the bot. The limit is checked by the service first. */
-  receiveChat(message: Message): Promise<void>;
-  /** Stops the responses in a channel that this user may stop. Returns how many stopped. */
-  stopResponses(channel: string, user: string, manager: boolean): Promise<string[]>;
-  /** Runs one button of a card saved with a reply. The user must be the card's owner. Errors are ToolErrors. */
-  act(channel: string, user: string, id: string, revision: number, index: number, interactionId: string): Promise<{ document: UiDocument; revision: number }>;
-}
-
-export interface ChatHost {
-  /** True when the user and Slopbot are both in the server. */
-  member(user: string, server: string): Promise<boolean>;
-  handle(server: string): Promise<PrivateChatHandle | undefined>;
+/** What the chat service needs: the engine to run chats, Discord authority for membership and names, and the shared limiter and access checks. */
+export interface ChatDeps {
+  engine: Engine;
+  directory: Directory;
   limiter: Pick<UserLimiter, "check">;
   access: ChannelAccess;
-  members?: Pick<MemberDirectory, "profiles">;
   /** Private storage for chat images. Without it, a local disk folder is used (development only). */
   images?: ObjectStorageProvider;
 }
@@ -130,7 +117,7 @@ export class WebChatService {
   private readonly pending = new Map<string, { chat: string; user: string; name: string; contentType: string; size: number; at: number }>();
   /** Files that are uploaded but not sent yet. Same rules as pending. */
   private readonly pendingFiles = new Map<string, { chat: string; user: string; name: string; contentType: string; size: number; at: number }>();
-  constructor(private readonly store: ChatStore, private readonly host: ChatHost, private readonly bus: RunEvents = runEvents, private readonly now: () => number = Date.now) {
+  constructor(private readonly store: ChatStore, private readonly host: ChatDeps, private readonly bus: RunEvents = runEvents, private readonly now: () => number = Date.now) {
     this.shares = new ChatShareService(store, now);
     this.storage = host.images ?? new LocalDiskStorage();
   }
@@ -143,7 +130,7 @@ export class WebChatService {
     const chats = await this.store.webChats(user);
     const member = new Map<string, Promise<boolean>>();
     const open = (server: string) => {
-      if (!member.has(server)) member.set(server, SNOWFLAKE.test(server) ? this.host.member(user, server).catch(() => false) : Promise.resolve(false));
+      if (!member.has(server)) member.set(server, SNOWFLAKE.test(server) ? this.host.directory.isMember(user, server).catch(() => false) : Promise.resolve(false));
       return member.get(server)!;
     };
     const kept = await Promise.all(chats.map(chat => open(chat.server)));
@@ -165,10 +152,10 @@ export class WebChatService {
 
   async create(user: string, server: string): Promise<{ id: string }> {
     await this.requireMember(user, server);
-    const handle = await this.handle(server);
+    const workspace = await this.handle(server);
     const id = newPrivateChatId(), at = this.now();
     await this.store.insertWebChat({ id, server, owner: user, title: "", created: at, updated: at, deleted: false });
-    handle.openChat(privateChannel(id));
+    workspace.openChat(privateChannel(id));
     return { id };
   }
 
@@ -182,10 +169,10 @@ export class WebChatService {
   async remove(user: string, id: string): Promise<void> {
     const chat = await this.owned(user, id);
     const channel = privateChannel(chat.id);
-    const handle = await this.handle(chat.server);
+    const workspace = await this.handle(chat.server);
     // The chat's images go first. If this fails, the chat stays and the user can try again.
     await this.removeImages(chat);
-    handle.closeChat(channel);
+    workspace.closeChat(channel);
     // The chat's share links stop working and their frozen copies go with the chat.
     await this.shares.removeChat(chat);
     await this.store.deleteWebChat(chat.id, chat.server, channel, this.now());
@@ -218,7 +205,7 @@ export class WebChatService {
     const copy = row ? await shares.snapshot(shareId) : undefined;
     if (!row || !copy) throw new ChatError(404, "Not found.");
     await this.requireMember(user, row.server);
-    const handle = await this.handle(row.server);
+    const workspace = await this.handle(row.server);
     const id = newPrivateChatId(), channel = privateChannel(id), at = this.now();
     // A message with no text (only images) is not copied. Images are never copied. File labels are not copied (an old snapshot can still have them).
     const messages = copy.messages.map(item => ({ ...item, text: withoutFileLabelText(item.text) })).filter(item => item.text.trim());
@@ -238,7 +225,7 @@ export class WebChatService {
       };
       await this.store.ingest(saved);
     }
-    handle.openChat(channel);
+    workspace.openChat(channel);
     return { id, title };
   }
 
@@ -248,7 +235,7 @@ export class WebChatService {
    */
   async continueMessage(user: string, server: string, source: Message): Promise<{ id: string }> {
     await this.requireMember(user, server);
-    const handle = await this.handle(server);
+    const workspace = await this.handle(server);
     const id = newPrivateChatId(), channel = privateChannel(id), at = this.now();
     const text = [...source.text].slice(0, PRIVATE_CHAT_MAX_CHARS).join("");
     await this.store.insertWebChat({ id, server, owner: user, title: privateChatTitle(text), created: at, updated: at, deleted: false });
@@ -257,7 +244,7 @@ export class WebChatService {
       ...(source.authorName ? { authorName: source.authorName } : {}), ...(source.isBot ? { isBot: true } : {}),
       text, timestamp: Math.min(source.timestamp ?? at - 1, at - 1), addressed: false,
     });
-    handle.openChat(channel);
+    workspace.openChat(channel);
     return { id };
   }
 
@@ -274,7 +261,7 @@ export class WebChatService {
     }
     const rows = await this.store.conversationMessages(chat.server, channel, cursor, limit + 1);
     return {
-      messages: await messageViews(this.store, this.host.members, chat.server, rows.slice(0, limit).reverse()),
+      messages: await messageViews(this.store, this.host.directory, chat.server, rows.slice(0, limit).reverse()),
       hasMore: rows.length > limit,
       streamId,
     };
@@ -302,9 +289,9 @@ export class WebChatService {
     if ([...body].length > PRIVATE_CHAT_MAX_CHARS) throw new ChatError(400, `Write ${PRIVATE_CHAT_MAX_CHARS} characters or fewer.`);
     const limit = await this.host.limiter.check(user);
     if (!limit.allowed) throw new ChatError(429, "Usage limit reached.", limit.resetAt);
-    const handle = await this.handle(chat.server);
+    const workspace = await this.handle(chat.server);
     const channel = privateChannel(chat.id), at = this.now();
-    const name = (await this.host.members?.profiles(chat.server, [user]))?.get(user)?.displayName ?? user;
+    const name = (await this.host.directory.profiles(chat.server, [user]))?.get(user)?.displayName ?? user;
     // The saved row keeps a placeholder per image or file (name, type, size, ID), never bytes.
     const attachments = [
       ...images.map(item => ({ name: item.name, url: CHAT_IMAGE_SCHEME + item.imageId, contentType: item.contentType, size: item.size })),
@@ -319,8 +306,8 @@ export class WebChatService {
     for (const item of images) this.pending.delete(item.imageId);
     for (const item of files) this.pendingFiles.delete(item.fileId);
     if (chat.title) await this.store.touchWebChat(chat.id, at); else await this.store.renameWebChat(chat.id, privateChatTitle(text || (images[0] ?? files[0])!.name), at);
-    await publishMessage(this.store, message, undefined, this.host.members);
-    void handle.receiveChat(modelImages.length ? { ...message, modelImages } : message).catch(error => logError("web_chat_receive_failed", error, { server: chat.server, channel, messageId: message.id }));
+    await publishMessage(this.store, message, undefined, this.host.directory);
+    void workspace.submit(modelImages.length ? { ...message, modelImages } : message, { ingested: true }).catch(error => logError("web_chat_receive_failed", error, { server: chat.server, channel, messageId: message.id }));
     return { id: message.id };
   }
 
@@ -482,8 +469,8 @@ export class WebChatService {
   /** Stops the Slopbot response in a chat. Only the owner can open the chat, so the owner stops it. */
   async stop(user: string, id: string): Promise<{ stopped: number }> {
     const chat = await this.owned(user, id);
-    const handle = await this.handle(chat.server);
-    return { stopped: (await handle.stopResponses(privateChannel(chat.id), user, false)).length };
+    const workspace = await this.handle(chat.server);
+    return { stopped: (await workspace.stop(privateChannel(chat.id), user, false)).length };
   }
 
   /** Runs one button of a card in the chat. The result replaces the card. A ToolError becomes a 400 with its message. */
@@ -491,9 +478,9 @@ export class WebChatService {
     const chat = await this.owned(user, id);
     const revision = Number(input.revision), index = Number(input.index);
     if (!/^[0-9a-f]{24}$/.test(cardId) || !Number.isSafeInteger(revision) || !Number.isSafeInteger(index)) throw new ChatError(400, "Invalid control.");
-    const handle = await this.handle(chat.server);
+    const workspace = await this.handle(chat.server);
     try {
-      return await handle.act(privateChannel(chat.id), user, cardId, revision, index, randomUUID());
+      return await workspace.act(privateChannel(chat.id), user, cardId, revision, index, randomUUID());
     } catch (error) {
       if (error instanceof ToolError) throw new ChatError(400, error.message);
       throw error;
@@ -507,12 +494,12 @@ export class WebChatService {
     return chat;
   }
   private async requireMember(user: string, server: string): Promise<void> {
-    if (!SNOWFLAKE.test(server) || !await this.host.member(user, server)) throw new ChatError(404, "Not found.");
+    if (!SNOWFLAKE.test(server) || !await this.host.directory.isMember(user, server)) throw new ChatError(404, "Not found.");
   }
-  private async handle(server: string): Promise<PrivateChatHandle> {
-    const handle = await this.host.handle(server);
-    if (!handle) throw new ChatError(404, "Not found.");
-    return handle;
+  private async handle(server: string): Promise<Workspace> {
+    const workspace = await this.host.engine.workspace(server);
+    if (!workspace) throw new ChatError(404, "Not found.");
+    return workspace;
   }
 }
 

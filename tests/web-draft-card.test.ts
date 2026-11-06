@@ -9,7 +9,8 @@ import type { Message } from "../src/domain.js";
 import type { ObjectStorageProvider } from "../src/object-storage.js";
 import { issueDraftTools } from "../src/issue-drafts.js";
 import { createConsole } from "../src/web-console.js";
-import { createChatRoutes, WebChatGateway, WebChatService, type ChatHost, type PrivateChatHandle } from "../src/web-chats.js";
+import { createChatRoutes, WebChatGateway, WebChatService } from "../src/web-chats.js";
+import { chatDeps } from "./chat-deps.js";
 import { privateChannel } from "../src/private-chat.js";
 import { runEvents } from "../src/run-events.js";
 import { ToolRegistry } from "../src/tools.js";
@@ -73,25 +74,19 @@ async function setup(t: TestContext): Promise<Fixture> {
   const request: Message = { server: SERVER, channel, id: "30000000000000003", author: OWNER, text: "Please file a bug about PNG uploads", timestamp: now };
   await store.ingest(request);
 
-  const handle: PrivateChatHandle = {
-    openChat() { /* no bot in these tests */ },
-    closeChat() { /* none */ },
-    async receiveChat() { /* none */ },
-    async stopResponses() { return []; },
-    // The Discord side runs a card button through its UI runtime, as a command by the web user.
-    act(channelId, user, id, revision, index, interactionId) {
-      return ui.act({ server: SERVER, channel: channelId, author: user, id: `chat-ui:${interactionId}`, text: "UI action", timestamp: Date.now() }, id, revision, index, interactionId);
-    },
-  };
   let clock = now;
   const members = new Set([OWNER, OTHER]);
-  const host: ChatHost = {
-    async member(user, server) { return server === SERVER && members.has(user); },
-    async handle(server) { return server === SERVER ? handle : undefined; },
-    limiter: { async check() { return { allowed: true }; } },
+  const host = chatDeps({
+    member: (user, server) => server === SERVER && members.has(user),
+    workspace: server => server === SERVER ? {
+      // The Discord side runs a card button through its UI runtime, as a command by the web user.
+      act(channelId, user, id, revision, index, interactionId) {
+        return ui.act({ server: SERVER, channel: channelId, author: user, id: `chat-ui:${interactionId}`, text: "UI action", timestamp: Date.now() }, id, revision, index, interactionId);
+      },
+    } : undefined,
     access: new ChannelAccess({ async facts() { return undefined; } }),
     images: new MemoryStorage(),
-  };
+  });
   const service = new WebChatService(store, host, undefined, () => ++clock);
   const gateway = new WebChatGateway(store, SERVER);
 

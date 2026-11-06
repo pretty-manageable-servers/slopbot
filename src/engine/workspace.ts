@@ -43,6 +43,7 @@ import { BOT_REPLY_LIMIT_KEY, botReplyLimit } from "../bot-reply-limit.js";
 import { MUTED_USERS_KEY, mutedUsers } from "../muted-users.js";
 import { GLOBAL_SETTINGS_SCOPE } from "../usage-cost.js";
 import { registerProfileTools } from "../profiles.js";
+import { publishTool } from "../run-events.js";
 import { Application } from "../application.js";
 import { Bot } from "../bot.js";
 import type { Config } from "../config.js";
@@ -258,7 +259,7 @@ export class EngineWorkspace implements Workspace {
       recentMessages: savedLimit("reply_context", config.replyContextMessages, 100),
       maxContextTokens: config.contextTokens, maxInputChars: config.contextTokens,
       maxOutputTokens: config.outputTokens, checkpointTokens: config.checkpointTokens, maxToolRounds: config.maxToolRounds,
-    }, store, { usage, onToolActivity: (message, activity) => ports.onToolActivity(message, activity), presentation: discordPresentation, ...(sandboxPrompt ? { sandboxPrompt } : {}), profiles: store, harness: store, images: imageSource, tools: {
+    }, store, { usage, onToolActivity: async (message, activity) => { if (this.bot.accepts(message.server, message.channel)) publishTool(message, activity); }, presentation: discordPresentation, ...(sandboxPrompt ? { sandboxPrompt } : {}), profiles: store, harness: store, images: imageSource, tools: {
       catalog: message => this.tools.catalog(message), schemas: message => this.tools.schemas(message), suggest: message => this.tools.suggest(message),
       execute: (message, call, id, version, invocation) => this.bot.executeTool(message, call, id, version, invocation),
       snapshot: () => {

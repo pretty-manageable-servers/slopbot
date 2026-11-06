@@ -16,7 +16,8 @@ import { registerReportTools } from "../src/search/reports.js";
 import { ShareError, ShareService, buildMessages } from "../src/shares.js";
 import { fileLabel, transcriptMessage } from "../src/run-events.js";
 import { fileUrl } from "../src/web-chat-files.js";
-import { ChatError, WebChatService, type ChatHost } from "../src/web-chats.js";
+import { ChatError, WebChatService } from "../src/web-chats.js";
+import { chatDeps } from "./chat-deps.js";
 import { ToolRegistry } from "../src/tools.js";
 import { visibleConversations, type TranscriptHost } from "../src/web-transcripts.js";
 import type { Message } from "../src/domain.js";
@@ -177,12 +178,11 @@ test("a private chat is shared by its owner only, as a snapshot, and deleting it
   await store.insertWebChat({ id: "fedcba9876543210fedcba9876543210", server: guild, owner: "carol", title: "", created: 1, updated: 1, deleted: false });
   await store.ingest({ ...webMessage("web-other", "carol budget note", otherChat, "carol"), server: guild });
   const members = new Set(["alice", "bob", "carol", "manager"]);
-  const host = {
-    member: async (user: string, serverId: string) => serverId === guild && members.has(user),
-    handle: async (serverId: string) => serverId === guild ? { openChat() { /* none */ }, closeChat() { /* none */ }, async receiveChat() { /* none */ } } : undefined,
-    limiter: { check: async () => ({ allowed: true }) },
+  const host = chatDeps({
+    member: (user, serverId) => serverId === guild && members.has(user),
+    workspace: serverId => serverId === guild ? {} : undefined,
     access: new ChannelAccess({ async facts() { return undefined; } }),
-  } as unknown as ChatHost;
+  });
   const chats = new WebChatService(store, host, { changed() { /* no live streams here */ } } as never, () => 2_000);
   const chat = "0123456789abcdef0123456789abcdef";
   const shares = new ShareService({ store, access: { check: async () => ({ view: true }) }, rule: { manager: async (user: string) => user === "manager" }, member: async (user: string, serverId: string) => serverId === guild && members.has(user) } as never);
@@ -281,12 +281,10 @@ test("continued share has no file labels", async t => {
   // A share made before the fix keeps the label in its frozen text. Continuing it must not copy the label.
   const snapshot = { id: "share-old", created_at: 1, options: { show_avatars: false, show_thinking: false }, messages: [{ author: "Alice", bot: false, text: `look\n${label}`, attachments: 1, tools: [] }] };
   await store.insertShare({ id: "share-old", server: guild, channel: ownerChat, created_by: "alice", created_at: 1, revoked_at: null, body: JSON.stringify(snapshot) });
-  const host = {
-    member: async () => true,
-    handle: async () => ({ openChat() { /* none */ }, closeChat() { /* none */ }, async receiveChat() { /* none */ } }),
-    limiter: { check: async () => ({ allowed: true }) },
+  const host = chatDeps({
+    member: () => true,
     access: new ChannelAccess({ async facts() { return undefined; } }),
-  } as unknown as ChatHost;
+  });
   const chats = new WebChatService(store, host, { changed() { /* no live streams here */ } } as never, () => 2_000);
   const { id } = await chats.continueShare("alice", "share-old", { snapshot: async () => snapshot } as never);
   const saved = await store.conversationMessages(guild, privateChannel(id), undefined, 10);

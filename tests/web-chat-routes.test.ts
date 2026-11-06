@@ -5,7 +5,9 @@ import { createHash, randomBytes } from "node:crypto";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { ChannelAccess } from "../src/channel-access.js";
 import { createConsole } from "../src/web-console.js";
-import { createChatRoutes, WebChatService, type ChatHost, type PrivateChatHandle } from "../src/web-chats.js";
+import { createChatRoutes, WebChatService } from "../src/web-chats.js";
+import { chatDeps } from "./chat-deps.js";
+import { privateChannel } from "../src/private-chat.js";
 import { runEvents } from "../src/run-events.js";
 import { createTranscripts } from "../src/web-transcripts.js";
 import { ShareService } from "../src/shares.js";
@@ -45,6 +47,8 @@ interface Fixture {
   /** The clock of the share service. Moving it past 60 seconds expires the membership cache. */
   shareNow: { now: number };
   received: Message[];
+  ingested: boolean[];
+  stops: { channel: string; user: string; manager: boolean }[];
   base: string;
   cookie(user: string): string;
   call(user: string | null, method: string, path: string, body?: unknown, headers?: Record<string, string>): Promise<{ status: number; json: any }>;
@@ -60,17 +64,16 @@ async function setup(t: TestContext): Promise<Fixture> {
   const membership = { fail: false };
   const shareNow = { now: Date.now() };
   const limit: { current: UserLimit } = { current: { allowed: true } };
-  const received: Message[] = [];
+  const received: Message[] = [], ingested: boolean[] = [], stops: { channel: string; user: string; manager: boolean }[] = [];
   const storage = new MemoryStorage();
-  const handle: PrivateChatHandle = { openChat() { /* no bot in these tests */ }, closeChat() { /* none */ }, async receiveChat(message) { received.push(message); }, async stopResponses() { return []; }, async act() { throw new Error('no cards in this test'); } };
   let clock = 1_000;
-  const host: ChatHost = {
-    async member(user, server) { return server === SERVER && members.has(user); },
-    async handle(server) { return server === SERVER ? handle : undefined; },
+  const host = chatDeps({
+    member: (user, server) => server === SERVER && members.has(user),
+    workspace: server => server === SERVER ? { async stop(channel, user, manager) { stops.push({ channel, user, manager }); return ["job"]; }, async submit(message, options) { received.push(message); ingested.push(options?.ingested === true); } } : undefined,
     limiter: { async check() { return limit.current; } },
     access: new ChannelAccess({ async facts() { return undefined; } }),
     images: storage,
-  };
+  });
   const service = new WebChatService(store, host, undefined, () => ++clock);
   const logins: Record<string, { cookie: string; csrf: string }> = {};
   for (const user of [ALICE, BOB, CAROL]) {
@@ -113,7 +116,7 @@ const shareService = new ShareService({
     const text = await response.text();
     return { status: response.status, json: text ? JSON.parse(text) : undefined };
   }
-  return { store, storage, members, limit, membership, shareNow, received, base, cookie: user => logins[user]!.cookie, call };
+  return { store, storage, members, limit, membership, shareNow, received, ingested, stops, base, cookie: user => logins[user]!.cookie, call };
 }
 
 async function newChat(f: Fixture, user = ALICE): Promise<string> {
@@ -306,6 +309,18 @@ test("a sent message is saved as a web message from the user and handed to the b
   assert.equal(saved.addressed, true);
   assert.equal(f.received.length, 1);
   assert.equal(f.received[0]!.id, sent.json.id);
+  assert.deepEqual(f.ingested, [true], "the engine gets a message that is already saved");
+});
+
+test("stop goes to the engine with the chat channel and the owner, never as a manager", async t => {
+  const f = await setup(t);
+  const id = await newChat(f);
+  const stopped = await f.call(ALICE, "POST", `/api/chats/${id}/stop`, {});
+  assert.equal(stopped.status, 200);
+  assert.deepEqual(stopped.json, { stopped: 1 });
+  assert.deepEqual(f.stops, [{ channel: privateChannel(id), user: ALICE, manager: false }]);
+  assert.equal((await f.call(BOB, "POST", `/api/chats/${id}/stop`, {})).status, 404);
+  assert.equal(f.stops.length, 1);
 });
 
 test("the owner shares a chat by a frozen link that needs no sign-in", async t => {

@@ -47,16 +47,18 @@ import { INBOX_TTL_MS, type InboxItem } from "../inbox.js";
 import { pageItems, type ServerListRow, type ServerPage } from "../admin-panel.js";
 import { ChannelAccess } from "../channel-access.js";
 import { TeamAdmins, discordTeamSource } from "../team-admins.js";
-import { publishMessage, publishMessageDelete, publishTool, runEvents } from "../run-events.js";
+import { publishMessage, publishMessageDelete, runEvents } from "../run-events.js";
 import { engineEvents } from "../engine/event-log.js";
+import type { EngineEnvelope } from "@slopbot/contracts";
 import { ShareService, type ShareRule } from "../shares.js";
 import { discordChannelAccessSource, wireChannelAccessEvents } from "./discord-channel-access.js";
-import { displayToolResult, ToolError, UncertainActionError, stableOperationId } from "../tools.js";
+import { displayToolResult, type ToolArgs, ToolError, UncertainActionError, stableOperationId } from "../tools.js";
 import { WebReplies, asWebUser, webReplyKey } from "../web-replies.js";
 import { MemberDirectory, discordMemberSource } from "../member-directory.js";
 import { discordWebReplies } from "./discord-web-replies.js";
 import { isPrivateChannel, isDirectMessageChannel, directMessageChannel, discordChannelId } from "../private-chat.js";
-import { WebChatGateway, type ChatHost } from "../web-chats.js";
+import { WebChatGateway } from "../web-chats.js";
+import type { Directory } from "../engine/api.js";
 
 /** Slopbot state and services for one Discord server. All servers share one client. */
 interface TranscriptChannel { id: string; name: string; enabled: boolean }
@@ -99,6 +101,7 @@ export class DiscordServer implements ChatGateway {
   readonly workspace: EngineWorkspace;
   private readonly renderer: ReplyRenderer;
   private readonly toolProgress = new DiscordToolProgress();
+  private readonly unlistenTools: () => void;
   private webReplies!: WebReplies;
   // Replies in private chats. They are saved in the database and never sent to Discord.
   private readonly chatGateway: WebChatGateway;
@@ -188,17 +191,13 @@ export class DiscordServer implements ChatGateway {
         this.voice.onSession = (channel, previous) => { if (previous) this.bot.closeVoiceChannel(previous); if (channel) this.bot.openVoiceChannel(guildId, channel); };
       }
       },
-      onToolActivity: (message, activity) => this.toolActivity(message, activity),
     };
     this.workspace = new EngineWorkspace(config, store, llm, guildId, objectStorageProvider, usage, access, team, sandboxProfile, degraded, ports);
+    this.unlistenTools = engineEvents.listen(envelope => this.toolStatus(envelope));
     this.chatGateway = new WebChatGateway(store, guildId, { queue: this.workspace.attachQueue, storage: objectStorageProvider ?? new LocalDiskStorage() });
   }
-  /** Private chats: the chat service opens, closes and hands messages in through these. */
+  /** Reopens a private chat of this server, for a Discord DM routed here. The chat service uses the Workspace. */
   openChat(channel: string): void { this.workspace.openChat(channel); }
-  closeChat(channel: string): void { this.workspace.closeChat(channel); }
-  async receiveChat(message: Message): Promise<void> {
-    await this.workspace.submit(message, { ingested: true });
-  }
   /** Starts work for this server after the client is ready. */
   async ready(botUser: string): Promise<void> {
     await this.store.setSetting(this.guildId, "context_bot_author", botUser);
@@ -239,31 +238,40 @@ export class DiscordServer implements ChatGateway {
     await this.store.ingest({ ...note, addressed: false });
     await this.worker.enqueue({ ...note, addressed: true });
   }
-  /** Tool progress for a run: voice, the live run events, and Discord status messages. */
-  private async toolActivity(message: Message, activity: ToolActivity): Promise<void> {
-      if (message.source === "voice" && activity.status === "running") this.voice?.toolStarted(message.channel, activity.name);
-      if (!this.bot.accepts(message.server, message.channel)) return;
-      publishTool(message, activity);
-      // Web chats show tool progress in their own stream. DMs use Discord status messages.
-      if (isPrivateChannel(message.channel) && !isDirectMessageChannel(message.channel)) return;
-      // A run_tools_code program stopped at a call that needs Confirm. Its pending record is already saved.
-      if (activity.parentId && activity.status === "rejected" && activity.reason?.includes("confirmation_required")) void this.postCodeConfirmation(message, activity);
-      await this.toolProgress.update(JSON.stringify([message.server,message.channel,message.id]), activity, async content => {
-        const channel = await this.client.channels.fetch(discordChannelId(message.channel));
-        if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Status channel unavailable");
-        const sent = await channel.send({content,embeds:[{footer:{text:toolProgressFooter}}],...(!message.id.startsWith("task-seed:") && !message.id.startsWith("command:") ? {reply:{messageReference:message.id,failIfNotExists:false}} : {}),allowedMentions:{parse:[],repliedUser:false}});
-        return sent;
-      });
+  /** Tool progress for a run: voice and Discord status messages, from the tool.status events of this server. Web chats show tool progress in their own stream. */
+  private toolStatus(envelope: EngineEnvelope): void {
+    const { conversation, event } = envelope;
+    if (event.type !== "tool.status" || conversation.server !== this.guildId) return;
+    if (isPrivateChannel(conversation.channel) && !isDirectMessageChannel(conversation.channel)) return;
+    if (!this.bot.accepts(conversation.server, conversation.channel)) return;
+    if (event.status === "running") this.voice?.toolStarted(conversation.channel, event.name);
+    // A run_tools_code program stopped at a call that needs Confirm. Its pending record is already saved.
+    if (event.parent && event.status === "rejected" && event.reason?.includes("confirmation_required")) void this.postCodeConfirmation(conversation.channel, event.turn, event.call);
+    const activity: ToolActivity = {
+      id: event.call, name: event.name, status: event.status,
+      ...(event.input && typeof event.input === "object" && !Array.isArray(event.input) ? { arguments: event.input as ToolArgs } : {}),
+      ...(event.reason ? { reason: event.reason } : {}),
+      ...(event.code !== undefined ? { code: event.code } : {}),
+      ...(event.parent !== undefined ? { parentId: event.parent } : {}),
+      ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
+    };
+    // Called before any await, so the status message of a request is updated in event order and cleared after its last update.
+    void this.toolProgress.update(JSON.stringify([conversation.server, conversation.channel, event.turn]), activity, async content => {
+      const channel = await this.client.channels.fetch(discordChannelId(conversation.channel));
+      if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Status channel unavailable");
+      return await channel.send({content,embeds:[{footer:{text:toolProgressFooter}}],...(!event.turn.startsWith("task-seed:") && !event.turn.startsWith("command:") ? {reply:{messageReference:event.turn,failIfNotExists:false}} : {}),allowedMentions:{parse:[],repliedUser:false}});
+    }).catch(error => logError("tool_status_display_failed", error, { stage: "Discord tool status", server: conversation.server, channel: conversation.channel, messageId: event.turn, tool: event.name }, true));
   }
   /** Posts Confirm and Cancel for a stopped run_tools_code call. Only the pending record of that call is read. */
-  private async postCodeConfirmation(message: Message, activity: ToolActivity): Promise<void> {
+  private async postCodeConfirmation(channelId: string, turn: string, call: string): Promise<void> {
     try {
-      const pending = await this.store.record(message.server, CONFIRM_RECORD, activity.id);
-      if (!pending || (pending.value as { done?: boolean } | undefined)?.done === true || !activity.parentId) return;
-      const channel = await this.client.channels.fetch(discordChannelId(message.channel));
+      const pending = await this.store.record(this.guildId, CONFIRM_RECORD, call);
+      const value = pending?.value as { done?: boolean; name?: unknown; arguments?: unknown; author?: unknown } | undefined;
+      if (!value || value.done === true || typeof value.name !== "string" || typeof value.author !== "string") return;
+      const channel = await this.client.channels.fetch(discordChannelId(channelId));
       if (!channel?.isTextBased() || !channel.isSendable()) throw new ToolError("Channel cannot receive confirmations");
-      await postConfirmation(channel, { name: activity.name, arguments: activity.arguments ?? {}, operationId: activity.id, parentOperationId: activity.parentId }, message.author);
-    } catch (error) { logError("code_confirmation_post_failed", error, { stage: "confirmation", server: message.server, channel: message.channel, messageId: message.id }, true); }
+      await postConfirmation(channel, { name: value.name, arguments: (value.arguments ?? {}) as ToolArgs, operationId: call, parentOperationId: call }, value.author);
+    } catch (error) { logError("code_confirmation_post_failed", error, { stage: "confirmation", server: this.guildId, channel: channelId, messageId: turn }, true); }
   }
   messageCreate(message: DiscordMessage): void { void this.receive(message).catch(error => logError("Discord event failed. Check channel permissions.", error)); }
   messageUpdate(updated: DiscordMessage | PartialMessage): void {
@@ -351,10 +359,6 @@ export class DiscordServer implements ChatGateway {
   }
   /** Set by discord-main when the website runs. Makes a private web chat from a message and gives its link. */
   webChat: { continueMessage(user: string, server: string, source: Message): Promise<string> } | undefined;
-  /** Runs a card button in a private chat for its owner. The card uses this server's UI runtime and tools, as a command. */
-  async act(channel: string, user: string, id: string, revision: number, index: number, interactionId: string): Promise<{ document: UiDocument; revision: number }> {
-    return this.workspace.act(channel, user, id, revision, index, interactionId);
-  }
   /** Stops responses in a channel. The web console calls it too. Returns the stopped job IDs. */
   async stopResponses(channel: string, user: string, manager: boolean): Promise<string[]> {
     return this.workspace.stop(channel, user, manager);
@@ -573,7 +577,7 @@ export class DiscordServer implements ChatGateway {
     if (!this.bot.accepts(message.server, message.channel)) throw new ToolError("Channel was disabled before sending");
     // A skipped voice turn posts nothing: no send, no delivery record, no ingest. Only the progress status is cleared.
     if (message.source === "voice" && (voiceTurnSkipped(message) || containsSkipMarker(text))) {
-      await requestTimings.wait("Discord status cleanup", () => this.toolProgress.finish(JSON.stringify([message.server,message.channel,message.id])));
+      await requestTimings.wait("Discord status cleanup", async () => { await engineEvents.idle(); await this.toolProgress.finish(JSON.stringify([message.server,message.channel,message.id])); });
       delivered = true;
       void this.voice?.speak(message.channel, VOICE_SKIP).catch(error => logError("discord_voice_speak_failed", error, { server: message.server, channel: message.channel }));
       return outputs;
@@ -635,7 +639,7 @@ export class DiscordServer implements ChatGateway {
       if (id) (await this.store.finishDelivery(id, result));
       outputs.push(result);
     }
-    await requestTimings.wait("Discord status cleanup", () => this.toolProgress.finish(JSON.stringify([message.server,message.channel,message.id])));
+    await requestTimings.wait("Discord status cleanup", async () => { await engineEvents.idle(); await this.toolProgress.finish(JSON.stringify([message.server,message.channel,message.id])); });
     // Web transcripts: the reply's runs are already saved, so their IDs are known now.
     const runIds = await this.store.requestRunIds(message.server, message.id);
     for (const output of outputs) await publishMessage(this.store, output, runIds, this.members).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
@@ -787,6 +791,7 @@ export class DiscordServer implements ChatGateway {
   }
   async start(): Promise<void> { await this.mcp.restore(); }
   async stop(): Promise<void> {
+    this.unlistenTools();
     this.voice?.stop();
     if (this.historyTimer) clearInterval(this.historyTimer);
     this.codeMaintenance?.();
@@ -813,6 +818,8 @@ export class DiscordAdapter {
   /** The Workspace of each server that is open. Same lifetime as servers. */
   readonly engine = new WorkspaceEngine();
   private readonly objectStorageProvider: S3StorageProvider | undefined;
+  /** Private storage of chat images, when configured. */
+  get images(): S3StorageProvider | undefined { return this.objectStorageProvider; }
   // One meter for the process. Its limiter is shared by every server, and discord-main attaches it to the embeddings.
   readonly usage: UsageMeter;
   private botUser: string | undefined;
@@ -917,17 +924,16 @@ export class DiscordAdapter {
       }
     } catch (error) { logError("discord_dm_failed", error, { channel }); }
   }
-  /** What the private chat service needs from Discord: membership, the server's handle, limits and access. */
-  chatHost(): ChatHost {
-    return {
-      member: async (user, server) => this.servers.has(server) && (await this.consoleServers(user)).some(item => item.id === server),
-      handle: async server => { const opening = this.servers.get(server); return opening ? await opening.catch(() => undefined) : undefined; },
-      limiter: this.usage.limiter,
-      access: this.access,
-      members: this.members,
-      ...(this.objectStorageProvider ? { images: this.objectStorageProvider } : {}),
-    };
-  }
+  /** Discord authority for the web client and the engine: membership, Manage Server, names. */
+  readonly directory: Directory = {
+    isMember: async (user, server) => this.servers.has(server) && (await this.consoleServers(user)).some(item => item.id === server),
+    canManage: async (user, server) => {
+      const guild = await this.client.guilds.fetch(server);
+      return (await guild.members.fetch({ user, force: true })).permissions.has(PermissionFlagsBits.ManageGuild);
+    },
+    profiles: (server, users) => this.members.profiles(server, users),
+    channelName: (server, channel) => this.channelName(server, channel),
+  };
   /**
    * True when Discord says the user is in the server, false when Discord says they are not. Any other error throws,
    * so a caller can answer "try again" instead of "not a member". Slopbot must have the server in its cache.
@@ -989,7 +995,9 @@ export class DiscordAdapter {
     const servers = await this.consoleServers(user);
     const chosen = servers.find(item => item.id === guildId) ?? (guildId ? undefined : servers[0]);
     if (!chosen) throw new ToolError(guildId ? "You and Slopbot are not both in that server." : "You and Slopbot do not share a server yet.", "rejected");
-    return this.servers.get(chosen.id)!;
+    const opening = this.servers.get(chosen.id);
+    if (!opening) throw new ToolError("You and Slopbot are not both in that server.", "rejected");
+    return opening;
   }
   /** Inbox items of the signed-in user in one server. Open items unless includeDone. Members only. */
   async consoleInbox(user: string, server: string, includeDone = false): Promise<InboxItem[]> {

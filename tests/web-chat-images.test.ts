@@ -5,7 +5,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { ChannelAccess } from "../src/channel-access.js";
 import { createConsole } from "../src/web-console.js";
-import { createChatRoutes, WebChatService, type ChatHost } from "../src/web-chats.js";
+import { createChatRoutes, WebChatService } from "../src/web-chats.js";
+import { chatDeps } from "./chat-deps.js";
 import { runEvents } from "../src/run-events.js";
 import { createTranscripts } from "../src/web-transcripts.js";
 import { ShareService } from "../src/shares.js";
@@ -39,13 +40,13 @@ async function setup(t: TestContext) {
   runEvents.attach(store);
   const storage = new FakeStorage(), received: Message[] = [];
   const limit = { allowed: true } as { allowed: boolean };
-  const host: ChatHost = {
-    async member(user, server) { return server === SERVER && [ALICE, BOB].includes(user); },
-    async handle() { return { openChat() { /* none */ }, closeChat() { /* none */ }, async receiveChat(message) { received.push(message); }, async stopResponses() { return []; }, async act() { throw new Error('no cards in this test'); } }; },
+  const host = chatDeps({
+    member: (user, server) => server === SERVER && [ALICE, BOB].includes(user),
+    workspace: { async submit(message) { received.push(message); } },
     limiter: { async check() { return limit as never; } },
     access: new ChannelAccess({ async facts() { return undefined; } }),
     images: storage,
-  };
+  });
   const members = new Set([ALICE, BOB]);
   const service = new WebChatService(store, host);
   const logins: Record<string, { cookie: string; csrf: string }> = {};

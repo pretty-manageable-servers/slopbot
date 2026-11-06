@@ -14,7 +14,8 @@ import { engineEvents } from "../src/engine/event-log.js";
 import { runEvents, publishTool } from "../src/run-events.js";
 import { webTranscriptKey } from "../src/server-tools.js";
 import { createConsole } from "../src/web-console.js";
-import { createChatRoutes, WebChatService, type ChatHost } from "../src/web-chats.js";
+import { createChatRoutes, WebChatService } from "../src/web-chats.js";
+import { chatDeps } from "./chat-deps.js";
 import { createTranscripts, legacyTurnEvents } from "../src/web-transcripts.js";
 import { transcriptServer } from "./transcript-server.js";
 import type { Message, ModelEvent, Prompt } from "../src/domain.js";
@@ -32,12 +33,10 @@ async function setup(t: TestContext) {
   engineEvents.attach(store);
   t.after(() => engineEvents.attach(undefined as never));
   store.setSetting(SERVER, webTranscriptKey(CHANNEL), true);
-  const host: ChatHost = {
-    async member(user, server) { return server === SERVER && (user === ALICE || user === BOB); },
-    async handle() { return { openChat() {}, closeChat() {}, async receiveChat() {}, async stopResponses() { return []; }, async act() { throw new Error("no cards"); } }; },
-    limiter: { async check() { return { allowed: true }; } },
+  const host = chatDeps({
+    member: (user, server) => server === SERVER && (user === ALICE || user === BOB),
     access: new ChannelAccess({ async facts() { return { thread: false, privateThread: false, viewChannel: true, readMessageHistory: true, sendMessages: true, sendMessagesInThreads: true, threadMember: false }; } }),
-  };
+  });
   const service = new WebChatService(store, host);
   const logins: Record<string, { cookie: string; csrf: string }> = {};
   for (const user of [ALICE, BOB]) {

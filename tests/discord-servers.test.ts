@@ -39,6 +39,16 @@ test('one client serves each server, and the console lists only shared servers',
   assert.deepEqual((await f.adapter.consoleServers(user)).map(item => item.id), [two]);
 });
 
+test('a cached shared server that is not open answers "not both in that server" instead of crashing', async t => {
+  const f = fixture();
+  f.client.emit(Events.ClientReady, f.client); await settle();
+  assert.equal((await f.adapter.consoleServers(user)).length, 2);
+  const dropped = await f.adapter['servers'].get(one)!;
+  t.after(async () => { await dropped.stop(); await f.adapter.stop(); f.store.close(); });
+  f.adapter['servers'].delete(one);
+  await assert.rejects(f.adapter.consoleSnapshot(user, one), /not both in that server/);
+});
+
 test('DISCORD_GUILD_IDS limits the servers Slopbot runs in', async t => {
   const f = fixture({ DISCORD_GUILD_IDS: one }); t.after(async () => { await f.adapter.stop(); f.store.close(); });
   f.client.emit(Events.ClientReady, f.client); await settle();

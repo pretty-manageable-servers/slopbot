@@ -2,7 +2,6 @@ import type { ChatGateway } from "../bot.js";
 import type { Message } from "../domain.js";
 import type { LlmMode, LlmRouter } from "../llm-mode.js";
 import type { StoredFile } from "../object-storage.js";
-import type { ToolActivity } from "../tool-activity.js";
 import type { ToolContext, ToolRegistry } from "../tools.js";
 import type { Directory } from "./api.js";
 
@@ -39,5 +38,4 @@ export interface WorkspacePorts {
   reminderChannel(message: Message): string | undefined;
   /** Called after the file tools are registered and before the usage tool: the platform registers its own tools here. */
   registerTools(tools: ToolRegistry): void;
-  onToolActivity(message: Message, activity: ToolActivity): Promise<void>;
 }

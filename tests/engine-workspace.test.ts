@@ -31,7 +31,7 @@ function fixture() {
     typing: () => () => {},
     findChannels: unused, taskThread: async () => undefined, fetchHistory: async () => [], fetchMessage: unused,
     imageAttachments: async () => undefined, sendStoredFile: unused, reminderChannel: () => undefined,
-    registerTools: () => {}, onToolActivity: async () => {},
+    registerTools: () => {},
   };
   const llm = { async *stream() { yield { kind: "text" as const, payload: { text: "Hello from the engine." } }; } };
   const workspace = new EngineWorkspace(config, store, llm, server, undefined, createUsageMeter(config, store), new ChannelAccess({ facts: async () => undefined }), undefined, undefined, undefined, ports);

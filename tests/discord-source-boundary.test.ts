@@ -41,25 +41,6 @@ test('an automatic image preview does not invalidate unchanged human instruction
 });
 
 
-for (const id of ['task-seed:source', 'command:reminder:source', 'source']) test(`live status uses valid reply references for ${id}`, async t => {
-  const f = fixture({content:'request',url:'https://cdn.discordapp.com/a.txt'});
-  t.after(() => f.store.close());
-  const thread = '1528064977913647299';
-  f.adapter['bot']['tasks'].add(thread);
-  const payloads: {content:string; reply?:unknown}[] = [];
-  t.mock.method(f.target, 'send', async (payload: {content:string; reply?:unknown}) => {
-    payloads.push(payload);
-    return {async edit() {}, async delete() {}};
-  });
-  const observer = f.adapter['workspace']['app']['runner']['services'].onToolActivity!;
-  await observer({id,server:guild,channel:thread,author:'person',text:'request',taskId:thread},
-    {id:'call',name:'web_search',status:'running',arguments:{query:'weather'}});
-  assert.equal(payloads.length, 1);
-  assert.match(payloads[0]!.content, /-# now: 🔎 "weather"$/);
-  assert.ok(!payloads[0]!.content.includes('"query"'));
-  assert.equal(Boolean(payloads[0]!.reply), id === 'source');
-});
-
 test('the engine imports neither discord.js nor node:http', () => {
   const dir = new URL('../../src/engine/', import.meta.url);
   const files = readdirSync(dir).filter(name => name.endsWith('.ts'));
