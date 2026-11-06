@@ -1,0 +1,30 @@
+# Local development services. Ports bind to 127.0.0.1 only. pnpm dev:web starts postgres and searxng; pnpm run search:start starts searxng alone.
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    # 5433 keeps clear of a Postgres already on 5432.
+    ports:
+      - "127.0.0.1:5433:5432"
+    environment:
+      POSTGRES_USER: slopbot
+      POSTGRES_DB: slopbot
+      POSTGRES_PASSWORD: local-development-only
+    volumes:
+      - slopbot-local-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U slopbot"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    restart: unless-stopped
+
+volumes:
+  slopbot-local-pg:
+    name: slopbot-local-pg

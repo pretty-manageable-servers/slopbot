@@ -182,11 +182,36 @@ If you already have an instance, set `SEARXNG_URL` in `.env.development`; enable
 pnpm run search:start
 ```
 
-This generates local settings with a random secret and starts SearXNG on localhost port 8080. Then add `SEARXNG_URL=http://127.0.0.1:8080` to `.env.development`, restart with `pnpm run dev`, and try `/slopbot web_search query:TypeScript`. Stop the search service with `npm run search:stop`.
+This generates local settings with a random secret and starts SearXNG on localhost port 8080. Then add `SEARXNG_URL=http://127.0.0.1:8080` to `.env.development`, restart with `pnpm run dev`, and try `/slopbot web_search query:TypeScript`. Stop the search service with `pnpm run search:stop`.
 
 Without `SEARXNG_URL`, the tool reports that configuration is needed. Local startup requires a running Docker daemon; live search has not been verified in this environment because Docker is stopped.
 
 The agent lifecycle follows [Auger's state machine](architecture/HARNESS.md), adapted to Slopbot's durable requests, permissions and tool journal.
+
+## Local console (no Discord)
+
+Runs the web console on a fixture world, with no Discord login and no Discord servers. Use it to try the console and chat on your machine.
+
+1. Copy the example and fill in a model key (or set `LLM_MODE=mock` in `.env.web` to run without a model):
+
+   ```sh
+   cp .env.web.example .env.web
+   ```
+
+2. Start Docker (OrbStack or Docker Desktop).
+3. Run:
+
+   ```sh
+   pnpm dev:web
+   ```
+
+   This starts Postgres on `127.0.0.1:5433` and SearXNG on `127.0.0.1:8080` from `compose.development.yaml`, builds, then runs the console and the dev sign-in on port 9091. It refuses to start when `.env.web` points at a remote database, sets `DISCORD_BOT_TOKEN`, or has no key. Without Docker it stops and asks you to start Docker and run it again.
+
+4. Open http://localhost:3000/console and pick a user from the list. The users and servers come from `dev/local-world.json`.
+
+Ctrl-C stops the console and the watchers. The Docker services keep running; stop them with `docker compose -f compose.development.yaml stop`.
+
+`pnpm dev` (the Discord dev bot) can use the same Postgres: set `DATABASE_URL=postgres://slopbot:local-development-only@127.0.0.1:5433/slopbot` in `.env.development`, with its own `DATABASE_SCHEMA=slopbot_dev`.
 
 ## Deployment
 
