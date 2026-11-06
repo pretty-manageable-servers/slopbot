@@ -33,11 +33,23 @@ const turn: EngineEvent[] = [
 const toolCalls = (messages: ReturnType<typeof chatMessages>) => messages.flatMap((m) => m.parts.filter((p) => p.type === "tool_call"));
 
 describe("a turn as kit messages", () => {
+  test("thinking shows its time from the event times", () => {
+    const timed = (event: EngineEvent, at: number): EngineEnvelope => ({ seq: ++seq, at, conversation, event });
+    const state = fold([
+      timed({ type: "turn.start", turn: "m1" }, 0),
+      timed({ type: "round.start", turn: "m1", run: "r1" }, 0),
+      timed({ type: "thinking.delta", turn: "m1", run: "r1", text: "hmm" }, 1_000),
+      timed({ type: "text.delta", turn: "m1", run: "r1", text: "Hi" }, 13_000),
+    ]);
+    expect(chatMessages(state)[0]!.parts[0]).toMatchObject({ type: "thinking", durationMs: 12_000 });
+  });
+
   test("the same events give the same message live and loaded", async () => {
     const live = foldEvents(turn);
     const page = emptyChat([toKitMessage(reply, "c1")], repliesOf([reply]), runTurnsOf([reply]));
     const reloaded = withLoadedTurns(page, await loadTurns(page, ["m2"], {
-      turnEvents: async () => turn.filter((e) => e.type !== "message.upsert"),
+      // The live envelopes have at 1, so the loaded events do too.
+      turnEvents: async () => turn.filter((e) => e.type !== "message.upsert").map((event) => ({ event, at: 1 })),
     }));
     const shown = chatMessages(live);
     expect(shown.map((m) => m.id)).toEqual(["m2"]);
@@ -90,7 +102,7 @@ describe("loading a reply", () => {
     const saved = foldEvents([turn[10]!, turn[11]!], joined);
     expect(chatMessages(saved).map((m) => m.id)).toEqual(["m2"]);
     expect(unloadedReplies(saved)).toEqual(["m2"]);
-    const full = withLoadedTurns(saved, await loadTurns(saved, ["m2"], { turnEvents: async () => turn.slice(0, 11) }));
+    const full = withLoadedTurns(saved, await loadTurns(saved, ["m2"], { turnEvents: async () => turn.slice(0, 11).map((event) => ({ event })) }));
     expect(chatMessages(full)[0]!.parts.map((p) => p.type)).toEqual(["thinking", "tool_call", "tool_call", "text"]);
   });
 

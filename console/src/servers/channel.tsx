@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { api, get, post, qs } from "../api";
 import type { ChannelHeader, Conversation, ConversationSummary, TranscriptMessage, TranscriptPage } from "../api-types";
 import type { EngineEnvelope, EngineEvent } from "@slopbot/contracts";
-import { chatMessages, emptyChat, repliesOf, runTurnsOf, type ChatState, type TurnSource } from "../events";
+import { chatMessages, emptyChat, repliesOf, runTurnsOf, timedEvents, type ChatState, type TurnSource } from "../events";
 import { useTurns } from "../use-turns";
 import { sessionQuery } from "../data";
 import { Loader, Logo } from "../logo";
@@ -153,7 +153,7 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
     setConvState(found ? emptyChat(found.map((message) => channelMessage(message, user, channelId)), repliesOf(found), runTurnsOf(found)) : null);
   }, [conversation.data, user, channelId]);
   const source = useMemo<TurnSource>(() => ({
-    turnEvents: (turn) => get<{ events: EngineEvent[] }>(`${base}/turns/${encodeURIComponent(turn)}/events${qs({ server: serverId })}`).then((found) => found.events),
+    turnEvents: (turn) => get<{ events: EngineEvent[]; at?: (number | null)[] }>(`${base}/turns/${encodeURIComponent(turn)}/events${qs({ server: serverId })}`).then(timedEvents),
   }), [base, serverId]);
   useTurns(state, setState, source);
   useTurns(convState, setConvState, source);

@@ -9,7 +9,7 @@ import { ImageViewer, imageClicked, type ViewedImage } from "./chat/image-viewer
 import { ShareDialog } from "./chat/share-dialog";
 import { UsageMeter } from "./chat/usage-meter";
 import type { EngineEnvelope } from "@slopbot/contracts";
-import { applyEngineEvent, chatMessages, emptyChat, pendingSend, repliesOf, runTurnsOf, toKitMessage, withPending, type PendingSend, type BotMessage, type ChatState, type TurnSource } from "./events";
+import { applyEngineEvent, chatMessages, emptyChat, pendingSend, repliesOf, runTurnsOf, timedEvents, toKitMessage, withPending, type PendingSend, type BotMessage, type ChatState, type TurnSource } from "./events";
 import { useTurns } from "./use-turns";
 import { Loader, Logo } from "./logo";
 import { useConsoleDictation } from "./ui/dictation";
@@ -102,7 +102,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
   }, [id]);
 
   const turnSource = useMemo<TurnSource | undefined>(() => (id ? {
-    turnEvents: (turn) => api.turnEvents(id, turn).then((found) => found.events),
+    turnEvents: (turn) => api.turnEvents(id, turn).then(timedEvents),
   } : undefined), [id]);
   useTurns(state, setState, turnSource ?? NO_TURNS);
 

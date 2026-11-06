@@ -1,4 +1,4 @@
-import type { EngineEnvelope, EngineEvent, Surface } from "@slopbot/contracts";
+import type { EngineEnvelope, EngineEvent, Surface, TimedEngineEvent } from "@slopbot/contracts";
 import type { Message } from "../domain.js";
 import type { MemberProfile } from "../member-directory.js";
 import { isDirectMessageChannel, isPrivateChannel } from "../private-chat.js";
@@ -21,7 +21,7 @@ export interface EngineEventLog {
   after(conversation: { server: string; channel: string }, seq: number, limit: number): Promise<EngineEnvelope[]>;
   /** The highest saved seq of the conversation, 0 when none. A page that opens /events?after=<seq> from it misses and repeats nothing. */
   latest(conversation: { server: string; channel: string }): Promise<number>;
-  turn(conversation: { server: string; channel: string }, turn: string): Promise<EngineEvent[]>;
+  turn(conversation: { server: string; channel: string }, turn: string): Promise<TimedEngineEvent[]>;
   subscribe(conversation: { server: string; channel: string }, listener: (envelope: EngineEnvelope) => void): () => void;
 }
 

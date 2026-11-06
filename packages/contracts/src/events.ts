@@ -44,3 +44,6 @@ export const EngineEnvelope = z.object({
   seq: z.number().int().positive().optional(), at: z.number().int(), conversation: Conversation, event: EngineEvent,
 });
 export type EngineEnvelope = z.infer<typeof EngineEnvelope>;
+
+/** A saved event of one turn with its time (the envelope's `at`). Turns made from old saved runs have no times. */
+export interface TimedEngineEvent { readonly event: EngineEvent; readonly at?: number }

@@ -170,7 +170,7 @@ test("a provider that sends no call ID: streamed tool input and the tool status 
   const request = { server: "s", channel: "c", taskId: "c", id: "request", author: "alice", text: "draw", addressed: true };
   await new Application(store, llm, { allowedChannels: [{ server: "s", channel: "c" }] }, undefined, { harness: store, tools, onToolActivity: async (message, activity) => publishTool(message, activity) }).handle(request);
   await engineEvents.idle();
-  const events = await engineEvents.turn({ server: "s", channel: "c" }, "request");
+  const events = (await engineEvents.turn({ server: "s", channel: "c" }, "request")).map(item => item.event);
   const input = events.filter(event => event.type === "tool.input"), status = events.filter(event => event.type === "tool.status");
   assert.equal(input.map(event => event.text).join(""), '{"markup":"<Stack />"}');
   assert.match(input[0]!.call, /^call_/);
@@ -188,7 +188,7 @@ test("a child tool.status names its parent by the parent's tool.status call ID",
   publishTool(request, { id: "child", name: "bash", status: "completed", arguments: {}, parentId: "m1:0" });
   publishTool(request, { id: "m1:0", callId: "call_p", name: "run_tools_code", status: "completed", arguments: {} });
   await engineEvents.idle();
-  const events = await engineEvents.turn({ server: "s", channel: "c" }, "m1");
+  const events = (await engineEvents.turn({ server: "s", channel: "c" }, "m1")).map(item => item.event);
   const child = events.find(event => event.type === "tool.status" && event.name === "bash");
   assert.equal(child?.type === "tool.status" && child.parent, "call_p");
 });

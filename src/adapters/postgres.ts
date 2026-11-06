@@ -22,7 +22,7 @@ import type { HistoryQuery, HistoryPage } from '../search/history-search.js';
 import { FUZZY_SCAN, FUZZY_TERMS, fuzzyWords, likePattern, rankFuzzy, type FuzzyHit, type FuzzyQuery } from '../search/fuzzy.js';
 import type { AppRecord } from '../records.js';
 import type { EngineEventRow } from '../engine/event-log.js';
-import type { EngineEnvelope, EngineEvent } from '@slopbot/contracts';
+import type { EngineEnvelope, EngineEvent, TimedEngineEvent } from '@slopbot/contracts';
 import type { ChannelReply, ChannelRun, RunSource } from '../conversation-groups.js';
 /** Rows deleted by one retention statement, so a large prune never holds locks for long. */
 const CONVERSATION_PRUNE_BATCH = 10000;
@@ -646,9 +646,9 @@ export class PostgresStore {
         return (await this.db.prepare("SELECT seq,created_at,data FROM engine_events WHERE server=? AND channel=? AND seq>? ORDER BY seq LIMIT ?")
             .all(server, channel, after, limit)).map(row => ({ seq: Number(row.seq), at: Number(row.created_at), conversation: { server, channel }, event: JSON.parse(String(row.data)) as EngineEvent }));
     }
-    async engineTurnEvents(server: string, channel: string, turn: string): Promise<EngineEvent[]> {
-        return (await this.db.prepare("SELECT data FROM engine_events WHERE server=? AND channel=? AND turn=? ORDER BY seq")
-            .all(server, channel, turn)).map(row => JSON.parse(String(row.data)) as EngineEvent);
+    async engineTurnEvents(server: string, channel: string, turn: string): Promise<TimedEngineEvent[]> {
+        return (await this.db.prepare("SELECT created_at,data FROM engine_events WHERE server=? AND channel=? AND turn=? ORDER BY seq")
+            .all(server, channel, turn)).map(row => ({ event: JSON.parse(String(row.data)) as EngineEvent, at: Number(row.created_at) }));
     }
     /** Deletes rows older than olderThan, then the oldest rows beyond maxRows, in conversation_events and engine_events. */
     async pruneConversationEvents(olderThan: number, maxRows: number): Promise<number> {

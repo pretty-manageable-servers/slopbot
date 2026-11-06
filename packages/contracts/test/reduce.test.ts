@@ -66,3 +66,22 @@ test("reducing does not change the view it was given", () => {
   assert.deepEqual(before.parts, [{ kind: "text", text: "a" }]);
   assert.deepEqual(after.parts, [{ kind: "text", text: "ab" }]);
 });
+
+test("with event times, a thinking part gets its time when the next part starts or the turn ends", () => {
+  const timed: [EngineEvent, number][] = [
+    [{ type: "turn.start", turn }, 0],
+    [{ type: "thinking.delta", turn, run, text: "Let me " }, 1_000],
+    [{ type: "thinking.delta", turn, run, text: "look." }, 3_000],
+    [{ type: "text.delta", turn, run, text: "Hi" }, 13_000],
+    [{ type: "thinking.delta", turn, run, text: "More." }, 14_000],
+    [{ type: "turn.end", turn, status: "done" }, 16_500],
+  ];
+  const view = timed.reduce<TurnView | undefined>((v, [event, at]) => reduceTurn(v, event, at), undefined)!;
+  assert.deepEqual(view.parts, [
+    { kind: "thinking", text: "Let me look.", startedAt: 1_000, durationMs: 12_000 },
+    { kind: "text", text: "Hi" },
+    { kind: "thinking", text: "More.", startedAt: 14_000, durationMs: 2_500 },
+  ]);
+  // Without times, as before: no start and no duration.
+  assert.deepEqual(reduceAll(timed.map(([event]) => event))!.parts[0], { kind: "thinking", text: "Let me look." });
+});

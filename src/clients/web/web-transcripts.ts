@@ -1,4 +1,4 @@
-import type { EngineEnvelope, EngineEvent } from "@slopbot/contracts";
+import type { EngineEnvelope, EngineEvent, TimedEngineEvent } from "@slopbot/contracts";
 import { engineEvents } from "../../engine/event-log.js";
 import type { EngineEventLog } from "../../engine/api.js";
 import { applyOut, json, type WebContext } from "./env.js";
@@ -225,7 +225,7 @@ function parseJson(text: string): unknown {
  * The events of one turn: the saved log rows, or for an older turn with none, events made from its saved runs.
  * Returns undefined for a turn that has neither, or whose runs belong to another conversation.
  */
-export async function turnEventsOf(store: TranscriptStore, events: Pick<EngineEventLog, "turn">, server: string, channel: string, turn: string): Promise<EngineEvent[] | undefined> {
+export async function turnEventsOf(store: TranscriptStore, events: Pick<EngineEventLog, "turn">, server: string, channel: string, turn: string): Promise<TimedEngineEvent[] | undefined> {
   const saved = await events.turn({ server, channel }, turn);
   if (saved.length) return saved;
   const runs: { id: string; steps: RunStep[]; failed: boolean }[] = [];
@@ -235,7 +235,12 @@ export async function turnEventsOf(store: TranscriptStore, events: Pick<EngineEv
     if (!record || record.message.channel !== channel) continue;
     runs.push({ id, steps: runSteps(await store.events(id), turns, record.status === "tool_calls" ? textCalls(record.result) : []), failed: record.status === "failed" });
   }
-  return runs.length ? legacyTurnEvents(turn, runs) : undefined;
+  return runs.length ? legacyTurnEvents(turn, runs).map(event => ({ event })) : undefined;
+}
+
+/** The body of a turn's events route. at: the time of each event, for "Thought for" times; null for turns made from old saved runs. */
+export function turnBody(events: readonly TimedEngineEvent[]): { events: EngineEvent[]; at: (number | null)[] } {
+  return { events: events.map(item => item.event), at: events.map(item => item.at ?? null) };
 }
 
 export function textCalls(text: string | null): ToolCall[] {
@@ -481,7 +486,7 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
     if (!RUN_ID.test(turn)) return json(400, { error: "Invalid turn." });
     if (!(await granted(host, server, channel, user))) return json(403, { error: "You cannot view this conversation." });
     const events = await turnEventsOf(store, host.events ?? engineEvents, server, channel, turn);
-    return events ? json(200, { events }) : json(404, { error: "Turn not found." });
+    return events ? json(200, turnBody(events)) : json(404, { error: "Turn not found." });
   }
 
   return conversationRoutes({
