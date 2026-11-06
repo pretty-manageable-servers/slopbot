@@ -131,7 +131,7 @@ test('landing serves the static export, console serves under /console, and trave
   assert.equal((await fetch(base+'/style.css')).status,404);
   assert.equal((await fetch(base+'/assets/logo-light.svg')).status,404);
   // Console: app pages give index.html, built assets are served, nothing else.
-  for(const path of ['/console','/console/','/console/chat/abc','/console/server/1/channel/2']){const page=await fetch(base+path);assert.match(await page.text(),/Next console/);assert.match(page.headers.get('content-security-policy')!,/script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline';/);}
+  for(const path of ['/console','/console/','/console/chat/abc','/console/server/1/channel/2']){const page=await fetch(base+path);assert.match(await page.text(),/Next console/);assert.match(page.headers.get('content-security-policy')!,/script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline';.*img-src 'self' blob: https:;/);}
   assert.equal((await fetch(base+'/console/assets/index-abc123.js')).headers.get('content-type'),'text/javascript');
   assert.equal((await fetch(base+'/console/assets/missing.js')).status,404);
   assert.equal((await fetch(base+'/console/assets/..%2f..%2f..%2fsecret.txt')).status,404);

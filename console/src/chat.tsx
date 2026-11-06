@@ -1,12 +1,12 @@
 // One private chat on screen: the saved messages, then the bot's live stream folded into kit messages.
-import { AttachButton, AttachmentRow, ChatHeader, ChatTitleMenu, ChatView, DictationButton, EmptyState, Menu, MenuItem, ModelPicker, SidebarToggle, ToolViewsProvider, UiComponentsProvider, defaultToolViews, uiMarkupToolView, useAttachments, widgetToolView } from "agentic-ui-kit";
+import { AttachButton, AttachmentRow, Button, ChatHeader, ChatTitleMenu, ChatView, DictationButton, EmptyState, Menu, MenuItem, ModelPicker, SidebarToggle, ToolViewsProvider, UiComponentsProvider, defaultToolViews, uiMarkupToolView, useAttachments, widgetToolView } from "agentic-ui-kit";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { useServer } from "./data";
 import { attachmentIds, attachmentKind, attachmentProblem } from "./chat/attachments";
 import { ShareDialog } from "./chat/share-dialog";
 import { UsageMeter } from "./chat/usage-meter";
-import { applyBotEvent, chatMessages, emptyChat, toKitMessage, withRunSteps, type BotEvent, type BotMessage, type ChatState, type RunStep } from "./events";
+import { applyBotEvent, chatMessages, emptyChat, pendingSend, toKitMessage, withPending, withRunSteps, type BotEvent, type PendingSend, type BotMessage, type ChatState, type RunStep } from "./events";
 import { Loader, Logo } from "./logo";
 import { useConsoleDictation } from "./ui/dictation";
 import { usePausedComposer } from "./llm-status";
@@ -21,6 +21,8 @@ const ASK_WARNING = "Only send what you wrote yourself. A prompt from someone el
 
 /** The question of a link, waiting in its chat's composer until it is sent or cleared. Kept for the page's life. */
 export const linkedAsks = new Map<string, string>();
+/** The send that is not on the page yet, by chat. A new chat's page reads it when it opens. */
+const pendingSends = new Map<string, PendingSend>();
 
 /** The one model for now. Its effort levels are the bot's (EFFORTS in src/domain.ts). */
 const MODELS = [{
@@ -63,7 +65,9 @@ interface ChatProps {
 
 export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProps) {
   const server = useServer();
-  const [state, setState] = useState<ChatState | null>(id ? null : emptyChat());
+  const [pending, setPending] = useState(() => (id ? pendingSends.get(id) : undefined));
+  // A new chat's first send shows at once, not after a loader.
+  const [state, setState] = useState<ChatState | null>(id && !pending ? null : emptyChat());
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState("");
   const [sharing, setSharing] = useState<string | null>(null);
@@ -107,8 +111,15 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
     return () => { closed = true; source?.close(); };
   }, [id]);
 
-  const messages = useMemo(() => (state ? chatMessages(state) : []), [state]);
+  const saved = useMemo(() => (state ? chatMessages(state) : []), [state]);
+  const shown = useMemo(() => withPending(saved, pending), [saved, pending]);
+  const messages = shown.messages;
   const busy = messages.some((m) => m.status === "streaming");
+  useEffect(() => {
+    if (!shown.done) return;
+    if (id) pendingSends.delete(id);
+    setPending(undefined);
+  }, [shown.done, id]);
 
   // A new composer makes its chat once, when the first file uploads or the first message sends.
   const ensureChat = (): Promise<string> => {
@@ -152,14 +163,20 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
     const { images, files } = attachmentIds(attachments.attachments);
     clearAsk();
     setSending(true);
+    const sent = pendingSend(text, attachments.attachments, saved.length);
+    setPending(sent);
+    let chat: string | undefined;
     void (async () => {
-      const chat = await ensureChat();
+      chat = await ensureChat();
+      pendingSends.set(chat, sent);
       await api.send(chat, text, images, files);
       attachments.clear();
       onSent(chat);
     })().catch((e: Error) => {
       // The text comes back when the field is still empty. The attachments stay for a retry.
       setDraft((current) => current || text);
+      if (chat) pendingSends.delete(chat);
+      setPending(undefined);
       notifyError(e);
     }).finally(() => setSending(false));
   };
@@ -180,7 +197,12 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
           leading={<SidebarToggle drawerOnly />}
           title={messages.length ? title || "New chat" : ""}
           menu={id && messages.length ? <ChatTitleMenu onShare={() => setSharing(id)} /> : undefined}
-          actions={status ? <span role="status">{status}</span> : undefined}
+          actions={(status || (id && messages.length)) ? (
+            <>
+              {status && <span role="status">{status}</span>}
+              {id && messages.length > 0 && <Button variant="ghost" size="sm" onPress={() => setSharing(id)}>Share</Button>}
+            </>
+          ) : undefined}
         />
       }
       composer={{

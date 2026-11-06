@@ -166,7 +166,7 @@ const landingCsp = consoleCsp.replace("script-src 'self'", "script-src 'self' 'u
  */
 export const WIDGET_FRAME_PATH = '/console/widget-frame.html';
 const widgetFrameCsp = "default-src 'none'; script-src 'unsafe-inline' https:; style-src 'unsafe-inline' https:; img-src data: blob: https:; font-src data: https:; connect-src https:; frame-ancestors 'self'; base-uri 'none'";
-const nextCsp = consoleCsp.replace("script-src 'self'", "script-src 'self' 'wasm-unsafe-eval'").replace("style-src 'self'", "style-src 'self' 'unsafe-inline'");
+const nextCsp = consoleCsp.replace("script-src 'self'", "script-src 'self' 'wasm-unsafe-eval'").replace("style-src 'self'", "style-src 'self' 'unsafe-inline'").replace("img-src 'self'", "img-src 'self' blob:");
 /** File of the public share page (/s/:id) for a /share path, or undefined. Only these names are served. */
 const shareFile = (path: string) => {
   const name = path.startsWith('/share/') ? path.slice('/share/'.length) : '';
