@@ -14,6 +14,7 @@ import { Loader, Logo } from "../logo";
 import { channelRoute } from "../router";
 import { notify, notifyError } from "../ui/feedback";
 import { ReplyBox } from "./reply-box";
+import { conversationsQuery } from "./queries";
 import { RunsPanel } from "./runs";
 import { applyTranscriptEvent, channelMessage, displayMessages, metaOfPart, runIdsOf, type Meta, type TranscriptEvent } from "./transcript";
 
@@ -34,10 +35,7 @@ export function ChannelPage() {
   const { run } = channelRoute.useSearch();
   const { data: session } = useSuspenseQuery(sessionQuery);
   // The conversation list says whether web transcripts are on for the channel. The messages route only refuses.
-  const list = useQuery({
-    queryKey: ["conversations", serverId, "list"],
-    queryFn: () => get<{ conversations: Conversation[] }>(`/api/conversations${qs({ server: serverId })}`).then((page) => page.conversations),
-  });
+  const list = useQuery(conversationsQuery(serverId));
   if (list.isPending) return <div className="page-note" aria-busy="true"><Loader size={56} /></div>;
   const listed = list.data?.find((item) => item.id === channelId);
   if (listed?.enabled === false) {
@@ -54,7 +52,7 @@ function OffNote({ server, channel, title, admin }: { server: string; channel: s
     mutationFn: () => post("/api/web-transcripts/channels", { server, channel, enabled: true }),
     onSuccess: () => {
       notify("Web transcripts on for this channel.");
-      void client.invalidateQueries({ queryKey: ["conversations", server, "list"] });
+      void client.invalidateQueries({ queryKey: conversationsQuery(server).queryKey });
     },
     onError: (error) => notifyError(error),
   });
