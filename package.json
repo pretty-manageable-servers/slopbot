@@ -3,23 +3,26 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@11.10.0",
   "engines": {
     "node": ">=22.13.0"
   },
   "scripts": {
+    "prebuild": "pnpm -F @slopbot/contracts build",
     "build": "tsc -p tsconfig.json && cp src/adapters/postgres-schema.sql dist/src/adapters/postgres-schema.sql && mkdir -p dist/architecture && cp architecture/BOT_GUIDE.md dist/architecture/BOT_GUIDE.md",
+    "precheck": "pnpm -F @slopbot/contracts build",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/tests/*.test.js && node --test scripts/deployment/*.test.mjs && node --test scripts/development/error-regressions.test.mjs scripts/development/error-counts.test.mjs",
-    "start": "npm run dev",
-    "demo": "npm run build && node dist/src/main.js",
-    "models": "npm run build && node --env-file-if-exists=.env dist/src/list-models.js",
+    "test": "pnpm run build && node --test dist/tests/*.test.js && node --test scripts/deployment/*.test.mjs && node --test scripts/development/error-regressions.test.mjs scripts/development/error-counts.test.mjs && pnpm -F @slopbot/contracts test",
+    "start": "pnpm run dev",
+    "demo": "pnpm run build && node dist/src/main.js",
+    "models": "pnpm run build && node --env-file-if-exists=.env dist/src/list-models.js",
     "search:start": "node scripts/search-start.mjs",
     "search:stop": "docker compose -f compose.search.yaml down",
     "dev": "node scripts/development/start.mjs",
-    "sandbox:smoke": "npm run build && node --env-file-if-exists=.env.development scripts/sandbox-smoke.mjs",
+    "sandbox:smoke": "pnpm run build && node --env-file-if-exists=.env.development scripts/sandbox-smoke.mjs",
     "sandbox:template": "node --env-file-if-exists=.env.development scripts/sandbox-template.mjs",
-    "regression:audit": "npm run build && node --test scripts/development/error-regressions.test.mjs",
-    "storage:smoke": "npm run build && node --env-file-if-exists=.env.development scripts/storage-smoke.mjs"
+    "regression:audit": "pnpm run build && node --test scripts/development/error-regressions.test.mjs",
+    "storage:smoke": "pnpm run build && node --env-file-if-exists=.env.development scripts/storage-smoke.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -34,7 +37,8 @@
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@fontsource-variable/source-serif-4": "^5.3.1",
     "@modelcontextprotocol/sdk": "^1.32.1",
-    "agentic-ui-kit": "0.8.0",
+    "@slopbot/contracts": "workspace:*",
+    "agentic-ui-kit": "catalog:",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "cron-parser": "5.10.2",
@@ -50,17 +54,7 @@
     "pg": "^8.23.1",
     "quickjs-emscripten": "^0.32.0",
     "sharp": "^0.35.5",
-    "undici": "^7.30.0"
-  },
-  "overrides": {
-    "exceljs": {
-      "uuid": "^11.1.1"
-    },
-    "discord.js": {
-      "undici": "7.30.0"
-    },
-    "@discordjs/rest": {
-      "undici": "7.30.0"
-    }
+    "undici": "^7.30.0",
+    "zod": "catalog:"
   }
 }

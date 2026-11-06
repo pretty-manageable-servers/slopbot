@@ -1,3 +1,5 @@
+import { Surface } from "@slopbot/contracts";
+
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
 export interface Attachment { readonly name: string; readonly url: string; readonly contentType?: string; readonly size?: number; readonly preview?: boolean }
@@ -27,6 +29,8 @@ export interface Message {
   readonly isBot?: boolean;
   /** "web" marks a Discord webhook post that a signed-in user sent from the web console. */
   readonly source?: "web" | "voice";
+  /** Where the turn came from. A client sets it; a saved message without it gets its surface from the channel. */
+  readonly surface?: Surface;
   readonly transient?: boolean;
   /** Web chat only: short-lived links of the images in this message, for the model. In memory; the saved row keeps attachments only. */
   readonly modelImages?: readonly { url: string; label: string }[];
@@ -70,7 +74,7 @@ export interface Prompt {
 export type ModelEvent =
   | { readonly kind: "text"; readonly payload: { readonly text: string } }
   /** Part of a native tool call's arguments while they stream. Only for the live web view; it is not journaled. */
-  | { readonly kind: "tool_input"; readonly payload: { readonly index: number; readonly name: string; readonly text: string } }
+  | { readonly kind: "tool_input"; readonly payload: { readonly index: number; readonly name: string; readonly text: string; readonly id?: string } }
   | { readonly kind: "reasoning" | "opaque" | "usage" | "tool_call"; readonly payload: Json };
 
 export interface Reply {
@@ -110,6 +114,7 @@ export function parseMessage(input: unknown): Message {
   if (value.revisionTimestamp !== undefined && (typeof value.revisionTimestamp !== "number" || !Number.isFinite(value.revisionTimestamp))) throw new TypeError("Invalid revision timestamp");
   if (value.isBot !== undefined && typeof value.isBot !== "boolean") throw new TypeError("Invalid bot flag");
   if (value.source !== undefined && value.source !== "web" && value.source !== "voice") throw new TypeError("Invalid message source");
+  if (value.surface !== undefined && !Surface.safeParse(value.surface).success) throw new TypeError("Invalid message surface");
   if (value.transient !== undefined && typeof value.transient !== "boolean") throw new TypeError("Invalid transient message flag");
   if (value.authorAliases !== undefined && (!Array.isArray(value.authorAliases) || value.authorAliases.some(alias => typeof alias !== "string"))) throw new TypeError("Invalid author aliases");
   if (value.authorIdentity !== undefined && (!value.authorIdentity || typeof value.authorIdentity !== "object" || Array.isArray(value.authorIdentity) || Object.values(value.authorIdentity).some(item => typeof item !== "string"))) throw new TypeError("Invalid Discord identity");
@@ -127,6 +132,7 @@ export function parseMessage(input: unknown): Message {
     ...(value.source !== undefined ? { source: value.source === "voice" ? "voice" as const : "web" as const } : {}),
     ...(value.revisionTimestamp !== undefined ? { revisionTimestamp: value.revisionTimestamp as number } : {}),
     ...(value.transient !== undefined ? { transient: value.transient as boolean } : {}),
+    ...(value.surface !== undefined ? { surface: value.surface as Surface } : {}),
     ...(value.uploadFiles === true ? { uploadFiles: true as const } : {}),
     ...(value.uploads ? { uploads: value.uploads as { files: string[]; failed: string[] } } : {}),
     id: value.id as string, server: value.server as string,
