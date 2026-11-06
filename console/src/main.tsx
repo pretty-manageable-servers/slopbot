@@ -8,6 +8,9 @@ import { queryClient } from "./data";
 import { Loader, Logo } from "./logo";
 import "./prefs";
 import { router } from "./router";
+import { stashAsk } from "./chat-page";
+
+stashAsk();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

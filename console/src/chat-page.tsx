@@ -15,15 +15,25 @@ const ASK_MAX_CHARS = 8000;
 /** Set by the shared page for a signed-out viewer who presses Continue, before the sign-in. */
 const SHARE_KEY = "slopbot-share";
 
-/** The question in the hash, kept in sessionStorage so it survives the Discord sign-in. The hash is removed. */
-function takeAsk(): string {
-  let text = "";
+/**
+ * Moves the question in the hash (#ask=…) to sessionStorage and removes the hash. main.tsx calls it before the
+ * session loads, so a signed-out visitor keeps the question over the Discord sign-in.
+ */
+export function stashAsk() {
   const match = /^#ask=(.*)$/s.exec(location.hash);
-  if (match) {
-    try { text = decodeURIComponent(match[1]!); } catch { text = ""; }
-    history.replaceState(history.state, "", location.pathname + location.search);
-    try { if (text.trim()) sessionStorage.setItem(ASK_KEY, text); } catch { /* private mode: the hash is the only copy */ }
-  }
+  if (!match) return;
+  let text = "";
+  try { text = decodeURIComponent(match[1]!); } catch { text = ""; }
+  history.replaceState(history.state, "", location.pathname + location.search);
+  try { if (text.trim()) sessionStorage.setItem(ASK_KEY, text); } catch { /* private mode: lost on sign-in */ }
+  if (text.trim()) pendingAsk = text;
+}
+let pendingAsk = "";
+
+/** The stashed question, cut to the bot's limit. */
+function takeAsk(): string {
+  let text = pendingAsk;
+  pendingAsk = "";
   if (!text) try { text = sessionStorage.getItem(ASK_KEY) || ""; } catch { /* no storage */ }
   return [...text.trim()].slice(0, ASK_MAX_CHARS).join("");
 }
