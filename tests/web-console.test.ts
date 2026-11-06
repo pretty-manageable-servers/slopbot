@@ -168,7 +168,9 @@ test('rejects other katex paths',async t=>{
   assert.equal((await fetch(base+'/share/katex/fonts/KaTeX_Main-Regular.woff2/..')).status,404);
 });
 test('landing returns 404 when site/out is missing',async t=>{
-  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:join(tmpdir(),'slopbot-no-such-site')},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});
+  const nextDir=await mkdtemp(join(tmpdir(),'slopbot-console-'));t.after(()=>rm(nextDir,{recursive:true,force:true}));
+  await writeFile(join(nextDir,'index.html'),'<!doctype html><title>Console</title>');
+  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:join(tmpdir(),'slopbot-no-such-site'),nextDir},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});
   server.listen(0,'127.0.0.1');await once(server,'listening');
   t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
   const address=server.address();assert.ok(address&&typeof address!=='string');
