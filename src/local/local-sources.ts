@@ -1,7 +1,6 @@
 import type { ChannelAccessSource } from "../channel-access.js";
 import type { Directory } from "../engine/api.js";
 import type { MemberDirectory, MemberProfile, MemberRecord, MemberSource, MemberUser } from "../member-directory.js";
-import { isPrivateChannel } from "../private-chat.js";
 import type { TeamSource } from "../team-admins.js";
 import type { LocalUser, LocalWorld } from "./world.js";
 
@@ -43,12 +42,11 @@ export function localMemberSource(world: LocalWorld): MemberSource {
   };
 }
 
-/** Access facts for private chat channels only. Other channels: undefined. */
-export function localChannelAccessSource(world: LocalWorld): ChannelAccessSource {
+/** No channels in local mode, so no channel facts. Private chats are guarded by ownership, as in production. */
+export function localChannelAccessSource(_world: LocalWorld): ChannelAccessSource {
   return {
-    async facts(server, channel, user) {
-      if (!userById(world, user)?.servers.includes(server) || !isPrivateChannel(channel)) return undefined;
-      return { thread: true, privateThread: true, viewChannel: true, readMessageHistory: true, sendMessages: true, sendMessagesInThreads: true, threadMember: true };
+    async facts() {
+      return undefined;
     },
   };
 }

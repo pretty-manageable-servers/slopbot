@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { ChannelAccess } from "../src/channel-access.js";
 import { LocalDirectory, localChannelAccessSource, localMemberSource, localTeamSource } from "../src/local/local-sources.js";
 import { parseLocalWorld } from "../src/local/world.js";
 import { MemberDirectory } from "../src/member-directory.js";
@@ -78,16 +79,12 @@ test("the team owner is the user with team owner, and the others with a team are
   assert.deepEqual(team.members, [{ id: DEV, role: "developer", accepted: true }]);
 });
 
-test("private chat channels are open to a server member and nobody else", async () => {
-  const access = localChannelAccessSource(world());
-  const allowed = { thread: true, privateThread: true, viewChannel: true, readMessageHistory: true, sendMessages: true, sendMessagesInThreads: true, threadMember: true };
-  assert.deepEqual(await access.facts(SERVER, PRIVATE, MEMBER), allowed);
-  assert.equal(await access.facts(SERVER, PRIVATE, OUTSIDER), undefined);
-  assert.equal(await access.facts(SERVER, PRIVATE, UNKNOWN), undefined);
-  assert.equal(await access.facts(OTHER_SERVER, PRIVATE, MEMBER), undefined);
+test("a private chat channel gives no channel access in local mode", async () => {
+  const access = new ChannelAccess(localChannelAccessSource(world()));
+  assert.deepEqual(await access.check(SERVER, PRIVATE, MEMBER), { view: false, send: false });
 });
 
-test("a normal channel has no access facts", async () => {
-  const access = localChannelAccessSource(world());
-  assert.equal(await access.facts(SERVER, CHANNEL, MEMBER), undefined);
+test("a normal channel gives no channel access in local mode", async () => {
+  const access = new ChannelAccess(localChannelAccessSource(world()));
+  assert.deepEqual(await access.check(SERVER, CHANNEL, MEMBER), { view: false, send: false });
 });
