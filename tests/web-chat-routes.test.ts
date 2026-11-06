@@ -632,3 +632,32 @@ test("delete chat removes files", async t => {
   assert.equal((await f.call(ALICE, "DELETE", `/api/chats/${id}`)).status, 200);
   assert.equal(f.storage.objects.size, 0, "the chat's files and images go with it");
 });
+
+test("refreshing a chat link keeps its URL, adds newer messages, and only works for its own live link", async t => {
+  const f = await setup(t);
+  const one = await newChat(f), two = await newChat(f);
+  await f.call(ALICE, "POST", `/api/chats/${one}/messages`, { text: "first line" });
+  await f.call(ALICE, "POST", `/api/chats/${two}/messages`, { text: "other chat" });
+  const shareId = (await f.call(ALICE, "POST", `/api/chats/${one}/shares`, {})).json.id as string;
+  const listed = async () => (await f.call(ALICE, "GET", `/api/chats/${one}/shares`)).json.shares[0];
+  assert.equal((await listed()).newer, false, "nothing is newer right after the link is made");
+
+  await f.call(ALICE, "POST", `/api/chats/${one}/messages`, { text: "second line" });
+  assert.equal((await listed()).newer, true);
+  const texts = async () => (await f.call(null, "GET", `/api/shares/${shareId}`)).json.messages.map((message: { text: string }) => message.text);
+  assert.deepEqual(await texts(), ["first line"]);
+
+  assert.equal((await f.call(BOB, "POST", `/api/chats/${one}/shares/${shareId}/refresh`, {})).status, 404, "a non-owner cannot refresh");
+  assert.equal((await f.call(ALICE, "POST", `/api/chats/${two}/shares/${shareId}/refresh`, {})).status, 404, "another chat's link is not found");
+  const refreshed = await f.call(ALICE, "POST", `/api/chats/${one}/shares/${shareId}/refresh`, {});
+  assert.equal(refreshed.status, 200);
+  assert.equal(refreshed.json.id, shareId);
+  assert.deepEqual(await texts(), ["first line", "second line"], "the same link now has the newer message");
+  const after = await listed();
+  assert.equal(after.newer, false);
+  assert.equal(after.frozen_at, refreshed.json.frozen_at);
+
+  assert.equal((await f.call(ALICE, "POST", `/api/chats/${one}/shares/${shareId}/revoke`, {})).status, 200);
+  assert.equal((await f.call(ALICE, "POST", `/api/chats/${one}/shares/${shareId}/refresh`, {})).status, 404, "a revoked link is not refreshed");
+  assert.equal((await listed()).newer, false);
+});

@@ -29,7 +29,7 @@ const CONVERSATION_PRUNE_BATCH = 10000;
 
 import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
 import type { InboxItem } from '../inbox.js';
-import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, listChatShares, revokeShare, revokeAllShares, deleteChatShares } from '../share-store.js';
+import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, listChatShares, revokeShare, updateShareBody, revokeAllShares, deleteChatShares } from '../share-store.js';
 import { getWebSession, saveWebSession, deleteWebSession, deleteExpiredWebSessions } from '../clients/web/web-session-store.js';
 import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatEffort, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../clients/web/web-chat-store.js';
 import { isPrivateChannel } from '../private-chat.js';
@@ -616,6 +616,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   async listShares(server: string, limit: number) { return listShares(this.db, server, limit); }
   async listChatShares(server: string, channel: string, limit: number) { return listChatShares(this.db, server, channel, limit); }
   async revokeShare(server: string, id: string, at: number): Promise<boolean> { return revokeShare(this.db, server, id, at); }
+  async updateShareBody(id: string, body: string) { return updateShareBody(this.db, id, body); }
   async revokeAllShares(server: string, at: number): Promise<number> { return revokeAllShares(this.db, server, at); }
   async deleteChatShares(channel: string): Promise<number> { return deleteChatShares(this.db, channel); }
   async getSession(idHash: string): Promise<WebSessionRow | undefined> { return getWebSession(this.db, idHash); }

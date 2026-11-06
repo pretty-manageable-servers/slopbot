@@ -25,6 +25,8 @@ export interface ShareStore {
   /** The links of one private chat, for its owner. */
   listChatShares(server: string, channel: string, limit: number): Promise<ShareListRow[]>;
   revokeShare(server: string, id: string, at: number): Promise<boolean>;
+  /** Replaces the frozen copy of a link that is not revoked. False when no row changed. */
+  updateShareBody(id: string, body: string): Promise<boolean>;
   /** Channel links only. Private chat links are never revoked here. */
   revokeAllShares(server: string, at: number): Promise<number>;
   /** Removes every link of a deleted private chat, with its frozen copies. */
@@ -302,31 +304,64 @@ export class ShareService {
   }
 }
 
+function frozenAt(row: ShareRow | undefined, fallback: number): number {
+  try {
+    const at = (JSON.parse(row?.body ?? "") as { created_at?: unknown }).created_at;
+    return typeof at === "number" && Number.isFinite(at) ? at : fallback;
+  } catch { return fallback; }
+}
+
 /**
  * Share links of one private chat. The owner check is not here: WebChatService checks the owner and the
  * server membership first, then calls these. A chat link is a frozen copy, like a channel link.
  */
 export class ChatShareService {
   private readonly now: () => number;
-  constructor(private readonly store: Pick<ShareStore, "shareMessages" | "shareRequestEvents" | "insertShare" | "getShare" | "listChatShares" | "revokeShare" | "deleteChatShares">, now?: () => number) {
+  constructor(private readonly store: Pick<ShareStore, "shareMessages" | "shareRequestEvents" | "insertShare" | "getShare" | "listChatShares" | "revokeShare" | "updateShareBody" | "deleteChatShares">, now?: () => number) {
     this.now = now ?? Date.now;
+  }
+
+  /** The newest messages of the chat, frozen as a share body at `created_at`. */
+  private async freeze(chat: { id: string; server: string }, created_at: number): Promise<string> {
+    const found = await snapshotOf(this.store, chat.server, privateChannel(chat.id), { limit: MAX_SHARE_MESSAGES }, { ...CHAT_SHARE_OPTIONS, show_tools: true });
+    if (!found.messages.length) throw new ShareError(400, "Send a message before you share this chat.");
+    return JSON.stringify({ created_at, options: CHAT_SHARE_OPTIONS, messages: found.messages });
   }
 
   /** Freezes the newest messages of the chat up to now, as a channel share does with no range. Later messages are not added. */
   async create(chat: { id: string; server: string }, user: string): Promise<{ id: string }> {
-    const channel = privateChannel(chat.id);
-    const found = await snapshotOf(this.store, chat.server, channel, { limit: MAX_SHARE_MESSAGES }, { ...CHAT_SHARE_OPTIONS, show_tools: true });
-    if (!found.messages.length) throw new ShareError(400, "Send a message before you share this chat.");
     const created_at = this.now();
+    const body = await this.freeze(chat, created_at);
     const id = randomBytes(16).toString("base64url");
-    const body = JSON.stringify({ created_at, options: CHAT_SHARE_OPTIONS, messages: found.messages });
-    await this.store.insertShare({ id, server: chat.server, channel, created_by: user, created_at, revoked_at: null, body });
+    await this.store.insertShare({ id, server: chat.server, channel: privateChannel(chat.id), created_by: user, created_at, revoked_at: null, body });
     return { id };
   }
 
-  async list(chat: { id: string; server: string }): Promise<{ shares: { id: string; created_at: number; revoked: boolean }[] }> {
-    const rows = await this.store.listChatShares(chat.server, privateChannel(chat.id), 200);
-    return { shares: rows.map(row => ({ id: row.id, created_at: row.created_at, revoked: row.revoked_at !== null })) };
+  /** Freezes the chat again under the same link. Another chat's link, a revoked link or an unknown ID is 404. */
+  async refresh(chat: { id: string; server: string }, id: string): Promise<{ id: string; frozen_at: number }> {
+    const row = isShareId(id) ? await this.store.getShare(id) : undefined;
+    if (!row || row.server !== chat.server || row.channel !== privateChannel(chat.id) || row.revoked_at !== null) throw new ShareError(404, "Not found.");
+    const frozen_at = this.now();
+    if (!await this.store.updateShareBody(id, await this.freeze(chat, frozen_at))) throw new ShareError(404, "Not found.");
+    return { id, frozen_at };
+  }
+
+  /**
+   * `frozen_at` is when the copy was taken. `newer` is true when the chat has a message after it. One store call
+   * per live link reads only the newest message (limit 1), with no tool events.
+   */
+  async list(chat: { id: string; server: string }): Promise<{ shares: { id: string; created_at: number; revoked: boolean; frozen_at: number; newer: boolean }[] }> {
+    const channel = privateChannel(chat.id);
+    const rows = await this.store.listChatShares(chat.server, channel, 200);
+    const live = rows.some(row => row.revoked_at === null);
+    const newest = live ? (await this.store.shareMessages(chat.server, channel, { limit: 1 })).messages[0]?.timestamp : undefined;
+    const shares = await Promise.all(rows.map(async row => {
+      const revoked = row.revoked_at !== null;
+      if (revoked) return { id: row.id, created_at: row.created_at, revoked, frozen_at: row.created_at, newer: false };
+      const frozen_at = frozenAt(await this.store.getShare(row.id), row.created_at);
+      return { id: row.id, created_at: row.created_at, revoked, frozen_at, newer: newest !== undefined && newest > frozen_at };
+    }));
+    return { shares };
   }
 
   /** Revokes one link of this chat only. Any other link ID is 404. */

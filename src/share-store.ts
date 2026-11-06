@@ -73,6 +73,11 @@ export async function revokeShare(db: ShareDb, server: string, id: string, at: n
   return result.changes > 0;
 }
 
+export async function updateShareBody(db: ShareDb, id: string, body: string): Promise<boolean> {
+  const result = await db.prepare("UPDATE shares SET body=? WHERE id=? AND revoked_at IS NULL").run(body, id);
+  return result.changes > 0;
+}
+
 export async function revokeAllShares(db: ShareDb, server: string, at: number): Promise<number> {
   const result = await db.prepare("UPDATE shares SET revoked_at=? WHERE server=? AND revoked_at IS NULL AND channel NOT LIKE 'web:%'").run(at, server);
   return result.changes;
