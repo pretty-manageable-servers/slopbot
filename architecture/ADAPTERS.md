@@ -15,7 +15,7 @@ Slopbot has an engine and clients. The engine runs requests for each Discord ser
 
 ## Rules
 
-- The engine imports no client, no `discord.js` and no `node:http`. The clients do not import each other, with one exception: `discord.ts` imports `WebChatGateway` from `web-chats.ts`. `tests/discord-source-boundary.test.ts` checks both rules and lists that import.
+- The engine imports no client, no `discord.js` and no `node:http`. The clients do not import each other. `tests/discord-source-boundary.test.ts` checks both rules.
 - The engine gets authority from `Directory`: membership, Manage Server and names. It gets platform actions from `WorkspacePorts`, which `DiscordServer` supplies.
 - A web chat's message is saved by the chat service before `Workspace.submit(message, { ingested: true })`. The engine does not save it again.
 - Clients set `Message.surface`. A saved message without one gets its surface from its channel.

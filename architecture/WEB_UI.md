@@ -8,7 +8,7 @@ The web client is the HTTP app in `src/clients/web/`. It runs in the bot process
 - `src/clients/web/env.ts`: the request types, `userOf`, `applyOut` and `failure`, which handles errors after a stream has started.
 - `src/clients/web/body.ts`: body reading with size limits (`readBytes`, `readJson`) and zod checks (`check`).
 - `src/clients/web/routes/*.ts`: one file per route group: `auth`, `account`, `chats`, `conversations`, `shares`, `admin`, `static` and `version`. A chat route is one line in `routes/chats.ts`. The body reading and the Origin and CSRF checks run before it.
-- `src/clients/web/web-chats.ts`: `WebChatService`, the private chats, and `WebChatGateway`, which saves and publishes replies to them.
+- `src/clients/web/web-chats.ts`: `WebChatService` and the private chats. `WebChatGateway`, which saves and publishes replies to them, is in `src/engine/web-chat-gateway.ts`, so the Discord client can use it without importing the web client.
 - `src/clients/web/web-transcripts.ts`: the Discord conversation views and `openEngineStream`, the writer for the live event stream.
 - `src/clients/web/web-console.ts`: `consoleOptions` reads the `WEB_*` settings. `createConsole` returns the `node:http` server.
 - `console/src/`: the app. `events.ts` maps engine events to chat messages. `console/share.html` is the public share page at `/s/:id`.
