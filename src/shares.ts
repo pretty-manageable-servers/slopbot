@@ -73,11 +73,6 @@ export const MEMBER_CACHE_MS = 60_000;
 const snowflake = /^\d{17,20}$/;
 const shareId = /^[A-Za-z0-9_-]{22}$/;
 export const isShareId = (id: string): boolean => shareId.test(id);
-/** Routes that change share links. The console uses this to allow POST. */
-export function isShareWrite(path: string): boolean {
-  return path === "/api/shares" || path === "/api/shares/revoke-all" || /^\/api\/shares\/[A-Za-z0-9_-]{22}\/revoke$/.test(path);
-}
-
 // Short labels for known tools. Arguments and results never go in a snapshot.
 const toolStatus = new Map<string, string>([
   ["web_search", "Searched the web"], ["read", "Read a file"], ["write", "Wrote a file"], ["edit", "Edited a file"], ["file_store", "Used file storage"],

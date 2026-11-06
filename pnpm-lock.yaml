@@ -6,9 +6,15 @@ settings:
 
 catalogs:
   default:
+    '@hono/node-server':
+      specifier: ^2.1.6
+      version: 2.1.6
     agentic-ui-kit:
       specifier: 0.9.1
       version: 0.9.1
+    hono:
+      specifier: ^4.13.16
+      version: 4.13.16
     zod:
       specifier: ^4
       version: 4.6.7
@@ -41,6 +47,9 @@ importers:
       '@fontsource-variable/source-serif-4':
         specifier: ^5.3.1
         version: 5.3.1
+      '@hono/node-server':
+        specifier: 'catalog:'
+        version: 2.1.6(hono@4.13.16)
       '@modelcontextprotocol/sdk':
         specifier: ^1.32.1
         version: 1.32.2(zod@4.6.7)
@@ -74,6 +83,9 @@ importers:
       fflate:
         specifier: ^0.8.3
         version: 0.8.3
+      hono:
+        specifier: 'catalog:'
+        version: 4.13.16
       linkedom:
         specifier: 0.18.13
         version: 0.18.13

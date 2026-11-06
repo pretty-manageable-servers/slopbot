@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { createServer } from "node:http";
+import { transcriptServer } from "./transcript-server.js";
 import { ChannelAccess, type ChannelFacts } from "../src/channel-access.js";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { RunEvents } from "../src/run-events.js";
@@ -39,10 +39,7 @@ async function fixture(t: { after(fn: () => unknown): void }, members?: MemberDi
   const names: Record<string, string> = { [CHANNEL]: "general", [OTHER]: "secret", [THREAD]: "task-1" };
   const host: TranscriptHost = { store, access, configured: () => [CHANNEL, OTHER], channelName: async (_server, channel) => names[channel], shareRule: { manager: async () => false, teamAdmin: async user => user === USER }, ...(members ? { members } : {}) };
   const routes = createTranscripts(host);
-  const http = createServer((req, res) => {
-    const user = req.headers["x-user"] ? String(req.headers["x-user"]) : undefined;
-    void routes.handle(req, res, new URL(req.url!, "http://localhost"), user);
-  });
+  const http = transcriptServer(routes);
   http.listen(0, "127.0.0.1");
   await once(http, "listening");
   t.after(() => new Promise<void>(resolve => http.close(() => resolve())));

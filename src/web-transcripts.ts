@@ -1,4 +1,5 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
+import { applyOut, json, type WebContext } from "./clients/web/env.js";
+import { conversationRoutes, type TranscriptRoutes } from "./clients/web/routes/conversations.js";
 import { logError } from "./errors.js";
 import type { Json, Message, ModelEvent } from "./domain.js";
 import type { ChannelAccess, ChannelAccessResult } from "./channel-access.js";
@@ -57,10 +58,7 @@ export interface TranscriptHost {
   ownsPrivateChat?(server: string, channel: string, user: string): Promise<boolean>;
 }
 
-export interface TranscriptRoutes {
-  handles(path: string): boolean;
-  handle(req: IncomingMessage, res: ServerResponse, url: URL, user: string | undefined): Promise<void>;
-}
+export type { TranscriptRoutes };
 
 /** One step of a saved run, in the order it happened. Costs and raw provider usage are never included. */
 export type RunStep =
@@ -73,7 +71,6 @@ export interface ToolStep { type: "tool"; name: string; status: string; args: st
 /** enabled is false for a channel whose web transcripts are off. Only channels are listed that way, never threads. */
 export interface Conversation { id: string; name: string; kind: "channel" | "thread"; parent: string | null; newest: number | null; canSend: boolean; enabled: boolean }
 
-const SNOWFLAKE = /^\d{17,20}$/;
 const ID = /^[\w:.-]{1,64}$/;
 const RUN_ID = /^[\w:.-]{1,200}$/;
 const MAX_RESULT_CHARS = 500;
@@ -299,7 +296,6 @@ async function cardOf(store: Pick<TranscriptStore, "record">, server: string, me
 
 export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
   const { store } = host;
-  const json = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
   const parseLimit = (raw: string | null, fallback: number, max: number): number | undefined => {
     if (raw === null || raw === "") return fallback;
     const value = Number(raw);
@@ -309,23 +305,23 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
   const parentOf = async (server: string, channel: string): Promise<string | null> =>
     store.taskThreads(server).find(task => task.thread === channel)?.parent ?? null;
 
-  async function messages(res: ServerResponse, url: URL, server: string, channel: string, user: string): Promise<void> {
+  async function messages(url: URL, server: string, channel: string, user: string): Promise<Response> {
     const access = await granted(host, server, channel, user);
-    if (!access) return json(res, 403, { error: "You cannot view this conversation." });
+    if (!access) return json(403, { error: "You cannot view this conversation." });
     // Read the stream position before the page, so a live event after it is never skipped.
     const streamId = await store.latestStreamId(server, channel);
     const limit = parseLimit(url.searchParams.get("limit"), 50, 100);
-    if (limit === undefined) return json(res, 400, { error: "Invalid limit." });
+    if (limit === undefined) return json(400, { error: "Invalid limit." });
     const beforeId = url.searchParams.get("before");
     let before: { time: number; id: string } | undefined;
     if (beforeId !== null) {
-      if (!ID.test(beforeId)) return json(res, 400, { error: "Invalid cursor." });
+      if (!ID.test(beforeId)) return json(400, { error: "Invalid cursor." });
       const found = await store.canonicalMessage(server, beforeId);
-      if (!found || found.channel !== channel) return json(res, 400, { error: "That message is no longer stored. Reload the conversation." });
+      if (!found || found.channel !== channel) return json(400, { error: "That message is no longer stored. Reload the conversation." });
       before = { time: found.timestamp ?? 0, id: found.id };
     }
     const rows = await store.conversationMessages(server, channel, before, limit + 1);
-    json(res, 200, {
+    return json(200, {
       ...(await header(server, channel, access, user)),
       streamId,
       hasMore: rows.length > limit,
@@ -348,26 +344,26 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
     return groupConversations(runs, replies, sources);
   }
 
-  async function conversationList(res: ServerResponse, url: URL, server: string, channel: string, user: string): Promise<void> {
-    if (!(await granted(host, server, channel, user))) return json(res, 403, { error: "You cannot view this conversation." });
+  async function conversationList(url: URL, server: string, channel: string, user: string): Promise<Response> {
+    if (!(await granted(host, server, channel, user))) return json(403, { error: "You cannot view this conversation." });
     const limit = parseLimit(url.searchParams.get("limit"), 20, 50);
-    if (limit === undefined) return json(res, 400, { error: "Invalid limit." });
+    if (limit === undefined) return json(400, { error: "Invalid limit." });
     const rawOffset = url.searchParams.get("offset") ?? "";
     const offset = rawOffset === "" ? 0 : Number(rawOffset);
-    if (!Number.isSafeInteger(offset) || offset < 0) return json(res, 400, { error: "Invalid offset." });
+    if (!Number.isSafeInteger(offset) || offset < 0) return json(400, { error: "Invalid offset." });
     const groups = await conversationsOf(server, channel);
-    json(res, 200, { conversations: groups.slice(offset, offset + limit).map(conversationSummary), hasMore: groups.length > offset + limit });
+    return json(200, { conversations: groups.slice(offset, offset + limit).map(conversationSummary), hasMore: groups.length > offset + limit });
   }
 
   // All messages of the conversation that holds this run: the triggers, the sources they used and Slopbot's replies, in time order.
-  async function conversation(res: ServerResponse, server: string, channel: string, runId: string, user: string): Promise<void> {
-    if (!RUN_ID.test(runId)) return json(res, 400, { error: "Invalid run." });
+  async function conversation(server: string, channel: string, runId: string, user: string): Promise<Response> {
+    if (!RUN_ID.test(runId)) return json(400, { error: "Invalid run." });
     const access = await granted(host, server, channel, user);
-    if (!access) return json(res, 403, { error: "You cannot view this conversation." });
+    if (!access) return json(403, { error: "You cannot view this conversation." });
     const group = (await conversationsOf(server, channel)).find(item => item.runIds.includes(runId));
-    if (!group) return json(res, 404, { error: "Conversation not found." });
+    if (!group) return json(404, { error: "Conversation not found." });
     const rows = await store.messagesById(server, channel, group.messageIds);
-    json(res, 200, {
+    return json(200, {
       ...(await header(server, channel, access, user)),
       streamId: await store.latestStreamId(server, channel),
       conversation: { ...conversationSummary(group), runIds: group.runIds },
@@ -376,18 +372,18 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
     });
   }
 
-  async function runRoute(res: ServerResponse, runId: string, user: string): Promise<void> {
-    if (!RUN_ID.test(runId)) return json(res, 400, { error: "Invalid run." });
+  async function runRoute(runId: string, user: string): Promise<Response> {
+    if (!RUN_ID.test(runId)) return json(400, { error: "Invalid run." });
     const record = await store.runRecord(runId);
-    if (!record || record.purpose !== "reply") return json(res, 404, { error: "Run not found." });
+    if (!record || record.purpose !== "reply") return json(404, { error: "Run not found." });
     const { server, channel } = record.message;
     // A private chat has no Discord channel, so the owner check replaces the channel access check.
     const visible = isPrivateChannel(channel) ? await host.ownsPrivateChat?.(server, channel, user) === true : Boolean(await granted(host, server, channel, user));
-    if (!visible) return json(res, 403, { error: "You cannot view this run." });
+    if (!visible) return json(403, { error: "You cannot view this run." });
     const events = await store.events(runId);
     const turns = await store.toolTurns(server, record.message.id);
     const fallback = record.status === "tool_calls" ? textCalls(record.result) : [];
-    json(res, 200, {
+    return json(200, {
       runId, requestId: record.message.id, channel, status: record.status,
       ...(record.status === "failed" && record.result ? { error: record.result.slice(0, 500) } : {}),
       steps: runSteps(events, turns, fallback),
@@ -395,33 +391,35 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
   }
 
   // Which of the given messages a reply run used. The same access check as the messages route.
-  async function used(res: ServerResponse, url: URL, server: string, channel: string, user: string): Promise<void> {
-    if (!(await granted(host, server, channel, user))) return json(res, 403, { error: "You cannot view this conversation." });
+  async function used(url: URL, server: string, channel: string, user: string): Promise<Response> {
+    if (!(await granted(host, server, channel, user))) return json(403, { error: "You cannot view this conversation." });
     const ids = (url.searchParams.get("ids") ?? "").split(",").filter(id => id !== "");
-    if (ids.length > 200 || ids.some(id => !ID.test(id))) return json(res, 400, { error: "Invalid message IDs." });
-    json(res, 200, { used: ids.length ? await store.usedSourceIds(server, channel, ids) : [] });
+    if (ids.length > 200 || ids.some(id => !ID.test(id))) return json(400, { error: "Invalid message IDs." });
+    return json(200, { used: ids.length ? await store.usedSourceIds(server, channel, ids) : [] });
   }
 
-  async function search(res: ServerResponse, url: URL, server: string, user: string): Promise<void> {
+  async function search(url: URL, server: string, user: string): Promise<Response> {
     const query = (url.searchParams.get("q") ?? "").trim();
-    if (query.length < 2 || query.length > 200) return json(res, 400, { error: "Search needs 2 to 200 characters." });
+    if (query.length < 2 || query.length > 200) return json(400, { error: "Search needs 2 to 200 characters." });
     // Search reads messages, so it covers only channels whose switch is on. The access check is in visibleConversations.
     const visible = (await visibleConversations(host, server, user)).filter(item => item.enabled).slice(0, 40);
     const found: FuzzyHit[] = [];
     for (const conversation of visible) found.push(...await store.searchFuzzy({ server, channel: conversation.id, query, limit: 50 }));
     found.sort((a, b) => b.score - a.score || (b.message.timestamp ?? 0) - (a.message.timestamp ?? 0));
-    json(res, 200, {
+    return json(200, {
       query,
       channels: visible.map(item => ({ id: item.id, name: item.name })),
       messages: await views(server, found.slice(0, 50).map(hit => hit.message)),
     });
   }
 
-  async function stream(req: IncomingMessage, res: ServerResponse, url: URL, server: string, channel: string, user: string): Promise<void> {
-    if (!(await granted(host, server, channel, user))) return json(res, 403, { error: "You cannot view this conversation." });
+  async function stream(c: WebContext, server: string, channel: string, user: string): Promise<Response | undefined> {
+    if (!(await granted(host, server, channel, user))) return json(403, { error: "You cannot view this conversation." });
+    const { incoming: req, outgoing: res } = c.env;
     // The browser sends Last-Event-ID on reconnect. A page load passes the stream position as ?after=.
-    const raw = Number(req.headers["last-event-id"] ?? url.searchParams.get("after") ?? 0);
+    const raw = Number(req.headers["last-event-id"] ?? new URL(c.req.url).searchParams.get("after") ?? 0);
     const cursor = Number.isSafeInteger(raw) && raw >= 0 ? raw : 0;
+    applyOut(c);
     res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
     res.write("retry: 3000\n\n");
     const stop = openStream({
@@ -433,34 +431,8 @@ export function createTranscripts(host: TranscriptHost): TranscriptRoutes {
     res.on("close", () => stop());
   }
 
-  return {
-    handles: path => path === "/api/conversations" || path.startsWith("/api/conversations/") || path.startsWith("/api/runs/"),
-    async handle(req, res, url, user) {
-      try {
-        if (!user) return json(res, 403, { error: "Sign in with Discord to continue." });
-        const parts = url.pathname.split("/").slice(2);
-        if (parts[0] === "runs") {
-          if (parts.length !== 2) return json(res, 404, { error: "Not found." });
-          return await runRoute(res, parts[1]!, user);
-        }
-        if (parts[0] !== "conversations") return json(res, 404, { error: "Not found." });
-        const server = url.searchParams.get("server") ?? "";
-        if (!SNOWFLAKE.test(server)) return json(res, 400, { error: "Invalid server." });
-        if (parts.length === 1) return json(res, 200, { conversations: await visibleConversations(host, server, user) });
-        if (parts.length === 2 && parts[1] === "search") return await search(res, url, server, user);
-        const channel = parts[1] ?? "";
-        if (!SNOWFLAKE.test(channel)) return json(res, 400, { error: "Invalid conversation." });
-        if (parts.length === 3 && parts[2] === "messages") return await messages(res, url, server, channel, user);
-        if (parts.length === 3 && parts[2] === "used") return await used(res, url, server, channel, user);
-        if (parts.length === 3 && parts[2] === "stream") return await stream(req, res, url, server, channel, user);
-        if (parts.length === 3 && parts[2] === "runs") return await conversationList(res, url, server, channel, user);
-        if (parts.length === 4 && parts[2] === "runs") return await conversation(res, server, channel, parts[3] ?? "", user);
-        return json(res, 404, { error: "Not found." });
-      } catch (error) {
-        logError("web_transcript_failed", error, { stage: "web transcripts" });
-        if (!res.headersSent) json(res, 502, { error: "Could not load this conversation." });
-        else res.end();
-      }
-    },
-  };
+  return conversationRoutes({
+    list: async (server, user) => json(200, { conversations: await visibleConversations(host, server, user) }),
+    search, messages, used, stream, runs: conversationList, conversation, run: runRoute,
+  });
 }

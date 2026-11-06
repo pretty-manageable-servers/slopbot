@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { chatRoutes } from "./clients/web/routes/chats.js";
 import { logError } from "./errors.js";
 import type { ChatGateway } from "./bot.js";
 import { parseEffort, type Effort, type Message } from "./domain.js";
@@ -22,7 +23,7 @@ import type { Attachment } from "./domain.js";
 import type { ObjectStorageProvider } from "./object-storage.js";
 import { AttachQueue, runKey, type QueuedFile } from "./attach-file.js";
 const IMAGE_EXTENSIONS: Record<string, "png" | "jpg" | "gif" | "webp"> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
-import { ChatShareService, ShareError, type ShareService, type ShareStore } from "./shares.js";
+import { ChatShareService, type ShareService, type ShareStore } from "./shares.js";
 
 /** Store calls for private chats. SQLite and Postgres implement them. */
 export interface ChatStore extends TranscriptStore, ConversationEventStore, ShareStore {
@@ -489,79 +490,6 @@ export class WebChatService {
   }
 }
 
-/** Route handler for /api/chats. The console checks the session and CSRF before it calls this. */
-export interface ChatRoutes {
-  handles(path: string): boolean;
-  handle(req: IncomingMessage, res: ServerResponse, url: URL, user: string, body: unknown): Promise<void>;
-}
-
-export function createChatRoutes(service: WebChatService): ChatRoutes {
-  const json = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
-  const fail = (res: ServerResponse, error: unknown) => {
-    if (error instanceof ChatError) return json(res, error.status, { error: error.message, ...(error.resetAt !== undefined ? { resetAt: error.resetAt } : {}) });
-    if (error instanceof ShareError) return json(res, error.status, { error: error.message });
-    logError("web_chat_failed", error, { stage: "web chats" });
-    if (!res.headersSent) json(res, 502, { error: "Could not complete this chat request." });
-    else res.end();
-  };
-  return {
-    handles: path => path === "/api/chats" || path.startsWith("/api/chats/"),
-    async handle(req, res, url, user, body) {
-      try {
-        const parts = url.pathname.split("/").slice(2);
-        const input = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
-        if (parts.length === 1) {
-          if (req.method === "GET") return json(res, 200, await service.list(user));
-          if (req.method === "POST") return json(res, 201, await service.create(user, String(input.server ?? "")));
-        }
-        const id = parts[1] ?? "";
-        if (parts[2] === "images") {
-          if (parts.length === 3 && req.method === "POST" && Buffer.isBuffer(body)) return json(res, 201, await service.uploadImage(user, id, body, url.searchParams.get("name")));
-          if (parts.length === 4 && req.method === "DELETE") { await service.discardImage(user, id, parts[3] ?? ""); return json(res, 200, { ok: true }); }
-          if (parts.length === 4 && req.method === "GET") {
-            const image = await service.readImage(user, id, parts[3] ?? "");
-            res.writeHead(200, { "Content-Type": image.contentType, "Content-Length": image.bytes.length, "Cache-Control": "private, max-age=600", "X-Content-Type-Options": "nosniff" });
-            return void res.end(image.bytes);
-          }
-        }
-        if (parts[2] === "files") {
-          // The file type is the request Content-Type, read by the service with fileContentType.
-          if (parts.length === 3 && req.method === "POST" && Buffer.isBuffer(body)) return json(res, 201, await service.uploadFile(user, id, body, url.searchParams.get("name"), req.headers["content-type"] ?? null));
-          if (parts.length === 4 && req.method === "DELETE") { await service.discardFile(user, id, parts[3] ?? ""); return json(res, 200, { ok: true }); }
-          if (parts.length === 4 && req.method === "GET") {
-            const file = await service.readFile(user, id, parts[3] ?? "");
-            // Never inline: the browser saves the file, and the type is not sniffed.
-            res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": file.bytes.length, "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`, "Cache-Control": "private, max-age=600", "X-Content-Type-Options": "nosniff" });
-            return void res.end(file.bytes);
-          }
-        }
-        if (parts.length === 2) {
-          if (req.method === "PATCH") {
-            if ("effort" in input) await service.setEffort(user, id, input.effort);
-            if ("title" in input || !("effort" in input)) await service.rename(user, id, input.title);
-            return json(res, 200, { ok: true });
-          }
-          if (req.method === "DELETE") { await service.remove(user, id); return json(res, 200, { ok: true }); }
-        }
-        if (parts.length === 3 && parts[2] === "messages") {
-          if (req.method === "GET") {
-            const raw = url.searchParams.get("limit");
-            const limit = raw === null || raw === "" ? 50 : Number(raw);
-            if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new ChatError(400, "Invalid limit.");
-            return json(res, 200, await service.messages(user, id, limit, url.searchParams.get("before") || null));
-          }
-          if (req.method === "POST") return json(res, 201, await service.send(user, id, input.text, input.images, input.files));
-        }
-        if (parts.length === 3 && parts[2] === "stop" && req.method === "POST") return json(res, 200, await service.stop(user, id));
-        if (parts.length === 5 && parts[2] === "ui" && parts[4] === "act" && req.method === "POST") return json(res, 200, await service.act(user, id, parts[3] ?? "", input));
-        if (parts.length === 3 && parts[2] === "stream" && req.method === "GET") return await service.openStream(req, res, user, id);
-        if (parts[2] === "shares") {
-          if (parts.length === 3 && req.method === "GET") return json(res, 200, await service.shareList(user, id));
-          if (parts.length === 3 && req.method === "POST") return json(res, 201, await service.shareCreate(user, id));
-          if (parts.length === 5 && parts[4] === "revoke" && req.method === "POST") return json(res, 200, await service.shareRevoke(user, id, parts[3] ?? ""));
-        }
-        return json(res, 404, { error: "Not found." });
-      } catch (error) { fail(res, error); }
-    },
-  };
-}
+export type { ChatRoutes } from "./clients/web/routes/chats.js";
+/** The Hono routes of /api/chats (see clients/web/routes/chats.ts). */
+export const createChatRoutes = chatRoutes;

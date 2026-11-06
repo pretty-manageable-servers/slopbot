@@ -10,7 +10,7 @@ import { SQLiteStore } from '../src/adapters/sqlite.js';
 import type { ShareData } from '@slopbot/contracts';
 import { parseMessage, type Message } from '../src/domain.js';
 import { webTranscriptKey } from '../src/server-tools.js';
-import { ShareError, ShareService, buildMessages, canCreateShare, isShareId, isShareWrite, renderSharePage, scrubText, toolLine, type ShareSnapshot } from '../src/shares.js';
+import { ShareError, ShareService, buildMessages, canCreateShare, isShareId, renderSharePage, scrubText, toolLine, type ShareSnapshot } from '../src/shares.js';
 import { createConsole } from '../src/web-console.js';
 import { TeamAdmins } from '../src/team-admins.js';
 
@@ -177,8 +177,6 @@ test('link IDs are 128 random bits in base64url', async () => {
   }
   assert.equal(ids.size, 40);
   assert.equal(isShareId('short'), false);
-  assert.equal(isShareWrite('/api/shares/revoke-all'), true);
-  assert.equal(isShareWrite('/api/shares/abc/revoke'), false);
 });
 
 test('the page is noindex and escapes message text and names', async () => {
