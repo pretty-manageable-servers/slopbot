@@ -1,17 +1,6 @@
-// The frozen copy of the share page (sharePageData in src/shares.ts) as kit messages.
+// The frozen copy of the share page (sharePageData in src/shares.ts, the ShareData contract) as kit messages.
+import type { ShareData } from "@slopbot/contracts";
 import type { Message, Part } from "agentic-ui-kit/core";
-
-export interface ShareData {
-  id: string;
-  messages: {
-    author: string; bot: boolean; at: number | null; text: string;
-    tools: { name: string; status: string; input?: unknown }[];
-    thinking: string;
-    images: { src: string; name: string }[];
-    files: { name: string; size: number }[];
-    other: number;
-  }[];
-}
 
 /** The kind of the custom part that names a message's author. */
 export const AUTHOR = "share-author";

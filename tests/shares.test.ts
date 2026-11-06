@@ -7,9 +7,10 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
+import type { ShareData } from '@slopbot/contracts';
 import { parseMessage, type Message } from '../src/domain.js';
 import { webTranscriptKey } from '../src/server-tools.js';
-import { ShareError, ShareService, buildMessages, canCreateShare, isShareId, isShareWrite, renderSharePage, scrubText, toolLine } from '../src/shares.js';
+import { ShareError, ShareService, buildMessages, canCreateShare, isShareId, isShareWrite, renderSharePage, scrubText, toolLine, type ShareSnapshot } from '../src/shares.js';
 import { createConsole } from '../src/web-console.js';
 import { TeamAdmins } from '../src/team-admins.js';
 
@@ -198,7 +199,7 @@ test('the page is noindex and escapes message text and names', async () => {
 });
 
 /** The page data that the share page embeds for web/shares.js. */
-function shareDataOf(page: string): { messages: { author: string; text: string; tools: string[]; other: number; images: unknown[] }[] } {
+function shareDataOf(page: string): ShareData {
   const match = /<script type="application\/json" id="share-data">([\s\S]*?)<\/script>/.exec(page);
   assert.ok(match, "the page has its data");
   return JSON.parse(match[1]!);
@@ -212,6 +213,18 @@ test('renderSharePage keeps an unsafe tool name and status text as text', () => 
   assert.deepEqual(data.messages[0]!.tools, [{ name: '<script>bad()</script>', status: 'Used tool <script>bad()</script>' }]);
   assert.equal(data.messages[0]!.other, 2);
   assert.equal(data.messages[0]!.text, 'hi\n<i>x</i>');
+});
+
+test('the page data is the ShareData contract: images are served from the share, other attachments are counted', () => {
+  const snapshot: ShareSnapshot = {
+    id: 'abc', created_at: 1, options: { show_avatars: false, show_thinking: false },
+    messages: [{ author: 'A', bot: false, at: 5, text: 'look', attachments: 3, images: [{ imageId: 'img1', name: 'a.png' }], files: [{ name: 'b.pdf', size: 42 }], tools: [] }],
+  };
+  const data: ShareData = shareDataOf(renderSharePage(snapshot, PAGE));
+  assert.deepEqual(data, {
+    id: 'abc',
+    messages: [{ author: 'A', bot: false, at: 5, text: 'look', tools: [], thinking: '', images: [{ src: '/s/abc/images/img1', name: 'a.png' }], files: [{ name: 'b.pdf', size: 42 }], other: 1 }],
+  });
 });
 
 test('a share keeps the input of visual tools, scrubbed, and drops the input of other tools', () => {

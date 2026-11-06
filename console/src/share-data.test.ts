@@ -1,7 +1,8 @@
 import { describe, expect, test } from "vitest";
-import { shareMessages, type ShareData } from "./share-data";
+import type { ShareMessageData } from "@slopbot/contracts";
+import { shareMessages } from "./share-data";
 
-const message = (over: Partial<ShareData["messages"][number]>): ShareData["messages"][number] => ({ author: "A", bot: false, at: 1000, text: "", tools: [], thinking: "", images: [], files: [], other: 0, ...over });
+const message = (over: Partial<ShareMessageData>): ShareMessageData => ({ author: "A", bot: false, at: 1000, text: "", tools: [], thinking: "", images: [], files: [], other: 0, ...over });
 
 describe("shareMessages", () => {
   test("a reply's widget becomes a done tool part with its input, before the reply text", () => {

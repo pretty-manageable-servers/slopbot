@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import type { ShareData } from "@slopbot/contracts";
 import type { Json, Message } from "./domain.js";
 import { webTranscriptsEnabled } from "./server-tools.js";
 import { PRIVATE_CHANNEL_PREFIX, isPrivateChannel, privateChannel } from "./private-chat.js";
@@ -344,7 +345,7 @@ function jsonForScript(value: unknown): string {
 export const SHARE_DATA_SLOT = "<!--share-data-->";
 
 /** The data of the public share page. The page reads it from #share-data and draws it with the kit. */
-export function sharePageData(snapshot: ShareSnapshot) {
+export function sharePageData(snapshot: ShareSnapshot): ShareData {
   return {
     id: snapshot.id,
     messages: snapshot.messages.map(message => ({

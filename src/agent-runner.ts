@@ -347,7 +347,7 @@ export class AgentRunner {
         const call: ToolCall = { ...turn.calls[index]!, arguments: resolveRefs(turn.calls[index]!.arguments, refs) as Record<string, Json> };
         if (result === undefined) {
           if (!tools || !this.accepts(message)) throw new Error("Tools unavailable in this scope");
-          await report({ id, name: call.name, arguments: call.arguments, status: "running", startedAt: startedAt = Date.now() });
+          await report({ id, callId: callIds[index]!, name: call.name, arguments: call.arguments, status: "running", startedAt: startedAt = Date.now() });
           const toolStarted = performance.now();
           const unknownRef = unknownMessageRef(turn.calls[index]!.arguments, refs);
           try { result = unknownRef !== undefined ? unknownRefResult(unknownRef) : await requestTimings.measure(message, `tool:${call.name}`, () => tools.execute(message, call, `${turn.id}:${index}`, sourceVersion, { signal, onActivity: report })); }
@@ -365,7 +365,7 @@ export class AgentRunner {
         const output = toolResult(result);
         batchFailed ||= toolFailed(output);
         if (output.ui) ui = output.ui;
-        await report({ id, name: call.name, arguments: call.arguments, status: toolFailed(output) ? output.status as "rejected" | "failed" : output.handoff ? "delegated" : "completed", ...(toolFailed(output) ? { reason: output.reason ?? output.text } : {}), reused, ...(durationMs !== undefined ? { durationMs } : {}), ...(startedAt !== undefined ? { startedAt } : {}) });
+        await report({ id, callId: callIds[index]!, name: call.name, arguments: call.arguments, status: toolFailed(output) ? output.status as "rejected" | "failed" : output.handoff ? "delegated" : "completed", ...(toolFailed(output) ? { reason: output.reason ?? output.text } : {}), reused, ...(durationMs !== undefined ? { durationMs } : {}), ...(startedAt !== undefined ? { startedAt } : {}) });
         if (signal.aborted) throw new HarnessInterrupted("Tool execution ended after interruption; its actual result is retained");
         if (machine.state.kind === "ToolPhase" && machine.state.calls.find(call => call.id === id)?.state === "Running") {
           // A failed execution is still a result the model must receive.

@@ -223,7 +223,7 @@ test('no_text_protocol', async t => {
 test('voice tools are offered only in voice runs', t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const registry = new ToolRegistry(store, async () => true);
-  registry.register(plainTool('voice_say', { surface: 'top', scope: 'discord' }));
+  registry.register(plainTool('voice_say', { surface: 'top', needs: ['discord_actions'] }));
   assert.deepEqual(registry.schemas(voiceMessage).map(item => item.function.name), ['voice_say']);
   assert.deepEqual(registry.schemas(message).map(item => item.function.name), []);
   assert.deepEqual(registry.schemas().map(item => item.function.name), []);
@@ -291,8 +291,8 @@ test('streamed tool arguments come as tool_input deltas once the name is known, 
   const events = [];
   for await (const event of llm.stream({prefixVersion:'v1',prefix:[],history:[],inputs:[],tools:[{name:'show_ui',description:'d',parameters:{type:'object'}}]} as unknown as Prompt)) events.push(event);
   assert.deepEqual(events.filter(event => event.kind === 'tool_input').map(event => event.payload), [
-    {index:0,name:'show_ui',text:'{"markup":"<Stack>'},
-    {index:0,name:'show_ui',text:'</Stack>"}'},
+    {index:0,name:'show_ui',text:'{"markup":"<Stack>',id:'call_ui'},
+    {index:0,name:'show_ui',text:'</Stack>"}',id:'call_ui'},
   ]);
   assert.deepEqual(events.at(-1), {kind:'tool_call',payload:[{name:'show_ui',arguments:{markup:'<Stack></Stack>'},id:'call_ui'}]});
 });
@@ -300,7 +300,7 @@ test('streamed tool arguments come as tool_input deltas once the name is known, 
 test('web-scoped tools are offered and run only in private web chats', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const registry = new ToolRegistry(store, async () => true);
-  registry.register(plainTool('show_ui', { surface: 'top', scope: 'web' }));
+  registry.register(plainTool('show_ui', { surface: 'top', needs: ['web_visuals'] }));
   const web = { ...message, channel: 'web:chat-1', taskId: 'web:chat-1' };
   assert.deepEqual(registry.schemas(web).map(item => item.function.name), ['show_ui']);
   assert.deepEqual(registry.schemas(message).map(item => item.function.name), []);

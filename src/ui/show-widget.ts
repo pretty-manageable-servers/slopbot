@@ -1,4 +1,4 @@
-import { checkWidgetCode, visualizeGuide, visualizeTool } from "agentic-ui-kit/core";
+import { checkWidgetCode, visualizeGuide, visualizeTool } from "agentic-ui-kit/visuals/core";
 import type { ToolRegistry } from "../tools.js";
 
 const props = visualizeTool.inputSchema.properties;
@@ -14,7 +14,7 @@ export function registerShowWidgetTool(registry: ToolRegistry): void {
   registry.register({
     name: visualizeTool.name,
     surface: "top",
-    scope: "web",
+    needs: ["web_visuals"],
     description: `${visualizeTool.description}\n\n${visualizeGuide}`,
     fields: {
       widget_code: { type: "string", description: props.widget_code.description, required: true, max: 60000 },

@@ -5,7 +5,8 @@ import { requestTimings } from "./request-timing.js";
 import { createHash } from "node:crypto";
 import { MAX_TOOL_CALLS_PER_BATCH } from "./generation-policy.js";
 import type { Json, Message, ModelTool } from "./domain.js";
-import { isPrivateChannel } from "./private-chat.js";
+import { SURFACE_CAPABILITIES, type Capability } from "@slopbot/contracts";
+import { surfaceOf } from "./engine/api.js";
 
 export interface ToolResult {
   text: string;
@@ -84,8 +85,8 @@ export interface ToolDefinition {
   setting?: boolean;
   /** External/custom tool default. Native routing is defined centrally in thread-policy.ts. */
   execution?: "inline" | "thread";
-  /** "discord": the tool acts on Discord itself (posts or edits Discord messages, threads, reactions, or changes Discord server or channel settings), so it is not offered in private web chats. "web": only the web chat can show it, so only private web chats are offered it. */
-  scope?: "discord" | "web";
+  /** Capabilities the message's surface must have (SURFACE_CAPABILITIES). "discord_actions": the tool acts on Discord itself (posts or edits Discord messages, threads, reactions, or changes Discord server or channel settings), so it is not offered in private chats. "web_visuals": only the web chat can show it, so only the web chat is offered it. */
+  needs?: readonly Capability[];
   /** Only a person's command or button runs this tool. The model is not offered it, and an agent call is refused with this text. */
   commandOnly?: string;
   publicResult?(args: ToolArgs): boolean;
@@ -111,7 +112,7 @@ export interface BlockingOperation { id: string; startedAt: number }
 export const UNCERTAIN_LOCK_MS = 10 * 60 * 1000;
 /** The message for a write that waits on an earlier unfinished write on the same resource. Names the operation, resource and age. */
 function blockedError(message: Message, name: string, blocking: BlockingOperation, resource: string, staleAfterMs: number): ToolError {
-  const error = new ToolError(`An earlier ${name} action in this ${isPrivateChannel(message.channel) ? "chat" : "task"} did not finish. Operation ${blocking.id} on ${resource} started ${ageText(blocking.startedAt)} ago. The lock on this resource clears at ${utcTime(blocking.startedAt + staleAfterMs)}. Check before you retry.`);
+  const error = new ToolError(`An earlier ${name} action in this ${surfaceOf(message) === "discord" ? "task" : "chat"} did not finish. Operation ${blocking.id} on ${resource} started ${ageText(blocking.startedAt)} ago. The lock on this resource clears at ${utcTime(blocking.startedAt + staleAfterMs)}. Check before you retry.`);
   return errorContext(error, { tool: name, operationId: blocking.id }) as ToolError;
 }
 /** The notice for a write whose outcome is unknown after its request was sent. */
@@ -155,9 +156,27 @@ export class ConfirmationRequired extends ToolError {
   }
 }
 
-/** Returned when a private chat calls a Discord-scoped tool. */
+/** Returned when a surface without discord_actions calls a tool that needs it. */
 export const discordOnlyMessage = "This action is only available in Discord.";
+/** Returned when a surface without web_visuals calls a tool that needs it. */
 export const webOnlyMessage = "This action is only available in the Slopbot web chat.";
+
+/** Whether the message's surface has the capability. */
+export function surfaceHas(message: Message, capability: Capability): boolean {
+  return SURFACE_CAPABILITIES[surfaceOf(message)].includes(capability);
+}
+
+const refusalByCapability: Record<Capability, string> = {
+  discord_actions: discordOnlyMessage,
+  web_visuals: webOnlyMessage,
+  live_tool_input: "This action is not available in this chat.",
+};
+
+/** The text returned when the message's surface lacks a capability the tool needs, or undefined when it has them all. */
+export function surfaceRefusal(message: Message, tool: Pick<ToolDefinition, "needs">): string | undefined {
+  const missing = tool.needs?.find(capability => !surfaceHas(message, capability));
+  return missing === undefined ? undefined : refusalByCapability[missing];
+}
 
 /** The kind of a value for an error message. */
 const kindOf = (value: unknown): string => value === null ? "null" : Array.isArray(value) ? "an array" : typeof value === "object" ? "an object" : `a ${typeof value}`;
@@ -238,18 +257,19 @@ export class ToolRegistry {
   }
   async recordedOperation(operationId: string): Promise<ToolOperation | undefined> { return this.journal.operation(operationId); }
   suggest(message: Message): ToolCall | undefined {
-    // Only a tool offered for this message may be forced, so a private chat never gets a Discord-scoped call.
+    // Only a tool offered for this message may be forced, so a surface never gets a tool it cannot run.
     const matches = this.definitions().filter(tool => offeredIn(tool, message)).flatMap(tool => {
       const args = tool.matchRead?.(message);
       return args && this.effect(tool.name, args) === "read" ? [{ name: tool.name, arguments: this.validate(tool.name, args) }] : [];
     });
     return matches.length === 1 ? matches[0] : undefined;
   }
-  /** The tools the model is offered for this message. A private chat gets every tool except Discord-scoped ones. */
+  /** The tools the model is offered for this message: every tool whose needs the message's surface has. */
   catalog(message?: Message): string { return catalogOf(this.definitions(), message); }
   schemas(message?: Message): readonly ModelTool[] { return schemasOf(this.definitions(), message); }
   effect(name: string, args: ToolArgs): "read" | "write" { const tool = this.tools.get(name); return tool?.writes ? tool.writes(args) ? "write" : "read" : tool?.effect ?? "read"; }
-  scopeOf(name: string): "discord" | "web" | undefined { return this.tools.get(name)?.scope; }
+  /** The text for a tool this message's surface cannot run, or undefined when it can run it. */
+  refusal(message: Message, name: string): string | undefined { const tool = this.tools.get(name); return tool && surfaceRefusal(message, tool); }
   requiresThread(name: string, args: ToolArgs): boolean {
     const tool = this.tools.get(name);
     return toolNeedsThread(name, args, this.effect(name, args), tool?.provider, tool?.execution);
@@ -305,9 +325,9 @@ export class ToolRegistry {
   async invokeResult(message: Message, name: string, input: unknown, operationId: string, source: "command" | "agent", expectedVersion?: number, invocation?: ToolInvocation): Promise<ToolResult> {
     const { args, notes } = this.check(name, input), tool = this.tools.get(name)!;
     if (tool.commandOnly && source === "agent") throw new ToolError(tool.commandOnly);
-    // A private chat cannot act on Discord. Every other tool follows the same rules as in Discord.
-    if (isPrivateChannel(message.channel) && tool.scope === "discord") throw new ToolError(discordOnlyMessage);
-    if (!isPrivateChannel(message.channel) && tool.scope === "web") throw new ToolError(webOnlyMessage);
+    // A surface runs a tool only if it has the capabilities the tool needs. A DM has none, so it runs no Discord or web tool.
+    const refusal = surfaceRefusal(message, tool);
+    if (refusal) throw new ToolError(refusal);
     if (this.effect(name, args) === "read") return this.perform(message, name, args, operationId, source, expectedVersion, invocation, notes);
     const key = tool.resource?.(message, args) ?? `server:${message.server}:tool:${name}`;
     const previous = this.writers.get(key) ?? Promise.resolve();
@@ -395,11 +415,11 @@ function sortedDefinitions(tools: ReadonlyMap<string, ToolDefinition>): readonly
   return [...tools.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** A private chat is offered every tool except Discord-scoped ones. Other channels are offered every tool except web-scoped ones. */
+/** A tool is offered when the message's surface has every capability the tool needs. */
 function offeredIn(tool: ToolDefinition, message?: Message): boolean {
   if (tool.commandOnly) return false;
   if (!message) return true;
-  return isPrivateChannel(message.channel) ? tool.scope !== "discord" : tool.scope !== "web";
+  return !surfaceRefusal(message, tool);
 }
 
 function catalogOf(definitions: readonly ToolDefinition[], message?: Message): string {

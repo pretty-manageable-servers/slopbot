@@ -1,5 +1,6 @@
 // One private chat on screen: the saved messages, then the bot's live stream folded into kit messages.
-import { AttachButton, AttachmentRow, Button, ChatHeader, ChatTitleMenu, ChatView, DictationButton, EmptyState, Menu, MenuItem, ModelPicker, SidebarToggle, ToolViewsProvider, UiComponentsProvider, defaultToolViews, uiMarkupToolView, useAttachments, widgetToolView } from "agentic-ui-kit";
+import { AttachButton, AttachmentRow, Button, ChatHeader, ChatTitleMenu, ChatView, DictationButton, EmptyState, Menu, MenuItem, ModelPicker, SidebarToggle, ToolViewsProvider, defaultToolViews, useAttachments } from "agentic-ui-kit";
+import { VisualsProvider, uiMarkupToolView, widgetToolView } from "agentic-ui-kit/visuals";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { useServer } from "./data";
@@ -15,7 +16,7 @@ import { uiComponents } from "./ui-components";
 
 const KINDS = ["message", "run.start", "run.delta", "run.tool", "run.end"] as const;
 /** show_widget frames load the bot's frame page (WIDGET_FRAME_PATH in src/web-console.ts), outside the page CSP. */
-const WIDGETS = { frameUrl: "/console/widget-frame.html" };
+const WIDGET_HOST = { frameUrl: "/console/widget-frame.html" };
 const toolViews = { ...defaultToolViews, show_ui: uiMarkupToolView(), show_widget: widgetToolView() };
 const ASK_WARNING = "Only send what you wrote yourself. A prompt from someone else can make Slopbot use tools or read data you did not mean to share.";
 
@@ -186,10 +187,9 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
   if (error) return <div className="page-note"><p>{error}</p></div>;
   if (!state) return <div className="page-note" aria-busy="true"><Loader size={56} /></div>;
   return (
-    <UiComponentsProvider components={uiComponents}>
+    <VisualsProvider components={uiComponents} host={WIDGET_HOST}>
     <ToolViewsProvider tools={toolViews}>
     <ChatView
-      widgets={WIDGETS}
       messages={messages}
       busy={busy}
       onSend={send}
@@ -262,6 +262,6 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
     />
     <ShareDialog chatId={sharing} triggerRef={shareButton} onClose={() => setSharing(null)} />
     </ToolViewsProvider>
-    </UiComponentsProvider>
+    </VisualsProvider>
   );
 }

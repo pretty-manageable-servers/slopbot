@@ -15,7 +15,7 @@ function registry(store: SQLiteStore) {
   const reader: ToolDefinition = { name: "reader", surface: "top", description: "reads", fields: {}, access: "member", effect: "read", retrySafe: true, async execute() { return "read ok"; } };
   // Like the shell tool: a write that does not act on Discord.
   const writer: ToolDefinition = { name: "writer", surface: "top", description: "writes", fields: {}, access: "member", effect: "write", retrySafe: false, async execute() { return "wrote"; } };
-  const poster: ToolDefinition = { name: "poster", surface: "top", description: "posts to Discord", fields: {}, access: "member", effect: "write", retrySafe: false, scope: "discord", async execute() { return "posted"; } };
+  const poster: ToolDefinition = { name: "poster", surface: "top", description: "posts to Discord", fields: {}, access: "member", effect: "write", retrySafe: false, needs: ["discord_actions"], async execute() { return "posted"; } };
   tools.register(reader);
   tools.register(writer);
   tools.register(poster);
@@ -51,7 +51,7 @@ test("a private chat runs a write tool, but a Discord-scoped call throws", async
 test("a private chat is never forced into a Discord-scoped call", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const tools = registry(store);
-  const lookup: ToolDefinition = { name: "lookup", description: "reads Discord state", fields: {}, access: "member", effect: "read", retrySafe: true, scope: "discord", matchRead: () => ({}), async execute() { return "looked"; } };
+  const lookup: ToolDefinition = { name: "lookup", description: "reads Discord state", fields: {}, access: "member", effect: "read", retrySafe: true, needs: ["discord_actions"], matchRead: () => ({}), async execute() { return "looked"; } };
   tools.register(lookup);
   assert.equal(tools.suggest({ ...privateMessage, text: "look it up" }), undefined);
   assert.deepEqual(tools.suggest({ ...discordMessage, text: "look it up" }), { name: "lookup", arguments: {} });
