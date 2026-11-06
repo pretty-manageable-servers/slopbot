@@ -6,9 +6,6 @@ export type Transport = McpConnection["transport"];
 export type Access = NonNullable<McpTool["access"]>;
 export type Effect = NonNullable<McpTool["effect"]>;
 
-/** A tool as the snapshot sends it. api-types.ts McpTool lacks needsReview, which src/mcp.ts adds to each tool. */
-export type ReviewTool = McpTool & { needsReview?: boolean };
-
 export interface ToolChoice { enabled: boolean; access: Access; effect: Effect }
 
 export interface ConnectionDraft {
