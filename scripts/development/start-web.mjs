@@ -37,6 +37,8 @@ function main() {
     process.exit(1);
   }
   if (spawnSync('pnpm', ['run', 'build'], { stdio: 'inherit' }).status !== 0) process.exit(1);
+  // The server serves the console and share pages from console/dist.
+  if (spawnSync('pnpm', ['-F', 'slopbot-console', 'build'], { stdio: 'inherit' }).status !== 0) process.exit(1);
 
   const options = { stdio: 'inherit', env: { ...process.env, ...env, NODE_ENV: 'development' } };
   const compiler = spawn(process.execPath, ['node_modules/typescript/bin/tsc', '-p', 'tsconfig.json', '--watch', '--preserveWatchOutput'], options);
