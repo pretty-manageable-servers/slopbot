@@ -86,6 +86,7 @@ import { pageItems, type ServerListRow, type ServerPage } from "../admin-panel.j
 import { ChannelAccess } from "../channel-access.js";
 import { TeamAdmins, discordTeamSource } from "../team-admins.js";
 import { publishMessage, publishMessageDelete, publishTool, runEvents } from "../run-events.js";
+import { engineEvents } from "../engine/event-log.js";
 import { ShareService, type ShareRule } from "../shares.js";
 import { discordChannelAccessSource, wireChannelAccessEvents } from "./discord-channel-access.js";
 import { displayToolResult, ToolError, ToolRegistry, UncertainActionError, stableOperationId } from "../tools.js";
@@ -1072,6 +1073,7 @@ export class DiscordAdapter {
       mode: () => this.degraded?.mode() ?? "normal",
     });
     runEvents.attach(store);
+    engineEvents.attach(store);
     this.shareRule = { manager: (user, server) => this.hasManageServer(user, server), teamAdmin: user => this.team.canEdit(user) };
     this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;
     this.shares = new ShareService({ store, access: this.access, rule: this.shareRule, member: (user, server) => this.isServerMember(user, server), images: this.objectStorageProvider ?? new LocalDiskStorage() });

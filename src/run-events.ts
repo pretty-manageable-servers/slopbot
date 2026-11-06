@@ -7,6 +7,7 @@ import { imageAttachments, remoteImageAttachments } from "./web-chat-images.js";
 import { fileAttachments, parseFileUrl, type ChatFileView } from "./web-chat-files.js";
 import { LEGACY_FILE_NOTE } from "./source-context.js";
 import type { UiDocument } from "./ui/schema.js";
+import { engineEvents } from "./engine/event-log.js";
 
 /** Kinds of events a web transcript stream sends. */
 export type ConversationKind = "message" | "run.start" | "run.delta" | "run.tool" | "run.end";
@@ -275,32 +276,44 @@ export async function publishMessage(store: Pick<ConversationEventStore, "settin
     ? (await directory.profiles(message.server, [message.author])).get(message.author) : undefined;
   const view = transcriptMessage(message, slopbot, ids, profile, false, card);
   runEvents.publish(message.server, message.channel, "message", message.id, { action: "upsert", message: view as unknown as Json });
+  engineEvents.publish({ server: message.server, channel: message.channel }, { type: "message.upsert", message: view });
 }
 
 export function publishMessageDelete(server: string, channel: string, id: string): void {
   runEvents.publish(server, channel, "message", id, { action: "delete", id });
+  engineEvents.publish({ server, channel }, { type: "message.delete", id });
 }
 
 /** Called by EventJournal when a model run starts. Only reply runs are shown live. */
 export function publishRunStart(message: Message, runId: string): void {
   runEvents.publish(message.server, message.channel, "run.start", runId, { requestId: message.id });
+  engineEvents.publish({ server: message.server, channel: message.channel }, { type: "round.start", turn: message.id, run: runId });
 }
 
 /** Called by EventJournal for each model event. Only text and thinking are shown live. */
 export function publishModelEvent(message: Message, runId: string, event: ModelEvent): void {
+  const conversation = { server: message.server, channel: message.channel };
   if (event.kind === "text") {
-    if (event.payload.text) runEvents.publish(message.server, message.channel, "run.delta", runId, { part: "text", text: event.payload.text });
+    if (event.payload.text) {
+      runEvents.publish(message.server, message.channel, "run.delta", runId, { part: "text", text: event.payload.text });
+      engineEvents.publish(conversation, { type: "text.delta", turn: message.id, run: runId, text: event.payload.text });
+    }
     return;
   }
   if (event.kind === "reasoning") {
     const text = reasoningText(event.payload);
-    if (text) runEvents.publish(message.server, message.channel, "run.delta", runId, { part: "thinking", text });
+    if (text) {
+      runEvents.publish(message.server, message.channel, "run.delta", runId, { part: "thinking", text });
+      engineEvents.publish(conversation, { type: "thinking.delta", turn: message.id, run: runId, text });
+    }
     return;
   }
-  // Only tools whose input the web view draws while it streams. Other tool input is not sent.
-  if (event.kind === "tool_input" && LIVE_INPUT_TOOLS.has(event.payload.name)) {
-    const { index, name, text } = event.payload;
-    runEvents.publish(message.server, message.channel, "run.delta", runId, { part: "tool", index, name, text });
+  if (event.kind === "tool_input") {
+    const { index, name, text, id } = event.payload;
+    // Input without a provider call ID cannot be keyed to its call, so it is not sent.
+    if (id) engineEvents.publish(conversation, { type: "tool.input", turn: message.id, run: runId, call: id, name, text });
+    // Only tools whose input the web view draws while it streams. Other tool input is not sent.
+    if (LIVE_INPUT_TOOLS.has(name)) runEvents.publish(message.server, message.channel, "run.delta", runId, { part: "tool", index, name, text });
   }
 }
 
@@ -321,6 +334,10 @@ export function publishTool(message: Message, activity: ToolActivity): void {
     status: activity.status,
     args: shortArgs(activity.arguments),
     ...(activity.reason ? { reason: activity.reason.slice(0, 300) } : {}),
+  });
+  engineEvents.publish({ server: message.server, channel: message.channel }, {
+    type: "tool.status", turn: message.id, call: activity.callId ?? activity.id, name: activity.name, status: activity.status,
+    input: activity.arguments, ...(activity.reason ? { reason: activity.reason.slice(0, 2000) } : {}),
   });
 }
 

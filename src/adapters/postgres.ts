@@ -22,6 +22,8 @@ import type { HistoryQuery, HistoryPage } from '../search/history-search.js';
 import { FUZZY_SCAN, FUZZY_TERMS, fuzzyWords, likePattern, rankFuzzy, type FuzzyHit, type FuzzyQuery } from '../search/fuzzy.js';
 import type { AppRecord } from '../records.js';
 import type { ConversationEvent } from '../run-events.js';
+import type { EngineEventRow } from '../engine/event-log.js';
+import type { EngineEnvelope, EngineEvent } from '@slopbot/contracts';
 import type { ChannelReply, ChannelRun, RunSource } from '../conversation-groups.js';
 /** Rows deleted by one retention statement, so a large prune never holds locks for long. */
 const CONVERSATION_PRUNE_BATCH = 10000;
@@ -648,17 +650,34 @@ export class PostgresStore {
         const row = (await this.db.prepare("SELECT MIN(stream_id) AS id FROM conversation_events WHERE server=? AND channel=?").get(server, channel))!;
         return row.id === null ? undefined : Number(row.id);
     }
-    /** Deletes rows older than olderThan, then the oldest rows beyond maxRows. Each statement deletes at most CONVERSATION_PRUNE_BATCH rows. */
+    async appendEngineEvent(row: EngineEventRow): Promise<number> {
+        const saved = await this.db.prepare("INSERT INTO engine_events(server,channel,turn,type,data,created_at) VALUES(?,?,?,?,?,?) RETURNING seq")
+            .get(row.server, row.channel, row.turn, row.type, JSON.stringify(row.data), row.createdAt);
+        return Number(saved!.seq);
+    }
+    async engineEventsAfter(server: string, channel: string, after: number, limit: number): Promise<EngineEnvelope[]> {
+        return (await this.db.prepare("SELECT seq,created_at,data FROM engine_events WHERE server=? AND channel=? AND seq>? ORDER BY seq LIMIT ?")
+            .all(server, channel, after, limit)).map(row => ({ seq: Number(row.seq), at: Number(row.created_at), conversation: { server, channel }, event: JSON.parse(String(row.data)) as EngineEvent }));
+    }
+    async engineTurnEvents(server: string, channel: string, turn: string): Promise<EngineEvent[]> {
+        return (await this.db.prepare("SELECT data FROM engine_events WHERE server=? AND channel=? AND turn=? ORDER BY seq")
+            .all(server, channel, turn)).map(row => JSON.parse(String(row.data)) as EngineEvent);
+    }
+    /** Deletes rows older than olderThan, then the oldest rows beyond maxRows, in conversation_events and engine_events. */
     async pruneConversationEvents(olderThan: number, maxRows: number): Promise<number> {
+        return await this.pruneEventRows("conversation_events", "stream_id", olderThan, maxRows) + await this.pruneEventRows("engine_events", "seq", olderThan, maxRows);
+    }
+    /** Each statement deletes at most CONVERSATION_PRUNE_BATCH rows. */
+    private async pruneEventRows(table: "conversation_events" | "engine_events", key: "stream_id" | "seq", olderThan: number, maxRows: number): Promise<number> {
         let deleted = 0;
         for (;;) {
-            const changes = (await this.db.prepare("DELETE FROM conversation_events WHERE stream_id IN (SELECT stream_id FROM conversation_events WHERE created_at<? LIMIT ?)").run(olderThan, CONVERSATION_PRUNE_BATCH)).changes;
+            const changes = (await this.db.prepare(`DELETE FROM ${table} WHERE ${key} IN (SELECT ${key} FROM ${table} WHERE created_at<? LIMIT ?)`).run(olderThan, CONVERSATION_PRUNE_BATCH)).changes;
             deleted += changes;
             if (changes < CONVERSATION_PRUNE_BATCH) break;
         }
-        let excess = Number((await this.db.prepare("SELECT COUNT(*) AS n FROM conversation_events").get())!.n) - maxRows;
+        let excess = Number((await this.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get())!.n) - maxRows;
         while (excess > 0) {
-            const changes = (await this.db.prepare("DELETE FROM conversation_events WHERE stream_id IN (SELECT stream_id FROM conversation_events ORDER BY stream_id LIMIT ?)").run(Math.min(excess, CONVERSATION_PRUNE_BATCH))).changes;
+            const changes = (await this.db.prepare(`DELETE FROM ${table} WHERE ${key} IN (SELECT ${key} FROM ${table} ORDER BY ${key} LIMIT ?)`).run(Math.min(excess, CONVERSATION_PRUNE_BATCH))).changes;
             if (!changes) break;
             deleted += changes;
             excess -= changes;

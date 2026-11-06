@@ -22,6 +22,8 @@ import type { HistoryQuery, HistoryPage } from '../search/history-search.js';
 import { FUZZY_SCAN, FUZZY_TERMS, fuzzyWords, likePattern, rankFuzzy, type FuzzyHit, type FuzzyQuery } from '../search/fuzzy.js';
 import type { AppRecord } from '../records.js';
 import type { ConversationEvent } from '../run-events.js';
+import type { EngineEventRow } from '../engine/event-log.js';
+import type { EngineEnvelope, EngineEvent } from '@slopbot/contracts';
 import type { ChannelReply, ChannelRun, RunSource } from '../conversation-groups.js';
 /** Rows deleted by one retention statement, so a large prune never holds the database for long. */
 const CONVERSATION_PRUNE_BATCH = 10000;
@@ -377,6 +379,13 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       );
       CREATE INDEX IF NOT EXISTS conversation_events_channel ON conversation_events(server,channel,stream_id);
       CREATE INDEX IF NOT EXISTS conversation_events_created ON conversation_events(created_at);
+      CREATE TABLE IF NOT EXISTS engine_events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, server TEXT NOT NULL, channel TEXT NOT NULL, turn TEXT,
+        type TEXT NOT NULL, data TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS engine_events_channel ON engine_events(server,channel,seq);
+      CREATE INDEX IF NOT EXISTS engine_events_turn ON engine_events(server,channel,turn,seq);
+      CREATE INDEX IF NOT EXISTS engine_events_created ON engine_events(created_at);
       CREATE INDEX IF NOT EXISTS runs_channel ON runs(json_extract(message,'$.server'),json_extract(message,'$.channel'));
       CREATE TABLE IF NOT EXISTS web_webhooks (server TEXT NOT NULL, channel TEXT NOT NULL, webhook_id TEXT NOT NULL, token_encrypted TEXT NOT NULL, PRIMARY KEY(server,channel));
       CREATE INDEX IF NOT EXISTS web_webhooks_hook ON web_webhooks(server,webhook_id);
@@ -801,17 +810,34 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     const row = this.db.prepare("SELECT MIN(stream_id) AS id FROM conversation_events WHERE server=? AND channel=?").get(server, channel)!;
     return row.id === null ? undefined : Number(row.id);
   }
-  /** Deletes rows older than olderThan, then the oldest rows beyond maxRows. Each statement deletes at most CONVERSATION_PRUNE_BATCH rows. */
+  async appendEngineEvent(row: EngineEventRow): Promise<number> {
+    const saved = this.db.prepare("INSERT INTO engine_events(server,channel,turn,type,data,created_at) VALUES(?,?,?,?,?,?) RETURNING seq")
+      .get(row.server, row.channel, row.turn, row.type, JSON.stringify(row.data), row.createdAt)!;
+    return Number(saved.seq);
+  }
+  async engineEventsAfter(server: string, channel: string, after: number, limit: number): Promise<EngineEnvelope[]> {
+    return this.db.prepare("SELECT seq,created_at,data FROM engine_events WHERE server=? AND channel=? AND seq>? ORDER BY seq LIMIT ?")
+      .all(server, channel, after, limit).map(row => ({ seq: Number(row.seq), at: Number(row.created_at), conversation: { server, channel }, event: JSON.parse(String(row.data)) as EngineEvent }));
+  }
+  async engineTurnEvents(server: string, channel: string, turn: string): Promise<EngineEvent[]> {
+    return this.db.prepare("SELECT data FROM engine_events WHERE server=? AND channel=? AND turn=? ORDER BY seq")
+      .all(server, channel, turn).map(row => JSON.parse(String(row.data)) as EngineEvent);
+  }
+  /** Deletes rows older than olderThan, then the oldest rows beyond maxRows, in conversation_events and engine_events. */
   async pruneConversationEvents(olderThan: number, maxRows: number): Promise<number> {
+    return this.pruneEventRows("conversation_events", "stream_id", olderThan, maxRows) + this.pruneEventRows("engine_events", "seq", olderThan, maxRows);
+  }
+  /** Each statement deletes at most CONVERSATION_PRUNE_BATCH rows. */
+  private pruneEventRows(table: "conversation_events" | "engine_events", key: "stream_id" | "seq", olderThan: number, maxRows: number): number {
     let deleted = 0;
     for (;;) {
-      const changes = Number(this.db.prepare("DELETE FROM conversation_events WHERE stream_id IN (SELECT stream_id FROM conversation_events WHERE created_at<? LIMIT ?)").run(olderThan, CONVERSATION_PRUNE_BATCH).changes);
+      const changes = Number(this.db.prepare(`DELETE FROM ${table} WHERE ${key} IN (SELECT ${key} FROM ${table} WHERE created_at<? LIMIT ?)`).run(olderThan, CONVERSATION_PRUNE_BATCH).changes);
       deleted += changes;
       if (changes < CONVERSATION_PRUNE_BATCH) break;
     }
-    let excess = Number(this.db.prepare("SELECT COUNT(*) AS n FROM conversation_events").get()!.n) - maxRows;
+    let excess = Number(this.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()!.n) - maxRows;
     while (excess > 0) {
-      const changes = Number(this.db.prepare("DELETE FROM conversation_events WHERE stream_id IN (SELECT stream_id FROM conversation_events ORDER BY stream_id LIMIT ?)").run(Math.min(excess, CONVERSATION_PRUNE_BATCH)).changes);
+      const changes = Number(this.db.prepare(`DELETE FROM ${table} WHERE ${key} IN (SELECT ${key} FROM ${table} ORDER BY ${key} LIMIT ?)`).run(Math.min(excess, CONVERSATION_PRUNE_BATCH)).changes);
       if (!changes) break;
       deleted += changes;
       excess -= changes;
