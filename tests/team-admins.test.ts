@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Collection, Team, TeamMemberMembershipState, type Client } from "discord.js";
-import { discordTeamSource, TeamAdmins, canEditRole, type TeamSnapshot } from "../src/team-admins.js";
+import { discordTeamSource } from "../src/clients/discord/discord-team-source.js";
+import { TeamAdmins, canEditRole, type TeamSnapshot } from "../src/team-admins.js";
 
 const OWNER = "100000000000000001", ADMIN = "100000000000000002", DEVELOPER = "100000000000000003", READER = "100000000000000004", OUTSIDER = "100000000000000005", INVITED = "100000000000000006";
 const FIVE_MINUTES = 5 * 60 * 1000;

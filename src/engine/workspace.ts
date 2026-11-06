@@ -24,7 +24,7 @@ import { UiRuntime, registerUiTool, registerPollTool } from '../ui/runtime.js';
 import { registerShowUiTool } from '../ui/show-ui.js';
 import { registerShowWidgetTool } from '../ui/show-widget.js';
 import type { UiDocument } from '../ui/schema.js';
-import { CONFIRM_RECORD, saveConfirmation } from '../adapters/discord-code.js';
+import { CONFIRM_RECORD, saveConfirmation } from '../confirmations.js';
 import { discordPresentation } from '../presentation/discord.js';
 import { registerHistoryTools } from '../search/history-search.js';
 import { registerViewImage } from '../view-image.js';

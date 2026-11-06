@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { GatewayIntentBits, type Client } from "discord.js";
-import { MemberDirectory, UNKNOWN_USER, discordMemberSource } from "../src/member-directory.js";
+import { MemberDirectory, UNKNOWN_USER } from "../src/member-directory.js";
+import { discordMemberSource } from "../src/clients/discord/discord-member-source.js";
 import { DEFAULT_AVATAR, fakeSource } from "./member-fakes.js";
 
 const SERVER = "1528063444874432734";

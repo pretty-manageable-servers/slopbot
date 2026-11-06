@@ -1,5 +1,3 @@
-import { Team, TeamMemberMembershipState, type Client } from "discord.js";
-
 export type TeamRole = "owner" | "admin" | "developer" | "read_only";
 /** The bot owner's team, reduced to the fields the check reads. Only user IDs are kept. */
 export interface TeamSnapshot { ownerId?: string | undefined; members: readonly { id: string; role: string; accepted: boolean }[] }
@@ -10,19 +8,6 @@ const MEMBER_ROLES = new Set(["admin", "developer", "read_only"]);
 
 export function canEditRole(role: TeamRole | undefined): boolean {
   return role === "owner" || role === "admin" || role === "developer";
-}
-
-/** Reads the bot's application through discord.js. A User owner (no team) is the one owner. */
-export function discordTeamSource(client: Client): TeamSource {
-  return {
-    async load() {
-      const application = await client.application?.fetch();
-      if (!application) throw new Error("Slopbot is not ready yet.");
-      const owner = application.owner;
-      if (owner instanceof Team) return { ownerId: owner.ownerId ?? undefined, members: [...owner.members.values()].map(member => ({ id: member.id, role: member.role, accepted: member.membershipState === TeamMemberMembershipState.Accepted })) };
-      return { ownerId: owner?.id, members: [] };
-    },
-  };
 }
 
 /** Team roles by user ID. Reloads at most every 5 minutes. A failed reload throws, so no role is granted. */
