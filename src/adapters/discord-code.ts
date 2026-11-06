@@ -7,9 +7,11 @@ import { displayToolResult, ToolError, toolFailed } from "../tools.js";
 import type { ToolActivity } from "../tool-activity.js";
 import { toolTraceRows } from "../clients/discord/discord-tool-trace.js";
 import { codeBlock } from "../code-display.js";
+import { CONFIRM_RECORD, saveConfirmation } from "../confirmations.js";
+
+export { CONFIRM_RECORD, saveConfirmation };
 
 const CONFIRM_ARGS_CHARS = 1500;
-export const CONFIRM_RECORD = "tool-confirm";
 /** A pending Confirm record older than this is expired: a click shows Expired and runs nothing. */
 export const CONFIRM_TTL_MS = 24 * 60 * 60 * 1000;
 const CONFIRM_ID = /^slopconfirm:(.+):(yes|no)$/;
@@ -54,16 +56,6 @@ function pendingOf(value: Json | undefined): PendingConfirmation | undefined {
   if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
   // A record without createdAt is treated as expired.
   return { name: record.name, arguments: args as ToolArgs, channel: record.channel, author: record.author, createdAt: typeof record.createdAt === "number" ? record.createdAt : 0, ...(typeof record.requestId === "string" ? { requestId: record.requestId } : {}), ...(typeof record.taskId === "string" ? { taskId: record.taskId } : {}), ...(typeof record.replyTo === "string" ? { replyTo: record.replyTo } : {}) };
-}
-
-/** Saves a pending confirmation. A record that is still pending is kept, so its Confirm and Cancel buttons still work. A done record is replaced. Retries a revision conflict, and throws rather than losing the record. */
-export async function saveConfirmation(store: RecordStore, server: string, operationId: string, value: Json): Promise<void> {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const previous = await store.record(server, CONFIRM_RECORD, operationId);
-    if (previous && (previous.value as Record<string, Json> | undefined)?.done !== true) return;
-    if (await store.putRecord(server, CONFIRM_RECORD, operationId, value, previous?.revision ?? 0)) return;
-  }
-  throw new Error("Confirmation record kept changing while it was saved");
 }
 
 /** Starts a new model turn for a confirmed call. The bot wires it to the worker: the note is saved, then queued on the original channel. */
