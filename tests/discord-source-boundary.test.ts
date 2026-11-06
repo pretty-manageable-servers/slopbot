@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { readdirSync, readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { ChannelType, type Client, type Message as DiscordMessage } from 'discord.js';
@@ -50,11 +51,18 @@ for (const id of ['task-seed:source', 'command:reminder:source', 'source']) test
     payloads.push(payload);
     return {async edit() {}, async delete() {}};
   });
-  const observer = f.adapter['app']['runner']['services'].onToolActivity!;
+  const observer = f.adapter['workspace']['app']['runner']['services'].onToolActivity!;
   await observer({id,server:guild,channel:thread,author:'person',text:'request',taskId:thread},
     {id:'call',name:'web_search',status:'running',arguments:{query:'weather'}});
   assert.equal(payloads.length, 1);
   assert.match(payloads[0]!.content, /-# now: 🔎 "weather"$/);
   assert.ok(!payloads[0]!.content.includes('"query"'));
   assert.equal(Boolean(payloads[0]!.reply), id === 'source');
+});
+
+test('the engine imports neither discord.js nor node:http', () => {
+  const dir = new URL('../../src/engine/', import.meta.url);
+  const files = readdirSync(dir).filter(name => name.endsWith('.ts'));
+  assert.ok(files.length > 0);
+  for (const name of files) assert.doesNotMatch(readFileSync(new URL(name, dir), 'utf8'), /from\s+['"](?:discord\.js|node:http|http)['"]/, name);
 });
