@@ -2,17 +2,19 @@
 // this draws it with the kit, like a chat: markdown, images, tool rows, and show_ui and show_widget visuals.
 import "./app.css";
 import "./prefs";
-import { Button, ChatHeader, ChatTheme, ChatTranscript, ToolViewsProvider, UiComponentsProvider, defaultToolViews, uiMarkupToolView, widgetToolView } from "agentic-ui-kit";
+import { Button, ChatHeader, ChatTheme, ChatTranscript, ToolViewsProvider, defaultToolViews } from "agentic-ui-kit";
+import { VisualsProvider, uiMarkupToolView, widgetToolView } from "agentic-ui-kit/visuals";
+import type { ShareData } from "@slopbot/contracts";
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ApiError, api } from "./api";
 import { Loader, Logo } from "./logo";
-import { AUTHOR, shareMessages, type ShareData } from "./share-data";
+import { AUTHOR, shareMessages } from "./share-data";
 import { uiComponents } from "./ui-components";
 
 /** The console's chat page keeps this ID through the sign-in, then continues the share (chat-page.tsx). */
 const SHARE_KEY = "slopbot-share";
-const WIDGETS = { frameUrl: "/console/widget-frame.html" };
+const WIDGET_HOST = { frameUrl: "/console/widget-frame.html" };
 const toolViews = { ...defaultToolViews, show_ui: uiMarkupToolView(), show_widget: widgetToolView() };
 
 function SharePage({ data }: { data: ShareData }) {
@@ -42,11 +44,10 @@ function SharePage({ data }: { data: ShareData }) {
 
   return (
     <ToolViewsProvider tools={toolViews}>
-      <UiComponentsProvider components={uiComponents}>
+      <VisualsProvider components={uiComponents} host={WIDGET_HOST}>
         <ChatTranscript
           className="h-dvh"
           messages={messages}
-          widgets={WIDGETS}
           renderPart={(part) => (part.type === "custom" && part.kind === AUTHOR ? <p className="text-sm font-medium text-chat-fg">{String(part.data)}</p> : undefined)}
           header={
             <ChatHeader
@@ -61,7 +62,7 @@ function SharePage({ data }: { data: ShareData }) {
             </p>
           }
         />
-      </UiComponentsProvider>
+      </VisualsProvider>
     </ToolViewsProvider>
   );
 }

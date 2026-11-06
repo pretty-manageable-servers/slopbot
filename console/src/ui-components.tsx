@@ -1,9 +1,10 @@
-// Renders for the show_ui components. The names, descriptions and props are the bot's (src/ui/show-ui-specs.ts),
-// so the tool, the markup check and the chat use one list. The renders follow the agentic-ui-kit playground set
-// (apps/playground/src/lib/ui-components.tsx).
-import { Button, useUiAction, useUiState, type UiComponent } from "agentic-ui-kit";
+// Renders for the show_ui components. The names, descriptions and props are the bot's (showUiSpecs in
+// @slopbot/contracts), so the tool, the markup check and the chat use one list. The renders follow the agentic-ui-kit
+// playground set (apps/playground/src/lib/ui-components.tsx).
+import { Button } from "agentic-ui-kit";
+import { uiComponentSet, useUiAction, useUiState, type UiComponent } from "agentic-ui-kit/visuals";
+import { showUiSpecs } from "@slopbot/contracts";
 import type { ReactNode } from "react";
-import { showUiSpecs } from "../../src/ui/show-ui-specs";
 
 const toneClass: Record<string, string> = {
   default: "text-chat-fg",
@@ -111,8 +112,8 @@ const renders: Record<string, UiComponent["render"]> = {
     },
 };
 
-export const uiComponents: UiComponent[] = showUiSpecs.map((spec) => {
-  const render = renders[spec.name];
-  if (!render) throw new Error(`No render for show_ui component ${spec.name}.`);
-  return { ...spec, render };
-});
+// Every component the bot offers needs a render. The kit's set also has Table, Badge and Progress, which the bot never offers.
+for (const spec of showUiSpecs) {
+  if (!renders[spec.name]) throw new Error(`No render for show_ui component ${spec.name}.`);
+}
+export const uiComponents = uiComponentSet({ renders });

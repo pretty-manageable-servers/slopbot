@@ -20,7 +20,7 @@ import { runtimeVersion } from './operations-config.js';
 import type { InboxItem } from './inbox.js';
 import { SERVER_NON_ZDR_SETTING, USER_NON_ZDR_SETTING, type LlmMode } from './llm-mode.js';
 import { GLOBAL_SETTINGS_SCOPE } from './usage-cost.js';
-import { widgetFrameLoader } from 'agentic-ui-kit/core';
+import { widgetFrameLoader } from 'agentic-ui-kit/visuals/core';
 import type { Json } from './domain.js';
 
 /** Team admin backend. Roles come from the Developer Portal team; panel holds the limits, prices and usage. */

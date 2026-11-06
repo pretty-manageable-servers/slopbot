@@ -1,4 +1,4 @@
-import { checkUiMarkupCode, showUiTool } from "agentic-ui-kit/core";
+import { checkUiMarkupCode, showUiTool } from "agentic-ui-kit/visuals/core";
 import type { ToolRegistry } from "../tools.js";
 import { showUiSpecs } from "./show-ui-specs.js";
 

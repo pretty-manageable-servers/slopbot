@@ -1,4 +1,4 @@
-import { checkWidgetCode, visualizeGuide, visualizeTool } from "agentic-ui-kit/core";
+import { checkWidgetCode, visualizeGuide, visualizeTool } from "agentic-ui-kit/visuals/core";
 import type { ToolRegistry } from "../tools.js";
 
 const props = visualizeTool.inputSchema.properties;
