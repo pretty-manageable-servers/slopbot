@@ -12,6 +12,13 @@ import { ShareService } from "../src/shares.js";
 import { ContextBuilder } from "../src/context-builder.js";
 import type { ObjectStorageProvider } from "../src/object-storage.js";
 import type { Message } from "../src/domain.js";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+/** The console build's share page (console/share.html), so the tests do not need console/dist. */
+const NEXT_DIR = mkdtempSync(join(tmpdir(), "slopbot-image-share-"));
+writeFileSync(join(NEXT_DIR, "share.html"), "<!doctype html><html><body><div id=\"root\"></div><!--share-data--></body></html>");
 
 const SERVER = "1528063444874432734";
 const ALICE = "1514413259522838529", BOB = "1514413259522838530";
@@ -47,7 +54,7 @@ async function setup(t: TestContext) {
     await store.saveSession({ id_hash: createHash("sha256").update(id).digest("hex"), user_id: user, csrf, expires: Date.now() + 86_400_000, created: Date.now() });
     logins[user] = { cookie: `slopbot_session=${id}`, csrf };
   }
-  const web = createConsole({ origin: ORIGIN, host: "127.0.0.1", port: 3000, clientId: "id", clientSecret: "secret" }, {
+  const web = createConsole({ origin: ORIGIN, host: "127.0.0.1", port: 3000, clientId: "id", clientSecret: "secret", nextDir: NEXT_DIR }, {
     sessions: store, async canSignIn() { return true; }, async snapshot() { return {}; }, async invoke() { return {}; }, chats: createChatRoutes(service),
     shares: new ShareService({ store, access: host.access, rule: { manager: async () => false }, member: async (user: string) => members.has(user), images: storage }) as never,
     conversations: createTranscripts({ store, access: host.access, configured: () => [], channelName: async () => undefined, ownsPrivateChat: (server, channel, user) => service.owns(user, server, channel) }),
