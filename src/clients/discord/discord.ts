@@ -31,7 +31,7 @@ import { buildFileReportCommand, buildMessageApps, buildStopCommand, CONTINUE_IN
 import { splitReply, type ChatGateway, type Incoming } from "../../bot.js";
 import { PresenceUpdater } from "../../presence.js";
 import type { Config } from "../../config.js";
-import { parseEffort, type Message } from "../../domain.js";
+import type { Message } from "../../domain.js";
 import type { LLM } from "../../ports.js";
 import { WorkspaceEngine } from "../../engine/engine.js";
 import { EngineWorkspace, sandboxProviderFor } from "../../engine/workspace.js";
@@ -39,7 +39,7 @@ import type { DegradedRouting, WorkspacePorts } from "../../engine/ports.js";
 
 export type { DegradedRouting };
 import type { RuntimeStore } from "../../runtime-store.js";
-import { decisionThresholds } from '../../participation-history.js';
+import { serverSettingsSnapshot } from '../../server-settings.js';
 import { UserLimitError, limitReply, usageView } from "../../user-limiter.js";
 import { createUsageMeter, type UsageMeter } from "../../usage-meter.js";
 import { webTranscriptKey, webTranscriptsEnabled } from "../../server-tools.js";
@@ -718,18 +718,7 @@ export class DiscordServer implements ChatGateway {
       me: { id: user, displayName: member.user.globalName ?? member.user.username, avatarUrl: known?.avatarUrl ?? null },
       profile: await this.store.profile(guild.id, user),
       mcp: admin ? this.mcp.snapshot() : null,
-      settings: admin ? {
-        monitoring: this.store.setting(guild.id, 'monitoring') ?? this.config.jevEnabled,
-        participation_thresholds: decisionThresholds(this.store.setting(guild.id, 'participation_thresholds'), this.config.jevThresholds),
-        classifier_context: this.store.setting(guild.id, 'classifier_context') ?? this.config.jevContextMessages,
-        reply_context: this.store.setting(guild.id, 'reply_context') ?? this.config.replyContextMessages,
-        cooldown_seconds: this.store.setting(guild.id, 'cooldown_seconds') ?? this.config.jevCooldownSeconds,
-        max_unsolicited_per_hour: this.store.setting(guild.id, 'max_unsolicited_per_hour') ?? this.config.jevMaxRepliesPerHour,
-        tool_display: toolDisplayMode(this.store.setting(guild.id, 'tool_display')),
-        default_effort: parseEffort(this.store.setting(guild.id, 'default_effort')) ?? 'default',
-        timing_footer: this.store.setting(guild.id, 'timing_footer') ?? false,
-        mock: this.config.mock,
-      } : null };
+      settings: admin ? serverSettingsSnapshot(this.config, this.store, guild.id) : null };
   }
   async consoleInvoke(user: string, channel: string, name: string, args: import('../../tools.js').ToolArgs): Promise<unknown> {
     if (isPrivateChannel(channel)) throw new ToolError('Choose a text channel in this server.');

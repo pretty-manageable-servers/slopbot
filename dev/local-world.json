@@ -1,0 +1,12 @@
+{
+  "bot": { "id": "300000000000000001", "name": "Slopbot (local)" },
+  "servers": [
+    { "id": "100000000000000001", "name": "Local Lab", "icon": null },
+    { "id": "100000000000000002", "name": "Second Lab", "icon": null }
+  ],
+  "users": [
+    { "id": "200000000000000001", "name": "Dev Owner", "avatarUrl": null, "servers": ["100000000000000001", "100000000000000002"], "manage": ["100000000000000001"], "team": "owner" },
+    { "id": "200000000000000002", "name": "Dev Member", "avatarUrl": null, "servers": ["100000000000000001"], "manage": [] },
+    { "id": "200000000000000003", "name": "Outsider", "avatarUrl": null, "servers": [], "manage": [] }
+  ]
+}
