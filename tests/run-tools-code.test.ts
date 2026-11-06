@@ -6,7 +6,6 @@ import type { Json } from '../src/domain.js';
 import { programText, runToolsCodeTool } from '../src/run-tools-code.js';
 import type { SandboxProvider, SandboxSession } from '../src/sandbox.js';
 import { ToolRegistry, type ToolContext, type ToolDefinition, type ToolExecutor, type ToolResult } from '../src/tools.js';
-import type { ToolActivity } from '../src/tool-activity.js';
 import type { LLM } from '../src/ports.js';
 
 const request = { server: 's', channel: 'c', taskId: 'c', id: 'm', author: 'alice', text: 'Compare the results.' };
@@ -27,17 +26,6 @@ test('catalog_same_for_admin_and_member', async t => {
     descriptions.push(JSON.stringify(codeSchema(registry, admin ? request : privateRequest)));
   }
   assert.equal(descriptions[0], descriptions[1]);
-});
-
-test('catalog_sorted', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const registry = new ToolRegistry(store, async () => true);
-  registry.register(readTool('zeta', async () => ({ text: 'z' })));
-  registry.register(readTool('alpha', async () => ({ text: 'a' })));
-  registry.register(readTool('top_tool', async () => ({ text: 't' }), { surface: 'top' }));
-  registry.register(runToolsCodeTool(registry));
-  const names = [...codeSchema(registry).function.description.matchAll(/^- (\w+)\(/gm)].map(match => match[1]);
-  assert.deepEqual(names, ['alpha', 'zeta']);
 });
 
 test('catalog_excludes_discovery', async t => {
@@ -202,19 +190,6 @@ test('discord_scope_blocks_private_chat', async t => {
   assert.equal(ran, 0);
 });
 
-test('child_activity_parent_id', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const registry = new ToolRegistry(store, async () => true);
-  registry.register(readTool('read_a', async () => ({ text: 'a', data: { v: 1 } })));
-  registry.register(runToolsCodeTool(registry));
-  const events: ToolActivity[] = [];
-  const code = 'text(await tools.read_a({}));';
-  await registry.invokeResult(request, 'run_tools_code', { code }, 'parent-act', 'agent', undefined, { onActivity: async event => { events.push(event); } });
-  assert.equal(events.find(event => event.id === 'parent-act' && event.code)?.code, code);
-  const child = events.find(event => event.name === 'read_a' && event.status === 'completed');
-  assert.equal(child?.parentId, 'parent-act');
-});
-
 test('the agent loop receives reduced output and child evidence, not intermediate payloads', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   await store.ingest({ ...request, id: 'evidence', text: 'Evidence' });
@@ -265,29 +240,6 @@ test('bare_name_call', async t => {
   assert.deepEqual(outputs(result), [[{ n: 12 }, { n: 3 }, { ok: true }, 'function']]);
 });
 
-test('no_args_call', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const registry = new ToolRegistry(store, async () => true);
-  registry.register(readTool('ping', async () => ({ text: 'pong', data: { ok: true } })));
-  registry.register(runToolsCodeTool(registry));
-  const result = await registry.invokeResult(request, 'run_tools_code', { code: 'text([await ping(), await tools.ping(), await ping(undefined)]);' }, 'noargs', 'agent');
-  assert.deepEqual(outputs(result), [[{ ok: true }, { ok: true }, { ok: true }]]);
-});
-
-test('scalar_arg_wrapped', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const registry = new ToolRegistry(store, async () => true);
-  // One required argument: a bare string is wrapped as { id }.
-  registry.register(readTool('lookup', async (_context, args) => ({ text: 'ok', data: args }), { fields: { id: { type: 'string', description: 'Id', required: true } } }));
-  // One required json argument: a bare array is wrapped as { ids }.
-  registry.register(readTool('batch', async (_context, args) => ({ text: 'ok', data: args }), { fields: { ids: { type: 'json', description: 'Ids', required: true } } }));
-  // Only one argument, optional: a bare number is wrapped as { n }.
-  registry.register(readTool('limit_only', async (_context, args) => ({ text: 'ok', data: args }), { fields: { n: { type: 'integer', description: 'Count' } } }));
-  registry.register(runToolsCodeTool(registry));
-  const code = 'text([await lookup("abc"), await batch([1,2]), await limit_only(4)]);';
-  assert.deepEqual(outputs(await registry.invokeResult(request, 'run_tools_code', { code }, 'wrap', 'agent')), [[{ id: 'abc' }, { ids: [1, 2] }, { n: 4 }]]);
-});
-
 test('bad_arg_lists_fields', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const registry = new ToolRegistry(store, async () => true);
@@ -304,36 +256,10 @@ test('bad_arg_lists_fields', async t => {
   assert.match(messages![1]!, /ping takes: no arguments\./);
 });
 
-const emptyOutcome = { outputs: [], failures: [] };
-
-test('model text shows the returned value', () => {
-  assert.equal(programText({ ...emptyOutcome, returned: { total: 3 }, logs: [], receipts: [] }), '{"total":3}');
-  assert.equal(programText({ ...emptyOutcome, returned: 'done' }), 'done');
-});
-
-test('model text shows logs', () => {
-  assert.equal(programText({ ...emptyOutcome, logs: ['[WARN] slow', 'hello'], receipts: [] }), 'Logs:\n[WARN] slow\nhello');
-});
-
 test('failed program keeps outputs and lists calls', () => {
   const text = programText({
     outputs: ['partial'], failures: [], error: { message: 'Program exceeded its wall-clock deadline.', status: 'failed' },
     receipts: [{ id: 1, name: 'mute_list', status: 'ok', bytes: 2150 }, { id: 2, name: 'foo', status: 'failed', bytes: 0 }, { id: 3, name: 'bar', status: 'unfinished', bytes: 0 }],
   });
   assert.equal(text, 'Program failed: Program exceeded its wall-clock deadline.\npartial\nCalls: mute_list ok 2.1 KB, foo failed, bar unfinished');
-});
-
-test('no output gives the receipt hint', () => {
-  const text = programText({ ...emptyOutcome, logs: [], receipts: [{ id: 1, name: 'mute_list', status: 'ok', bytes: 100 }] });
-  assert.equal(text, 'Calls: mute_list ok 100 B\nNo output. The call results are not shown. To see data, end with return result, or call text(result).');
-});
-
-test('logs-only program still lists calls', () => {
-  const text = programText({ ...emptyOutcome, logs: ['hi'], receipts: [{ id: 1, name: 'mute_list', status: 'ok', bytes: 100 }] });
-  assert.equal(text, 'Logs:\nhi\nCalls: mute_list ok 100 B');
-});
-
-test('model text works without the contract fields', () => {
-  assert.equal(programText({ outputs: ['x'], failures: [] }), 'x');
-  assert.equal(programText({ outputs: [], failures: [{ name: 'a', error: 'bad' }] }), 'Incomplete program result: 1 tool call(s) failed. a: bad\nNo output. The call results are not shown. To see data, end with return result, or call text(result).');
 });

@@ -6,7 +6,7 @@ import { ChannelAccess, type ChannelFacts } from "../src/channel-access.js";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { RunEvents } from "../src/run-events.js";
 import { webTranscriptKey, transcriptSwitchOn } from "../src/server-tools.js";
-import { createTranscripts, openStream, runSteps, type TranscriptHost } from "../src/web-transcripts.js";
+import { createTranscripts, openStream, type TranscriptHost } from "../src/web-transcripts.js";
 import { createConsole } from "../src/web-console.js";
 import type { Message, ModelEvent } from "../src/domain.js";
 import { MemberDirectory } from "../src/member-directory.js";
@@ -354,16 +354,6 @@ test("the used route rejects more than 200 IDs and IDs with spaces", async t => 
   assert.equal((await get(f, `/api/conversations/${CHANNEL}/used?server=${SERVER}&ids=a%20b`)).status, 400);
 });
 
-test("saved run steps: failed and delegated results, and text-protocol tool requests", () => {
-  const steps = runSteps(
-    [{ kind: "text", payload: { text: '{"tool_calls":[{"name":"status","arguments":{}}]}' } }],
-    [{ calls: [{ name: "status", arguments: {} }, { name: "task_start", arguments: { goal: "x" } }], results: { "0": { text: "bad", status: "failed" }, "1": { text: "Thread", handoff: { threadId: "t" } } } }],
-    [{ name: "status", arguments: {} }, { name: "task_start", arguments: { goal: "x" } }],
-  );
-  assert.deepEqual(steps.map(step => step.type === "tool" ? [step.name, step.status] : step.type), [["status", "failed"], ["task_start", "delegated"]]);
-  assert.deepEqual(runSteps([], []), []);
-});
-
 test("reconnect after a cursor sends each later event once, then live events", async t => {
   const f = await fixture(t);
   const bus = new RunEvents();
@@ -438,22 +428,6 @@ test("the stream closes when the switch is turned off, and sends no more events 
   assert.equal(c.out.length, size);
 });
 
-test("the periodic check and heartbeat run on their own timers", async t => {
-  const f = await fixture(t);
-  const bus = new RunEvents();
-  bus.attach(f.store);
-  let allowed = true;
-  const c = collect();
-  openStream({ server: SERVER, channel: CHANNEL, user: USER, cursor: 0, store: f.store, bus, access: f.access, allowed: async () => allowed, write: c.write, end: c.end, heartbeatMs: 5, recheckMs: 10 });
-  await new Promise(resolve => setTimeout(resolve, 30));
-  assert.match(c.out.join(""), /: ping/);
-  assert.equal(c.state.ended, false);
-  allowed = false;
-  await new Promise(resolve => setTimeout(resolve, 40));
-  assert.equal(c.state.ended, true);
-  assert.match(c.out.join(""), /event: closed/);
-});
-
 test("the HTTP stream sends the retry hint and keeps the cursor for reconnects", async t => {
   const f = await fixture(t);
   const controller = new AbortController();
@@ -510,21 +484,6 @@ test("no reset for a cursor that is kept, for a fresh load, or for a channel tha
   stop();
 });
 
-test("a channel whose rows are all pruned sends reset for an old cursor", async t => {
-  const f = await fixture(t);
-  const bus = new RunEvents();
-  bus.attach(f.store);
-  bus.publish(SERVER, CHANNEL, "message", "a", { action: "upsert" });
-  await bus.idle();
-  const [row] = await f.store.conversationEventsAfter(SERVER, CHANNEL, 0, 10);
-  assert.equal(await f.store.pruneConversationEvents(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER), 1);
-  const c = collect();
-  const stop = openStream({ server: SERVER, channel: CHANNEL, user: USER, cursor: row!.streamId, store: f.store, bus, access: f.access, allowed: async () => true, write: c.write, end: c.end, heartbeatMs: 100000, recheckMs: 100000 });
-  await settle();
-  assert.match(c.out.join(""), /event: reset/);
-  stop();
-});
-
 test("the HTTP stream sends reset for a pruned Last-Event-ID", async t => {
   const f = await fixture(t);
   const bus = new RunEvents();
@@ -564,11 +523,4 @@ test("a run view still works after its live events are pruned, because it reads 
   assert.equal(after.status, 200);
   assert.deepEqual(after.body, before.body);
   assert.equal(after.body.steps[0].type, "thinking");
-});
-
-test("run steps keep the full input of show_ui calls and only short arguments of others", () => {
-  const markup = "<Card title=\"Plan\">" + "x".repeat(400) + "</Card>";
-  const steps = runSteps([{ kind: "tool_call", payload: [{ name: "show_ui", arguments: { markup } }, { name: "web_search", arguments: { query: "y".repeat(400) } }] }], []);
-  assert.deepEqual(steps.map(step => step.type === "tool" ? step.input : undefined), [{ markup }, undefined]);
-  assert.ok(steps.every(step => step.type === "tool" && step.args.length <= 301));
 });

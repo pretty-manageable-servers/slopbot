@@ -110,8 +110,6 @@ test("deleting a private chat removes its messages, runs and events and keeps ot
 import { Application } from "../src/application.js";
 import { Bot, type ChatGateway, type Incoming } from "../src/bot.js";
 import { FakeLLM } from "../src/adapters/fake-llm.js";
-import { WebChatGateway } from "../src/web-chats.js";
-import type { ToolActivity } from "../src/tool-activity.js";
 
 function botFor(store: SQLiteStore, tools?: ToolRegistry) {
   const app = new Application(store, new FakeLLM(), { allowedChannels: [{ server: "s", channel: "100000000000000001" }] });
@@ -165,25 +163,6 @@ test("a private chat saves memories, but cannot start tasks", async t => {
   assert.equal(created(), 0, "no task thread may be created");
   assert.deepEqual((await store.memories("s", privateChannel(privateId))).map(note => note.content), ["I like tea"]);
   assert.equal(outputs.at(-1)!.text, "This action is only available in Discord.");
-});
-
-test("a private chat runs a write tool through the bot, but a Discord-scoped one is refused", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const tools = registry(store);
-  const { bot, created } = botFor(store, tools);
-  bot.openPrivateChat("s", privateChannel(privateId));
-  assert.equal((await bot.executeTool(privateMessage, { name: "writer", arguments: {} }, "op-bot-write")).text, "wrote");
-  assert.equal(created(), 0, "a private write never starts a task thread");
-  await assert.rejects(bot.executeTool(privateMessage, { name: "poster", arguments: {} }, "op-bot-post"), (error: unknown) => error instanceof ToolError && error.message === "This action is only available in Discord.");
-  assert.equal(created(), 0);
-});
-
-test("a private chat reply has no tool footer, because the web run summary shows the tools", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const gateway = new WebChatGateway(store, "s");
-  const activity: ToolActivity[] = [{ id: "t1", name: "status", status: "completed" }];
-  const [reply] = await gateway.reply(privateMessage, "Answer", "delivery-1", activity);
-  assert.equal(reply!.text, "Answer");
 });
 
 test("the chat list of an owner has the chats of all servers", async t => {

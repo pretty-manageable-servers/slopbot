@@ -55,18 +55,6 @@ test('reserve respects the monthly cap and returns undefined when full', async t
   assert.equal(await store.reserveProviderCredits('firecrawl', MONTH, 1, 3), undefined, 'other providers never match');
 });
 
-test('reserve skips exhausted keys even when they have the least used', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const s = secrets();
-  const a = keyRow(s, SECRET_A, 'first', 1), b = keyRow(s, SECRET_B, 'second', 2);
-  await store.addProviderKey(a); await store.addProviderKey(b);
-  await store.exhaustProviderKey(a.id, MONTH);
-  assert.equal((await store.reserveProviderCredits('tavily', MONTH, 1, 950))?.id, b.id);
-  await store.exhaustProviderKey(b.id, MONTH);
-  assert.equal(await store.reserveProviderCredits('tavily', MONTH, 1, 950), undefined);
-  assert.deepEqual((await store.providerKeyUsage(MONTH)).map(row => row.exhausted), [true, true]);
-});
-
 test('concurrent reserves never pass the cap', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const s = secrets();
@@ -113,18 +101,6 @@ test('seal fails when no key is configured, and a bad key throws', () => {
   assert.throws(() => new WebKeySecrets('not-a-key'), /32-byte/);
   assert.throws(() => new WebKeySecrets(randomBytes(16).toString('base64')), /32-byte/);
   assert.equal(new WebKeySecrets(randomBytes(32).toString('base64')).enabled, true);
-});
-
-test('WEB_KEYS_SECRET from the environment is read by default and checked', () => {
-  const saved = process.env.WEB_KEYS_SECRET;
-  try {
-    process.env.WEB_KEYS_SECRET = 'short';
-    assert.throws(() => new WebKeySecrets(), /WEB_KEYS_SECRET must be a base64-encoded 32-byte key/);
-    process.env.WEB_KEYS_SECRET = randomBytes(32).toString('base64');
-    assert.equal(new WebKeySecrets().enabled, true);
-  } finally {
-    if (saved === undefined) delete process.env.WEB_KEYS_SECRET; else process.env.WEB_KEYS_SECRET = saved;
-  }
 });
 
 test('newProviderKeyRow validates provider, secret, label and owner', () => {

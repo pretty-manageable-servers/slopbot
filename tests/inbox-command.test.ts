@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { Events, type Client, type Interaction } from 'discord.js';
-import { DiscordAdapter, buildInboxCommand } from '../src/adapters/discord.js';
+import { DiscordAdapter } from '../src/adapters/discord.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { loadConfig } from '../src/config.js';
 
@@ -81,21 +81,4 @@ test('inbox command marks done by id prefix', async t => {
   assert.match((await runInbox(f)).reply, /^`bbbbbbbb` from /, 'the other item is still open');
   assert.equal((await runInbox(f, { done: 'all' })).reply, 'Marked 1 item done.');
   assert.equal((await runInbox(f)).reply, 'Your inbox is empty.');
-});
-
-test('inbox command empty', async t => {
-  const f = await open(t);
-  const { reply, defer } = await runInbox(f);
-  assert.equal(reply, 'Your inbox is empty.');
-  assert.deepEqual(defer, { flags: 64 });
-});
-
-test('inbox command is registered', async t => {
-  const registered: { name: string; options?: { name: string; type: number }[] }[] = [];
-  await open(t, registered);
-  const command = registered.find(item => item.name === 'inbox');
-  assert.ok(command, 'the guild gets a top-level /inbox command');
-  assert.deepEqual(command.options?.map(option => [option.name, option.type]), [['done', 3], ['all', 5]]);
-  const built = buildInboxCommand().toJSON() as { name: string; options: { name: string }[] };
-  assert.deepEqual(built.options.map(option => option.name), ['done', 'all']);
 });

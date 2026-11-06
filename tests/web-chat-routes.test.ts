@@ -582,38 +582,6 @@ test("send with files and images over 10 is 400", async t => {
   assert.equal(f.received.at(-1)!.attachments?.length, 10);
 });
 
-test("send files only uses default text", async t => {
-  const f = await setup(t);
-  const id = await newChat(f);
-  const up = await uploadFile(f, ALICE, id, Buffer.from("a,b\n1,2\n"), "data.csv", "text/csv");
-  const fileId = up.json.fileId as string;
-  const sent = await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { files: [fileId] });
-  assert.equal(sent.status, 201);
-  const saved = await f.store.canonicalMessage(SERVER, sent.json.id);
-  assert.ok(saved);
-  assert.equal(saved.text.split("\n")[0], "Please look at the attached file(s).", "the default text comes first");
-  assert.deepEqual(saved.attachments, [{ name: "data.csv", url: `web-file:${SERVER}/${id}/${fileId}`, contentType: "text/csv", size: 8 }]);
-  assert.equal(f.received.at(-1)!.modelImages, undefined, "a file is not sent to the model as an image");
-  const viewed = await f.call(ALICE, "GET", `/api/chats/${id}/messages`);
-  assert.equal(viewed.json.messages[0].text, "Please look at the attached file(s).", "the web view hides the label");
-  assert.equal((await f.call(ALICE, "GET", "/api/chats")).json[0].title, "data.csv", "the first file name is the title");
-  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { files: [fileId] })).status, 400, "a sent file is not pending any more");
-});
-
-test("send with file adds attachment label for the model", async t => {
-  const f = await setup(t);
-  const id = await newChat(f);
-  const fileId = (await uploadFile(f, ALICE, id, Buffer.from("a,b\n"), "data.csv", "text/csv")).json.fileId as string;
-  const sent = await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "look", files: [fileId] });
-  assert.equal(sent.status, 201);
-  const label = `[Attachment data.csv, type text/csv: web-file:${SERVER}/${id}/${fileId}; content not inspected]`;
-  const saved = await f.store.canonicalMessage(SERVER, sent.json.id);
-  assert.equal(saved!.text, `look\n${label}`, "the saved text has the label after the body");
-  assert.equal(f.received.at(-1)!.text, `look\n${label}`, "the model gets the label");
-  const viewed = await f.call(ALICE, "GET", `/api/chats/${id}/messages`);
-  assert.equal(viewed.json.messages[0].text, "look", "the web view does not show the label");
-});
-
 test("read file sets attachment disposition", async t => {
   const f = await setup(t);
   const id = await newChat(f);

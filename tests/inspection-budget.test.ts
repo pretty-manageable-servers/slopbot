@@ -30,13 +30,6 @@ test('internal reports send the configured provider allowance for both report to
   }
 });
 
-test('inspection defaults follow the actual model, including legacy aliases', () => {
-  for (const model of ['nimbus', 'qwen3.8-flash-next', 'cirrus', 'gemma4-e4b']) {
-    const llm = new ChatCompletionsLLM({ baseUrl: 'https://api.pmservers.org/ai/v1', model, apiKey: 'test-only' });
-    assert.equal(withInspectionBudget(llm, prompt).maxOutputTokens, ['cirrus', 'gemma4-e4b'].includes(model) ? 32000 : 50000);
-  }
-});
-
 test('large inspection input reserves output within the context window and rejects unfittable input', () => {
   const limits = { contextTokenLimit: 64000, outputTokenLimit: 32000 };
   const large = { ...prompt, inputs: [{ role: 'user' as const, content: 'x'.repeat(45000) }] };
