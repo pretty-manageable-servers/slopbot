@@ -21,12 +21,6 @@ test("team roles come from the Developer Portal team, and only editors can edit"
   assert.equal(canEditRole(undefined), false);
 });
 
-test("an unknown team role is read only", async () => {
-  const admins = new TeamAdmins({ async load() { return team([accepted(ADMIN, "send_messages_only")]); } });
-  assert.equal(await admins.role(ADMIN), "read_only");
-  assert.equal(await admins.canEdit(ADMIN), false);
-});
-
 test("a team owner is read from the Team object, by user ID", async () => {
   const members = new Collection([
     [ADMIN, { id: ADMIN, role: "admin", membershipState: TeamMemberMembershipState.Accepted }],

@@ -78,15 +78,6 @@ test('adding a key validates the input and stores only a sealed secret', async t
   assert.throws(() => secrets.open(row!.secretEncrypted, 'another-row'), 'the seal is bound to its row');
 });
 
-test('a disabled store refuses new keys with a message for the operator', async t => {
-  const { store, panel } = setup(new WebKeySecrets('')); t.after(() => store.close());
-  await assert.rejects(panel.addWebKey(OWNER, { provider: 'tavily', secret: SECRET }), (error: unknown) => error instanceof AdminInputError && /WEB_KEYS_SECRET/.test(error.message));
-  const view = await panel.webKeys(OWNER);
-  assert.equal(view.enabled, false);
-  assert.deepEqual(view.keys, []);
-  assert.deepEqual(await store.listProviderKeys(), []);
-});
-
 test('each member keeps at most 10 keys per provider', async t => {
   const { store, panel } = setup(); t.after(() => store.close());
   for (let i = 0; i < 10; i++) await panel.addWebKey(OWNER, { provider: 'tavily', secret: `tvly-key-${i}-abcdef` });

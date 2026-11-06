@@ -143,7 +143,7 @@ export class Operations {
 
 export function registerOperationsTools(registry: ToolRegistry, services: OperationsServices, server?: string): Operations {
   const ops = new Operations(services);
-  const base = { scope: 'discord' as const, access: 'admin' as const, effect: 'read' as const, retrySafe: true,
+  const base = { needs: ['discord_actions' as const], access: 'admin' as const, effect: 'read' as const, retrySafe: true,
     authorize: async (context: ToolContext) => {
       await ops.authorize(context);
       const saved = await services.store.record(context.message.server, 'diagnostic_evidence', evidenceId(context));

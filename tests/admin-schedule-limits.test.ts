@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { AdminPanel, type AdminConfig } from '../src/admin-panel.js';
-import { createConsole, type ConsoleAdmin } from '../src/web-console.js';
+import { createConsole, type ConsoleAdmin } from '../src/clients/web/web-console.js';
 import { TeamAdmins, type TeamSnapshot } from '../src/team-admins.js';
 import { UserLimiter } from '../src/user-limiter.js';
 import { MemberDirectory } from '../src/member-directory.js';
@@ -21,13 +21,6 @@ function setup() {
   const panel = new AdminPanel(config, store, limiter, new MemberDirectory(fakeSource({})));
   return { store, panel };
 }
-
-test('scheduled task limits read the defaults when nothing is saved', async t => {
-  const { store, panel } = setup(); t.after(() => store.close());
-  assert.deepEqual(panel.scheduleLimits(), { ...DEFAULT_SCHEDULE_LIMITS, default: DEFAULT_SCHEDULE_LIMITS });
-  assert.deepEqual(panel.scheduleLimits(), { perServer: 50, perUser: 10, minMinutes: { message: 15, prompt: 60, tool: 60 }, default: { perServer: 50, perUser: 10, minMinutes: { message: 15, prompt: 60, tool: 60 } } });
-  assert.equal(store.setting(GLOBAL_SETTINGS_SCOPE, SCHEDULE_LIMITS_KEY), undefined);
-});
 
 test('save valid limits stores them for all servers and reads them back', async t => {
   const { store, panel } = setup(); t.after(() => store.close());

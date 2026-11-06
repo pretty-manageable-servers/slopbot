@@ -4,14 +4,22 @@ import { once } from "node:events";
 import { createHash, randomBytes } from "node:crypto";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { ChannelAccess } from "../src/channel-access.js";
-import { createConsole } from "../src/web-console.js";
-import { createChatRoutes, WebChatService, type ChatHost } from "../src/web-chats.js";
-import { runEvents } from "../src/run-events.js";
-import { createTranscripts } from "../src/web-transcripts.js";
+import { createConsole } from "../src/clients/web/web-console.js";
+import { createChatRoutes, WebChatService } from "../src/clients/web/web-chats.js";
+import { chatDeps } from "./chat-deps.js";
+import { engineEvents } from "../src/engine/event-log.js";
+import { createTranscripts } from "../src/clients/web/web-transcripts.js";
 import { ShareService } from "../src/shares.js";
 import { ContextBuilder } from "../src/context-builder.js";
 import type { ObjectStorageProvider } from "../src/object-storage.js";
 import type { Message } from "../src/domain.js";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+/** The console build's share page (console/share.html), so the tests do not need console/dist. */
+const NEXT_DIR = mkdtempSync(join(tmpdir(), "slopbot-image-share-"));
+writeFileSync(join(NEXT_DIR, "share.html"), "<!doctype html><html><body><div id=\"root\"></div><!--share-data--></body></html>");
 
 const SERVER = "1528063444874432734";
 const ALICE = "1514413259522838529", BOB = "1514413259522838530";
@@ -29,16 +37,16 @@ class FakeStorage implements ObjectStorageProvider {
 async function setup(t: TestContext) {
   const store = new SQLiteStore(":memory:");
   t.after(() => store.close());
-  runEvents.attach(store);
+  engineEvents.attach(store);
   const storage = new FakeStorage(), received: Message[] = [];
   const limit = { allowed: true } as { allowed: boolean };
-  const host: ChatHost = {
-    async member(user, server) { return server === SERVER && [ALICE, BOB].includes(user); },
-    async handle() { return { openChat() { /* none */ }, closeChat() { /* none */ }, async receiveChat(message) { received.push(message); }, async stopResponses() { return []; }, async act() { throw new Error('no cards in this test'); } }; },
+  const host = chatDeps({
+    member: (user, server) => server === SERVER && [ALICE, BOB].includes(user),
+    workspace: { async submit(message) { received.push(message); } },
     limiter: { async check() { return limit as never; } },
     access: new ChannelAccess({ async facts() { return undefined; } }),
     images: storage,
-  };
+  });
   const members = new Set([ALICE, BOB]);
   const service = new WebChatService(store, host);
   const logins: Record<string, { cookie: string; csrf: string }> = {};
@@ -47,7 +55,7 @@ async function setup(t: TestContext) {
     await store.saveSession({ id_hash: createHash("sha256").update(id).digest("hex"), user_id: user, csrf, expires: Date.now() + 86_400_000, created: Date.now() });
     logins[user] = { cookie: `slopbot_session=${id}`, csrf };
   }
-  const web = createConsole({ origin: ORIGIN, host: "127.0.0.1", port: 3000, clientId: "id", clientSecret: "secret" }, {
+  const web = createConsole({ origin: ORIGIN, host: "127.0.0.1", port: 3000, clientId: "id", clientSecret: "secret", nextDir: NEXT_DIR }, {
     sessions: store, async canSignIn() { return true; }, async snapshot() { return {}; }, async invoke() { return {}; }, chats: createChatRoutes(service),
     shares: new ShareService({ store, access: host.access, rule: { manager: async () => false }, member: async (user: string) => members.has(user), images: storage }) as never,
     conversations: createTranscripts({ store, access: host.access, configured: () => [], channelName: async () => undefined, ownsPrivateChat: (server, channel, user) => service.owns(user, server, channel) }),

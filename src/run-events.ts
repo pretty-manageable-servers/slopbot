@@ -7,30 +7,8 @@ import { imageAttachments, remoteImageAttachments } from "./web-chat-images.js";
 import { fileAttachments, parseFileUrl, type ChatFileView } from "./web-chat-files.js";
 import { LEGACY_FILE_NOTE } from "./source-context.js";
 import type { UiDocument } from "./ui/schema.js";
-
-/** Kinds of events a web transcript stream sends. */
-export type ConversationKind = "message" | "run.start" | "run.delta" | "run.tool" | "run.end";
-
-/** One event before the store gives it a stream ID. `data` is a small JSON object. */
-export interface ConversationRow {
-  server: string;
-  channel: string;
-  kind: ConversationKind;
-  /** The message ID for message events, the run ID for run events. */
-  ref: string;
-  data: Json;
-}
-export interface ConversationEvent extends ConversationRow { streamId: number; createdAt: number }
-
-/** The store part the publisher and the stream need. Stream IDs only go up. */
-export interface ConversationEventStore {
-  setting(server: string, key: string): unknown;
-  taskThreads(server: string): { thread: string; parent: string }[];
-  appendConversationEvent(row: ConversationRow & { createdAt: number }): Promise<number>;
-  conversationEventsAfter(server: string, channel: string, after: number, limit: number): Promise<ConversationEvent[]>;
-  /** The lowest stream ID kept for the channel, or undefined when no rows are kept. */
-  oldestStreamId(server: string, channel: string): Promise<number | undefined>;
-}
+import { engineEvents } from "./engine/event-log.js";
+import { stableOperationId } from "./tools.js";
 
 /** The store part the retention timer needs. */
 export interface ConversationEventRetention {
@@ -80,6 +58,8 @@ export interface TranscriptMessage {
   editedAt: number | null;
   slopbot: boolean;
   runIds: string[];
+  /** The turn of a saved reply (its request message ID). Set when a page loads saved messages, so the page can read /turns/:turn/events. */
+  turn?: string;
   /** Web chat images as saved placeholders. The page loads the bytes from the chat's image route. */
   images?: { imageId: string; name: string; contentType: string; size: number }[];
   remoteImages?: { src: string; name: string; size: number }[];
@@ -91,8 +71,11 @@ export interface TranscriptMessage {
   used: boolean;
 }
 
+/** The part of the store that holds server settings. */
+export interface SettingReader { setting(server: string, key: string): unknown }
+
 /** The ID of Slopbot's own Discord user, saved when the bot becomes ready. */
-export function slopbotId(store: Pick<ConversationEventStore, "setting">, server: string): string | undefined {
+export function slopbotId(store: SettingReader, server: string): string | undefined {
   const value = store.setting(server, "context_bot_author");
   return typeof value === "string" ? value : undefined;
 }
@@ -153,9 +136,6 @@ export function transcriptMessage(stored: Message, slopbot: string | undefined, 
   };
 }
 
-interface Pending extends ConversationRow { createdAt: number }
-type Listener = (event: ConversationEvent) => void;
-const key = (server: string, channel: string) => JSON.stringify([server, channel]);
 const MAX_SHORT_ARGS = 300;
 
 /** Shortens tool arguments for a live or stored view. */
@@ -165,162 +145,76 @@ export function shortArgs(args: unknown): string {
 }
 
 /**
- * In-process publisher for conversation events. Events are saved in publish order with a
- * stream ID, then sent to subscribers. Consecutive text or thinking deltas of one run are
- * saved as one row, so the stored order always matches the send order.
- */
-export class RunEvents {
-  private store: ConversationEventStore | undefined;
-  private queue: Pending[] = [];
-  private running = false;
-  private current: Promise<void> = Promise.resolve();
-  private readonly listeners = new Map<string, Set<Listener>>();
-  private readonly changes = new Map<string, Set<() => void>>();
-  // Every model token is published, so the switch is read at most once a second per conversation.
-  private readonly switches = new Map<string, { on: boolean; until: number }>();
-
-  /** Until a store is attached, publishing does nothing. */
-  attach(store: ConversationEventStore): void { this.store = store; }
-
-  /** Saves and sends one event, if the channel's web transcripts switch is on. */
-  publish(server: string, channel: string, kind: ConversationKind, ref: string, data: Json): void {
-    const store = this.store;
-    if (!store || !this.switchOn(store, server, channel)) return;
-    this.queue.push({ server, channel, kind, ref, data, createdAt: Date.now() });
-    if (!this.running) {
-      this.running = true;
-      this.current = this.drain();
-    }
-  }
-
-  /** Resolves when every event published so far is saved and sent. */
-  async idle(): Promise<void> { while (this.running) await this.current; }
-
-  subscribe(server: string, channel: string, listener: Listener): () => void {
-    const id = key(server, channel);
-    const set = this.listeners.get(id) ?? new Set<Listener>();
-    set.add(listener);
-    this.listeners.set(id, set);
-    return () => { set.delete(listener); if (!set.size) this.listeners.delete(id); };
-  }
-
-  private switchOn(store: ConversationEventStore, server: string, channel: string): boolean {
-    const id = key(server, channel), now = Date.now(), hit = this.switches.get(id);
-    if (hit && hit.until > now) return hit.on;
-    const on = transcriptSwitchOn(store, server, channel);
-    this.switches.set(id, { on, until: now + 1000 });
-    return on;
-  }
-
-  /** Tells streams of a server to check access and switches again. Also clears the switch cache. */
-  changed(server: string): void {
-    this.switches.clear();
-    for (const listener of this.changes.get(server) ?? []) {
-      try { listener(); } catch (error) { logError("run_events_listener_failed", error, { server }); }
-    }
-  }
-
-  onChange(server: string, listener: () => void): () => void {
-    const set = this.changes.get(server) ?? new Set<() => void>();
-    set.add(listener);
-    this.changes.set(server, set);
-    return () => { set.delete(listener); if (!set.size) this.changes.delete(server); };
-  }
-
-  private async drain(): Promise<void> {
-    while (this.queue.length) {
-      const batch = mergeDeltas(this.queue.splice(0));
-      const store = this.store;
-      for (const row of batch) {
-        if (!store) break;
-        let streamId: number;
-        try { streamId = await store.appendConversationEvent(row); }
-        catch (error) { logError("run_events_save_failed", error, { stage: "live events", server: row.server, channel: row.channel }, true); continue; }
-        const event: ConversationEvent = { ...row, streamId };
-        for (const listener of this.listeners.get(key(row.server, row.channel)) ?? []) {
-          try { listener(event); } catch (error) { logError("run_events_listener_failed", error, { server: row.server, channel: row.channel }); }
-        }
-      }
-    }
-    this.running = false;
-  }
-}
-
-/** Joins consecutive text, thinking or tool input deltas of the same run and the same tool call. Order is kept. */
-function mergeDeltas(items: Pending[]): Pending[] {
-  const out: Pending[] = [];
-  for (const item of items) {
-    const last = out.at(-1);
-    if (last && last.kind === "run.delta" && item.kind === "run.delta" && last.server === item.server && last.channel === item.channel && last.ref === item.ref) {
-      const a = last.data as { part: string; text: string; index?: number }, b = item.data as { part: string; text: string; index?: number };
-      if (a.part === b.part && a.index === b.index) { last.data = { ...a, text: a.text + b.text }; continue; }
-    }
-    out.push({ ...item });
-  }
-  return out;
-}
-
-/** The process-wide publisher. The Discord adapter attaches the store once. */
-export const runEvents = new RunEvents();
-
-/**
  * Sends a Discord message as an upsert. For a Slopbot message the run IDs come from the store
  * unless the caller passes them (a reply that is being delivered now).
  */
-export async function publishMessage(store: Pick<ConversationEventStore, "setting" | "taskThreads"> & { replyRunIds(server: string, messageId: string): Promise<string[]> }, message: Message, runIds?: readonly string[], directory?: Pick<MemberDirectory, "profiles">, card?: ChatCard): Promise<void> {
+export async function publishMessage(store: { setting(server: string, key: string): unknown; taskThreads(server: string): { thread: string; parent: string }[]; replyRunIds(server: string, messageId: string): Promise<string[]> }, message: Message, runIds?: readonly string[], directory?: Pick<MemberDirectory, "profiles">, card?: ChatCard): Promise<void> {
   const slopbot = slopbotId(store, message.server);
   const ids = runIds ?? (slopbot !== undefined && message.author === slopbot ? await store.replyRunIds(message.server, message.id) : []);
   // Only a conversation that is switched on is read, so a quiet channel costs no Discord lookups.
   const profile = directory && showsProfile(message, slopbot) && transcriptSwitchOn(store, message.server, message.channel)
     ? (await directory.profiles(message.server, [message.author])).get(message.author) : undefined;
   const view = transcriptMessage(message, slopbot, ids, profile, false, card);
-  runEvents.publish(message.server, message.channel, "message", message.id, { action: "upsert", message: view as unknown as Json });
+  engineEvents.publish({ server: message.server, channel: message.channel }, { type: "message.upsert", message: view });
 }
 
 export function publishMessageDelete(server: string, channel: string, id: string): void {
-  runEvents.publish(server, channel, "message", id, { action: "delete", id });
+  engineEvents.publish({ server, channel }, { type: "message.delete", id });
 }
 
 /** Called by EventJournal when a model run starts. Only reply runs are shown live. */
 export function publishRunStart(message: Message, runId: string): void {
-  runEvents.publish(message.server, message.channel, "run.start", runId, { requestId: message.id });
+  engineEvents.publish({ server: message.server, channel: message.channel }, { type: "round.start", turn: message.id, run: runId });
 }
 
 /** Called by EventJournal for each model event. Only text and thinking are shown live. */
 export function publishModelEvent(message: Message, runId: string, event: ModelEvent): void {
+  const conversation = { server: message.server, channel: message.channel };
   if (event.kind === "text") {
-    if (event.payload.text) runEvents.publish(message.server, message.channel, "run.delta", runId, { part: "text", text: event.payload.text });
+    if (event.payload.text) {
+      engineEvents.publish(conversation, { type: "text.delta", turn: message.id, run: runId, text: event.payload.text });
+    }
     return;
   }
   if (event.kind === "reasoning") {
     const text = reasoningText(event.payload);
-    if (text) runEvents.publish(message.server, message.channel, "run.delta", runId, { part: "thinking", text });
+    if (text) {
+      engineEvents.publish(conversation, { type: "thinking.delta", turn: message.id, run: runId, text });
+    }
     return;
   }
-  // Only tools whose input the web view draws while it streams. Other tool input is not sent.
-  if (event.kind === "tool_input" && LIVE_INPUT_TOOLS.has(event.payload.name)) {
-    const { index, name, text } = event.payload;
-    runEvents.publish(message.server, message.channel, "run.delta", runId, { part: "tool", index, name, text });
+  if (event.kind === "tool_input") {
+    const { index, name, text, id } = event.payload;
+    // Without a provider call ID the call gets the ID the agent runner will give it (fallbackCallId).
+    engineEvents.publish(conversation, { type: "tool.input", turn: message.id, run: runId, call: id ?? fallbackCallId(runId, index), name, text });
   }
 }
+
+/** The call ID of a tool call whose provider sent none. Keyed by the model round, which is known while the input streams. */
+export const fallbackCallId = (runId: string, index: number): string => `call_${stableOperationId(runId, String(index))}`;
 
 /** Tools whose arguments stream to the web view: show_ui markup is drawn as it is written. */
 export const LIVE_INPUT_TOOLS: ReadonlySet<string> = new Set(["show_ui", "show_widget"]);
 
-/** Called by EventJournal when the model stream ends. */
-export function publishRunEnd(message: Message, runId: string, status: "done" | "failed"): void {
-  runEvents.publish(message.server, message.channel, "run.end", runId, { status });
-}
+// The call ID of each running tool activity. A child (run_tools_code program call) names its parent by activity ID,
+// but tool.status events key a call by its call ID, so the parent is looked up here.
+const callOfActivity = new Map<string, string>();
+const MAX_TRACKED_ACTIVITIES = 500;
 
 /** Called by the tool progress observer. The ref is the request message, which the run belongs to. */
 export function publishTool(message: Message, activity: ToolActivity): void {
-  runEvents.publish(message.server, message.channel, "run.tool", message.id, {
-    requestId: message.id,
-    id: activity.id,
-    name: activity.name,
-    status: activity.status,
-    args: shortArgs(activity.arguments),
-    ...(activity.reason ? { reason: activity.reason.slice(0, 300) } : {}),
+  const call = activity.callId ?? activity.id;
+  if (activity.status === "running" && activity.callId) {
+    callOfActivity.set(activity.id, activity.callId);
+    if (callOfActivity.size > MAX_TRACKED_ACTIVITIES) callOfActivity.delete(callOfActivity.keys().next().value!);
+  } else if (activity.status !== "running") callOfActivity.delete(activity.id);
+  engineEvents.publish({ server: message.server, channel: message.channel }, {
+    type: "tool.status", turn: message.id, call, name: activity.name, status: activity.status,
+    input: activity.arguments,
+    ...(activity.reason ? { reason: activity.reason.slice(0, 2000) } : {}),
+    ...(activity.code !== undefined ? { code: activity.code } : {}),
+    ...(activity.parentId !== undefined ? { parent: callOfActivity.get(activity.parentId) ?? activity.parentId } : {}),
+    ...(activity.durationMs !== undefined ? { durationMs: activity.durationMs } : {}),
   });
 }
 

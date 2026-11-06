@@ -1,0 +1,239 @@
+{
+  "outcome": {
+    "reply": "Slopbot could not complete these tool calls:\n- `broken`: failed: always broken\n- `broken`: failed: always broken\n- `broken`: failed: always broken\nStopped after three consecutive failed tool rounds. No further tool calls were run.",
+    "toolActivity": [
+      {
+        "id": "T:0",
+        "callId": "p1_0",
+        "name": "broken",
+        "arguments": {
+          "n": 0
+        },
+        "status": "failed",
+        "reason": "[TOOL_FAILED] always broken",
+        "reused": false
+      },
+      {
+        "id": "T:0",
+        "callId": "p2_0",
+        "name": "broken",
+        "arguments": {
+          "n": 0
+        },
+        "status": "failed",
+        "reason": "[TOOL_FAILED] always broken",
+        "reused": false
+      },
+      {
+        "id": "T:0",
+        "callId": "p3_0",
+        "name": "broken",
+        "arguments": {
+          "n": 0
+        },
+        "status": "failed",
+        "reason": "[TOOL_FAILED] always broken",
+        "reused": false
+      }
+    ]
+  },
+  "activityEvents": [
+    {
+      "id": "T:0",
+      "name": "broken",
+      "status": "running",
+      "callId": "p1_0"
+    },
+    {
+      "id": "T:0",
+      "name": "broken",
+      "status": "failed",
+      "callId": "p1_0",
+      "reason": "[TOOL_FAILED] always broken"
+    },
+    {
+      "id": "T:0",
+      "name": "broken",
+      "status": "running",
+      "callId": "p2_0"
+    },
+    {
+      "id": "T:0",
+      "name": "broken",
+      "status": "failed",
+      "callId": "p2_0",
+      "reason": "[TOOL_FAILED] always broken"
+    },
+    {
+      "id": "T:0",
+      "name": "broken",
+      "status": "running",
+      "callId": "p3_0"
+    },
+    {
+      "id": "T:0",
+      "name": "broken",
+      "status": "failed",
+      "callId": "p3_0",
+      "reason": "[TOOL_FAILED] always broken"
+    }
+  ],
+  "harness": [
+    {
+      "event": {
+        "type": "SendMessage"
+      },
+      "state": {
+        "kind": "Streaming"
+      }
+    },
+    {
+      "event": {
+        "type": "ToolsRequested",
+        "ids": [
+          "T:0"
+        ]
+      },
+      "state": {
+        "kind": "ToolPhase",
+        "calls": [
+          {
+            "id": "T:0",
+            "state": "Undecided",
+            "denied": false
+          }
+        ],
+        "queuedMessage": false
+      }
+    },
+    {
+      "event": {
+        "type": "ToolDecision",
+        "id": "T:0",
+        "decision": "approve"
+      },
+      "state": {
+        "kind": "ToolPhase",
+        "calls": [
+          {
+            "id": "T:0",
+            "state": "Running",
+            "denied": false
+          }
+        ],
+        "queuedMessage": false
+      }
+    },
+    {
+      "event": {
+        "type": "ToolResult",
+        "id": "T:0"
+      },
+      "state": {
+        "kind": "Streaming"
+      }
+    },
+    {
+      "event": {
+        "type": "ToolsRequested",
+        "ids": [
+          "T:0"
+        ]
+      },
+      "state": {
+        "kind": "ToolPhase",
+        "calls": [
+          {
+            "id": "T:0",
+            "state": "Undecided",
+            "denied": false
+          }
+        ],
+        "queuedMessage": false
+      }
+    },
+    {
+      "event": {
+        "type": "ToolDecision",
+        "id": "T:0",
+        "decision": "approve"
+      },
+      "state": {
+        "kind": "ToolPhase",
+        "calls": [
+          {
+            "id": "T:0",
+            "state": "Running",
+            "denied": false
+          }
+        ],
+        "queuedMessage": false
+      }
+    },
+    {
+      "event": {
+        "type": "ToolResult",
+        "id": "T:0"
+      },
+      "state": {
+        "kind": "Streaming"
+      }
+    },
+    {
+      "event": {
+        "type": "ToolsRequested",
+        "ids": [
+          "T:0"
+        ]
+      },
+      "state": {
+        "kind": "ToolPhase",
+        "calls": [
+          {
+            "id": "T:0",
+            "state": "Undecided",
+            "denied": false
+          }
+        ],
+        "queuedMessage": false
+      }
+    },
+    {
+      "event": {
+        "type": "ToolDecision",
+        "id": "T:0",
+        "decision": "approve"
+      },
+      "state": {
+        "kind": "ToolPhase",
+        "calls": [
+          {
+            "id": "T:0",
+            "state": "Running",
+            "denied": false
+          }
+        ],
+        "queuedMessage": false
+      }
+    },
+    {
+      "event": {
+        "type": "ToolResult",
+        "id": "T:0"
+      },
+      "state": {
+        "kind": "Streaming"
+      }
+    },
+    {
+      "event": {
+        "type": "StreamCompleted"
+      },
+      "state": {
+        "kind": "WaitingForUserMessage"
+      }
+    }
+  ],
+  "final": "WaitingForUserMessage",
+  "rounds": 4
+}

@@ -1,7 +1,7 @@
 import type { Message, ModelEvent } from "./domain.js";
 import type { Store } from "./ports.js";
 import { requestTimings } from "./request-timing.js";
-import { publishModelEvent, publishRunEnd, publishRunStart } from "./run-events.js";
+import { publishModelEvent, publishRunStart } from "./run-events.js";
 import { liveText } from "./live-text.js";
 
 // Preserve original payloads/order. Batch bounded writes; flush even on stream failure.
@@ -69,7 +69,7 @@ export class EventJournal {
   }
   async close(): Promise<void> {
     clearInterval(this.timer);
-    if (this.live) { publishRunEnd(this.message, this.runId, this.failure ? "failed" : "done"); liveText.emit({ kind: "end", message: this.message, runId: this.runId, status: this.failure ? "failed" : "done" }); }
+    if (this.live) { liveText.emit({ kind: "end", message: this.message, runId: this.runId, status: this.failure ? "failed" : "done" }); }
     await requestTimings.wait("journal durability", () => this.flush());
     if (this.failure) throw this.failure;
   }

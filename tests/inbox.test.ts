@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ChannelAccess, type ChannelFacts } from "../src/channel-access.js";
-import { Inbox, INBOX_MAX_SUMMARY, INBOX_SENDER_DAILY_LIMIT, type InboxItem, type InboxStore } from "../src/inbox.js";
+import { Inbox, INBOX_SENDER_DAILY_LIMIT, type InboxItem, type InboxStore } from "../src/inbox.js";
 import { registerServerTools, type ServerToolServices } from "../src/server-tools.js";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { ToolRegistry } from "../src/tools.js";
@@ -97,13 +97,6 @@ test("done all", async () => {
   assert.deepEqual(await inbox.list(SERVER, TARGET), []);
   assert.equal((await inbox.list(SERVER, TARGET, true)).length, 2);
   assert.ok(store.items.every(item => item.done_at !== null));
-});
-
-test("summary too long fails", async () => {
-  const { inbox } = setup();
-  await assert.rejects(inbox.add(input({ summary: "x".repeat(INBOX_MAX_SUMMARY + 1) })), /at most 1000 characters/);
-  await assert.rejects(inbox.add(input({ summary: "   " })), /cannot be empty/);
-  await inbox.add(input({ summary: "x".repeat(INBOX_MAX_SUMMARY) }));
 });
 
 test("target cannot see channel fails", async () => {

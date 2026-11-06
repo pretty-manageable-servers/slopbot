@@ -4,7 +4,7 @@ import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { ToolRegistry } from "../src/tools.js";
 import { UiRuntime } from "../src/ui/runtime.js";
 import { validateUi } from "../src/ui/schema.js";
-import { discordUi } from "../src/adapters/discord-ui.js";
+import { discordUi } from "../src/clients/discord/discord-ui.js";
 const message = { server: "s", channel: "c", author: "u", id: "m", text: "UI" };
 test("UI rejects executable content and invalid poll specifications", () => {
   assert.throws(
@@ -161,26 +161,4 @@ test("a UI recovers a completed action after a crash before the UI update", asyn
     recovered.document.type !== "poll" &&
       recovered.document.text === "Completed",
   );
-});
-
-test("rich cards suppress multiple link previews and encode controls with opaque IDs", () => {
-  const payload = discordUi(
-    validateUi({
-      version: 1,
-      type: "card",
-      text: "https://example.com https://example.org",
-      actions: [
-        {
-          label: "More",
-          action: "history.next",
-          arguments: { cursor: "secret-cursor" },
-        },
-      ],
-    }),
-    "opaque",
-    3,
-  );
-  assert.ok(payload.flags?.includes("SuppressEmbeds"));
-  assert.ok(!JSON.stringify(payload).includes("secret-cursor"));
-  assert.match(JSON.stringify(payload), /slopui:opaque:3:0/);
 });

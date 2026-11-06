@@ -21,19 +21,20 @@ import type { BlockingOperation, ToolArgs, ToolCall, ToolContext, ToolOperation 
 import type { HistoryQuery, HistoryPage } from '../search/history-search.js';
 import { FUZZY_SCAN, FUZZY_TERMS, fuzzyWords, likePattern, rankFuzzy, type FuzzyHit, type FuzzyQuery } from '../search/fuzzy.js';
 import type { AppRecord } from '../records.js';
-import type { ConversationEvent } from '../run-events.js';
+import type { EngineEventRow } from '../engine/event-log.js';
+import type { EngineEnvelope, EngineEvent } from '@slopbot/contracts';
 import type { ChannelReply, ChannelRun, RunSource } from '../conversation-groups.js';
 /** Rows deleted by one retention statement, so a large prune never holds locks for long. */
 const CONVERSATION_PRUNE_BATCH = 10000;
 
 import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
 import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, listChatShares, revokeShare, revokeAllShares, deleteChatShares } from '../share-store.js';
-import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatEffort, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../web-chat-store.js';
+import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatEffort, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../clients/web/web-chat-store.js';
 import { isPrivateChannel } from '../private-chat.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
 import type { InboxItem } from '../inbox.js';
-import { getWebSession, saveWebSession, deleteWebSession, deleteExpiredWebSessions } from '../web-session-store.js';
-import type { WebSessionRow } from '../web-session-store.js';
+import { getWebSession, saveWebSession, deleteWebSession, deleteExpiredWebSessions } from '../clients/web/web-session-store.js';
+import type { WebSessionRow } from '../clients/web/web-session-store.js';
 function inboxItemFromRow(row: Record<string, any>): InboxItem {
   return { id: String(row.id), server: String(row.server), target: String(row.target), sender: String(row.sender), channel: String(row.channel), sourceIds: JSON.parse(String(row.source_ids)) as string[], summary: String(row.summary), created_at: Number(row.created_at), done_at: row.done_at === null ? null : Number(row.done_at) };
 }
@@ -623,7 +624,7 @@ export class PostgresStore {
         return (await this.db.prepare("SELECT id FROM runs WHERE json_extract(message,'$.server')=? AND json_extract(message,'$.id')=? AND COALESCE(json_extract(prompt,'$.purpose'),'reply')='reply' ORDER BY rowid")
             .all(server, requestId)).map(row => String(row.id));
     }
-    async runRecord(runId: string): Promise<import('../web-transcripts.js').TranscriptRun | undefined> {
+    async runRecord(runId: string): Promise<import('../clients/web/web-transcripts.js').TranscriptRun | undefined> {
         const row = await this.db.prepare("SELECT id,message,prompt,status,result FROM runs WHERE id=?").get(runId);
         if (!row) return undefined;
         return { id: String(row.id), message: parseMessage(JSON.parse(String(row.message))), purpose: String(JSON.parse(String(row.prompt)).purpose ?? "reply"), status: String(row.status), result: row.result === null ? null : String(row.result), context: promptInventory(JSON.parse(String(row.prompt))) };
@@ -632,33 +633,37 @@ export class PostgresStore {
         return (await this.db.prepare("SELECT calls,results,diagnostic_args FROM agent_turns WHERE server=? AND message_id=? AND valid=1 ORDER BY sequence")
             .all(server, messageId)).map(row => ({ calls: JSON.parse(String(row.calls)), results: JSON.parse(String(row.results)), diagnosticArgs: row.diagnostic_args === null ? null : JSON.parse(String(row.diagnostic_args)) }));
     }
-    async appendConversationEvent(row: { server: string; channel: string; kind: string; ref: string; data: Json; createdAt: number }): Promise<number> {
-        const saved = await this.db.prepare("INSERT INTO conversation_events(server,channel,kind,ref,data,created_at) VALUES(?,?,?,?,?,?) RETURNING stream_id")
-            .get(row.server, row.channel, row.kind, row.ref, JSON.stringify(row.data), row.createdAt);
-        return Number(saved!.stream_id);
+    async latestEngineSeq(server: string, channel: string): Promise<number> {
+        return Number((await this.db.prepare("SELECT COALESCE(MAX(seq),0) AS id FROM engine_events WHERE server=? AND channel=?").get(server, channel))!.id);
     }
-    async latestStreamId(server: string, channel: string): Promise<number> {
-        return Number((await this.db.prepare("SELECT COALESCE(MAX(stream_id),0) AS id FROM conversation_events WHERE server=? AND channel=?").get(server, channel))!.id);
+    async appendEngineEvent(row: EngineEventRow): Promise<number> {
+        const saved = await this.db.prepare("INSERT INTO engine_events(server,channel,turn,type,data,created_at) VALUES(?,?,?,?,?,?) RETURNING seq")
+            .get(row.server, row.channel, row.turn, row.type, JSON.stringify(row.data), row.createdAt);
+        return Number(saved!.seq);
     }
-    async conversationEventsAfter(server: string, channel: string, after: number, limit: number): Promise<ConversationEvent[]> {
-        return (await this.db.prepare("SELECT stream_id,server,channel,kind,ref,data,created_at FROM conversation_events WHERE server=? AND channel=? AND stream_id>? ORDER BY stream_id LIMIT ?")
-            .all(server, channel, after, limit)).map(row => ({ streamId: Number(row.stream_id), server: String(row.server), channel: String(row.channel), kind: String(row.kind) as ConversationEvent["kind"], ref: String(row.ref), data: JSON.parse(String(row.data)) as Json, createdAt: Number(row.created_at) }));
+    async engineEventsAfter(server: string, channel: string, after: number, limit: number): Promise<EngineEnvelope[]> {
+        return (await this.db.prepare("SELECT seq,created_at,data FROM engine_events WHERE server=? AND channel=? AND seq>? ORDER BY seq LIMIT ?")
+            .all(server, channel, after, limit)).map(row => ({ seq: Number(row.seq), at: Number(row.created_at), conversation: { server, channel }, event: JSON.parse(String(row.data)) as EngineEvent }));
     }
-    async oldestStreamId(server: string, channel: string): Promise<number | undefined> {
-        const row = (await this.db.prepare("SELECT MIN(stream_id) AS id FROM conversation_events WHERE server=? AND channel=?").get(server, channel))!;
-        return row.id === null ? undefined : Number(row.id);
+    async engineTurnEvents(server: string, channel: string, turn: string): Promise<EngineEvent[]> {
+        return (await this.db.prepare("SELECT data FROM engine_events WHERE server=? AND channel=? AND turn=? ORDER BY seq")
+            .all(server, channel, turn)).map(row => JSON.parse(String(row.data)) as EngineEvent);
     }
-    /** Deletes rows older than olderThan, then the oldest rows beyond maxRows. Each statement deletes at most CONVERSATION_PRUNE_BATCH rows. */
+    /** Deletes rows older than olderThan, then the oldest rows beyond maxRows, in conversation_events and engine_events. */
     async pruneConversationEvents(olderThan: number, maxRows: number): Promise<number> {
+        return await this.pruneEventRows("conversation_events", "stream_id", olderThan, maxRows) + await this.pruneEventRows("engine_events", "seq", olderThan, maxRows);
+    }
+    /** Each statement deletes at most CONVERSATION_PRUNE_BATCH rows. */
+    private async pruneEventRows(table: "conversation_events" | "engine_events", key: "stream_id" | "seq", olderThan: number, maxRows: number): Promise<number> {
         let deleted = 0;
         for (;;) {
-            const changes = (await this.db.prepare("DELETE FROM conversation_events WHERE stream_id IN (SELECT stream_id FROM conversation_events WHERE created_at<? LIMIT ?)").run(olderThan, CONVERSATION_PRUNE_BATCH)).changes;
+            const changes = (await this.db.prepare(`DELETE FROM ${table} WHERE ${key} IN (SELECT ${key} FROM ${table} WHERE created_at<? LIMIT ?)`).run(olderThan, CONVERSATION_PRUNE_BATCH)).changes;
             deleted += changes;
             if (changes < CONVERSATION_PRUNE_BATCH) break;
         }
-        let excess = Number((await this.db.prepare("SELECT COUNT(*) AS n FROM conversation_events").get())!.n) - maxRows;
+        let excess = Number((await this.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get())!.n) - maxRows;
         while (excess > 0) {
-            const changes = (await this.db.prepare("DELETE FROM conversation_events WHERE stream_id IN (SELECT stream_id FROM conversation_events ORDER BY stream_id LIMIT ?)").run(Math.min(excess, CONVERSATION_PRUNE_BATCH))).changes;
+            const changes = (await this.db.prepare(`DELETE FROM ${table} WHERE ${key} IN (SELECT ${key} FROM ${table} ORDER BY ${key} LIMIT ?)`).run(Math.min(excess, CONVERSATION_PRUNE_BATCH))).changes;
             if (!changes) break;
             deleted += changes;
             excess -= changes;

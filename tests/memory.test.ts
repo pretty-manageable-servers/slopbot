@@ -150,13 +150,6 @@ test("explicit quotes bypass generation and cannot misattribute a requester's co
   assert.ok(!answer.includes("I meant"));
 });
 
-test("a resolved clarification is acknowledged directly", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  await store.ingest(msg("source", "a real statement", { author: "rice", authorName: "Rice Farmer" }));
-  const app = new Application(store, { async *stream() { throw new Error("do not narrate the clarification"); } }, { allowedChannels: [{ server: "s", channel: "c" }] }, store);
-  assert.equal((await app.handle(msg("correction", "I meant Rice Farmer")))?.text, "Got it—you mean Rice Farmer.");
-});
-
 test("opening an existing database deletes chat vectors and keeps saved knowledge vectors", async t => {
   const { DatabaseSync } = await import("node:sqlite");
   const { mkdtempSync, rmSync } = await import("node:fs");

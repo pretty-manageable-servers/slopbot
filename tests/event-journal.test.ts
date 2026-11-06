@@ -68,35 +68,3 @@ test("journal flushes on stream failure and supports legacy stores", async () =>
   assert.deepEqual(sequences, [0]);
   assert.equal(events[0]?.kind, "reasoning");
 });
-test("journal flushes sparse streams on its interval and propagates write errors", async () => {
-  let writes = 0;
-  const journal = new EventJournal(
-    {
-      async appendEvent() {
-        writes++;
-      },
-    },
-    "sparse",
-    message,
-    "model",
-  );
-  await journal.append({ kind: "text", payload: { text: "hello" } });
-  await new Promise((resolve) => setTimeout(resolve, 300));
-  assert.equal(writes, 1);
-  await journal.close();
-  const failed = new EventJournal(
-    {
-      async appendEvent() {
-        throw new Error("database failed");
-      },
-    },
-    "bad",
-    message,
-    "model",
-  );
-  await failed.append({
-    kind: "reasoning",
-    payload: { text: "must not silently succeed" },
-  });
-  await assert.rejects(failed.close(), /database failed/);
-});

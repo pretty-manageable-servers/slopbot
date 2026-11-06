@@ -15,7 +15,7 @@ function registry(store: SQLiteStore) {
   const reader: ToolDefinition = { name: "reader", surface: "top", description: "reads", fields: {}, access: "member", effect: "read", retrySafe: true, async execute() { return "read ok"; } };
   // Like the shell tool: a write that does not act on Discord.
   const writer: ToolDefinition = { name: "writer", surface: "top", description: "writes", fields: {}, access: "member", effect: "write", retrySafe: false, async execute() { return "wrote"; } };
-  const poster: ToolDefinition = { name: "poster", surface: "top", description: "posts to Discord", fields: {}, access: "member", effect: "write", retrySafe: false, scope: "discord", async execute() { return "posted"; } };
+  const poster: ToolDefinition = { name: "poster", surface: "top", description: "posts to Discord", fields: {}, access: "member", effect: "write", retrySafe: false, needs: ["discord_actions"], async execute() { return "posted"; } };
   tools.register(reader);
   tools.register(writer);
   tools.register(poster);
@@ -51,7 +51,7 @@ test("a private chat runs a write tool, but a Discord-scoped call throws", async
 test("a private chat is never forced into a Discord-scoped call", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const tools = registry(store);
-  const lookup: ToolDefinition = { name: "lookup", description: "reads Discord state", fields: {}, access: "member", effect: "read", retrySafe: true, scope: "discord", matchRead: () => ({}), async execute() { return "looked"; } };
+  const lookup: ToolDefinition = { name: "lookup", description: "reads Discord state", fields: {}, access: "member", effect: "read", retrySafe: true, needs: ["discord_actions"], matchRead: () => ({}), async execute() { return "looked"; } };
   tools.register(lookup);
   assert.equal(tools.suggest({ ...privateMessage, text: "look it up" }), undefined);
   assert.deepEqual(tools.suggest({ ...discordMessage, text: "look it up" }), { name: "lookup", arguments: {} });
@@ -97,11 +97,11 @@ test("deleting a private chat removes its messages, runs and events and keeps ot
   await store.ingest({ ...message, id: "web-other", channel: other, text: "other chat" });
   await store.startRun("run-private", message, { prefixVersion: "test", prefix: [], history: [], inputs: [] });
   await store.appendEvent("run-private", 0, { kind: "text", payload: { text: "secret answer" } });
-  await store.appendConversationEvent({ server: "s", channel: chat, kind: "message", ref: "web-2", data: {}, createdAt: 1 });
+  await store.appendEngineEvent({ server: "s", channel: chat, turn: null, type: "message.delete", data: { type: "message.delete", id: "web-2" }, createdAt: 1 });
   await store.deleteWebChat(privateId, "s", chat, 9);
   assert.equal(await store.canonicalMessage("s", "web-2"), undefined);
   assert.deepEqual(store.events("run-private"), []);
-  assert.equal(await store.latestStreamId("s", chat), 0);
+  assert.equal(await store.latestEngineSeq("s", chat), 0);
   assert.equal((await store.webChat(privateId))?.deleted, true);
   assert.deepEqual((await store.webChats("alice")).map(row => row.id), ["e".repeat(32)]);
   assert.ok(await store.canonicalMessage("s", "web-other"), "other chats are untouched");
@@ -110,8 +110,6 @@ test("deleting a private chat removes its messages, runs and events and keeps ot
 import { Application } from "../src/application.js";
 import { Bot, type ChatGateway, type Incoming } from "../src/bot.js";
 import { FakeLLM } from "../src/adapters/fake-llm.js";
-import { WebChatGateway } from "../src/web-chats.js";
-import type { ToolActivity } from "../src/tool-activity.js";
 
 function botFor(store: SQLiteStore, tools?: ToolRegistry) {
   const app = new Application(store, new FakeLLM(), { allowedChannels: [{ server: "s", channel: "100000000000000001" }] });
@@ -165,25 +163,6 @@ test("a private chat saves memories, but cannot start tasks", async t => {
   assert.equal(created(), 0, "no task thread may be created");
   assert.deepEqual((await store.memories("s", privateChannel(privateId))).map(note => note.content), ["I like tea"]);
   assert.equal(outputs.at(-1)!.text, "This action is only available in Discord.");
-});
-
-test("a private chat runs a write tool through the bot, but a Discord-scoped one is refused", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const tools = registry(store);
-  const { bot, created } = botFor(store, tools);
-  bot.openPrivateChat("s", privateChannel(privateId));
-  assert.equal((await bot.executeTool(privateMessage, { name: "writer", arguments: {} }, "op-bot-write")).text, "wrote");
-  assert.equal(created(), 0, "a private write never starts a task thread");
-  await assert.rejects(bot.executeTool(privateMessage, { name: "poster", arguments: {} }, "op-bot-post"), (error: unknown) => error instanceof ToolError && error.message === "This action is only available in Discord.");
-  assert.equal(created(), 0);
-});
-
-test("a private chat reply has no tool footer, because the web run summary shows the tools", async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const gateway = new WebChatGateway(store, "s");
-  const activity: ToolActivity[] = [{ id: "t1", name: "status", status: "completed" }];
-  const [reply] = await gateway.reply(privateMessage, "Answer", "delivery-1", activity);
-  assert.equal(reply!.text, "Answer");
 });
 
 test("the chat list of an owner has the chats of all servers", async t => {

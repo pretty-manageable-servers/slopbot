@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createHash, randomBytes } from "node:crypto";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
-import { createConsole, type ConsoleBackend } from "../src/web-console.js";
+import { createConsole, type ConsoleBackend } from "../src/clients/web/web-console.js";
 import type { InboxItem } from "../src/inbox.js";
 
 const SERVER = "1528063444874432734", ALICE = "1514413259522838529", ORIGIN = "http://localhost:3000";

@@ -7,7 +7,7 @@ import {appendToolEvidence} from './prompt-cache.js';
 import { toolFailureSummary } from "./presentation/tool-activity.js";
 import type { ToolActivity, ToolActivityObserver } from './tool-activity.js';
 import { presentationInstructions, type PresentationPolicy } from './presentation/policy.js';
-import { HarnessMachine, HarnessInterrupted, type HarnessJournal, type HarnessEvent } from "./harness-state.js";
+import { HarnessMachine, HarnessInterrupted, nextStep, type HarnessJournal, type HarnessEvent } from "./harness-state.js";
 import { ContextBuilder } from "./context-builder.js";
 import { ReplyRenderer } from "./reply-renderer.js";
 import { randomUUID } from "node:crypto";
@@ -15,6 +15,7 @@ import { parseEffort, type Effort, type Json, type Message, type Prompt, type Pr
 import { loadTaskSeed, refListParts, resolveRefs, type SettingsPort } from "./transcript.js";
 import { linkRefs } from "./reply-refs.js";
 import type { AgentTurn, LLM, Store } from "./ports.js";
+import { fallbackCallId } from "./run-events.js";
 import type { Recall } from "./memory.js";
 import { attribution, streamMetered, type UsageMeter } from "./usage-meter.js";
 import { GLOBAL_SETTINGS_SCOPE } from "./usage-cost.js";
@@ -226,11 +227,11 @@ export class AgentRunner {
     } catch (error) {
       if (error instanceof RequestGone) { console.log(JSON.stringify({ type: "run_stopped_request_deleted", server: message.server, channel: message.channel, messageId: message.id })); return undefined; }
       if (controller.signal.aborted) {
-        if (machine.state.kind === "Streaming") await step({ type: "Interrupt" });
+        if (nextStep(machine.state).kind === "stream") await step({ type: "Interrupt" });
         if (machine.state.kind === "InterruptingStream") await step({ type: "StreamInterrupted" });
         throw new HarnessInterrupted("Request interrupted; original model/tool events are retained", { cause: error });
       }
-      if (machine.state.kind === "Streaming") await step({ type: "StreamFailed" });
+      if (nextStep(machine.state).kind === "stream") await step({ type: "StreamFailed" });
       throw error;
     } finally { this.active.delete(key); }
   }
@@ -303,7 +304,7 @@ export class AgentRunner {
     };
     const compactWorkingContext = async (latestBatchStart: number): Promise<void> => {
       const used = this.counter.count([...prefix, ...history, ...inputs, ...trace]);
-      if (used <= Math.floor(inputLimit * 0.8) || machine.state.kind === "ToolResultsHeld") return;
+      if (used <= Math.floor(inputLimit * 0.8) || nextStep(machine.state).kind === "hold") return;
       const tail = trace.slice(latestBatchStart);
       const older = [...history, ...trace.slice(0, latestBatchStart)];
       if (!older.length && used <= inputLimit) return;
@@ -328,26 +329,30 @@ export class AgentRunner {
       console.log(JSON.stringify({ type: "working_context_checkpoint", server: message.server, channel: message.channel, messageId: message.id, runId, before: used, after, inputLimit, schemaBudget }));
     };
     let failedToolRounds = 0;
-    const appendTurn = async (turn: AgentTurn): Promise<void> => {
+    const appendTurn = async (turn: AgentTurn, runId?: string): Promise<void> => {
       if (signal.aborted) throw new HarnessInterrupted("Request interrupted");
       await step({ type: "ToolsRequested", ids: turn.calls.map((_, index) => `${turn.id}:${index}`) });
       const latestBatchStart = trace.length;
-      const callIds = turn.calls.map((call, index) => call.id ?? `call_${stableOperationId(turn.id, String(index))}`);
+      const callIds = turn.calls.map((call, index) => call.id ?? fallbackCallId(runId ?? turn.id, index));
       trace.push({ role: "assistant", content: native && turn.calls.every(call => !call.id) ? "" : turn.text, ...(native ? { toolCalls: turn.calls.map((call, index) => ({ id: callIds[index]!, name: call.name, arguments: call.arguments })) } : {}) });
       let batchFailed = false;
-      for (let index = 0; index < turn.calls.length; index++) {
+      // Auger drives the batch: approve the next undecided call, run it, send its result.
+      // Calls run one at a time, so a Running call never outlives its own step ("wait" cannot occur here).
+      for (let next = nextStep(machine.state); next.kind === "decide"; next = nextStep(machine.state)) {
         if (signal.aborted) throw new HarnessInterrupted("Request interrupted before next tool");
-        const id = `${turn.id}:${index}`;
+        const id = next.call.id;
+        const index = Number(id.slice(id.lastIndexOf(":") + 1));
+        // Every call is approved. A block or a validation error becomes a result the model sees.
+        await step({ type: "ToolDecision", id, decision: "approve" });
         let result = turn.results[String(index)];
         const reused = result !== undefined;
         let durationMs: number | undefined;
         let startedAt: number | undefined;
-        await step({ type: "ToolDecision", id, decision: "approve" });
         // The model sees refs such as "#m3"; the executed, journaled and displayed call uses real message IDs.
         const call: ToolCall = { ...turn.calls[index]!, arguments: resolveRefs(turn.calls[index]!.arguments, refs) as Record<string, Json> };
         if (result === undefined) {
           if (!tools || !this.accepts(message)) throw new Error("Tools unavailable in this scope");
-          await report({ id, name: call.name, arguments: call.arguments, status: "running", startedAt: startedAt = Date.now() });
+          await report({ id, callId: callIds[index]!, name: call.name, arguments: call.arguments, status: "running", startedAt: startedAt = Date.now() });
           const toolStarted = performance.now();
           const unknownRef = unknownMessageRef(turn.calls[index]!.arguments, refs);
           try { result = unknownRef !== undefined ? unknownRefResult(unknownRef) : await requestTimings.measure(message, `tool:${call.name}`, () => tools.execute(message, call, `${turn.id}:${index}`, sourceVersion, { signal, onActivity: report })); }
@@ -365,7 +370,7 @@ export class AgentRunner {
         const output = toolResult(result);
         batchFailed ||= toolFailed(output);
         if (output.ui) ui = output.ui;
-        await report({ id, name: call.name, arguments: call.arguments, status: toolFailed(output) ? output.status as "rejected" | "failed" : output.handoff ? "delegated" : "completed", ...(toolFailed(output) ? { reason: output.reason ?? output.text } : {}), reused, ...(durationMs !== undefined ? { durationMs } : {}), ...(startedAt !== undefined ? { startedAt } : {}) });
+        await report({ id, callId: callIds[index]!, name: call.name, arguments: call.arguments, status: toolFailed(output) ? output.status as "rejected" | "failed" : output.handoff ? "delegated" : "completed", ...(toolFailed(output) ? { reason: output.reason ?? output.text } : {}), reused, ...(durationMs !== undefined ? { durationMs } : {}), ...(startedAt !== undefined ? { startedAt } : {}) });
         if (signal.aborted) throw new HarnessInterrupted("Tool execution ended after interruption; its actual result is retained");
         if (machine.state.kind === "ToolPhase" && machine.state.calls.find(call => call.id === id)?.state === "Running") {
           // A failed execution is still a result the model must receive.
@@ -381,14 +386,15 @@ export class AgentRunner {
     };
     for (const turn of turns) {
       await appendTurn(turn);
-      if (machine.state.kind === "ToolResultsHeld") break;
+      if (nextStep(machine.state).kind === "hold") break;
     }
     const maxRounds = this.policy.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
     for (let round = 0; round <= maxRounds; round++) {
       if (signal.aborted) throw new HarnessInterrupted("Request interrupted");
       trace.push(...await pendingNotes());
-      if (machine.state.kind === "ToolResultsHeld") directAnswer = "Slopbot could not complete these tool calls:\n" + toolFailureSummary(activity) + "\nNo further tool calls were run.";
-      if (machine.state.kind !== "ToolResultsHeld" && this.counter.count([...prefix, ...history, ...inputs, ...trace]) > inputLimit) throw new RequestError("CONTEXT_BUDGET", "Context budget reached; original prompts and tool results are retained.", "Start a fresh request, or increase CONTEXT_TOKENS with enough room for OUTPUT_TOKENS.", { inputLimit: this.inputLimit });
+      const held = nextStep(machine.state).kind === "hold";
+      if (held) directAnswer = "Slopbot could not complete these tool calls:\n" + toolFailureSummary(activity) + "\nNo further tool calls were run.";
+      if (!held && this.counter.count([...prefix, ...history, ...inputs, ...trace]) > inputLimit) throw new RequestError("CONTEXT_BUDGET", "Context budget reached; original prompts and tool results are retained.", "Start a fresh request, or increase CONTEXT_TOKENS with enough room for OUTPUT_TOKENS.", { inputLimit: this.inputLimit });
       const runId = randomUUID();
       const retriesExhausted = failedToolRounds >= 3;
       // Read at each round, so a run cannot start new tools after the user passes the grace limit.
@@ -419,11 +425,11 @@ export class AgentRunner {
           if (round === maxRounds) throw new RequestError("TOOL_ROUND_LIMIT", `Reached the limit of ${maxRounds} tool rounds for this attempt. Completed progress is retained.`, "Continue the task in a new message, or retry this job to resume with a fresh round allowance. Set MAX_TOOL_ROUNDS to change the limit.", { limit: maxRounds, savedRounds: turns.length, completedRounds: round, nextTools: calls.map(call => call.name).join(", ") });
           const turn = await this.store.addAgentTurn(message, text, calls);
           await this.store.finishToolRun(runId, text);
-          await appendTurn(turn);
+          await appendTurn(turn, runId);
           continue;
         }
         if (signal.aborted) throw new HarnessInterrupted("Request interrupted before completion");
-        if (machine.state.kind === "Streaming") await step({ type: "StreamCompleted" });
+        if (nextStep(machine.state).kind === "stream") await step({ type: "StreamCompleted" });
         await this.store.complete(runId, taskKey, [...inputs, ...trace], text);
         // The stored run result keeps the model text. Only the reply shown to users gets the links.
         const rendered = await this.renderer.render(message.server, text, quoteAnswer !== undefined);

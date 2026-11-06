@@ -109,6 +109,13 @@ CREATE TABLE IF NOT EXISTS conversation_events (
       );
 CREATE INDEX IF NOT EXISTS conversation_events_channel ON conversation_events(server,channel,stream_id);
 CREATE INDEX IF NOT EXISTS conversation_events_created ON conversation_events(created_at);
+CREATE TABLE IF NOT EXISTS engine_events (
+        seq BIGSERIAL PRIMARY KEY, server TEXT NOT NULL, channel TEXT NOT NULL, turn TEXT,
+        type TEXT NOT NULL, data TEXT NOT NULL, created_at BIGINT NOT NULL
+      );
+CREATE INDEX IF NOT EXISTS engine_events_channel ON engine_events(server,channel,seq);
+CREATE INDEX IF NOT EXISTS engine_events_turn ON engine_events(server,channel,turn,seq);
+CREATE INDEX IF NOT EXISTS engine_events_created ON engine_events(created_at);
 CREATE TABLE IF NOT EXISTS worker_leases (server TEXT PRIMARY KEY, owner TEXT NOT NULL, expires BIGINT NOT NULL);
 CREATE OR REPLACE VIEW message_search AS SELECT sequence AS rowid,body::jsonb->>'text' AS text FROM messages;
 CREATE INDEX IF NOT EXISTS jobs_ready ON jobs(server,status,sequence);

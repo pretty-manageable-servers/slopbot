@@ -235,7 +235,7 @@ export class ChatCompletionsLLM implements LLM {
             const sent = sentInput.get(index) ?? 0;
             if (parts.name && parts.arguments.length > sent) {
               sentInput.set(index, parts.arguments.length);
-              yield { kind: "tool_input", payload: { index, name: parts.name, text: parts.arguments.slice(sent) } };
+              yield { kind: "tool_input", payload: { index, name: parts.name, text: parts.arguments.slice(sent), ...(parts.id ? { id: parts.id } : {}) } };
             }
           }
         }

@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { Events, GatewayIntentBits, Partials, type Client, type Interaction } from 'discord.js';
-import { DiscordAdapter } from '../src/adapters/discord.js';
+import { Events, type Client, type Interaction } from 'discord.js';
+import { DiscordAdapter } from '../src/clients/discord/discord.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { loadConfig } from '../src/config.js';
 import type { LLM } from '../src/ports.js';
@@ -39,6 +39,16 @@ test('one client serves each server, and the console lists only shared servers',
   assert.deepEqual((await f.adapter.consoleServers(user)).map(item => item.id), [two]);
 });
 
+test('a cached shared server that is not open answers "not both in that server" instead of crashing', async t => {
+  const f = fixture();
+  f.client.emit(Events.ClientReady, f.client); await settle();
+  assert.equal((await f.adapter.consoleServers(user)).length, 2);
+  const dropped = await f.adapter['servers'].get(one)!;
+  t.after(async () => { await dropped.stop(); await f.adapter.stop(); f.store.close(); });
+  f.adapter['servers'].delete(one);
+  await assert.rejects(f.adapter.consoleSnapshot(user, one), /not both in that server/);
+});
+
 test('DISCORD_GUILD_IDS limits the servers Slopbot runs in', async t => {
   const f = fixture({ DISCORD_GUILD_IDS: one }); t.after(async () => { await f.adapter.stop(); f.store.close(); });
   f.client.emit(Events.ClientReady, f.client); await settle();
@@ -64,15 +74,6 @@ test('secondary server slash commands defer and return their own channel setting
     const timer = setTimeout(() => reject(new Error('Command was not acknowledged')), 1000); timer.unref();
   })]);
   assert.deepEqual(calls, ['defer', 'No channels configured.']);
-});
-
-
-test('the Discord client subscribes to direct messages and partial channels', async t => {
-  const store = new SQLiteStore();
-  const adapter = new DiscordAdapter(loadConfig({ DISCORD_BOT_TOKEN: 'test-only', LLM_MODE: 'mock' }), store, { async *stream() {} });
-  t.after(async () => { await adapter.stop(); store.close(); });
-  assert.ok(adapter['client'].options.intents.has(GatewayIntentBits.DirectMessages));
-  assert.ok(adapter['client'].options.partials?.includes(Partials.Channel));
 });
 
 test('DMs reply without mentions, keep private history, and track edits and deletions', async t => {

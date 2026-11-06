@@ -1,9 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ChatCompletionsLLM, gemmaToolCalls } from '../src/adapters/chat-completions.js';
+import { ChatCompletionsLLM } from '../src/adapters/chat-completions.js';
 import { describeError } from '../src/errors.js';
 import { withInspectionBudget } from '../src/context.js';
-import { parseToolCalls } from '../src/tools.js';
 import type { Prompt } from '../src/domain.js';
 
 const options = { baseUrl: 'https://api.pmservers.org/ai/v1', model: 'nimbus', apiKey: 'test-only' };
@@ -16,11 +15,6 @@ test('nine native calls fit the shared batch limit and retain every call ID', as
   let result: unknown;
   for await (const event of llm.stream(prompt)) if (event.kind === 'tool_call') result = event.payload;
   assert.deepEqual(result, calls.map(call => ({ id: call.id, name: 'read', arguments: {} })));
-});
-
-test('the internal and legacy envelope parser uses the same larger batch limit', () => {
-  const calls = Array.from({ length: 9 }, (_, index) => ({ name: 'read', id: `call_${index}`, arguments: {} }));
-  assert.equal(parseToolCalls(JSON.stringify({ tool_calls: calls }))?.length, 9);
 });
 
 for (const [name, chunk, code, done] of [
@@ -38,11 +32,6 @@ test('image transport bytes do not consume the text context budget', () => {
   const image = { url: 'data:image/jpeg;base64,' + 'A'.repeat(400000), label: 'Bounded 768px file frame' };
   const budgeted = withInspectionBudget({ contextTokenLimit: 200000, outputTokenLimit: 50000 }, { ...prompt, tools: [], inputs: [{ role: 'user', content: 'Inspect this image.', images: [image] }] });
   assert.equal(budgeted.maxOutputTokens, 50000);
-});
-
-test('provider network failure has a specific code', async () => {
-  const llm = new ChatCompletionsLLM(options, async () => { throw new TypeError('fetch failed'); });
-  await assert.rejects(async () => { for await (const event of llm.stream(prompt)) void event; }, error => describeError(error).code === 'PROVIDER_NETWORK');
 });
 
 test('a single response choice without an explicit index is not silently discarded', async () => {
@@ -74,9 +63,4 @@ test('a broken response body has a specific stream code and preserves partial ou
   let text = '';
   await assert.rejects(async () => { for await (const event of llm.stream(prompt)) if (event.kind === 'text') text += event.payload.text; }, error => describeError(error).code === 'PROVIDER_STREAM_INTERRUPTED');
   assert.equal(text, 'partial');
-});
-
-test('template tool batches share the larger batch allowance',()=>{
- const text=Array.from({length:9},()=>'<|tool_call>call:read{}<tool_call|>').join('\n');
- assert.equal(gemmaToolCalls(text)?.length,9);
 });

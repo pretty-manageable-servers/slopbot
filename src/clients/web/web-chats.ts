@@ -1,0 +1,438 @@
+import { randomUUID } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { chatRoutes } from "./routes/chats.js";
+import { logError } from "../../errors.js";
+import { parseEffort, type Effort, type Message } from "../../domain.js";
+import type { UiDocument } from "../../ui/schema.js";
+import type { ChannelAccess } from "../../channel-access.js";
+import type { Directory, Engine, Workspace } from "../../engine/api.js";
+import type { UserLimiter } from "../../user-limiter.js";
+import { ToolError } from "../../tools.js";
+import { PRIVATE_CHANNEL_PREFIX, PRIVATE_CHAT_MAX_CHARS, PRIVATE_CHAT_TITLE_CHARS, isPrivateChannel, newPrivateChatId, privateChannel, privateChatTitle } from "../../private-chat.js";
+import { fileLabel, publishMessage, slopbotId, withoutFileLabelText } from "../../run-events.js";
+import type { EngineEvent } from "@slopbot/contracts";
+import { engineEvents } from "../../engine/event-log.js";
+import { messageViews, openEngineStream, streamCursor, turnEventsOf, type TranscriptStore } from "./web-transcripts.js";
+import type { WebChatRow } from "./web-chat-store.js";
+import { CHAT_IMAGE_ID, CHAT_IMAGE_MAX_BYTES, CHAT_IMAGE_MAX_COUNT, CHAT_IMAGE_SCHEME, LocalDiskStorage, chatImageContentType, chatImageKey, imageAttachments, imageName, newChatImageId, sniffImage } from "../../web-chat-images.js";
+import { CHAT_FILE_ID, CHAT_FILE_MAX_BYTES, CHAT_ATTACHMENT_MAX_COUNT, chatFileKey, fileAttachments, fileContentType, fileName, fileUrl, newChatFileId, type ChatFileView } from "../../web-chat-files.js";
+import type { ObjectStorageProvider } from "../../object-storage.js";
+import { ChatShareService, type ShareService, type ShareStore } from "../../shares.js";
+
+/** Store calls for private chats. SQLite and Postgres implement them. */
+export interface ChatStore extends TranscriptStore, ShareStore {
+  ingest(message: Message): Promise<boolean>;
+  insertWebChat(row: WebChatRow): Promise<void>;
+  webChat(id: string): Promise<WebChatRow | undefined>;
+  webChats(owner: string): Promise<WebChatRow[]>;
+  renameWebChat(id: string, title: string, updated: number): Promise<void>;
+  setWebChatEffort(id: string, effort: Effort | null): Promise<void>;
+  touchWebChat(id: string, updated: number): Promise<void>;
+  deleteWebChat(id: string, server: string, channel: string, at: number): Promise<void>;
+  setting(server: string, key: string): unknown;
+}
+
+/** What the chat service needs: the engine to run chats, Discord authority for membership and names, and the shared limiter and access checks. */
+export interface ChatDeps {
+  engine: Engine;
+  directory: Directory;
+  limiter: Pick<UserLimiter, "check">;
+  access: ChannelAccess;
+  /** Private storage for chat images. Without it, a local disk folder is used (development only). */
+  images?: ObjectStorageProvider;
+}
+
+/** An error with the HTTP status the route sends. resetAt is set for a usage limit. */
+export class ChatError extends Error {
+  override name = "ChatError";
+  constructor(readonly status: number, message: string, readonly resetAt?: number) { super(message); }
+}
+
+const CHAT_ID = /^[0-9a-f]{32}$/;
+const SNOWFLAKE = /^\d{17,20}$/;
+/** The model reads an image soon after the send. */
+const MODEL_LINK_SECONDS = 900;
+const PENDING_IMAGE_MS = 60 * 60 * 1000;
+const PENDING_FILE_MS = 60 * 60 * 1000;
+const MESSAGE_ID = /^[\w:.-]{1,64}$/;
+
+/** The private chat API: list, create, rename, delete, messages, live stream and send. Every call checks the owner and the server membership. */
+export class WebChatService {
+  private readonly shares: ChatShareService;
+  private readonly storage: ObjectStorageProvider;
+  /** Images that are uploaded but not sent yet. A restart forgets them; their objects stay until the chat is deleted. */
+  private readonly pending = new Map<string, { chat: string; user: string; name: string; contentType: string; size: number; at: number }>();
+  /** Files that are uploaded but not sent yet. Same rules as pending. */
+  private readonly pendingFiles = new Map<string, { chat: string; user: string; name: string; contentType: string; size: number; at: number }>();
+  constructor(private readonly store: ChatStore, private readonly host: ChatDeps, private readonly now: () => number = Date.now) {
+    this.shares = new ChatShareService(store, now);
+    this.storage = host.images ?? new LocalDiskStorage();
+  }
+
+  /**
+   * All live chats of the user, from every server, newest first. The server of a chat only hosts its runs, so the list
+   * is the same on every device. Chats in a server that the user or Slopbot left are not shown (they cannot be opened).
+   */
+  async list(user: string): Promise<{ id: string; title: string; updated: number; effort: Effort }[]> {
+    const chats = await this.store.webChats(user);
+    const member = new Map<string, Promise<boolean>>();
+    const open = (server: string) => {
+      if (!member.has(server)) member.set(server, SNOWFLAKE.test(server) ? this.host.directory.isMember(user, server).catch(() => false) : Promise.resolve(false));
+      return member.get(server)!;
+    };
+    const kept = await Promise.all(chats.map(chat => open(chat.server)));
+    return chats.filter((_, index) => kept[index]).map(chat => ({ id: chat.id, title: chat.title, updated: chat.updated, effort: this.effortOf(chat) }));
+  }
+
+  /** The chat's own effort, else the server default, else medium. */
+  private effortOf(chat: WebChatRow): Effort {
+    return chat.effort ?? parseEffort(this.store.setting(chat.server, "default_effort")) ?? "medium";
+  }
+
+  /** Saves the chat's effort. null returns the chat to the server default. */
+  async setEffort(user: string, id: string, raw: unknown): Promise<void> {
+    const chat = await this.owned(user, id);
+    const effort = raw === null ? null : parseEffort(raw);
+    if (effort === undefined) throw new ChatError(400, "Choose low, medium or xhigh.");
+    await this.store.setWebChatEffort(chat.id, effort);
+  }
+
+  async create(user: string, server: string): Promise<{ id: string }> {
+    await this.requireMember(user, server);
+    const workspace = await this.handle(server);
+    const id = newPrivateChatId(), at = this.now();
+    await this.store.insertWebChat({ id, server, owner: user, title: "", created: at, updated: at, deleted: false });
+    workspace.openChat(privateChannel(id));
+    return { id };
+  }
+
+  async rename(user: string, id: string, raw: unknown): Promise<void> {
+    const chat = await this.owned(user, id);
+    const title = typeof raw === "string" ? raw.replace(/\s+/g, " ").trim() : "";
+    if (!title || [...title].length > PRIVATE_CHAT_TITLE_CHARS) throw new ChatError(400, `Write a title of 1 to ${PRIVATE_CHAT_TITLE_CHARS} characters.`);
+    await this.store.renameWebChat(chat.id, title, this.now());
+  }
+
+  async remove(user: string, id: string): Promise<void> {
+    const chat = await this.owned(user, id);
+    const channel = privateChannel(chat.id);
+    const workspace = await this.handle(chat.server);
+    // The chat's images go first. If this fails, the chat stays and the user can try again.
+    await this.removeImages(chat);
+    workspace.closeChat(channel);
+    // The chat's share links stop working and their frozen copies go with the chat.
+    await this.shares.removeChat(chat);
+    await this.store.deleteWebChat(chat.id, chat.server, channel, this.now());
+    // Wakes open streams, which then see that the chat is gone and close.
+    this.host.access.clearServer(chat.server);
+  }
+
+  /** The owner's share links of this chat. Anyone else gets 404. */
+  async shareList(user: string, id: string): Promise<{ shares: { id: string; created_at: number; revoked: boolean }[] }> {
+    return this.shares.list(await this.owned(user, id));
+  }
+
+  /** A new link with a frozen copy of the chat's messages up to now. */
+  async shareCreate(user: string, id: string): Promise<{ id: string }> {
+    return this.shares.create(await this.owned(user, id), user);
+  }
+
+  /** Revokes one link of this chat. Anyone else gets 404. */
+  async shareRevoke(user: string, id: string, shareId: string): Promise<{ id: string; revoked: true }> {
+    return this.shares.revoke(await this.owned(user, id), shareId);
+  }
+
+  /**
+   * Copies a live share into a new private chat of the signed-in user. The copied messages are saved in that chat,
+   * so the model reads them as earlier history. An unknown or revoked share, or a private chat link whose owner left
+   * the server, is 404 (the snapshot check). Images and tool lines are not copied.
+   */
+  async continueShare(user: string, shareId: string, shares: Pick<ShareService, "snapshot">): Promise<{ id: string; title: string }> {
+    const row = await this.store.getShare(shareId);
+    const copy = row ? await shares.snapshot(shareId) : undefined;
+    if (!row || !copy) throw new ChatError(404, "Not found.");
+    await this.requireMember(user, row.server);
+    const workspace = await this.handle(row.server);
+    const id = newPrivateChatId(), channel = privateChannel(id), at = this.now();
+    // A message with no text (only images) is not copied. Images are never copied. File labels are not copied (an old snapshot can still have them).
+    const messages = copy.messages.map(item => ({ ...item, text: withoutFileLabelText(item.text) })).filter(item => item.text.trim());
+    const title = privateChatTitle(messages[0]?.text ?? "");
+    await this.store.insertWebChat({ id, server: row.server, owner: user, title, created: at, updated: at, deleted: false });
+    const slopbot = slopbotId(this.store, row.server) ?? "slopbot";
+    // Each copied row gets a new ID. Slopbot replies keep the Slopbot author, so the model reads them as its own answers.
+    for (const [index, item] of messages.entries()) {
+      const saved: Message = {
+        id: `chat-share-${randomUUID()}`, server: row.server, channel,
+        author: item.bot ? slopbot : `share:${shareId}:${index}`,
+        authorName: item.bot ? "Slopbot" : item.author,
+        ...(item.bot ? { isBot: true } : {}),
+        text: item.text,
+        timestamp: Math.min(item.at ?? at - messages.length + index, at - 1),
+        addressed: false,
+      };
+      await this.store.ingest(saved);
+    }
+    workspace.openChat(channel);
+    return { id, title };
+  }
+
+  /**
+   * Makes a new private chat that starts with one Discord message, for the "Continue in Slopbot web" message command.
+   * The message is saved as earlier history, so the model reads it. Slopbot does not answer until the user writes.
+   */
+  async continueMessage(user: string, server: string, source: Message): Promise<{ id: string }> {
+    await this.requireMember(user, server);
+    const workspace = await this.handle(server);
+    const id = newPrivateChatId(), channel = privateChannel(id), at = this.now();
+    const text = [...source.text].slice(0, PRIVATE_CHAT_MAX_CHARS).join("");
+    await this.store.insertWebChat({ id, server, owner: user, title: privateChatTitle(text), created: at, updated: at, deleted: false });
+    await this.store.ingest({
+      id: `chat-message-${randomUUID()}`, server, channel, author: source.author,
+      ...(source.authorName ? { authorName: source.authorName } : {}), ...(source.isBot ? { isBot: true } : {}),
+      text, timestamp: Math.min(source.timestamp ?? at - 1, at - 1), addressed: false,
+    });
+    workspace.openChat(channel);
+    return { id };
+  }
+
+  async messages(user: string, id: string, limit: number, before: string | null): Promise<{ messages: unknown[]; hasMore: boolean; streamId: number }> {
+    const chat = await this.owned(user, id);
+    const channel = privateChannel(chat.id);
+    const streamId = await engineEvents.latest({ server: chat.server, channel });
+    let cursor: { time: number; id: string } | undefined;
+    if (before !== null) {
+      if (!MESSAGE_ID.test(before)) throw new ChatError(400, "Invalid cursor.");
+      const found = await this.store.canonicalMessage(chat.server, before);
+      if (!found || found.channel !== channel) throw new ChatError(400, "That message is no longer stored. Reload the chat.");
+      cursor = { time: found.timestamp ?? 0, id: found.id };
+    }
+    const rows = await this.store.conversationMessages(chat.server, channel, cursor, limit + 1);
+    return {
+      messages: await messageViews(this.store, this.host.directory, chat.server, rows.slice(0, limit).reverse()),
+      hasMore: rows.length > limit,
+      streamId,
+    };
+  }
+
+  /** Saves the user message, publishes it, then lets the bot answer. The usage limit is checked before anything is saved. */
+  async send(user: string, id: string, raw: unknown, rawImages: unknown = undefined, rawFiles: unknown = undefined): Promise<{ id: string }> {
+    const chat = await this.owned(user, id);
+    const ids = rawImages === undefined ? [] : rawImages;
+    const fileIds = rawFiles === undefined ? [] : rawFiles;
+    if (!Array.isArray(ids) || !Array.isArray(fileIds) || ids.length + fileIds.length > CHAT_ATTACHMENT_MAX_COUNT || new Set(ids).size !== ids.length || new Set(fileIds).size !== fileIds.length) throw new ChatError(400, `Attach ${CHAT_ATTACHMENT_MAX_COUNT} files or images or fewer.`);
+    const images = ids.map(imageId => {
+      const found = typeof imageId === "string" ? this.pending.get(imageId) : undefined;
+      if (!found || found.chat !== chat.id || found.user !== user) throw new ChatError(400, "An image was not found. Attach it again.");
+      return { imageId: imageId as string, ...found };
+    });
+    const files = fileIds.map(fileId => {
+      const found = typeof fileId === "string" ? this.pendingFiles.get(fileId) : undefined;
+      if (!found || found.chat !== chat.id || found.user !== user) throw new ChatError(400, "A file was not found. Attach it again.");
+      return { fileId: fileId as string, url: fileUrl(chat.server, chat.id, fileId as string), ...found };
+    });
+    const text = typeof raw === "string" ? raw.trim() : "";
+    if (!text && !images.length && !files.length) throw new ChatError(400, "Write a message.");
+    const body = text || (files.length ? "Please look at the attached file(s)." : "Please look at the attached image" + (images.length > 1 ? "s." : "."));
+    if ([...body].length > PRIVATE_CHAT_MAX_CHARS) throw new ChatError(400, `Write ${PRIVATE_CHAT_MAX_CHARS} characters or fewer.`);
+    const limit = await this.host.limiter.check(user);
+    if (!limit.allowed) throw new ChatError(429, "Usage limit reached.", limit.resetAt);
+    const workspace = await this.handle(chat.server);
+    const channel = privateChannel(chat.id), at = this.now();
+    const name = (await this.host.directory.profiles(chat.server, [user]))?.get(user)?.displayName ?? user;
+    // The saved row keeps a placeholder per image or file (name, type, size, ID), never bytes.
+    const attachments = [
+      ...images.map(item => ({ name: item.name, url: CHAT_IMAGE_SCHEME + item.imageId, contentType: item.contentType, size: item.size })),
+      ...files.map(item => ({ name: item.name, url: item.url, contentType: item.contentType, size: item.size })),
+    ];
+    // Each file gets one label line in the saved text, so the model knows the file exists. Images go by modelImages instead.
+    const labels = files.map(item => fileLabel(item.name, item.contentType, item.url));
+    const message: Message = { id: `chat-${randomUUID()}`, server: chat.server, channel, author: user, authorName: name, text: [body, ...labels].join("\n"), timestamp: at, addressed: true, source: "web", surface: "web", effort: this.effortOf(chat), ...(attachments.length ? { attachments } : {}) };
+    // The model gets short-lived signed links, only in memory.
+    const modelImages = await Promise.all(images.map(async item => ({ url: await this.storage.link(chatImageKey(chat.server, chat.id, item.imageId), item.name, MODEL_LINK_SECONDS), label: item.name })));
+    await this.store.ingest(message);
+    for (const item of images) this.pending.delete(item.imageId);
+    for (const item of files) this.pendingFiles.delete(item.fileId);
+    if (chat.title) await this.store.touchWebChat(chat.id, at); else await this.store.renameWebChat(chat.id, privateChatTitle(text || (images[0] ?? files[0])!.name), at);
+    await publishMessage(this.store, message, undefined, this.host.directory);
+    void workspace.submit(modelImages.length ? { ...message, modelImages } : message, { ingested: true }).catch(error => logError("web_chat_receive_failed", error, { server: chat.server, channel, messageId: message.id }));
+    return { id: message.id };
+  }
+
+  /** Stores one uploaded image in private storage and returns its ID. The usage limit is checked first. The type comes from the bytes. */
+  async uploadImage(user: string, id: string, bytes: Uint8Array, rawName: string | null): Promise<{ imageId: string; name: string; contentType: string; size: number }> {
+    const chat = await this.owned(user, id);
+    if (!bytes.length) throw new ChatError(400, "The image is empty.");
+    if (bytes.length > CHAT_IMAGE_MAX_BYTES) throw new ChatError(413, "Images can be 25 MB or smaller.");
+    const kind = sniffImage(bytes);
+    if (!kind) throw new ChatError(415, "Use a PNG, JPEG, GIF or WebP image.");
+    const at = this.now();
+    for (const [key, item] of this.pending) if (at - item.at > PENDING_IMAGE_MS) { this.pending.delete(key); void this.storage.delete(chatImageKey(chat.server, item.chat, key)).catch(error => logError("web_chat_image_sweep_failed", error, { server: chat.server }, true)); }
+    if ([...this.pending.values()].filter(item => item.chat === chat.id && item.user === user).length >= CHAT_IMAGE_MAX_COUNT) throw new ChatError(400, `Attach ${CHAT_IMAGE_MAX_COUNT} images or fewer.`);
+    const limit = await this.host.limiter.check(user);
+    if (!limit.allowed) throw new ChatError(429, "Usage limit reached.", limit.resetAt);
+    const imageId = newChatImageId(kind.extension), name = imageName(rawName, kind.extension);
+    await this.storage.put(chatImageKey(chat.server, chat.id, imageId), bytes, kind.contentType);
+    this.pending.set(imageId, { chat: chat.id, user, name, contentType: kind.contentType, size: bytes.length, at });
+    return { imageId, name, contentType: kind.contentType, size: bytes.length };
+  }
+
+  /** Removes an image that is uploaded but not sent. A sent image goes only with its chat. */
+  async discardImage(user: string, id: string, imageId: string): Promise<void> {
+    const chat = await this.owned(user, id);
+    const found = this.pending.get(imageId);
+    if (!found || found.chat !== chat.id || found.user !== user) throw new ChatError(404, "Not found.");
+    this.pending.delete(imageId);
+    await this.storage.delete(chatImageKey(chat.server, chat.id, imageId));
+  }
+
+  /** The bytes of one image of an owned chat. The key has the chat in it, so another chat's image is never reached. */
+  async readImage(user: string, id: string, imageId: string): Promise<{ bytes: Uint8Array; contentType: string }> {
+    const chat = await this.owned(user, id);
+    if (!CHAT_IMAGE_ID.test(imageId)) throw new ChatError(404, "Not found.");
+    const bytes = await this.storage.get(chatImageKey(chat.server, chat.id, imageId), CHAT_IMAGE_MAX_BYTES).catch(() => undefined);
+    if (!bytes) throw new ChatError(404, "Not found.");
+    return { bytes, contentType: chatImageContentType(imageId) };
+  }
+
+  /** Stores one uploaded file of any type and returns its view. The usage limit is checked first. The type is the browser's, when it is plain. */
+  async uploadFile(user: string, id: string, bytes: Uint8Array, rawName: string | null, rawType: string | null): Promise<ChatFileView> {
+    const chat = await this.owned(user, id);
+    if (!bytes.length) throw new ChatError(400, "The file is empty.");
+    if (bytes.length > CHAT_FILE_MAX_BYTES) throw new ChatError(413, "Files can be 10 MB or smaller.");
+    const at = this.now();
+    for (const [key, item] of this.pendingFiles) if (at - item.at > PENDING_FILE_MS) { this.pendingFiles.delete(key); void this.storage.delete(chatFileKey(chat.server, item.chat, key)).catch(error => logError("web_chat_file_sweep_failed", error, { server: chat.server }, true)); }
+    if ([...this.pending.values(), ...this.pendingFiles.values()].filter(item => item.chat === chat.id && item.user === user).length >= CHAT_ATTACHMENT_MAX_COUNT) throw new ChatError(400, `Attach ${CHAT_ATTACHMENT_MAX_COUNT} files or images or fewer.`);
+    const limit = await this.host.limiter.check(user);
+    if (!limit.allowed) throw new ChatError(429, "Usage limit reached.", limit.resetAt);
+    const name = fileName(rawName), contentType = fileContentType(rawType);
+    const fileId = newChatFileId(name);
+    await this.storage.put(chatFileKey(chat.server, chat.id, fileId), bytes, contentType);
+    this.pendingFiles.set(fileId, { chat: chat.id, user, name, contentType, size: bytes.length, at });
+    return { fileId, name, contentType, size: bytes.length };
+  }
+
+  /** Removes a file that is uploaded but not sent. A sent file goes only with its chat. */
+  async discardFile(user: string, id: string, fileId: string): Promise<void> {
+    const chat = await this.owned(user, id);
+    const found = this.pendingFiles.get(fileId);
+    if (!found || found.chat !== chat.id || found.user !== user) throw new ChatError(404, "Not found.");
+    this.pendingFiles.delete(fileId);
+    await this.storage.delete(chatFileKey(chat.server, chat.id, fileId));
+  }
+
+  /** The bytes and name of one file of an owned chat. The key has the chat in it, so another chat's file is never reached. */
+  async readFile(user: string, id: string, fileId: string): Promise<{ bytes: Uint8Array; name: string }> {
+    const chat = await this.owned(user, id);
+    if (!CHAT_FILE_ID.test(fileId)) throw new ChatError(404, "Not found.");
+    const bytes = await this.storage.get(chatFileKey(chat.server, chat.id, fileId), CHAT_FILE_MAX_BYTES).catch(() => undefined);
+    if (!bytes) throw new ChatError(404, "Not found.");
+    return { bytes, name: await this.chatFileName(chat, fileId) };
+  }
+
+  /** The name of a file: the pending upload, else the message that sent it, else the file ID. */
+  private async chatFileName(chat: WebChatRow, fileId: string): Promise<string> {
+    const pending = this.pendingFiles.get(fileId);
+    if (pending?.chat === chat.id) return pending.name;
+    const channel = privateChannel(chat.id);
+    let cursor: { time: number; id: string } | undefined;
+    for (;;) {
+      const rows = await this.store.conversationMessages(chat.server, channel, cursor, 100);
+      for (const row of rows) { const found = fileAttachments(row.attachments).find(item => item.fileId === fileId); if (found) return found.name; }
+      const last = rows.at(-1);
+      if (rows.length < 100 || !last) break;
+      cursor = { time: last.timestamp ?? 0, id: last.id };
+    }
+    return fileId;
+  }
+
+  /** Deletes every stored image and file of a chat: the sent ones (from the message rows) and the pending ones. */
+  private async removeImages(chat: WebChatRow): Promise<void> {
+    const channel = privateChannel(chat.id), ids = new Set<string>(), fileIds = new Set<string>();
+    for (const [imageId, item] of this.pending) if (item.chat === chat.id) ids.add(imageId);
+    for (const [fileId, item] of this.pendingFiles) if (item.chat === chat.id) fileIds.add(fileId);
+    let cursor: { time: number; id: string } | undefined;
+    for (;;) {
+      const rows = await this.store.conversationMessages(chat.server, channel, cursor, 100);
+      for (const row of rows) {
+        for (const item of imageAttachments(row.attachments)) ids.add(item.imageId);
+        for (const item of fileAttachments(row.attachments)) fileIds.add(item.fileId);
+      }
+      const last = rows.at(-1);
+      if (rows.length < 100 || !last) break;
+      cursor = { time: last.timestamp ?? 0, id: last.id };
+    }
+    for (const imageId of ids) { await this.storage.delete(chatImageKey(chat.server, chat.id, imageId)); this.pending.delete(imageId); }
+    for (const fileId of fileIds) { await this.storage.delete(chatFileKey(chat.server, chat.id, fileId)); this.pendingFiles.delete(fileId); }
+  }
+
+  /** Opens the engine event stream of a chat (SSE). Without ?after= or Last-Event-ID it starts at the newest event. */
+  async openEvents(req: IncomingMessage, res: ServerResponse, user: string, id: string): Promise<void> {
+    const chat = await this.owned(user, id);
+    const header = req.headers["last-event-id"];
+    const cursor = streamCursor(Array.isArray(header) ? header[0] : header, new URL(req.url || "/", "http://local").searchParams.get("after"));
+    res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
+    res.write("retry: 3000\n\n");
+    const stop = openEngineStream({
+      server: chat.server, channel: privateChannel(chat.id), user, cursor, events: engineEvents, access: this.host.access,
+      allowed: async () => { try { await this.owned(user, id); return true; } catch { return false; } },
+      write: text => { res.write(text); },
+      end: () => { res.end(); },
+    });
+    res.on("close", () => stop());
+  }
+
+  /** The saved engine events of one turn of a chat. */
+  async turnEvents(user: string, id: string, turn: string): Promise<{ events: EngineEvent[] }> {
+    const chat = await this.owned(user, id);
+    const events = /^[\w:.-]{1,200}$/.test(turn) ? await turnEventsOf(this.store, engineEvents, chat.server, privateChannel(chat.id), turn) : undefined;
+    if (!events) throw new ChatError(404, "Not found.");
+    return { events };
+  }
+
+  /** True when the user owns the private chat in this channel, and the chat is in this server. Errors count as no. */
+  async owns(user: string, server: string, channel: string): Promise<boolean> {
+    if (!isPrivateChannel(channel)) return false;
+    return this.owned(user, channel.slice(PRIVATE_CHANNEL_PREFIX.length)).then(chat => chat.server === server, () => false);
+  }
+
+  /** The chat, when the user owns it and is still in its server. Anything else is a 404. */
+  /** Stops the Slopbot response in a chat. Only the owner can open the chat, so the owner stops it. */
+  async stop(user: string, id: string): Promise<{ stopped: number }> {
+    const chat = await this.owned(user, id);
+    const workspace = await this.handle(chat.server);
+    return { stopped: (await workspace.stop(privateChannel(chat.id), user, false)).length };
+  }
+
+  /** Runs one button of a card in the chat. The result replaces the card. A ToolError becomes a 400 with its message. */
+  async act(user: string, id: string, cardId: string, input: Record<string, unknown>): Promise<{ document: UiDocument; revision: number }> {
+    const chat = await this.owned(user, id);
+    const revision = Number(input.revision), index = Number(input.index);
+    if (!/^[0-9a-f]{24}$/.test(cardId) || !Number.isSafeInteger(revision) || !Number.isSafeInteger(index)) throw new ChatError(400, "Invalid control.");
+    const workspace = await this.handle(chat.server);
+    try {
+      return await workspace.act(privateChannel(chat.id), user, cardId, revision, index, randomUUID());
+    } catch (error) {
+      if (error instanceof ToolError) throw new ChatError(400, error.message);
+      throw error;
+    }
+  }
+
+  private async owned(user: string, id: string): Promise<WebChatRow> {
+    const chat = CHAT_ID.test(id) ? await this.store.webChat(id) : undefined;
+    if (!chat || chat.deleted || chat.owner !== user) throw new ChatError(404, "Not found.");
+    await this.requireMember(user, chat.server);
+    return chat;
+  }
+  private async requireMember(user: string, server: string): Promise<void> {
+    if (!SNOWFLAKE.test(server) || !await this.host.directory.isMember(user, server)) throw new ChatError(404, "Not found.");
+  }
+  private async handle(server: string): Promise<Workspace> {
+    const workspace = await this.host.engine.workspace(server);
+    if (!workspace) throw new ChatError(404, "Not found.");
+    return workspace;
+  }
+}
+
+export type { ChatRoutes } from "./routes/chats.js";
+/** The Hono routes of /api/chats (see clients/web/routes/chats.ts). */
+export const createChatRoutes = chatRoutes;

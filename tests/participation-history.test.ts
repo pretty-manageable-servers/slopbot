@@ -2,9 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { ParticipationGate, type ParticipationOptions } from '../src/participation.js';
-import { defaultDecisionThresholds, readParticipationHistory } from '../src/participation-history.js';
+import { defaultDecisionThresholds } from '../src/participation-history.js';
 import { DecisionClassifier } from '../src/adapters/decisions.js';
-import { postgresSql } from '../src/adapters/postgres-database.js';
 import { loadConfig } from '../src/config.js';
 import { Application } from '../src/application.js';
 import { FakeLLM } from '../src/adapters/fake-llm.js';
@@ -53,13 +52,6 @@ test('history includes legacy scores and scopes filters without duplicating upgr
   assert.equal((await store.participationHistory('s', 'c', { count: 10, text: '%' })).length, 0);
   await store.remove('s', 'c', '1');
   assert.equal((await store.participationHistory('s', 'c', { count: 10 })).length, 0);
-});
-
-test('history SQL translates both bounded paths for PostgreSQL', async () => {
-  const statements: string[] = [];
-  await readParticipationHistory(async (sql, values) => { const query = postgresSql(sql, values); statements.push(query.sql); assert.equal(query.values.at(-1), 10); return []; }, 's', 'c', { count: 10, after: 1000, before: 2000, author: 'a', messageId: '1', text: '%' });
-  assert.equal(statements.length, 2);
-  for (const sql of statements) { assert.doesNotMatch(sql, /json_extract|\?/); assert.match(sql, /JOIN messages/); assert.match(sql, /LIMIT \$\d+/); }
 });
 
 test('environment cutoffs validate probabilities including boundary values', () => {

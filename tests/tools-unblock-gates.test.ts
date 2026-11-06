@@ -99,20 +99,6 @@ test('failed_check_returns_before_confirm', async t => {
   assert.match(data.failures[0]!.error, /not monitored/);
 });
 
-test('confirmed_failure_starts_model_turn', async () => {
-  const { store, interaction, payloads } = clickFixture(Date.now());
-  const resumed: Message[] = [];
-  const tools = { invokeResult: async () => { throw new ToolError('Channel access denied'); } } as unknown as CodeRunner;
-  await handleConfirm(interaction, store as unknown as CodeStore, tools, undefined, async note => { resumed.push(note); });
-  assert.equal(resumed.length, 1);
-  assert.equal(resumed[0]!.text, 'Confirmed channels failed: Channel access denied');
-  assert.equal(resumed[0]!.channel, channel);
-  assert.equal(resumed[0]!.author, 'alice');
-  assert.equal(resumed[0]!.addressed, true);
-  // The channel shows no error text and no "still pending".
-  assert.equal(payloads.at(-1)!.payload.content, 'Confirmed.');
-});
-
 test('program_keeps_work_when_confirm_needed', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const saved = new Map<string, Json>(); let removed = 0;

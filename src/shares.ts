@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import type { ShareData } from "@slopbot/contracts";
 import type { Json, Message } from "./domain.js";
 import { webTranscriptsEnabled } from "./server-tools.js";
 import { PRIVATE_CHANNEL_PREFIX, isPrivateChannel, privateChannel } from "./private-chat.js";
@@ -30,7 +31,10 @@ export interface ShareStore {
   deleteChatShares(channel: string): Promise<number>;
 }
 
-export interface ShareToolLine { name: string; status: string }
+/** A tool step of an answer. Visual tools (show_ui, show_widget) keep their input, so the share page can draw them. */
+export interface ShareToolLine { name: string; status: string; input?: Json }
+/** The tools whose input is the visual itself. Their input is copied into the share, with text scrubbed. */
+const VISUAL_TOOLS: ReadonlySet<string> = new Set(["show_ui", "show_widget"]);
 export interface ShareMessage {
   author: string; bot: boolean; at?: number; text: string; attachments: number;
   /** Web chat images in this frozen copy. Only these IDs are served on the share's image route. */
@@ -69,11 +73,6 @@ export const MEMBER_CACHE_MS = 60_000;
 const snowflake = /^\d{17,20}$/;
 const shareId = /^[A-Za-z0-9_-]{22}$/;
 export const isShareId = (id: string): boolean => shareId.test(id);
-/** Routes that change share links. The console uses this to allow POST. */
-export function isShareWrite(path: string): boolean {
-  return path === "/api/shares" || path === "/api/shares/revoke-all" || /^\/api\/shares\/[A-Za-z0-9_-]{22}\/revoke$/.test(path);
-}
-
 // Short labels for known tools. Arguments and results never go in a snapshot.
 const toolStatus = new Map<string, string>([
   ["web_search", "Searched the web"], ["read", "Read a file"], ["write", "Wrote a file"], ["edit", "Edited a file"], ["file_store", "Used file storage"],
@@ -84,9 +83,17 @@ const toolStatus = new Map<string, string>([
   ["usage", "Checked usage"], ["timing_inspect", "Checked timings"], ["timing_active", "Checked active timings"],
   ["profile", "Used a profile"], ["status", "Checked status"], ["bot_info", "Checked bot info"],
 ]);
-export function toolLine(name: string): ShareToolLine {
+export function toolLine(name: string, input?: Json): ShareToolLine {
   const short = name.slice(0, 80);
-  return { name: short, status: toolStatus.get(name) ?? `Used tool ${short}` };
+  return { name: short, status: toolStatus.get(name) ?? `Used tool ${short}`, ...(input !== undefined && VISUAL_TOOLS.has(name) ? { input: scrubJson(input) } : {}) };
+}
+
+/** scrubText on every string in a JSON value. */
+function scrubJson(value: Json): Json {
+  if (typeof value === "string") return scrubText(value);
+  if (Array.isArray(value)) return value.map(scrubJson);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, scrubJson(item)]));
+  return value;
 }
 
 /** Removes IDs and emails from text. Mentions become plain labels. */
@@ -99,9 +106,15 @@ export function scrubText(text: string): string {
     .replace(/\b\d{17,20}\b/g, "[id]");
 }
 
-function toolNames(payload: Json): string[] {
+/** The calls of a tool_call event. Arguments in JSON text are parsed; arguments that do not parse are dropped. */
+function toolCalls(payload: Json): { name: string; input?: Json }[] {
   const calls: Json[] = Array.isArray(payload) ? payload : [payload];
-  return calls.flatMap(call => call && typeof call === "object" && !Array.isArray(call) && typeof call.name === "string" ? [call.name] : []);
+  return calls.flatMap(call => {
+    if (!call || typeof call !== "object" || Array.isArray(call) || typeof call.name !== "string") return [];
+    let input: Json | undefined = call.arguments;
+    if (typeof input === "string") { try { input = JSON.parse(input) as Json; } catch { input = undefined; } }
+    return [{ name: call.name, ...(input !== undefined ? { input } : {}) }];
+  });
 }
 function reasoningText(payload: Json): string {
   if (typeof payload === "string") return payload;
@@ -127,9 +140,9 @@ function optionalFlag(value: unknown, name: string): boolean {
 
 /** Builds the snapshot from stored messages. Only the message's own answer gets tool lines and thinking. */
 export function buildMessages(messages: readonly Message[], events: readonly { request: string; kind: string; payload: Json }[], options: { show_thinking: boolean; show_tools?: boolean }): ShareMessage[] {
-  const tools = new Map<string, string[]>(), thinking = new Map<string, string>();
+  const tools = new Map<string, { name: string; input?: Json }[]>(), thinking = new Map<string, string>();
   for (const event of events) {
-    if (event.kind === "tool_call") tools.set(event.request, [...(tools.get(event.request) ?? []), ...toolNames(event.payload)]);
+    if (event.kind === "tool_call") tools.set(event.request, [...(tools.get(event.request) ?? []), ...toolCalls(event.payload)]);
     else if (event.kind === "reasoning") thinking.set(event.request, (thinking.get(event.request) ?? "") + reasoningText(event.payload));
   }
   const claimed = new Set<string>();
@@ -147,7 +160,7 @@ export function buildMessages(messages: readonly Message[], events: readonly { r
     const request = message.isBot ? message.replyTo : undefined;
     if (request && !claimed.has(request)) {
       claimed.add(request);
-      if (options.show_tools ?? options.show_thinking) item.tools = (tools.get(request) ?? []).map(toolLine);
+      if (options.show_tools ?? options.show_thinking) item.tools = (tools.get(request) ?? []).map(call => toolLine(call.name, call.input));
       if (options.show_thinking && thinking.get(request)) item.thinking = scrubText(thinking.get(request)!);
     }
     return item;
@@ -248,10 +261,10 @@ export class ShareService {
     return bytes ? { bytes, contentType: chatImageContentType(imageId) } : undefined;
   }
 
-  /** Public HTML page for a live link, or undefined. */
-  async page(id: string): Promise<string | undefined> {
+  /** Public HTML page for a live link, or undefined. `template` is the built share page (console/share.html). */
+  async page(id: string, template: string): Promise<string | undefined> {
     const snapshot = await this.snapshot(id);
-    return snapshot ? renderSharePage(snapshot) : undefined;
+    return snapshot ? renderSharePage(snapshot, template) : undefined;
   }
 
   async list(user: string, server: string): Promise<{ shares: { id: string; channel: string; created_at: number; revoked: boolean }[] }> {
@@ -323,24 +336,32 @@ function jsonForScript(value: unknown): string {
   return JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
-/**
- * The public share page. The server sends the frozen copy as JSON. share/shares.js draws it with the chat's own
- * classes (share/chat.css) and markdown renderer (share/markdown.js). The text is never put in the HTML here.
- */
-export function renderSharePage(snapshot: ShareSnapshot): string {
-  const data = {
+/** Where the share page template (console/share.html, built by Vite) takes its data. */
+export const SHARE_DATA_SLOT = "<!--share-data-->";
+
+/** The data of the public share page. The page reads it from #share-data and draws it with the kit. */
+export function sharePageData(snapshot: ShareSnapshot): ShareData {
+  return {
     id: snapshot.id,
     messages: snapshot.messages.map(message => ({
       author: message.author,
       bot: message.bot,
       at: message.at ?? null,
       text: message.text,
-      tools: message.tools.map(tool => tool.status),
+      tools: message.tools.map(tool => ({ name: tool.name, status: tool.status, ...(tool.input !== undefined ? { input: tool.input } : {}) })),
       thinking: message.thinking ?? "",
       images: (message.images ?? []).map(image => ({ src: `/s/${snapshot.id}/images/${image.imageId}`, name: image.name })),
       files: (message.files ?? []).map(file => ({ name: file.name, size: file.size })),
       other: Math.max(0, message.attachments - (message.images?.length ?? 0) - (message.files?.length ?? 0)),
     })),
   };
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="robots" content="noindex"><meta name="referrer" content="no-referrer"><title>Shared conversation · Slopbot</title><link rel="icon" href="/share/assets/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/share/style.css"><link rel="stylesheet" href="/share/chat.css"><link rel="stylesheet" href="/share/shares.css"><link rel="stylesheet" href="/share/katex/katex.min.css"><script src="/share/katex/katex.min.js" defer></script></head><body class="share-page"><main class="share"><header class="share-top"><p class="share-note"><strong>Shared from Slopbot.</strong> This is a frozen copy. Later messages are not included.</p><div class="share-actions"><button id="share-theme" type="button">Light</button><button id="share-continue" type="button">Continue in Slopbot</button></div></header><p id="share-status" class="share-status" role="status" hidden></p><div class="chat share-chat"><div id="share-log" class="chat-log share-log" role="log"></div></div><noscript><p class="share-status">Turn on JavaScript to read this conversation.</p></noscript></main><script type="application/json" id="share-data">${jsonForScript(data)}</script><script src="/share/highlight.min.js" defer></script><script src="/share/markdown.js" defer></script><script src="/share/shares.js" defer></script></body></html>`;
+}
+
+/**
+ * The public share page: the template with the frozen copy as JSON in place of SHARE_DATA_SLOT. The text is never
+ * put in the HTML itself.
+ */
+export function renderSharePage(snapshot: ShareSnapshot, template: string): string {
+  const data = `<script type="application/json" id="share-data">${jsonForScript(sharePageData(snapshot))}</script>`;
+  return template.includes(SHARE_DATA_SLOT) ? template.replace(SHARE_DATA_SLOT, () => data) : template.replace("</body>", () => `${data}</body>`);
 }

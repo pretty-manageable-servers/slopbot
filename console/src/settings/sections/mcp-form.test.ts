@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { McpConnection } from "../../api-types";
-import { connectionReady, draftFromConnection, hostOf, isConnectionId, newConnectionBody, newConnectionReady, saveConnectionBody, type ConnectionDraft } from "./mcp-form";
+import { connectionReady, draftFromConnection, isConnectionId, newConnectionBody, newConnectionReady, saveConnectionBody, type ConnectionDraft } from "./mcp-form";
 
 const hash = "a".repeat(64);
 const connection: McpConnection = {
@@ -13,20 +13,11 @@ const connection: McpConnection = {
 };
 
 describe("saveConnectionBody", () => {
-  test("keeps the saved token when the token field is blank", () => {
-    const body = saveConnectionBody(connection, draftFromConnection(connection));
-    expect(body).not.toHaveProperty("token");
-    expect(body).toMatchObject({ action: "save", id: "github", url: connection.url, transport: "http", enabled: true, timeoutMs: 15000, concurrency: 4 });
-  });
-
-  test("sends an empty token when the saved token is removed", () => {
-    const draft: ConnectionDraft = { ...draftFromConnection(connection), removeToken: true };
-    expect(saveConnectionBody(connection, draft).token).toBe("");
-  });
-
-  test("sends a typed token", () => {
-    const draft: ConnectionDraft = { ...draftFromConnection(connection), token: "new-secret" };
-    expect(saveConnectionBody(connection, draft).token).toBe("new-secret");
+  test("the token is sent only when typed or removed, never echoed back", () => {
+    const base = draftFromConnection(connection);
+    expect(saveConnectionBody(connection, base)).not.toHaveProperty("token");
+    expect(saveConnectionBody(connection, { ...base, removeToken: true }).token).toBe("");
+    expect(saveConnectionBody(connection, { ...base, token: "new-secret" }).token).toBe("new-secret");
   });
 
   test("sends only the enabled tools, with their schema hash, access and operation", () => {
@@ -38,11 +29,6 @@ describe("saveConnectionBody", () => {
       { name: "create", schemaHash: hash, access: "admin", effect: "write" },
     ]);
   });
-
-  test("trims the endpoint and keeps the switched-off state", () => {
-    const draft: ConnectionDraft = { ...draftFromConnection(connection), url: "  https://example.com/mcp ", enabled: false };
-    expect(saveConnectionBody(connection, draft)).toMatchObject({ url: "https://example.com/mcp", enabled: false });
-  });
 });
 
 describe("newConnectionBody", () => {
@@ -50,10 +36,6 @@ describe("newConnectionBody", () => {
     expect(newConnectionBody({ id: "github", url: "https://example.com/mcp", transport: "sse", token: "" })).toEqual({
       action: "save", id: "github", url: "https://example.com/mcp", transport: "sse", enabled: true, tools: [],
     });
-  });
-
-  test("sends the token when one is typed", () => {
-    expect(newConnectionBody({ id: "github", url: "https://example.com/mcp", transport: "http", token: "secret" }).token).toBe("secret");
   });
 });
 
@@ -81,12 +63,5 @@ describe("connectionReady and newConnectionReady", () => {
     expect(newConnectionReady({ id: "github", url: "https://example.com/mcp", transport: "http", token: "" })).toBe(true);
     expect(newConnectionReady({ id: "GitHub", url: "https://example.com/mcp", transport: "http", token: "" })).toBe(false);
     expect(newConnectionReady({ id: "github", url: "", transport: "http", token: "" })).toBe(false);
-  });
-});
-
-describe("hostOf", () => {
-  test("shows the host of the endpoint, or the text when it is not a URL", () => {
-    expect(hostOf("https://api.example.com:8443/mcp")).toBe("api.example.com:8443");
-    expect(hostOf("not a url")).toBe("not a url");
   });
 });

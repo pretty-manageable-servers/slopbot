@@ -11,5 +11,7 @@ export interface ToolActivity {
   readonly code?: string;
   /** The run_tools_code operation that made this call. */
   readonly parentId?: string;
+  /** The provider tool call ID. Live events key a call by it. */
+  readonly callId?: string;
 }
 export type ToolActivityObserver = (message: import('./domain.js').Message, activity: ToolActivity) => Promise<void>;

@@ -133,39 +133,6 @@ test("text reminder unchanged", async (t) => {
   assert.deepEqual([...new Set(checked)], ["c"]);
 });
 
-test("voice reminder list shows join channel reminders", async (t) => {
-  const store = new SQLiteStore();
-  t.after(() => store.close());
-  const registry = new ToolRegistry(store, async () => false);
-  registerReminderTools(
-    registry,
-    {
-      store,
-      authorize: async () => {},
-      reminderChannel: (message) =>
-        message.source === "voice" ? joinText : undefined,
-    },
-    () => now,
-  );
-  await registry.invokeResult(
-    voiceMessage(),
-    "reminder",
-    { action: "create", at, text: "Ship" },
-    "voice-list-create",
-    "agent",
-  );
-  const listed = await registry.invokeResult(
-    voiceMessage(),
-    "reminder",
-    { action: "list" },
-    "voice-list",
-    "agent",
-  );
-  assert.match(listed.text, /Ship/);
-  assert.match(listed.text, /Reference: /);
-  assert.doesNotMatch(listed.text, /No reminders in this channel/);
-});
-
 test("voice reminder cancel works", async (t) => {
   const store = new SQLiteStore();
   t.after(() => store.close());

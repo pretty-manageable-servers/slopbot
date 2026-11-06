@@ -1,7 +1,8 @@
 import type { ToolActivityObserver } from './tool-activity.js';
 import { requestTimings } from "./request-timing.js";
 import type { PresentationPolicy } from './presentation/policy.js';
-import type { HarnessJournal } from "./harness-state.js";
+import { HarnessInterrupted, type HarnessJournal } from "./harness-state.js";
+import { engineEvents } from "./engine/event-log.js";
 import { hasMessageContent, parseMessage, type Message, type Reply } from "./domain.js";
 import type { LLM, Store } from "./ports.js";
 import type { Recall } from "./memory.js";
@@ -49,11 +50,25 @@ export class Application {
         const result = await accepted;
         if ("error" in result) throw result.error;
         if (!result.value) return undefined;
-        return await this.runner.run(message, key);
+        return await this.runTurn(message, key);
       } finally { release(); if (this.taskTails.get(key) === tail) this.taskTails.delete(key); }
     }
     if ((!alreadyIngested && !await this.store.ingest(message)) || message.addressed === false) return undefined;
-    return this.runner.run(message);
+    return this.runTurn(message);
+  }
+
+  /** Runs one turn between its turn.start and turn.end events in the engine log. */
+  private async runTurn(message: Message, taskKey?: string): Promise<Reply | undefined> {
+    const conversation = { server: message.server, channel: message.channel };
+    engineEvents.publish(conversation, { type: "turn.start", turn: message.id });
+    try {
+      const reply = await this.runner.run(message, taskKey);
+      engineEvents.publish(conversation, { type: "turn.end", turn: message.id, status: "done" });
+      return reply;
+    } catch (error) {
+      engineEvents.publish(conversation, { type: "turn.end", turn: message.id, status: error instanceof HarnessInterrupted ? "interrupted" : "failed" });
+      throw error;
+    }
   }
 
 }

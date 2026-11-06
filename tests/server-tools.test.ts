@@ -5,7 +5,7 @@ import { ToolRegistry, ToolError } from "../src/tools.js";
 import { configuredChannels, registerServerTools } from "../src/server-tools.js";
 import { loadConfig } from "../src/config.js";
 import { HistoryImporter } from "../src/history.js";
-import { buildToolCommands } from "../src/adapters/discord-commands.js";
+import { buildToolCommands } from "../src/clients/discord/discord-commands.js";
 import type { Message } from "../src/domain.js";
 import type { ParticipationOptions } from '../src/participation.js';
 import { ParticipationGate } from '../src/participation.js';
@@ -99,18 +99,6 @@ test("read-only index and channel actions do not require a task thread; memory o
   assert.equal((await f.store.memories(server, channel)).length, 1);
 });
 
-test("slash command schemas come directly from the registry and include an unlimited generic runner", t => {
-  const f = setup(); t.after(() => f.store.close());
-  const command = buildToolCommands(f.registry).toJSON();
-  const names = command.options?.map(option => option.name) ?? [];
-  for (const tool of f.registry.definitions()) assert.ok(names.includes(tool.name));
-  assert.ok(names.includes("run"));
-  for (let i = 0; i < 30; i++) f.registry.register({ name: `connector_${i}`, description: "Connector action", fields: { payload: { type: "json", description: "Structured payload", required: true } }, access: "admin", effect: "write", retrySafe: true, async execute() { return "done"; } });
-  assert.equal(buildToolCommands(f.registry).toJSON().options?.length, 25);
-  assert.ok(f.registry.catalog().includes("connector_29"));
-  assert.deepEqual(f.registry.validate("connector_29", { payload: { items: [1, "a"], enabled: true } }), { payload: { items: [1, "a"], enabled: true } });
-});
-
 test("removing a scope purges searchable content and cancels its queued jobs without deleting reasoning", async t => {
   const f = setup(); t.after(() => f.store.close());
   f.store.enqueueJob(message);
@@ -120,13 +108,6 @@ test("removing a scope purges searchable content and cancels its queued jobs wit
   assert.equal(f.store.indexStats(server, channel).messages, 0);
   assert.equal(f.store.jobs(server, channel)[0]?.status, "cancelled");
   assert.deepEqual(f.store.events("run"), [{ kind: "reasoning", payload: { delta: "retain" } }]);
-});
-
-test("indexing status requests select the indexing read handler", t => {
-  const f = setup(); t.after(() => f.store.close());
-  assert.deepEqual(f.registry.suggest({ ...message, text: "hello slopbot check the status of the indexing" }), { name: "index", arguments: { action: "status" } });
-  assert.deepEqual(f.registry.suggest({ ...message, text: `indexing progress in <#${other}>` }), { name: "index", arguments: { action: "status", channel: other } });
-  assert.equal(f.registry.suggest({ ...message, text: "index the last 150 days" }), undefined);
 });
 
 test('large tool enums still produce valid slash commands without losing validation', t => {

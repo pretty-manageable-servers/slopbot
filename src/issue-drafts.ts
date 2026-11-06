@@ -6,7 +6,7 @@ import type { RuntimeStore } from './runtime-store.js';
 import { authoredSourceText } from './source-context.js';
 import type { ToolArgs, ToolContext, ToolDefinition } from './tools.js';
 import type { UiDocument } from './ui/schema.js';
-import { isDirectMessageChannel, isPrivateChannel } from './private-chat.js';
+import { surfaceOf } from './engine/api.js';
 
 /** app_records kind. One draft per channel or thread. */
 export const ISSUE_DRAFT_KIND = 'issue_draft';
@@ -169,7 +169,7 @@ export function issueDraftTools(services: IssueDraftServices): ToolDefinition[] 
       return {
         text: `Issue draft saved (${plural(messages, 'message', 'messages')}, ${plural(runs, 'tool run', 'tool runs')}). The draft card is shown to the requester. Keep your chat reply to one or two sentences; do not repeat the draft. The requester files it with /file-report or the File report button.`,
         data: { title: draft.title, cites: cites.length, expires_at: new Date(draft.expiresAt).toISOString() },
-        ui: draftCard(draft, Date.now(), isPrivateChannel(context.message.channel) && !isDirectMessageChannel(context.message.channel) ? 'web' : 'discord'),
+        ui: draftCard(draft, Date.now(), surfaceOf(context.message) === 'web' ? 'web' : 'discord'),
       };
     },
   };

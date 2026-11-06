@@ -1,13 +1,12 @@
 import { errorSummary, logError } from './errors.js';
 import type { Json } from './domain.js';
-import { isPrivateChannel } from './private-chat.js';
 import { stableJson } from './prompt-cache.js';
 import { ProgramRuntime, programBuiltins, type ProgramDispatch } from './program-runtime.js';
 import type { RecordStore } from './records.js';
 import type { SandboxProfile } from './sandbox-profile.js';
 import { resolveSandboxPath, sandboxSession } from './sandbox-session.js';
 import type { SandboxProvider } from './sandbox.js';
-import { ConfirmationRequired, ToolError, stableOperationId, toolResult, type ToolArgs, type ToolDefinition, type ToolField, type ToolRegistry, type ToolResult } from './tools.js';
+import { ConfirmationRequired, ToolError, stableOperationId, surfaceRefusal, toolResult, type ToolArgs, type ToolDefinition, type ToolField, type ToolRegistry, type ToolResult } from './tools.js';
 
 export const RUN_TOOLS_CODE = 'run_tools_code';
 
@@ -149,7 +148,7 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
         try { await context.invocation?.onActivity?.(activity); } catch (error) { logError('program_tool_status_failed', error, { tool: activity.name, operationId: activity.id }, true); }
       };
       await report({ id: parentId, name: RUN_TOOLS_CODE, arguments: args, status: 'running', code, startedAt: Date.now() });
-      const usable = async (tool: ToolDefinition): Promise<boolean> => !(tool.access === 'admin' && !context.isAdmin) && !(isPrivateChannel(message.channel) && tool.scope === 'discord');
+      const usable = async (tool: ToolDefinition): Promise<boolean> => !(tool.access === 'admin' && !context.isAdmin) && !surfaceRefusal(message, tool);
       const builtin = async (name: string, raw: unknown, index: number): Promise<Json> => {
         const input: ToolArgs = isArgs(raw) ? raw : {};
         if (name === 'builtin:list_tools') {

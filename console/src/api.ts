@@ -1,5 +1,6 @@
 // Calls to the bot's console API. Writes need the session's CSRF token, which /api/session gives.
 
+import type { EngineEvent } from "@slopbot/contracts";
 import type { ChatFile, ChatImage, ChatShare, ChatSummary, Session, Usage } from "./api-types";
 export type { ChatSummary, Session } from "./api-types";
 
@@ -82,6 +83,8 @@ export const api = {
   useReset: (server: string, kind: string) => post<Usage>("/api/usage/reset", { server, kind }),
   logout: () => call<unknown>("POST", "/api/logout", {}),
   stop: (id: string) => call<{ stopped: number }>("POST", `${chat(id)}/stop`, {}),
-  run: (runId: string) => call<{ steps: unknown[] }>("GET", `/api/runs/${encodeURIComponent(runId)}`),
-  streamUrl: (id: string, after: number) => `${chat(id)}/stream?after=${after}`,
+  /** The request (turn) of a run. A saved reply names its runs, not its turn. */
+  turnEvents: (id: string, turn: string) => call<{ events: EngineEvent[] }>("GET", `${chat(id)}/turns/${encodeURIComponent(turn)}/events`),
+  /** The live engine events of a chat. No position: the stream starts at the newest event. */
+  eventsUrl: (id: string) => `${chat(id)}/events`,
 };

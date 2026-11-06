@@ -1,14 +1,16 @@
 // /server/$serverId/channel/$channelId: one channel's or thread's transcript, read-only, with live updates. ?run=<id>
 // shows one of its conversations. The reply box is under the channel when the user can send. The bot's routes:
 // src/web-transcripts.ts (the conversation list, messages, stream, runs and reply).
-import { useMutation, useQueries, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { AttachmentCard, Button, ChatHeader, ChatTranscript, Drawer, DRAWER_QUERY, SidebarToggle, useMediaQuery } from "agentic-ui-kit";
 import type { Part } from "agentic-ui-kit/core";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, get, post, qs } from "../api";
 import type { ChannelHeader, Conversation, ConversationSummary, TranscriptMessage, TranscriptPage } from "../api-types";
-import { chatMessages, emptyChat, type ChatState, type RunStep } from "../events";
+import type { EngineEnvelope, EngineEvent } from "@slopbot/contracts";
+import { chatMessages, emptyChat, repliesOf, runTurnsOf, type ChatState, type TurnSource } from "../events";
+import { useTurns } from "../use-turns";
 import { sessionQuery } from "../data";
 import { Loader, Logo } from "../logo";
 import { channelRoute } from "../router";
@@ -17,9 +19,8 @@ import { ReplyBox } from "./reply-box";
 import { conversationsQuery } from "./queries";
 import { RunsPanel } from "./runs";
 import { ShareChannelDialog } from "./share-channel";
-import { applyTranscriptEvent, channelMessage, displayMessages, foldOfPart, foldUnused, markUsed, metaOfPart, unusedIds, runIdsOf, type FoldRow, type Meta, type TranscriptEvent } from "./transcript";
+import { applyTranscriptEvent, channelMessage, displayMessages, foldOfPart, foldUnused, markUsed, metaOfPart, unusedIds, type FoldRow, type Meta } from "./transcript";
 
-const KINDS = ["message", "run.start", "run.delta", "run.tool", "run.end"] as const;
 /** Messages per request. The bot's limit is 100. */
 const PAGE = 50;
 
@@ -98,16 +99,16 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
     refetchOnWindowFocus: false,
   });
 
-  // The newest page starts the page. A reload of it (after a reset) starts over.
+  // The newest page starts the page. A reload of it starts over.
   useEffect(() => {
     if (!newest.data) return;
-    setState(emptyChat(newest.data.messages.map((message) => channelMessage(message, user, channelId)), newest.data.streamId));
+    setState(emptyChat(newest.data.messages.map((message) => channelMessage(message, user, channelId)), repliesOf(newest.data.messages), runTurnsOf(newest.data.messages)));
     setHasMore(newest.data.hasMore);
   }, [newest.data, user, channelId]);
 
-  // Live events from after the page. A reloaded page (after a reset) reopens the stream.
-  const after = newest.data?.streamId;
+  // Live engine events from the newest event on. A reloaded page reopens the stream.
   const loaded = newest.dataUpdatedAt;
+  const ready = newest.data !== undefined;
   // After a run ends, other people's messages are checked again: a reply run may have used them now.
   const refreshUsed = () => {
     const ids = unusedIds(stateRef.current?.saved ?? []);
@@ -119,26 +120,19 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
   const stateRef = useRef(state);
   stateRef.current = state;
   useEffect(() => {
-    if (after === undefined) return;
-    const source = new EventSource(`${base}/stream${qs({ server: serverId, after })}`);
-    for (const type of KINDS) {
-      source.addEventListener(type, (event) => {
-        const message = event as MessageEvent<string>;
-        let data: unknown;
-        try { data = JSON.parse(message.data); } catch { return; }
-        const bot = { type, id: Number(message.lastEventId) || 0, data } as TranscriptEvent;
-        setState((s) => (s ? applyTranscriptEvent(s, bot, channelId, user) : s));
-        // A new message or a finished run can change the conversations and the open conversation.
-        if (type === "message" || type === "run.end") {
-          if (type === "run.end" || (data as { message?: { slopbot?: boolean } }).message?.slopbot) refreshUsed();
-          void client.invalidateQueries({ queryKey: [...scope, "runs"] });
-          void client.invalidateQueries({ queryKey: [...scope, "run"] });
-        }
-      });
-    }
-    source.addEventListener("reset", () => {
-      source.close();
-      void client.invalidateQueries({ queryKey: [...scope, "messages"] });
+    if (!ready) return;
+    const source = new EventSource(`${base}/events${qs({ server: serverId })}`);
+    source.addEventListener("engine", (event) => {
+      let envelope: EngineEnvelope;
+      try { envelope = JSON.parse((event as MessageEvent<string>).data) as EngineEnvelope; } catch { return; }
+      setState((s) => (s ? applyTranscriptEvent(s, envelope, channelId, user) : s));
+      // A new message or a finished turn can change the conversations and the open conversation.
+      const type = envelope.event.type;
+      if (type === "message.upsert" || type === "turn.end") {
+        if (type === "turn.end" || envelope.event.message.slopbot) refreshUsed();
+        void client.invalidateQueries({ queryKey: [...scope, "runs"] });
+        void client.invalidateQueries({ queryKey: [...scope, "run"] });
+      }
     });
     source.addEventListener("closed", (event) => {
       source.close();
@@ -149,16 +143,25 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
     source.onopen = () => setStatus("");
     source.onerror = () => setStatus(source.readyState === EventSource.CLOSED ? "Disconnected." : "Reconnecting…");
     return () => source.close();
-  }, [serverId, channelId, after, loaded, user]);
+  }, [serverId, channelId, ready, loaded, user]);
 
   const channel = newest.data?.channel;
   const canSend = run === undefined && newest.data?.canSend === true;
+  const [convState, setConvState] = useState<ChatState | null>(null);
+  useEffect(() => {
+    const found = conversation.data?.messages;
+    setConvState(found ? emptyChat(found.map((message) => channelMessage(message, user, channelId)), repliesOf(found), runTurnsOf(found)) : null);
+  }, [conversation.data, user, channelId]);
+  const source = useMemo<TurnSource>(() => ({
+    turnEvents: (turn) => get<{ events: EngineEvent[] }>(`${base}/turns/${encodeURIComponent(turn)}/events${qs({ server: serverId })}`).then((found) => found.events),
+  }), [base, serverId]);
+  useTurns(state, setState, source);
+  useTurns(convState, setConvState, source);
   const shown = useMemo(() => {
-    if (run !== undefined) return conversation.data?.messages.map((message) => channelMessage(message, user, channelId)) ?? [];
-    return state ? chatMessages(state) : [];
-  }, [run, conversation.data, state, user, channelId]);
-  const steps = useRunSteps(serverId, channelId, useMemo(() => runIdsOf(shown), [shown]));
-  const messages = useMemo(() => foldUnused(displayMessages(shown, steps), Object.keys(state?.live ?? {}), shownFolds), [shown, steps, state, shownFolds]);
+    const open = run !== undefined ? convState : state;
+    return open ? chatMessages(open) : [];
+  }, [run, convState, state]);
+  const messages = useMemo(() => foldUnused(displayMessages(shown), Object.keys(state?.live ?? {}), shownFolds), [shown, state, shownFolds]);
   const toggleFold = useCallback((key: string) => {
     setShownFolds((keys) => {
       const next = new Set(keys);
@@ -227,19 +230,6 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
       <ShareChannelDialog server={serverId} channel={channelId} open={sharing} onClose={() => setSharing(false)} />
     </div>
   );
-}
-
-/** The steps of each run, loaded once per run (GET /api/runs/:runId). A run that fails to load gives no steps. */
-function useRunSteps(serverId: string, channelId: string, runIds: string[]): Map<string, readonly RunStep[]> {
-  const combine = useCallback((results: { data?: RunStep[] }[]) => new Map(runIds.map((id, index) => [id, results[index]?.data ?? []] as const)), [runIds]);
-  return useQueries({
-    queries: runIds.map((id) => ({
-      queryKey: ["conversations", serverId, channelId, "steps", id],
-      queryFn: () => api.run(id).then((run) => run.steps as RunStep[]),
-      staleTime: Infinity,
-    })),
-    combine,
-  });
 }
 
 /** The author line above a message, and the row of a folded run. The kit draws the viewer's own messages and their attachments itself. */

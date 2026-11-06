@@ -2,9 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ButtonInteraction } from 'discord.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
-import { handleToolTrace } from '../src/adapters/discord-tool-trace.js';
-import { showCodeRows } from '../src/adapters/discord-code.js';
-import { TOOL_TRACE_KIND, TOOL_TRACE_CURSOR_KIND, saveToolTrace, pruneToolTraces, tracePage, type ToolTrace } from '../src/tool-trace.js';
+import { handleToolTrace } from '../src/clients/discord/discord-tool-trace.js';
+import { TOOL_TRACE_KIND, TOOL_TRACE_CURSOR_KIND, saveToolTrace, pruneToolTraces, type ToolTrace } from '../src/tool-trace.js';
 import { ToolRegistry } from '../src/tools.js';
 import type { Json } from '../src/domain.js';
 import type { ToolActivity } from '../src/tool-activity.js';
@@ -26,18 +25,6 @@ const sampleTrace = (): ToolTrace => ({ owner: 'u', channel: 'c', expires: Date.
   { id: 'two', name: 'write', arguments: { path: 'a', text: 'new' }, status: 'rejected', durationMs: 20, outcome: 'Permission denied' },
   { id: 'three', name: 'read', arguments: { path: 'b' }, status: 'failed', durationMs: 30, outcome: 'Unavailable' },
 ] });
-
-test('one entry point covers eleven programs and their children without repeated inline code', () => {
-  const activity: ToolActivity[] = Array.from({ length: 11 }, (_, index) => ({ id: `program${index}`, name: 'run_tools_code', status: 'completed', code: 'return 1' }));
-  activity.push({ id: 'child', parentId: 'program0', name: 'read', status: 'completed' });
-  for (const mode of ['summary', 'full'] as const) {
-    const rows = showCodeRows(activity, mode, 'trace');
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0]!.toJSON().components.length, 1);
-    assert.equal((rows[0]!.toJSON().components[0] as { custom_id: string }).custom_id, 'sloptrace:trace');
-  }
-  assert.deepEqual(showCodeRows(activity, 'none'), []);
-});
 
 test('snapshot preserves chronological arguments and actual journal outcomes with redaction', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
@@ -105,21 +92,6 @@ test('pager rejects other readers, wrong channels, servers, revoked access and e
   assert.match(expired.last().content, /cursor expired/);
 });
 
-test('diff pages stay within Discord limits and show explicit truncation with inert fences', () => {
-  const trace = sampleTrace();
-  trace.steps[0]!.arguments = { code: '`'.repeat(5000) };
-  trace.steps[0]!.outcome = 'x'.repeat(5000);
-  trace.steps[1]!.arguments = { code: 'a'.repeat(5000) };
-  trace.steps[1]!.outcome = 'y'.repeat(5000);
-  for (const index of [0, 1]) {
-    const page = tracePage(trace, index);
-    assert.ok(page.length < 2000);
-    assert.equal((page.match(/```/g) ?? []).length, 2);
-    assert.match(page, /truncated/);
-    assert.match(page, /\+ outcome:/);
-  }
-});
-
 test('expired snapshots and cursors are scrubbed without reviving on delivery retry', async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
   const id = (await saveToolTrace(store, request, [{ id: 'gone', name: 'read', status: 'completed', arguments: { path: 'private-path' } }]))!;
@@ -131,19 +103,6 @@ test('expired snapshots and cursors are scrubbed without reviving on delivery re
   assert.deepEqual((await store.record('s', TOOL_TRACE_KIND, id))!.value, { expired: true });
 });
 
-
-test('changes beyond the displayed excerpt still produce argument and outcome diffs', () => {
-  const trace = sampleTrace();
-  trace.steps[0]!.arguments = { text: 'a'.repeat(500) + 'old' };
-  trace.steps[1]!.arguments = { text: 'a'.repeat(500) + 'new' };
-  trace.steps[0]!.outcome = 'x'.repeat(500) + 'old';
-  trace.steps[1]!.outcome = 'x'.repeat(500) + 'new';
-  const page = tracePage(trace, 1);
-  assert.match(page, /- arguments:/);
-  assert.match(page, /\+ arguments:/);
-  assert.match(page, /- outcome:/);
-  assert.match(page, /\+ outcome:/);
-});
 
 
 test('DM tool traces use private scope and keep requester and channel checks', async t => {

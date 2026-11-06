@@ -1,0 +1,27 @@
+{
+  "outcome": {
+    "reply": "plain answer",
+    "toolActivity": []
+  },
+  "activityEvents": [],
+  "harness": [
+    {
+      "event": {
+        "type": "SendMessage"
+      },
+      "state": {
+        "kind": "Streaming"
+      }
+    },
+    {
+      "event": {
+        "type": "StreamCompleted"
+      },
+      "state": {
+        "kind": "WaitingForUserMessage"
+      }
+    }
+  ],
+  "final": "WaitingForUserMessage",
+  "rounds": 1
+}

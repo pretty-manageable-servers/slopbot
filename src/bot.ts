@@ -9,12 +9,12 @@ import type { Store } from "./ports.js";
 import type { Knowledge } from "./memory.js";
 import type { TaskWorker, QueueStore } from "./queue.js";
 import { DEFAULT_BOT_REPLY_LIMIT, type BotReplyLimit } from "./bot-reply-limit.js";
-import { ToolError, discordOnlyMessage, webOnlyMessage, type ToolCall, type ToolRegistry, type ToolResult } from "./tools.js";
+import { ToolError, discordOnlyMessage, type ToolCall, type ToolRegistry, type ToolResult } from "./tools.js";
 import type { ParticipationGate } from "./participation.js";
 import { UserLimitError, limitReply } from "./user-limiter.js";
 import { isPrivateChannel } from "./private-chat.js";
 import { renderTranscript, saveTaskRefs, type SettingsPort } from "./transcript.js";
-import { slopbotId, type ConversationEventStore } from "./run-events.js";
+import { slopbotId, type SettingReader } from "./run-events.js";
 import { DEFAULT_STATUS_NOTE_MINUTES, DEGRADED_NOTE, type LlmMode, type LlmRouter } from "./llm-mode.js";
 import { DegradedNotes } from "./degraded-notes.js";
 
@@ -350,7 +350,7 @@ export class Bot {
       reference = available.find(item => item.id === reference)?.replyTo;
     }
     const context = message.replyTo ? available.filter(item => referenceIds.has(item.id)) : available;
-    const selfId = "setting" in this.store ? slopbotId(this.store as Pick<ConversationEventStore, "setting">, message.server) : undefined;
+    const selfId = "setting" in this.store ? slopbotId(this.store as SettingReader, message.server) : undefined;
     const replies = (await this.store.modelReplies?.(message.server, context.map(item => item.id))) ?? new Map<string, { runId: string; text: string }>();
     const { items, refs: seedRefs } = renderTranscript(context, selfId, replies, message.replyTo, "s");
     // Model text is a labelled quote here. The seed is one user message, so an assistant turn cannot be sent as a real role.
@@ -377,8 +377,8 @@ export class Bot {
     await registry.checkAccess(message, call.name);
     // Checked before the thread rule. A private chat has no task threads, so its writes run in the chat itself.
     const privateChat = isPrivateChannel(message.channel);
-    if (privateChat && registry.scopeOf(call.name) === "discord") throw new ToolError(discordOnlyMessage);
-    if (!privateChat && registry.scopeOf(call.name) === "web") throw new ToolError(webOnlyMessage);
+    const refusal = registry.refusal(message, call.name);
+    if (refusal) throw new ToolError(refusal);
     if (!privateChat && registry.requiresThread(call.name, call.arguments) && !this.tasks.has(message.channel) && call.name !== "task_start") {
       const thread = await this.startTask(message, message.text);
       return { text: `Task started in <#${thread}>. Updates will appear there.`, handoff: { threadId: thread } };

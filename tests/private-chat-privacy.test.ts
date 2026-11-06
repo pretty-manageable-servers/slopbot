@@ -7,20 +7,24 @@ import { FakeLLM } from "../src/adapters/fake-llm.js";
 import { Bot, type ChatGateway, type Incoming } from "../src/bot.js";
 import { configuredChannels } from "../src/server-tools.js";
 import type { Config } from "../src/config.js";
-import { discordChannelAccessSource } from "../src/adapters/discord-channel-access.js";
+import { discordChannelAccessSource } from "../src/clients/discord/discord-channel-access.js";
 import { ChannelAccess } from "../src/channel-access.js";
 import { HistoryImporter } from "../src/history.js";
 import { privateChannel } from "../src/private-chat.js";
 import type { ParticipationGate } from "../src/participation.js";
 import { registerReportTools } from "../src/search/reports.js";
-import { ShareError, ShareService, buildMessages, renderSharePage } from "../src/shares.js";
+import { ShareError, ShareService, buildMessages } from "../src/shares.js";
 import { fileLabel, transcriptMessage } from "../src/run-events.js";
 import { fileUrl } from "../src/web-chat-files.js";
-import { ChatError, WebChatService, type ChatHost } from "../src/web-chats.js";
+import { ChatError, WebChatService } from "../src/clients/web/web-chats.js";
+import { chatDeps } from "./chat-deps.js";
 import { ToolRegistry } from "../src/tools.js";
-import { visibleConversations, type TranscriptHost } from "../src/web-transcripts.js";
+import { visibleConversations, type TranscriptHost } from "../src/clients/web/web-transcripts.js";
 import type { Message } from "../src/domain.js";
 import type { Client } from "discord.js";
+
+/** A share page template, as console/share.html builds it. */
+const PAGE = "<!doctype html><html><body><div id=\"root\"></div><!--share-data--></body></html>";
 
 // Every test seeds one message in a web: (private) channel and one in a Discord channel, then checks
 // that the private one never comes back through a path that other channels or other users can reach.
@@ -174,13 +178,12 @@ test("a private chat is shared by its owner only, as a snapshot, and deleting it
   await store.insertWebChat({ id: "fedcba9876543210fedcba9876543210", server: guild, owner: "carol", title: "", created: 1, updated: 1, deleted: false });
   await store.ingest({ ...webMessage("web-other", "carol budget note", otherChat, "carol"), server: guild });
   const members = new Set(["alice", "bob", "carol", "manager"]);
-  const host = {
-    member: async (user: string, serverId: string) => serverId === guild && members.has(user),
-    handle: async (serverId: string) => serverId === guild ? { openChat() { /* none */ }, closeChat() { /* none */ }, async receiveChat() { /* none */ } } : undefined,
-    limiter: { check: async () => ({ allowed: true }) },
+  const host = chatDeps({
+    member: (user, serverId) => serverId === guild && members.has(user),
+    workspace: serverId => serverId === guild ? {} : undefined,
     access: new ChannelAccess({ async facts() { return undefined; } }),
-  } as unknown as ChatHost;
-  const chats = new WebChatService(store, host, { changed() { /* no live streams here */ } } as never, () => 2_000);
+  });
+  const chats = new WebChatService(store, host, () => 2_000);
   const chat = "0123456789abcdef0123456789abcdef";
   const shares = new ShareService({ store, access: { check: async () => ({ view: true }) }, rule: { manager: async (user: string) => user === "manager" }, member: async (user: string, serverId: string) => serverId === guild && members.has(user) } as never);
 
@@ -203,7 +206,7 @@ test("a private chat is shared by its owner only, as a snapshot, and deleting it
   assert.ok(!body.includes("later private line"), "a later message is not in the link");
   assert.ok(!body.includes("carol budget note"), "another chat is not in the link");
   assert.ok(!body.includes("the team picked the beach"), "server data is not in the link");
-  assert.ok(!(await shares.page(id))?.includes("later private line"), "the public page is the same snapshot");
+  assert.ok(!(await shares.page(id, PAGE))?.includes("later private line"), "the public page is the same snapshot");
 
   // Server managers do not list or revoke a private chat link.
   assert.deepEqual((await shares.list("manager", guild)).shares, [], "the server list has no chat link");
@@ -214,7 +217,7 @@ test("a private chat is shared by its owner only, as a snapshot, and deleting it
   // Deleting the chat revokes the link and removes its frozen copy.
   await chats.remove("alice", chat);
   assert.equal(await shares.snapshot(id), undefined, "deleting the chat revokes the link");
-  assert.equal(await shares.page(id), undefined);
+  assert.equal(await shares.page(id, PAGE), undefined);
   assert.equal(await store.getShare(id), undefined, "the frozen copy is removed");
 });
 
@@ -240,13 +243,6 @@ test("a private chat never gets a JEV participation decision", async t => {
   await bot.receive(incoming);
   assert.equal(decided, 0, "the participation gate must not see a private chat");
   assert.equal(outputs.length, 1, "the private chat is still answered");
-});
-
-test("message view has files", () => {
-  const fileId = "0123456789abcdef0123456789abcdef.txt";
-  const message = { ...webMessage("web-file-msg", "see the notes"), attachments: [{ name: "notes.txt", url: fileUrl(server, "0123456789abcdef0123456789abcdef", fileId), contentType: "text/plain", size: 12 }] } as Message;
-  assert.deepEqual(transcriptMessage(message, undefined).files, [{ fileId, name: "notes.txt", contentType: "text/plain", size: 12 }]);
-  assert.equal("files" in transcriptMessage(webMessage("web-plain"), undefined), false, "a message without files has no files key");
 });
 
 test("share shows file names without file ids", () => {
@@ -285,28 +281,14 @@ test("continued share has no file labels", async t => {
   // A share made before the fix keeps the label in its frozen text. Continuing it must not copy the label.
   const snapshot = { id: "share-old", created_at: 1, options: { show_avatars: false, show_thinking: false }, messages: [{ author: "Alice", bot: false, text: `look\n${label}`, attachments: 1, tools: [] }] };
   await store.insertShare({ id: "share-old", server: guild, channel: ownerChat, created_by: "alice", created_at: 1, revoked_at: null, body: JSON.stringify(snapshot) });
-  const host = {
-    member: async () => true,
-    handle: async () => ({ openChat() { /* none */ }, closeChat() { /* none */ }, async receiveChat() { /* none */ } }),
-    limiter: { check: async () => ({ allowed: true }) },
+  const host = chatDeps({
+    member: () => true,
     access: new ChannelAccess({ async facts() { return undefined; } }),
-  } as unknown as ChatHost;
-  const chats = new WebChatService(store, host, { changed() { /* no live streams here */ } } as never, () => 2_000);
+  });
+  const chats = new WebChatService(store, host, () => 2_000);
   const { id } = await chats.continueShare("alice", "share-old", { snapshot: async () => snapshot } as never);
   const saved = await store.conversationMessages(guild, privateChannel(id), undefined, 10);
   assert.deepEqual(saved.map(message => message.text), ["look"], "the copied text has no label");
-});
-
-test("share page data has files", () => {
-  const page = renderSharePage({
-    id: "share1", created_at: 1, options: { show_avatars: false, show_thinking: false },
-    messages: [{ author: "Alice", bot: false, text: "report", attachments: 2, tools: [], files: [{ name: "report.pdf", size: 2048 }] }],
-  });
-  const match = /<script type="application\/json" id="share-data">([\s\S]*?)<\/script>/.exec(page);
-  assert.ok(match, "the page has its data");
-  const data = JSON.parse(match[1]!) as { messages: { files: unknown[]; other: number }[] };
-  assert.deepEqual(data.messages[0]!.files, [{ name: "report.pdf", size: 2048 }], "the page gets the file name and size");
-  assert.equal(data.messages[0]!.other, 1, "a file is not counted as an attachment not shown");
 });
 
 test("Postgres queries keep private chats out of the channel list, author lookup and memory index", () => {

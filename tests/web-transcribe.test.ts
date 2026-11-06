@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { handleTranscribe, transcribeLimits, type TranscribeDeps } from '../src/web-transcribe.js';
+import { handleTranscribe, transcribeLimits, type TranscribeDeps } from '../src/clients/web/web-transcribe.js';
 
 const ORIGIN = 'http://localhost:3000';
 const session = { user: 'u1', csrf: 'tok' };

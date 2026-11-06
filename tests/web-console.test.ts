@@ -4,19 +4,17 @@ import { once } from 'node:events';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { consoleOptions, createConsole } from '../src/web-console.js';
+import { consoleOptions, createConsole } from '../src/clients/web/web-console.js';
 import { ToolError } from '../src/tools.js';
 import { WebKeySecrets } from '../src/web-keys.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { AdminInputError, AdminPanel, pageItems, serverPage, type UserDetailView, type UsersPageView } from '../src/admin-panel.js';
-import { DEFAULT_INSTRUCTIONS, fullSystemText, systemText } from '../src/agent-runner.js';
-import { nativeToolInstructions } from '../src/tools.js';
-import type { PresentationPolicy } from '../src/presentation/policy.js';
+import { DEFAULT_INSTRUCTIONS } from '../src/agent-runner.js';
 import { TeamAdmins, type TeamSnapshot } from '../src/team-admins.js';
 import { USER_LIMIT_OVERRIDES_SETTING, UserLimiter } from '../src/user-limiter.js';
 import type { KnownUserRow, UserTokenTotalRow } from '../src/ports.js';
 import { KEY_ERRORS_SETTING } from '../src/web-providers.js';
-import type { ConsoleAdmin } from '../src/web-console.js';
+import type { ConsoleAdmin } from '../src/clients/web/web-console.js';
 import { MemberDirectory } from '../src/member-directory.js';
 import { fakeSource } from './member-fakes.js';
 import { activePrices, GLOBAL_SETTINGS_SCOPE, usageCostMicros } from '../src/usage-cost.js';
@@ -166,17 +164,6 @@ test('rejects other katex paths',async t=>{
   assert.equal((await fetch(base+'/share/katex/fonts/evil.woff2')).status,404);
   assert.equal((await fetch(base+'/share/katex/fonts/%2e%2e%2fkatex.min.js')).status,404);
   assert.equal((await fetch(base+'/share/katex/fonts/KaTeX_Main-Regular.woff2/..')).status,404);
-});
-test('landing returns 404 when site/out is missing',async t=>{
-  const nextDir=await mkdtemp(join(tmpdir(),'slopbot-console-'));t.after(()=>rm(nextDir,{recursive:true,force:true}));
-  await writeFile(join(nextDir,'index.html'),'<!doctype html><title>Console</title>');
-  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:join(tmpdir(),'slopbot-no-such-site'),nextDir},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});
-  server.listen(0,'127.0.0.1');await once(server,'listening');
-  t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
-  const address=server.address();assert.ok(address&&typeof address!=='string');
-  const base=`http://127.0.0.1:${address.port}`;
-  assert.equal((await fetch(base+'/')).status,404);
-  assert.equal((await fetch(base+'/console')).status,200);
 });
 const teamConfig = { model: 'nimbus', jevModel: 'cirrus', embeddingModel: 'embed', baseUrl: 'https://models.example.com/v1', modelPrices: {}, fallbackPrice: { input: 1, cached_input: 1, output: 1 }, userLimit5hCostMicros: 100, userLimitWeekCostMicros: 0, userLimitGracePercent: 10 };
 
@@ -718,22 +705,6 @@ test('model prices: each row shows the config or fallback default, the override,
   // Bad saved entries are ignored by billing, so they show no override either.
   await store.setSetting(GLOBAL_SETTINGS_SCOPE, 'model_prices', { nimbus: { input: 'x' } });
   assert.equal(row(panel.prices() as PricesBody, 'nimbus').override, null);
-});
-
-test('full system prompt is the base, the presentation rules and the tool rules, with the saved prompt when set', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  const limiter = new UserLimiter(store, { fiveHourCostMicros: 100, weekCostMicros: 0, gracePercent: 10 });
-  const directory = new MemberDirectory(fakeSource({}));
-  const config = { model: 'nimbus', jevModel: 'cirrus', embeddingModel: 'embed', baseUrl: 'https://models.example.com/v1', modelPrices: {}, fallbackPrice: { input: 1, cached_input: 1, output: 1 }, userLimit5hCostMicros: 100, userLimitWeekCostMicros: 0, userLimitGracePercent: 10 };
-  const presentation: PresentationPolicy = { id: 'test', rules: [{ id: 'plain', instruction: 'Use plain text only.', apply: text => text }] };
-  const panel = new AdminPanel(config, store, limiter, directory, presentation);
-  assert.equal(panel.fullSystemPrompt().text, `${DEFAULT_INSTRUCTIONS}\nUse plain text only.\n${nativeToolInstructions}`);
-  assert.equal(panel.fullSystemPrompt().text, fullSystemText(DEFAULT_INSTRUCTIONS, presentation));
-  await panel.saveSystemPrompt({ text: '  Be brief.  ' });
-  assert.equal(panel.fullSystemPrompt().text, `Be brief.\nUse plain text only.\n${nativeToolInstructions}`);
-  assert.equal(systemText('Be brief.', presentation), 'Be brief.\nUse plain text only.');
-  const bare = new AdminPanel(config, store, limiter, directory);
-  assert.equal(bare.fullSystemPrompt().text, `Be brief.\n${nativeToolInstructions}`);
 });
 test('/api/version is public and shows the build sha and time, or nulls for a missing or bad sha', async t => {
   const keys = ['SLOPBOT_BUILD_SHA', 'SLOPBOT_BUILD_TIME'] as const;

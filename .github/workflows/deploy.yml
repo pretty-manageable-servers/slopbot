@@ -22,15 +22,17 @@ jobs:
         options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm test
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
         env:
           TEST_DATABASE_URL: postgres://postgres:test@localhost:5432/slopbot_test
-      - run: cd console && npm ci && npm test && npm run build
+      - run: pnpm -F slopbot-console test
+      - run: pnpm -F slopbot-console build
   deploy:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: test

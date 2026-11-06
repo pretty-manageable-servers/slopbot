@@ -8,10 +8,12 @@ import { ChannelAccess } from "../src/channel-access.js";
 import type { Message } from "../src/domain.js";
 import type { ObjectStorageProvider } from "../src/object-storage.js";
 import { issueDraftTools } from "../src/issue-drafts.js";
-import { createConsole } from "../src/web-console.js";
-import { createChatRoutes, WebChatGateway, WebChatService, type ChatHost, type PrivateChatHandle } from "../src/web-chats.js";
+import { createConsole } from "../src/clients/web/web-console.js";
+import { createChatRoutes, WebChatService } from "../src/clients/web/web-chats.js";
+import { WebChatGateway } from "../src/engine/web-chat-gateway.js";
+import { chatDeps } from "./chat-deps.js";
 import { privateChannel } from "../src/private-chat.js";
-import { runEvents } from "../src/run-events.js";
+import { engineEvents } from "../src/engine/event-log.js";
 import { ToolRegistry } from "../src/tools.js";
 import { UiRuntime } from "../src/ui/runtime.js";
 import type { UiDocument } from "../src/ui/schema.js";
@@ -55,7 +57,7 @@ interface Fixture {
 async function setup(t: TestContext): Promise<Fixture> {
   const store = new SQLiteStore(":memory:");
   t.after(() => store.close());
-  runEvents.attach(store);
+  engineEvents.attach(store);
   const client = new FakeClient();
   const tools = new ToolRegistry(store, async () => true);
   for (const tool of issueDraftTools({ store, client: client as unknown as OperationsClient, authorize: async () => {} })) tools.register(tool);
@@ -73,26 +75,20 @@ async function setup(t: TestContext): Promise<Fixture> {
   const request: Message = { server: SERVER, channel, id: "30000000000000003", author: OWNER, text: "Please file a bug about PNG uploads", timestamp: now };
   await store.ingest(request);
 
-  const handle: PrivateChatHandle = {
-    openChat() { /* no bot in these tests */ },
-    closeChat() { /* none */ },
-    async receiveChat() { /* none */ },
-    async stopResponses() { return []; },
-    // The Discord side runs a card button through its UI runtime, as a command by the web user.
-    act(channelId, user, id, revision, index, interactionId) {
-      return ui.act({ server: SERVER, channel: channelId, author: user, id: `chat-ui:${interactionId}`, text: "UI action", timestamp: Date.now() }, id, revision, index, interactionId);
-    },
-  };
   let clock = now;
   const members = new Set([OWNER, OTHER]);
-  const host: ChatHost = {
-    async member(user, server) { return server === SERVER && members.has(user); },
-    async handle(server) { return server === SERVER ? handle : undefined; },
-    limiter: { async check() { return { allowed: true }; } },
+  const host = chatDeps({
+    member: (user, server) => server === SERVER && members.has(user),
+    workspace: server => server === SERVER ? {
+      // The Discord side runs a card button through its UI runtime, as a command by the web user.
+      act(channelId, user, id, revision, index, interactionId) {
+        return ui.act({ server: SERVER, channel: channelId, author: user, id: `chat-ui:${interactionId}`, text: "UI action", timestamp: Date.now() }, id, revision, index, interactionId);
+      },
+    } : undefined,
     access: new ChannelAccess({ async facts() { return undefined; } }),
     images: new MemoryStorage(),
-  };
-  const service = new WebChatService(store, host, undefined, () => ++clock);
+  });
+  const service = new WebChatService(store, host, () => ++clock);
   const gateway = new WebChatGateway(store, SERVER);
 
   const logins: Record<string, { cookie: string; csrf: string }> = {};

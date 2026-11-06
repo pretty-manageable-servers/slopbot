@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { EventEmitter } from 'node:events';
 import { ChannelType, type Client } from 'discord.js';
-import { DiscordServer } from '../src/adapters/discord.js';
+import { DiscordServer } from '../src/clients/discord/discord.js';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { loadConfig } from '../src/config.js';
 import type { Message } from '../src/domain.js';

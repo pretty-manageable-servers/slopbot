@@ -2,12 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
+import { readFileSync } from 'node:fs';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
+import type { ShareData } from '@slopbot/contracts';
 import { parseMessage, type Message } from '../src/domain.js';
 import { webTranscriptKey } from '../src/server-tools.js';
-import { ShareError, ShareService, buildMessages, canCreateShare, isShareId, isShareWrite, renderSharePage, scrubText, toolLine } from '../src/shares.js';
-import { createConsole } from '../src/web-console.js';
+import { ShareError, ShareService, buildMessages, canCreateShare, isShareId, renderSharePage, scrubText, toolLine, type ShareSnapshot } from '../src/shares.js';
+import { createConsole } from '../src/clients/web/web-console.js';
 import { TeamAdmins } from '../src/team-admins.js';
+
+/** A share page template, as console/share.html builds it. */
+const PAGE = "<!doctype html><html><body><div id=\"root\"></div><!--share-data--></body></html>";
 
 const server = '1528063444874432734', channel = '1528063444874432735';
 const admin = '151441325952283852', ada = '151441325952283850', mention = '151441325952283853', bot = '151441325952283854';
@@ -113,7 +121,7 @@ test('messages after creation are not added to a live link', async () => {
   const { service, store } = await fixture();
   const { id } = await service.create(admin, { server, channel });
   await store.ingest(parseMessage({ id: '1528063444874432804', server, channel, author: ada, authorName: 'Ada', text: 'added afterwards', timestamp: 4000 }));
-  const page = await service.page(id);
+  const page = await service.page(id, PAGE);
   assert.ok(page);
   assert.equal(page.includes('added afterwards'), false);
   assert.equal(page.includes('later secret message'), true, 'the snapshot holds what was in range at creation');
@@ -144,10 +152,10 @@ test('a revoked link returns nothing, and revoke-all removes every link in the s
   const { service } = await fixture();
   const one = await service.create(admin, { server, channel });
   const two = await service.create(admin, { server, channel });
-  assert.ok(await service.page(one.id));
+  assert.ok(await service.page(one.id, PAGE));
   assert.deepEqual(await service.revoke(admin, one.id), { id: one.id, revoked: true });
   assert.equal(await service.snapshot(one.id), undefined);
-  assert.equal(await service.page(one.id), undefined);
+  assert.equal(await service.page(one.id, PAGE), undefined);
   assert.ok(await service.snapshot(two.id));
   assert.deepEqual(await service.revokeAll(admin, server), { revoked: 1 });
   assert.equal(await service.snapshot(two.id), undefined);
@@ -169,8 +177,6 @@ test('link IDs are 128 random bits in base64url', async () => {
   }
   assert.equal(ids.size, 40);
   assert.equal(isShareId('short'), false);
-  assert.equal(isShareWrite('/api/shares/revoke-all'), true);
-  assert.equal(isShareWrite('/api/shares/abc/revoke'), false);
 });
 
 test('the page is noindex and escapes message text and names', async () => {
@@ -179,9 +185,9 @@ test('the page is noindex and escapes message text and names', async () => {
   await store.ingest(parseMessage({ id: human, server, channel, author: ada, authorName: '<b>Mallory</b>', text: '<img src=x onerror=alert(1)> "quoted" & \'single\'', timestamp: 1 }));
   const service = new ShareService({ store, access: { async check() { return { view: true }; } }, rule: { manager: async () => true } });
   const { id } = await service.create(admin, { server, channel });
-  const page = await service.page(id);
+  const page = await service.page(id, PAGE);
   assert.ok(page);
-  assert.match(page, /<meta name="robots" content="noindex">/);
+  assert.match(readFileSync(new URL('../../console/share.html', import.meta.url), 'utf8'), /<meta name="robots" content="noindex" \/>/, 'the template is noindex');
   assert.equal(page.includes('<img src=x'), false);
   assert.equal(page.includes('<b>Mallory</b>'), false);
   // The text and names are JSON data. The browser draws them through the markdown renderer, which escapes them.
@@ -191,20 +197,44 @@ test('the page is noindex and escapes message text and names', async () => {
 });
 
 /** The page data that the share page embeds for web/shares.js. */
-function shareDataOf(page: string): { messages: { author: string; text: string; tools: string[]; other: number; images: unknown[] }[] } {
+function shareDataOf(page: string): ShareData {
   const match = /<script type="application\/json" id="share-data">([\s\S]*?)<\/script>/.exec(page);
   assert.ok(match, "the page has its data");
   return JSON.parse(match[1]!);
 }
 
 test('renderSharePage keeps an unsafe tool name and status text as text', () => {
-  const html = renderSharePage({ id: 'x', created_at: 1, options: { show_avatars: false, show_thinking: false }, messages: [{ author: 'A', bot: true, text: 'hi\n<i>x</i>', attachments: 2, tools: [toolLine('<script>bad()</script>')] }] });
+  const html = renderSharePage({ id: 'x', created_at: 1, options: { show_avatars: false, show_thinking: false }, messages: [{ author: 'A', bot: true, text: 'hi\n<i>x</i>', attachments: 2, tools: [toolLine('<script>bad()</script>')] }] }, PAGE);
   assert.equal(html.includes('<script>bad()'), false);
   assert.equal(html.includes('<i>x</i>'), false);
   const data = shareDataOf(html);
-  assert.deepEqual(data.messages[0]!.tools, ['Used tool <script>bad()</script>']);
+  assert.deepEqual(data.messages[0]!.tools, [{ name: '<script>bad()</script>', status: 'Used tool <script>bad()</script>' }]);
   assert.equal(data.messages[0]!.other, 2);
   assert.equal(data.messages[0]!.text, 'hi\n<i>x</i>');
+});
+
+test('the page data is the ShareData contract: images are served from the share, other attachments are counted', () => {
+  const snapshot: ShareSnapshot = {
+    id: 'abc', created_at: 1, options: { show_avatars: false, show_thinking: false },
+    messages: [{ author: 'A', bot: false, at: 5, text: 'look', attachments: 3, images: [{ imageId: 'img1', name: 'a.png' }], files: [{ name: 'b.pdf', size: 42 }], tools: [] }],
+  };
+  const data: ShareData = shareDataOf(renderSharePage(snapshot, PAGE));
+  assert.deepEqual(data, {
+    id: 'abc',
+    messages: [{ author: 'A', bot: false, at: 5, text: 'look', tools: [], thinking: '', images: [{ src: '/s/abc/images/img1', name: 'a.png' }], files: [{ name: 'b.pdf', size: 42 }], other: 1 }],
+  });
+});
+
+test('a share keeps the input of visual tools, scrubbed, and drops the input of other tools', () => {
+  const widget = { widget_code: '<svg></svg><p>mail a@b.co</p>', title: 'Heat' };
+  const [, reply] = buildMessages([
+    { id: 'q', server: 's', channel: 'c', author: 'u', text: 'plot it' },
+    { id: 'r', server: 's', channel: 'c', author: 'bot', text: 'Plotted', isBot: true, replyTo: 'q' },
+  ] as never, [{ request: 'q', kind: 'tool_call', payload: [{ name: 'show_widget', arguments: JSON.stringify(widget) }, { name: 'web_search', arguments: { query: 'secret' } }] }], { show_thinking: false, show_tools: true });
+  assert.deepEqual(reply!.tools, [
+    { name: 'show_widget', status: 'Used tool show_widget', input: { widget_code: '<svg></svg><p>mail [email]</p>', title: 'Heat' } },
+    { name: 'web_search', status: 'Searched the web' },
+  ]);
 });
 
 test('scrubText removes mentions, emails and long numeric IDs', () => {
@@ -239,7 +269,11 @@ async function login(call: (path: string, init?: RequestInit) => Promise<Respons
 
 test('HTTP routes: public page and JSON, noindex headers, manager-only writes with CSRF', async t => {
   const { service } = await fixture();
-  const web = createConsole({ origin: 'http://localhost:3000', host: '127.0.0.1', port: 0, clientId: 'id', clientSecret: 'secret' }, { sessions: new SQLiteStore(), async canSignIn() { return true; },
+  // The page is the console build's share.html, filled with the copy.
+  const nextDir = await mkdtemp(join(tmpdir(), 'slopbot-share-'));
+  t.after(() => rm(nextDir, { recursive: true, force: true }));
+  await writeFile(join(nextDir, 'share.html'), PAGE);
+  const web = createConsole({ origin: 'http://localhost:3000', host: '127.0.0.1', port: 0, clientId: 'id', clientSecret: 'secret', nextDir }, { sessions: new SQLiteStore(), async canSignIn() { return true; },
     async snapshot(id) { return { user: id }; },
     async invoke() { return {}; },
     shares: service,
@@ -272,8 +306,9 @@ test('HTTP routes: public page and JSON, noindex headers, manager-only writes wi
   assert.equal(page.status, 200);
   assert.equal(page.headers.get('x-robots-tag'), 'noindex');
   assert.match(page.headers.get('content-type') ?? '', /text\/html/);
+  assert.match(page.headers.get('content-security-policy') ?? '', /script-src 'self'/);
   const html = await page.text();
-  assert.match(html, /<meta name="robots" content="noindex">/);
+  assert.match(html, /id="share-data"/);
   assert.equal(html.includes(ada), false);
 
   const json = await call(`/api/shares/${id}`);

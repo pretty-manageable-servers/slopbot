@@ -278,29 +278,28 @@ test("shares, transcripts and run events match SQLite on Postgres", { skip: !pro
     await step.step("list shares after revoke all", () => store.listShares(SHARES, 10));
     await step.step("other server share kept", () => store.getShare("share-3"));
 
-    // Live events: stream IDs go up across channels.
-    const event = (channel: string, kind: "message" | "run.start" | "run.delta" | "run.end", ref: string, data: Record<string, string>, createdAt: number) =>
-      store.appendConversationEvent({ server: SHARES, channel, kind, ref, data, createdAt });
-    await step.step("append event 1", () => event("c1", "message", "m1", {}, 1000));
-    await step.step("append event 2", () => event("c2", "run.start", "run-1", {}, 1001));
-    await step.step("append event 3", () => event("c1", "run.delta", "run-1", { text: "Hel" }, 1002));
-    await step.step("append event 4", () => event("c2", "run.end", "run-1", {}, 1003));
-    await step.step("append event 5", () => event("c1", "run.end", "run-1", {}, 1004));
-    await step.step("latest stream id c1", () => store.latestStreamId(SHARES, "c1"));
-    await step.step("latest stream id c2", () => store.latestStreamId(SHARES, "c2"));
-    await step.step("latest stream id empty channel", () => store.latestStreamId(SHARES, "c3"));
-    await step.step("events after 0 on c1", () => store.conversationEventsAfter(SHARES, "c1", 0, 10));
-    await step.step("events after 1 on c1", () => store.conversationEventsAfter(SHARES, "c1", 1, 10));
-    await step.step("events limit 1 on c1", () => store.conversationEventsAfter(SHARES, "c1", 0, 1));
-    await step.step("oldest stream id c1", () => store.oldestStreamId(SHARES, "c1"));
-    await step.step("oldest stream id c2", () => store.oldestStreamId(SHARES, "c2"));
-    await step.step("oldest stream id empty channel", () => store.oldestStreamId(SHARES, "c3"));
+    // Engine events: seq goes up across channels.
+    const event = (channel: string, ref: string, createdAt: number) =>
+      store.appendEngineEvent({ server: SHARES, channel, turn: null, type: "message.delete", data: { type: "message.delete", id: ref }, createdAt });
+    await step.step("append event 1", () => event("c1", "m1", 1000));
+    await step.step("append event 2", () => event("c2", "m2", 1001));
+    await step.step("append event 3", () => event("c1", "m3", 1002));
+    await step.step("append event 4", () => event("c2", "m4", 1003));
+    await step.step("append event 5", () => event("c1", "m5", 1004));
+    await step.step("latest seq c1", () => store.latestEngineSeq(SHARES, "c1"));
+    await step.step("latest seq c2", () => store.latestEngineSeq(SHARES, "c2"));
+    await step.step("latest seq empty channel", () => store.latestEngineSeq(SHARES, "c3"));
+    await step.step("events after 0 on c1", () => store.engineEventsAfter(SHARES, "c1", 0, 10));
+    await step.step("events after 1 on c1", () => store.engineEventsAfter(SHARES, "c1", 1, 10));
+    await step.step("events limit 1 on c1", () => store.engineEventsAfter(SHARES, "c1", 0, 1));
   });
 
   assert.deepEqual(log["append event 1"], { value: 1 });
   assert.deepEqual(log["append event 5"], { value: 5 });
-  assert.deepEqual((log["events after 0 on c1"] as { value: { streamId: number }[] }).value.map(row => row.streamId), [1, 3, 5]);
-  assert.deepEqual(log["latest stream id c2"], { value: 4 });
+  assert.deepEqual((log["events after 0 on c1"] as { value: { seq: number }[] }).value.map(row => row.seq), [1, 3, 5]);
+  assert.deepEqual(log["latest seq c1"], { value: 5 });
+  assert.deepEqual(log["latest seq c2"], { value: 4 });
+  assert.deepEqual(log["latest seq empty channel"], { value: 0 });
   assert.deepEqual(log["reply runs of b1"], { value: ["run-1", "run-3"] });
   assert.deepEqual(log["reply runs of b2"], { value: [] });
   assert.deepEqual(log["shares: request events"], { value: [
@@ -325,18 +324,18 @@ test("shares, transcripts and run events match SQLite on Postgres", { skip: !pro
   assert.deepEqual(log["conversation activity"], { value: [{ channel: "c1", newest: 300 }, { channel: "c2", newest: 999 }] });
 });
 
-test("conversation event retention matches SQLite on Postgres", { skip: !process.env.TEST_DATABASE_URL }, async () => {
+test("event retention matches SQLite on Postgres", { skip: !process.env.TEST_DATABASE_URL }, async () => {
   const log = await sameOnBoth(async (store, step, backend) => {
     // Setup only: Postgres seeds rows in one statement, SQLite appends them one by one. Rows and stream IDs are the same.
     const seed = async (channel: string, count: number, createdAt: number) => {
       if (backend.kind === "sqlite") {
-        for (let index = 0; index < count; index++) await store.appendConversationEvent({ server: PRUNE, channel, kind: "run.delta", ref: "run-1", data: {}, createdAt });
+        for (let index = 0; index < count; index++) await store.appendEngineEvent({ server: PRUNE, channel, turn: null, type: "message.delete", data: { type: "message.delete", id: "m" }, createdAt });
         return;
       }
       const client = new Client({ connectionString: backend.url, options: `-c search_path=${backend.schema},public` });
       await client.connect();
       try {
-        await client.query("INSERT INTO conversation_events(server,channel,kind,ref,data,created_at) SELECT $1,$2,'run.delta','run-1','{}',$3 FROM generate_series(1,$4)", [PRUNE, channel, createdAt, count]);
+        await client.query("INSERT INTO engine_events(server,channel,turn,type,data,created_at) SELECT $1,$2,NULL,'message.delete','{\"type\":\"message.delete\",\"id\":\"m\"}',$3 FROM generate_series(1,$4)", [PRUNE, channel, createdAt, count]);
       } finally {
         await client.end();
       }
@@ -345,17 +344,16 @@ test("conversation event retention matches SQLite on Postgres", { skip: !process
     await seed("old", 10500, 1000);
     await seed("new", 50, 9000);
     await step.step("prune by age", () => store.pruneConversationEvents(5000, 1_000_000_000));
-    await step.step("old rows after age prune", () => store.conversationEventsAfter(PRUNE, "old", 0, 10));
-    await step.step("recent rows after age prune", async () => (await store.conversationEventsAfter(PRUNE, "new", 0, 100_000)).length);
+    await step.step("old rows after age prune", () => store.engineEventsAfter(PRUNE, "old", 0, 10));
+    await step.step("recent rows after age prune", async () => (await store.engineEventsAfter(PRUNE, "new", 0, 100_000)).length);
     // More than one delete batch by row cap.
     await seed("cap", 11500, 9000);
     await step.step("prune by row cap", () => store.pruneConversationEvents(0, 1000));
-    await step.step("rows kept by cap", async () => (await store.conversationEventsAfter(PRUNE, "cap", 0, 100_000)).length);
-    await step.step("oldest recent row after cap", () => store.oldestStreamId(PRUNE, "new"));
+    await step.step("rows kept by cap", async () => (await store.engineEventsAfter(PRUNE, "cap", 0, 100_000)).length);
     await step.step("cap keeps newest stream ids", async () => {
-      const latest = await store.latestStreamId(PRUNE, "cap");
-      const oldest = await store.oldestStreamId(PRUNE, "cap");
-      return { span: latest - (oldest ?? latest) + 1 };
+      const latest = await store.latestEngineSeq(PRUNE, "cap");
+      const oldest = (await store.engineEventsAfter(PRUNE, "cap", 0, 1))[0]?.seq ?? latest;
+      return { span: latest - oldest + 1 };
     });
     await step.step("prune when nothing is over", () => store.pruneConversationEvents(0, 1000));
   });
@@ -363,7 +361,6 @@ test("conversation event retention matches SQLite on Postgres", { skip: !process
   assert.deepEqual(log["recent rows after age prune"], { value: 50 });
   assert.deepEqual(log["prune by row cap"], { value: 10550 });
   assert.deepEqual(log["rows kept by cap"], { value: 1000 });
-  assert.deepEqual(log["oldest recent row after cap"], { value: undefined });
   assert.deepEqual(log["cap keeps newest stream ids"], { value: { span: 1000 } });
   assert.deepEqual(log["prune when nothing is over"], { value: 0 });
 });

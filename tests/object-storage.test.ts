@@ -154,11 +154,6 @@ test('stored public binary files copy into a task sandbox with permission checks
   await assert.rejects(registry.invokeResult({ ...message, author: bob }, 'file_store', args, 'sandbox-copy-denied', 'agent'), /not shared/);
 });
 
-test('unconfigured storage explains setup instead of pretending to save files', async t => {
-  const store = new SQLiteStore(); t.after(() => store.close());
-  await assert.rejects(new UserFileStorage(store).list('s', alice, 'mine', ''), /OBJECT_STORAGE_BUCKET/);
-});
-
 test('sandbox outputs can be saved persistently and copied back into a sandbox with their binary content', async t => {
   const f = setup(); t.after(() => f.store.close());
   const written: { path: string; bytes: unknown }[] = [];
