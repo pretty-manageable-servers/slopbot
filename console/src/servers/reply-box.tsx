@@ -1,9 +1,10 @@
 // The reply box under a channel: the text goes to the channel through the bot (POST /api/conversations/:channel/reply).
 import { useMutation } from "@tanstack/react-query";
-import { Composer } from "agentic-ui-kit";
+import { Composer, DictationButton } from "agentic-ui-kit";
 import { useState } from "react";
 import { ApiError, post } from "../api";
 import type { ReplyResult } from "../api-types";
+import { useConsoleDictation } from "../ui/dictation";
 import { notify, notifyError } from "../ui/feedback";
 
 export function ReplyBox({ server, channel }: { server: string; channel: string }) {
@@ -22,6 +23,7 @@ export function ReplyBox({ server, channel }: { server: string; channel: string 
       else notifyError(error);
     },
   });
+  const dictation = useConsoleDictation();
   return (
     <Composer
       variant="docked"
@@ -30,6 +32,8 @@ export function ReplyBox({ server, channel }: { server: string; channel: string 
       onChange={setText}
       onSubmit={(body) => send.mutate(body)}
       submitDisabled={send.isPending}
+      dictation={dictation.state}
+      trailing={dictation.supported && <DictationButton onPress={dictation.start} />}
     />
   );
 }

@@ -547,7 +547,7 @@ export class DiscordVoice {
   }
 
   private audio(): PmAudio {
-    return new PmAudio(this.config.baseUrl, this.config.apiKey, this.config.voice?.voice ?? 'alloy');
+    return new PmAudio(this.config.baseUrl, this.config.apiKey, this.config.voice?.voice ?? 'alloy', undefined, this.config.voice?.sttModel);
   }
 
   private async join(channel: string, replies: 'voice' | 'text', origin: string | undefined): Promise<void> {
@@ -555,7 +555,7 @@ export class DiscordVoice {
     const connection = this.connect({ guildId: guild.id, channelId: channel, adapterCreator: guild.voiceAdapterCreator, selfDeaf: false, selfMute: false });
     const player = this.createPlayer();
     const abort = new AbortController(), captures = new Set<AudioReceiveStream>();
-    const audio = new PmAudio(this.config.baseUrl, this.config.apiKey, this.config.voice?.voice ?? 'alloy');
+    const audio = new PmAudio(this.config.baseUrl, this.config.apiKey, this.config.voice?.voice ?? 'alloy', undefined, this.config.voice?.sttModel);
     let idle: ReturnType<typeof setTimeout>, lastError = 0;
     const refresh = () => { clearTimeout(idle); idle = setTimeout(() => this.leave(), IDLE_MS); idle.unref(); };
     const fail = (error: unknown) => {

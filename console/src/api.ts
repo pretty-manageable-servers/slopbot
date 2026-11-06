@@ -45,6 +45,14 @@ export async function upload<T>(path: string, file: File): Promise<T> {
   return data as T;
 }
 
+/** Raw WAV to the speech-to-text route. Resolves to the words heard. */
+async function transcribe(audio: Blob, signal: AbortSignal): Promise<string> {
+  const response = await fetch("/api/transcribe", { method: "POST", headers: { "Content-Type": "audio/wav", "X-CSRF-Token": csrf }, body: audio, signal });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new ApiError(typeof data.error === "string" ? data.error : `Dictation failed (${response.status}).`, response.status, data);
+  return typeof data.text === "string" ? data.text : "";
+}
+
 export async function loadSession(): Promise<Session> {
   const session = await call<Session>("GET", "/api/session");
   csrf = session.csrf;
@@ -55,6 +63,7 @@ const chat = (id: string) => `/api/chats/${encodeURIComponent(id)}`;
 
 export const api = {
   session: loadSession,
+  transcribe,
   chats: () => call<ChatSummary[]>("GET", "/api/chats"),
   createChat: (server: string) => call<{ id: string }>("POST", "/api/chats", { server }),
   messages: (id: string, limit = 50) => call<{ messages: unknown[]; hasMore: boolean; streamId: number }>("GET", `${chat(id)}/messages?limit=${limit}`),
