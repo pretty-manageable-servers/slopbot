@@ -106,7 +106,8 @@ export interface McpBody {
 // ----- Inbox, shares, usage (src/web-console.ts:360-449, src/shares.ts) -----
 export interface InboxItem { id: string; server: string; target: string; sender: string; channel: string; sourceIds: string[]; summary: string; created_at: number; done_at: number | null }
 export interface ServerShare { id: string; channel: string; created_at: number; revoked: boolean }
-export interface ChatShare { id: string; created_at: number; revoked: boolean }
+/** `frozen_at` is when the copy was taken; `newer` is true when the chat has messages after it. */
+export interface ChatShare { id: string; created_at: number; revoked: boolean; frozen_at: number; newer: boolean }
 export interface CreateShareBody { server: string; channel: string; from?: string; to?: string; show_avatars?: boolean; show_thinking?: boolean }
 
 // ----- Transcripts (src/web-transcripts.ts:437-465) -----

@@ -78,6 +78,7 @@ export const api = {
   shares: (id: string) => call<{ shares: ChatShare[] }>("GET", `${chat(id)}/shares`),
   createShare: (id: string) => call<{ id: string }>("POST", `${chat(id)}/shares`, {}),
   revokeShare: (id: string, shareId: string) => call<unknown>("POST", `${chat(id)}/shares/${encodeURIComponent(shareId)}/revoke`, {}),
+  refreshShare: (id: string, shareId: string) => call<{ id: string; frozen_at: number }>("POST", `${chat(id)}/shares/${encodeURIComponent(shareId)}/refresh`, {}),
   continueShare: (shareId: string) => call<{ id: string; title: string }>("POST", `/api/shares/${encodeURIComponent(shareId)}/continue`, {}),
   usage: (server: string) => get<Usage>(`/api/usage${qs({ server })}`),
   useReset: (server: string, kind: string) => post<Usage>("/api/usage/reset", { server, kind }),

@@ -44,9 +44,10 @@ export function ShareDialog({ chatId, triggerRef, onClose }: { chatId: string | 
   );
 }
 
-function SharePanel({ chatId, onClose }: { chatId: string; onClose: () => void }) {
+export function SharePanel({ chatId, onClose }: { chatId: string; onClose: () => void }) {
   const client = useQueryClient();
-  const { data: shares, error, isPending } = useQuery(sharesQuery(chatId));
+  // Always refetch on open, so `newer` is current.
+  const { data: shares, error, isPending } = useQuery({ ...sharesQuery(chatId), staleTime: 0, refetchOnMount: "always" });
   const active = (shares ?? []).filter((share) => !share.revoked).sort((a, b) => b.created_at - a.created_at);
   const access: Access = active.length ? "link" : "private";
   // The settings view, with the access it would save.
@@ -63,6 +64,15 @@ function SharePanel({ chatId, onClose }: { chatId: string; onClose: () => void }
       setDraft(null);
       if (id) await copyLink(id);
       else notify("Link turned off.");
+    },
+    onError: notifyError,
+  });
+
+  const refresh = useMutation({
+    mutationFn: (shareId: string) => api.refreshShare(chatId, shareId),
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: sharesQuery(chatId).queryKey });
+      notify("Link updated");
     },
     onError: notifyError,
   });
@@ -94,6 +104,11 @@ function SharePanel({ chatId, onClose }: { chatId: string; onClose: () => void }
         <IconButton label="Close" variant="ghost" size="sm" onPress={onClose}>{icons.close}</IconButton>
       </div>
       <p className="text-chat-muted">{subtitle(active[0])}</p>
+      {active[0] && (
+        <Button variant="outline" size="sm" className="self-start" isDisabled={!active[0].newer || refresh.isPending} onPress={() => refresh.mutate(active[0]!.id)}>
+          Add new messages
+        </Button>
+      )}
       <div className="flex flex-col gap-1.5">
         <p className="text-xs text-chat-muted">Who has access</p>
         <Button variant="ghost" className="w-full justify-start gap-3 px-2 py-2" isDisabled={isPending} onPress={() => setDraft(access)}>
@@ -117,7 +132,7 @@ function SharePanel({ chatId, onClose }: { chatId: string; onClose: () => void }
 
 function subtitle(link: ChatShare | undefined): string {
   if (!link) return "Only messages up until now will be shared.";
-  return `The link shows the messages up to ${new Date(link.created_at).toLocaleString()}. Later messages are not added.`;
+  return `The link shows the messages up to ${new Date(link.frozen_at).toLocaleString()}. Later messages are not added unless you add them.`;
 }
 
 function AccessPicker({ value, onChange }: { value: Access; onChange: (access: Access) => void }) {
