@@ -1,0 +1,101 @@
+/*
+ * PMServers brand on the kit's theme variables only (agent-wiki brand-style.md). The kit's fonts are already
+ * the brand fonts; this file loads them. Dark is the kit's and the brand's default; light is set by
+ * data-chat-theme="light" on <html>.
+ */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./fonts/inter-latin-wght-normal.woff2") format("woff2-variations");
+}
+@font-face {
+  font-family: "Source Serif 4";
+  font-style: normal;
+  font-weight: 200 900;
+  font-display: swap;
+  src: url("./fonts/source-serif-4-latin-wght-normal.woff2") format("woff2-variations");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("./fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2-variations");
+}
+
+:root {
+  color-scheme: dark;
+  --chat-bg: #161615;
+  --chat-sidebar: #1f1e1d;
+  --chat-surface: #1f1e1d;
+  --chat-selected: #2b2a28;
+  --chat-border: #33322f;
+  --chat-fg: #e2e0d9;
+  --chat-muted: #9a978f;
+  --chat-accent: #7ea6ff;
+  --chat-accent-fg: #161615;
+  --chat-focus: #7ea6ff;
+  --chat-check: #7ea6ff;
+}
+
+[data-chat-theme="light"] {
+  color-scheme: light;
+  --chat-bg: #faf9f5;
+  --chat-sidebar: #f3f1ea;
+  --chat-surface: #f3f1ea;
+  --chat-raised: #ffffff;
+  --chat-hover: #ebe7dc;
+  --chat-selected: #e9e6dc;
+  --chat-bubble: #e9e6dc;
+  --chat-popover: #ffffff;
+  --chat-popover-border: #e2dfd5;
+  --chat-popover-hover: #f0ede4;
+  --chat-border: #e2dfd5;
+  --chat-border-strong: #d6d1c2;
+  --chat-divider: #f0ede4;
+  --chat-code-bg: #ffffff;
+  --chat-code-border: #e2dfd5;
+  --chat-inline-code: #e9e6dc;
+  --chat-fg: #2d2c28;
+  --chat-muted: #737069;
+  --chat-subtle: #8a8475;
+  --chat-accent: #2f5fd0;
+  --chat-accent-fg: #ffffff;
+  --chat-check: #2f5fd0;
+  --chat-focus: #2f5fd0;
+  --chat-warning: #a8590c;
+  --chat-warning-bg: #fbf1e3;
+  --chat-danger: #b3261e;
+  --chat-shadow-popover: 0 8px 24px rgb(41 38 27 / 0.12);
+}
+
+html,
+body,
+#root,
+.app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--chat-bg);
+  color: var(--chat-fg);
+  font-family: var(--chat-font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.page-note {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  color: var(--chat-muted);
+}
+
+.page-note a {
+  color: var(--chat-accent);
+}

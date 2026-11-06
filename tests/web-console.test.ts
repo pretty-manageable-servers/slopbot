@@ -94,7 +94,10 @@ test('landing serves the static export, console serves under /console, and trave
   await writeFile(join(dir,'site/out/404.html'),'<!doctype html>');
   await writeFile(join(dir,'site/out/terms.html'),'<!doctype html><title>Terms</title>');
   await writeFile(join(dir,'secret.txt'),'secret');
-  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:join(dir,'site/out')},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});
+  await mkdir(join(dir,'console/dist/assets'),{recursive:true});
+  await writeFile(join(dir,'console/dist/index.html'),'<!doctype html><title>Next console</title>');
+  await writeFile(join(dir,'console/dist/assets/index-abc123.js'),'console.log(2)');
+  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:join(dir,'site/out'),nextDir:join(dir,'console/dist')},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});
   server.listen(0,'127.0.0.1');await once(server,'listening');
   t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
   const address=server.address();assert.ok(address&&typeof address!=='string');
@@ -128,6 +131,12 @@ test('landing serves the static export, console serves under /console, and trave
   assert.equal((await fetch(base+'/console/../package.json')).status,404);
   assert.equal((await fetch(base+'/style.css')).status,404);
   assert.equal((await fetch(base+'/assets/logo-light.svg')).status,404);
+  // New console: app pages give index.html, built assets are served, nothing else.
+  for(const path of ['/console/next','/console/next/','/console/next/chat/abc']){const next=await fetch(base+path);assert.match(await next.text(),/Next console/);assert.match(next.headers.get('content-security-policy')!,/script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline';/);}
+  assert.equal((await fetch(base+'/console/next/assets/index-abc123.js')).headers.get('content-type'),'text/javascript');
+  assert.equal((await fetch(base+'/console/next/assets/missing.js')).status,404);
+  assert.equal((await fetch(base+'/console/next/assets/..%2f..%2f..%2fsecret.txt')).status,404);
+  assert.equal((await fetch(base+'/console/next/secret.txt')).status,404);
 });
 test('serves katex files',async t=>{
   const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:'site/out'},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});

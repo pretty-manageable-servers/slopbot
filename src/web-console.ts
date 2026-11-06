@@ -66,8 +66,8 @@ export interface ConsoleBackend {
   /** Login sessions. The database is the source of truth, so logins survive restarts. */
   sessions: WebSessionStore;
 }
-/** siteDir is the landing page export. It defaults to site/out. llmStatus gives the signed-in user's LLM mode; without it the mode is normal. settings holds the non-ZDR switches. */
-export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string; siteDir?: string; llmStatus?: (user: string) => { mode: LlmMode; canChat: boolean }; settings?: ConsoleSettings }
+/** siteDir is the landing page export. It defaults to site/out. nextDir is the Vite build of the new console (console/dist). llmStatus gives the signed-in user's LLM mode; without it the mode is normal. settings holds the non-ZDR switches. */
+export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string; siteDir?: string; nextDir?: string; llmStatus?: (user: string) => { mode: LlmMode; canChat: boolean }; settings?: ConsoleSettings }
 /** Reads and writes of the non-ZDR switches. Users use the global scope; each server uses its own scope. */
 export interface ConsoleSettings { setting(server: string, key: string): unknown; setSetting(server: string, key: string, value: Json): void | Promise<void> }
 export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOptions | undefined {
@@ -147,10 +147,13 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
   return undefined;
 }
 type StaticFile = { content: Buffer; type: string };
-const contentTypes: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webp': 'image/webp', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8', '.json': 'application/json' };
+const contentTypes: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webp': 'image/webp', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.txt': 'text/plain; charset=utf-8', '.json': 'application/json' };
 const consoleCsp = "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 // The Next static export uses inline scripts. Only the landing HTML gets this relaxation.
 const landingCsp = consoleCsp.replace("script-src 'self'", "script-src 'self' 'unsafe-inline'");
+// The new console (agentic-ui-kit) needs two more rules. Shiki highlights code with a WebAssembly regex engine,
+// and the kit sets style attributes (code tokens, the composer height). No inline or eval'd script is allowed.
+const nextCsp = consoleCsp.replace("script-src 'self'", "script-src 'self' 'wasm-unsafe-eval'").replace("style-src 'self'", "style-src 'self' 'unsafe-inline'");
 /** Console file for a /console path, or undefined. Only these names are served. */
 const consoleFile = (path: string) => {
   if (path === '/console' || path === '/console/') return 'index.html';
@@ -158,6 +161,13 @@ const consoleFile = (path: string) => {
   if (/^\/(chat|team)(\/[^/]+)?\/?$/.test(path) || /^\/team\/[^/]+\/run\/[^/]+\/?$/.test(path)) return 'index.html';
   const name = path.startsWith('/console/') ? path.slice('/console/'.length) : '';
   return /^(app\.js|palette\.js|conversations\.js|markdown\.js|highlight\.min\.js|style\.css|chat\.css|console\.css|shares\.js|shares\.css|assets\/(logo-(light|dark)\.svg|favicon\.svg|[a-z0-9-]+\.woff2)|katex\/katex\.min\.js|katex\/katex\.min\.css|katex\/fonts\/KaTeX_[A-Za-z0-9_-]+\.woff2)$/.test(name) ? name : undefined;
+};
+/** File of the new console (the Vite build) for a /console/next path, or undefined. Paths without a file extension are pages of the app. */
+const nextFile = (path: string) => {
+  if (path !== '/console/next' && !path.startsWith('/console/next/')) return undefined;
+  const name = path.slice('/console/next/'.length);
+  if (/^assets\/[A-Za-z0-9_.-]+$/.test(name)) return name;
+  return /^[A-Za-z0-9_/-]*$/.test(name) ? 'index.html' : undefined;
 };
 /** Landing file for a path: the home page, /_next/ files and top-level files such as /favicon.svg. */
 // A path with no extension is a page of the export, for example /terms gives terms.html.
@@ -450,6 +460,8 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
       if (req.method !== 'GET') return send(res, 405, { error: 'Method not allowed.' });
       const consoleName = consoleFile(routePath);
       if (consoleName) return sendFile(res, await readInside('web', consoleName));
+      const nextName = nextFile(routePath);
+      if (nextName) { res.setHeader('Content-Security-Policy', nextCsp); return sendFile(res, await readInside(options.nextDir ?? 'console/dist', nextName)); }
       const landingName = landingFile(routePath);
       if (!landingName) return send(res, 404, { error: 'Not found.' });
       if (landingName.endsWith('.html')) res.setHeader('Content-Security-Policy', landingCsp);
