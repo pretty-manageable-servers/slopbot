@@ -71,6 +71,8 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState("");
   const [sharing, setSharing] = useState<string | null>(null);
+  // The Share popover opens under the header's Share button, also from the title menu.
+  const shareButton = useRef<HTMLSpanElement>(null);
   const [sending, setSending] = useState(false);
   const [ask, setAsk] = useState(() => (id ? linkedAsks.get(id) : undefined));
   const [draft, setDraft] = useState(ask ?? "");
@@ -200,7 +202,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
           actions={(status || (id && messages.length)) ? (
             <>
               {status && <span role="status">{status}</span>}
-              {id && messages.length > 0 && <Button variant="ghost" size="sm" onPress={() => setSharing(id)}>Share</Button>}
+              {id && messages.length > 0 && <span ref={shareButton} className="inline-flex"><Button variant="ghost" size="sm" onPress={() => setSharing(id)}>Share</Button></span>}
             </>
           ) : undefined}
         />
@@ -258,7 +260,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
         event.currentTarget.value = "";
       }}
     />
-    <ShareDialog chatId={sharing} onClose={() => setSharing(null)} />
+    <ShareDialog chatId={sharing} triggerRef={shareButton} onClose={() => setSharing(null)} />
     </ToolViewsProvider>
     </UiComponentsProvider>
   );

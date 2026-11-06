@@ -289,8 +289,12 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         res.setHeader('X-Robots-Tag', 'noindex');
         const shareId = routePath.slice(routePath.lastIndexOf('/') + 1);
         if (routePath.startsWith('/s/')) {
-          const html = await backend.shares.page(shareId);
+          // The page is the console's share entry (console/share.html), so it gets the console's CSP.
+          const template = await readInside(options.nextDir ?? 'console/dist', 'share.html');
+          if (!template) return send(res, 503, { error: 'The share page is not built.' });
+          const html = await backend.shares.page(shareId, template.content.toString('utf8'));
           if (!html) return send(res, 404, { error: 'Not found.' });
+          res.setHeader('Content-Security-Policy', nextCsp);
           res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end(html); return;
         }
         const snapshot = await backend.shares.snapshot(shareId);

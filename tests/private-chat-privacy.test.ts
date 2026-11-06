@@ -22,6 +22,9 @@ import { visibleConversations, type TranscriptHost } from "../src/web-transcript
 import type { Message } from "../src/domain.js";
 import type { Client } from "discord.js";
 
+/** A share page template, as console/share.html builds it. */
+const PAGE = "<!doctype html><html><body><div id=\"root\"></div><!--share-data--></body></html>";
+
 // Every test seeds one message in a web: (private) channel and one in a Discord channel, then checks
 // that the private one never comes back through a path that other channels or other users can reach.
 
@@ -203,7 +206,7 @@ test("a private chat is shared by its owner only, as a snapshot, and deleting it
   assert.ok(!body.includes("later private line"), "a later message is not in the link");
   assert.ok(!body.includes("carol budget note"), "another chat is not in the link");
   assert.ok(!body.includes("the team picked the beach"), "server data is not in the link");
-  assert.ok(!(await shares.page(id))?.includes("later private line"), "the public page is the same snapshot");
+  assert.ok(!(await shares.page(id, PAGE))?.includes("later private line"), "the public page is the same snapshot");
 
   // Server managers do not list or revoke a private chat link.
   assert.deepEqual((await shares.list("manager", guild)).shares, [], "the server list has no chat link");
@@ -214,7 +217,7 @@ test("a private chat is shared by its owner only, as a snapshot, and deleting it
   // Deleting the chat revokes the link and removes its frozen copy.
   await chats.remove("alice", chat);
   assert.equal(await shares.snapshot(id), undefined, "deleting the chat revokes the link");
-  assert.equal(await shares.page(id), undefined);
+  assert.equal(await shares.page(id, PAGE), undefined);
   assert.equal(await store.getShare(id), undefined, "the frozen copy is removed");
 });
 
@@ -301,7 +304,7 @@ test("share page data has files", () => {
   const page = renderSharePage({
     id: "share1", created_at: 1, options: { show_avatars: false, show_thinking: false },
     messages: [{ author: "Alice", bot: false, text: "report", attachments: 2, tools: [], files: [{ name: "report.pdf", size: 2048 }] }],
-  });
+  }, PAGE);
   const match = /<script type="application\/json" id="share-data">([\s\S]*?)<\/script>/.exec(page);
   assert.ok(match, "the page has its data");
   const data = JSON.parse(match[1]!) as { messages: { files: unknown[]; other: number }[] };
