@@ -237,6 +237,18 @@ test('a share keeps the input of visual tools, scrubbed, and drops the input of 
   ]);
 });
 
+test('a web chat reply with no replyTo gets the tools of the human message before it', () => {
+  const widget = { widget_code: '<p>budget</p>', title: 'Budget' };
+  const rows = buildMessages([
+    { id: 'q1', server: 's', channel: 'web:abc', author: 'u', text: 'hi' },
+    { id: 'r1', server: 's', channel: 'web:abc', author: 'bot', text: 'Hello', isBot: true },
+    { id: 'q2', server: 's', channel: 'web:abc', author: 'u', text: 'plot it' },
+    { id: 'r2', server: 's', channel: 'web:abc', author: 'bot', text: 'Plotted', isBot: true },
+  ] as never, [{ request: 'q2', kind: 'tool_call', payload: [{ name: 'show_widget', arguments: widget }] }], { show_thinking: false, show_tools: true });
+  assert.deepEqual(rows[1]!.tools, []);
+  assert.deepEqual(rows[3]!.tools, [{ name: 'show_widget', status: 'Used tool show_widget', input: widget }]);
+});
+
 test('scrubText removes mentions, emails and long numeric IDs', () => {
   assert.equal(scrubText('<@123456789012345678> <@!123456789012345679> <@&123456789012345680> <#123456789012345681>'), '@member @member @role #channel');
   assert.equal(scrubText('write to a.b+c@mail.example.org or 12345678901234567890 now'), 'write to [email] or [id] now');

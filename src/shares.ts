@@ -138,6 +138,18 @@ function optionalFlag(value: unknown, name: string): boolean {
   return value;
 }
 
+/**
+ * The request message ID of each answer, or undefined. A web chat reply is saved with no replyTo, so its request is
+ * the last human message before it.
+ */
+function requestIds(messages: readonly Message[]): (string | undefined)[] {
+  let human: string | undefined;
+  return messages.map(message => {
+    if (!message.isBot) { human = message.id; return undefined; }
+    return message.replyTo ?? (isPrivateChannel(message.channel) ? human : undefined);
+  });
+}
+
 /** Builds the snapshot from stored messages. Only the message's own answer gets tool lines and thinking. */
 export function buildMessages(messages: readonly Message[], events: readonly { request: string; kind: string; payload: Json }[], options: { show_thinking: boolean; show_tools?: boolean }): ShareMessage[] {
   const tools = new Map<string, { name: string; input?: Json }[]>(), thinking = new Map<string, string>();
@@ -145,8 +157,8 @@ export function buildMessages(messages: readonly Message[], events: readonly { r
     if (event.kind === "tool_call") tools.set(event.request, [...(tools.get(event.request) ?? []), ...toolCalls(event.payload)]);
     else if (event.kind === "reasoning") thinking.set(event.request, (thinking.get(event.request) ?? "") + reasoningText(event.payload));
   }
-  const claimed = new Set<string>();
-  return messages.map(message => {
+  const claimed = new Set<string>(), requests = requestIds(messages);
+  return messages.map((message, index) => {
     const item: ShareMessage = {
       author: scrubText(message.authorName ?? (message.isBot ? "Slopbot" : "Member")),
       bot: message.isBot === true,
@@ -157,7 +169,7 @@ export function buildMessages(messages: readonly Message[], events: readonly { r
       ...(fileAttachments(message.attachments).length ? { files: fileAttachments(message.attachments).map(({ name, size }) => ({ name: scrubText(name), size })) } : {}),
       tools: [],
     };
-    const request = message.isBot ? message.replyTo : undefined;
+    const request = requests[index];
     if (request && !claimed.has(request)) {
       claimed.add(request);
       if (options.show_tools ?? options.show_thinking) item.tools = (tools.get(request) ?? []).map(call => toolLine(call.name, call.input));
@@ -170,7 +182,7 @@ export function buildMessages(messages: readonly Message[], events: readonly { r
 /** The stored messages of a range, as snapshot messages. Tool lines and thinking come from the runs of the answers. */
 async function snapshotOf(store: Pick<ShareStore, "shareMessages" | "shareRequestEvents">, server: string, channel: string, range: ShareMessageRange, options: { show_thinking: boolean; show_tools?: boolean }): Promise<{ messages: ShareMessage[]; more: boolean }> {
   const found = await store.shareMessages(server, channel, range);
-  const requests = [...new Set(found.messages.flatMap(message => message.isBot && message.replyTo ? [message.replyTo] : []))];
+  const requests = [...new Set(requestIds(found.messages).filter((id): id is string => id !== undefined))];
   const events = await store.shareRequestEvents(server, requests);
   return { messages: buildMessages(found.messages, events, options), more: found.more };
 }
