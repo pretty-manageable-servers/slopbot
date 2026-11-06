@@ -27,8 +27,11 @@ export function ServersPane() {
   return (
     <div className="flex flex-col gap-1 px-2">
       <ServerPicker />
-      <SidebarItem icon={icons.inbox} label={count ? `Inbox (${count >= 50 ? "50+" : count})` : "Inbox"} active={onInbox}
-        onPress={() => void navigate({ to: "/server/$serverId", params: { serverId: server.id } })} />
+      {/* SidebarItem is an <li>; outside the Sidebar's nav slot it needs its own list. */}
+      <ul className="m-0 list-none p-0">
+        <SidebarItem icon={icons.inbox} label={count ? `Inbox (${count >= 50 ? "50+" : count})` : "Inbox"} active={onInbox}
+          onPress={() => void navigate({ to: "/server/$serverId", params: { serverId: server.id } })} />
+      </ul>
       {conversations.error
         ? <SectionNote>The channels are not available right now.</SectionNote>
         : conversations.data && !sections.length
