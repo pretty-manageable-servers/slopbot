@@ -13,6 +13,8 @@ export interface Config {
   sandboxApiUrl?: string;
   sandboxUrl?: string;
   sandboxTemplate?: string;
+  /** "local" runs the web console with no Discord (src/web-main.ts). */
+  platform: "discord" | "local";
   discordToken: string;
   /** Servers Slopbot may join. Empty means every server that invites it. */
   guildIds: string[];
@@ -60,12 +62,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     return value;
   };
   const mock = env.LLM_MODE === "mock";
+  const platform = env.SLOPBOT_PLATFORM?.trim() || "discord";
+  if (platform !== "discord" && platform !== "local") throw new Error("SLOPBOT_PLATFORM must be discord or local");
+  const local = platform === "local";
   const operations = loadOperationsConfig(env);
   if (env.LLM_MODE && !["mock", "provider"].includes(env.LLM_MODE)) throw new Error("LLM_MODE must be mock or provider");
   const list = (key: string) => (env[key] ?? "").split(",").map(value => value.trim()).filter(Boolean);
-  const channelServer = env.DISCORD_GUILD_ID?.trim() || undefined;
-  const guildIds = [...new Set(list("DISCORD_GUILD_IDS"))];
-  const channelIds = list("DISCORD_CHANNEL_IDS");
+  // Local mode has no Discord servers or channels, so it ignores these keys.
+  const channelServer = local ? undefined : env.DISCORD_GUILD_ID?.trim() || undefined;
+  const guildIds = local ? [] : [...new Set(list("DISCORD_GUILD_IDS"))];
+  const channelIds = local ? [] : list("DISCORD_CHANNEL_IDS");
   if (channelIds.length && !channelServer) throw new Error("Set DISCORD_GUILD_ID for the server of DISCORD_CHANNEL_IDS");
   if (![...guildIds, ...(channelServer ? [channelServer] : []), ...channelIds].every(value => /^\d{17,20}$/.test(value))) {
     throw new Error("Discord server/channel IDs must be numeric IDs, not names");
@@ -123,14 +129,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   if ([...(env.VOICE_INSTRUCTIONS?.trim() ?? '')].length > 1000) throw new Error('VOICE_INSTRUCTIONS must be at most 1000 characters');
   return {
-    ...(enabled('VOICE_ENABLED', true) ? { voice: { voice: env.VOICE_NAME?.trim() || 'alloy', sttModel: env.STT_MODEL?.trim() || 'squall', ...(env.VOICE_INSTRUCTIONS?.trim() ? { instructions: env.VOICE_INSTRUCTIONS.trim() } : {}) } } : {}),
+    ...(!local && enabled('VOICE_ENABLED', true) ? { voice: { voice: env.VOICE_NAME?.trim() || 'alloy', sttModel: env.STT_MODEL?.trim() || 'squall', ...(env.VOICE_INSTRUCTIONS?.trim() ? { instructions: env.VOICE_INSTRUCTIONS.trim() } : {}) } } : {}),
     ...(operations ? { operations } : {}),
     ...(objectStorage ? { objectStorage } : {}),
     ...(accessId && accessSecret ? { searxngAccess: { clientId: accessId, clientSecret: accessSecret } } : {}),
     ...(env.E2B_API_KEY ? { sandboxApiKey: env.E2B_API_KEY, sandboxApiUrl: env.E2B_API_URL ?? "https://api.pmservers.org/sandboxes", sandboxUrl: env.E2B_SANDBOX_URL ?? "https://sandbox.pmservers.org" } : {}),
     ...(env.E2B_TEMPLATE ? { sandboxTemplate: env.E2B_TEMPLATE } : {}),
     ...(env.SEARXNG_URL ? { searxngUrl: env.SEARXNG_URL } : {}),
-    discordToken: required("DISCORD_BOT_TOKEN"), guildIds, ...(channelServer ? { channelServer } : {}), channelIds, mock, baseUrl,
+    platform, discordToken: local ? "" : required("DISCORD_BOT_TOKEN"), guildIds, ...(channelServer ? { channelServer } : {}), channelIds, mock, baseUrl,
     apiKey: mock ? "" : required("LLM_API_KEY"),
     model,
     ...(env.DATABASE_URL ? { databaseUrl: env.DATABASE_URL } : {}),

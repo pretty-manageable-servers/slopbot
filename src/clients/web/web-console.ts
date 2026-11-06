@@ -84,8 +84,11 @@ export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOpt
   if (oauthBase && (!['http:', 'https:'].includes(oauthBase.protocol) || !['localhost', '127.0.0.1'].includes(oauthBase.hostname))) throw new Error('WEB_OAUTH_BASE must be an HTTP(S) URL on localhost or 127.0.0.1');
   const port = Number(env.WEB_PORT || 3000);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid WEB_PORT');
-  if (!env.DISCORD_CLIENT_ID || !env.DISCORD_CLIENT_SECRET) throw new Error('Set DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET for web login');
-  return { origin: origin.origin, port, host: env.WEB_HOST || '127.0.0.1', clientId: env.DISCORD_CLIENT_ID, clientSecret: env.DISCORD_CLIENT_SECRET, ...(oauthBase ? { oauthBase: oauthBase.origin } : {}) };
+  // Local mode signs in through the dev OAuth server, which checks no client secret.
+  const localDefault = env.SLOPBOT_PLATFORM === 'local' && oauthBase ? 'local-dev' : undefined;
+  const clientId = env.DISCORD_CLIENT_ID || localDefault, clientSecret = env.DISCORD_CLIENT_SECRET || localDefault;
+  if (!clientId || !clientSecret) throw new Error('Set DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET for web login');
+  return { origin: origin.origin, port, host: env.WEB_HOST || '127.0.0.1', clientId, clientSecret, ...(oauthBase ? { oauthBase: oauthBase.origin } : {}) };
 }
 /** The console's HTTP server. The routes are one Hono app (clients/web/app.ts) served on a node:http server, so callers listen and close it as before. */
 export function createConsole(options: ConsoleOptions, backend: ConsoleBackend): Server {

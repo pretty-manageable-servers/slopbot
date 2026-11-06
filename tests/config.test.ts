@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { loadConfig } from "../src/config.js";
+import { consoleOptions } from "../src/clients/web/web-console.js";
 
 const env = { DISCORD_BOT_TOKEN: "test", DISCORD_GUILD_ID: "12345678901234567", DISCORD_CHANNEL_IDS: "12345678901234568", LLM_MODE: "mock" };
 
@@ -29,4 +30,31 @@ test("servers: empty allowlist allows all, initial channels need their server", 
   assert.deepEqual(loadConfig({ ...base, DISCORD_GUILD_ID: "12345678901234567" }).guildIds, []);
   assert.throws(() => loadConfig({ ...base, DISCORD_CHANNEL_IDS: "12345678901234568" }), /DISCORD_GUILD_ID/);
   assert.throws(() => loadConfig({ ...base, DISCORD_GUILD_IDS: "my-server" }), /numeric IDs/);
+});
+
+test("local platform needs no bot token", () => {
+  const config = loadConfig({ SLOPBOT_PLATFORM: "local", LLM_MODE: "mock", DISCORD_GUILD_ID: "12345678901234567", DISCORD_CHANNEL_IDS: "12345678901234568" });
+  assert.equal(config.platform, "local");
+  assert.equal(config.discordToken, "");
+  assert.deepEqual(config.channelIds, []);
+  assert.equal(config.channelServer, undefined);
+  assert.equal(config.voice, undefined);
+});
+
+test("discord platform still needs the token", () => {
+  assert.equal(loadConfig(env).platform, "discord");
+  assert.throws(() => loadConfig({ LLM_MODE: "mock" }), /DISCORD_BOT_TOKEN/);
+  assert.throws(() => loadConfig({ SLOPBOT_PLATFORM: "discord", LLM_MODE: "mock" }), /DISCORD_BOT_TOKEN/);
+  assert.throws(() => loadConfig({ ...env, SLOPBOT_PLATFORM: "slack" }), /SLOPBOT_PLATFORM/);
+});
+
+test("local console defaults the client id and secret only with WEB_OAUTH_BASE", () => {
+  const web = { WEB_ENABLED: "true", SLOPBOT_PLATFORM: "local" };
+  const options = consoleOptions({ ...web, WEB_OAUTH_BASE: "http://127.0.0.1:9091" })!;
+  assert.equal(options.clientId, "local-dev");
+  assert.equal(options.clientSecret, "local-dev");
+  assert.equal(options.oauthBase, "http://127.0.0.1:9091");
+  assert.throws(() => consoleOptions(web), /DISCORD_CLIENT_ID/);
+  assert.throws(() => consoleOptions({ WEB_ENABLED: "true", WEB_OAUTH_BASE: "http://127.0.0.1:9091" }), /DISCORD_CLIENT_ID/);
+  assert.throws(() => consoleOptions({ ...web, WEB_OAUTH_BASE: "http://127.0.0.1:9091", NODE_ENV: "production" }), /local development only/);
 });
