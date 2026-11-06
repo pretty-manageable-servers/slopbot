@@ -2,6 +2,8 @@
 
 export interface Session {
   user: string;
+  /** Name and avatar from the first server; null when Discord does not know them. */
+  me: { displayName: string; avatarUrl: string | null } | null;
   csrf: string;
   servers: { id: string; name: string; icon: string | null; admin: boolean }[];
 }
@@ -39,6 +41,9 @@ export const api = {
   createChat: (server: string) => call<{ id: string }>("POST", "/api/chats", { server }),
   messages: (id: string, limit = 50) => call<{ messages: unknown[]; hasMore: boolean; streamId: number }>("GET", `${chat(id)}/messages?limit=${limit}`),
   send: (id: string, text: string) => call<{ id: string }>("POST", `${chat(id)}/messages`, { text, images: [], files: [] }),
+  update: (id: string, change: { title?: string; effort?: string }) => call<unknown>("PATCH", chat(id), change),
+  remove: (id: string) => call<unknown>("DELETE", chat(id)),
+  logout: () => call<unknown>("POST", "/api/logout", {}),
   stop: (id: string) => call<{ stopped: number }>("POST", `${chat(id)}/stop`, {}),
   run: (runId: string) => call<{ steps: unknown[] }>("GET", `/api/runs/${encodeURIComponent(runId)}`),
   streamUrl: (id: string, after: number) => `${chat(id)}/stream?after=${after}`,

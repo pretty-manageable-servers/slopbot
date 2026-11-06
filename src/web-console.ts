@@ -44,6 +44,8 @@ export interface ConsoleBackend {
   canSignIn(user: string): Promise<boolean>;
   /** The servers the user and Slopbot share, with the user's admin flag. Cached. Light: no channel or settings data. */
   servers?(user: string): Promise<{ id: string; name: string; icon: string | null; admin: boolean }[]>;
+  /** The user's name and avatar as one server shows them (nickname and server avatar first). Undefined when unknown. */
+  profile?(user: string, server: string): Promise<{ displayName: string; avatarUrl: string | null } | undefined>;
   invoke(user: string, server: string | undefined, channel: string, name: string, args: ToolArgs): Promise<unknown>;
   mcp?(user: string, server: string | undefined, input: unknown): Promise<unknown>;
   transcripts?(user: string, server: string): Promise<unknown>;
@@ -314,7 +316,11 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         if (req.method === 'GET' && routePath === '/api/session' && backend.servers) {
           // The light start of the page: who signs in, the CSRF token and the server list. No channel or settings data.
           if (!(await backend.canSignIn(session.user))) { await sessions.deleteSession(session.hash); res.setHeader('Set-Cookie', cookie('slopbot_session', '', 0)); return send(res, 401, { error: 'Sign in with Discord to continue.' }); }
-          return send(res, 200, { user: session.user, servers: await backend.servers(session.user), csrf: session.csrf });
+          const servers = await backend.servers(session.user);
+          // The name and avatar for the account row, from the first server. The page shows the user ID without them.
+          const found = servers[0] && backend.profile ? await backend.profile(session.user, servers[0].id).catch(() => undefined) : undefined;
+          const me = found ? { displayName: found.displayName, avatarUrl: found.avatarUrl } : null;
+          return send(res, 200, { user: session.user, me, servers, csrf: session.csrf });
         }
         if (req.method === 'GET' && routePath === '/api/settings') {
           const server = url.searchParams.get('server') ?? undefined;

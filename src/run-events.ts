@@ -305,7 +305,7 @@ export function publishModelEvent(message: Message, runId: string, event: ModelE
 }
 
 /** Tools whose arguments stream to the web view: show_ui markup is drawn as it is written. */
-export const LIVE_INPUT_TOOLS: ReadonlySet<string> = new Set(["show_ui"]);
+export const LIVE_INPUT_TOOLS: ReadonlySet<string> = new Set(["show_ui", "show_widget"]);
 
 /** Called by EventJournal when the model stream ends. */
 export function publishRunEnd(message: Message, runId: string, status: "done" | "failed"): void {

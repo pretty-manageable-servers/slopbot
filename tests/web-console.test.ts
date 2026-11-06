@@ -751,3 +751,27 @@ test('/api/version is public and shows the build sha and time, or nulls for a mi
   process.env.SLOPBOT_BUILD_SHA = sha; process.env.SLOPBOT_BUILD_TIME = 'yesterday';
   assert.deepEqual(await version(), { sha: 'a1b2c3d', time: null, url: `https://github.com/pretty-manageable-servers/slopbot/commit/${sha}` });
 });
+test('session gives the name and avatar of the first server for the account row', async t => {
+  const asked: string[] = [];
+  const server = createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'}, { sessions: new SQLiteStore(), async canSignIn() { return true; },
+    async snapshot(id) { return {user:id}; }, async invoke() { return {}; },
+    async servers() { return [{ id: '223456789012345678', name: 'PMS', icon: null, admin: false }]; },
+    async profile(user, guild) { asked.push(`${user}@${guild}`); return { displayName: 'Ada', avatarUrl: 'https://cdn.discordapp.com/avatars/1/a.png' }; },
+  });
+  server.listen(0,'127.0.0.1'); await once(server,'listening');
+  t.after(() => new Promise<void>(resolve => server.close(()=>resolve())));
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  const base = `http://127.0.0.1:${address.port}`, originalFetch = globalThis.fetch;
+  const call = (path:string, options?: RequestInit) => originalFetch(base+path, options);
+  t.mock.method(globalThis,'fetch',async (url: string | URL | Request, init?:RequestInit) => {
+    if (String(url) === 'https://discord.com/api/oauth2/token') return Response.json({access_token:'oauth-secret'});
+    if (String(url) === 'https://discord.com/api/users/@me') return Response.json({id:'123456789012345678'});
+    return originalFetch(url,init);
+  });
+  const state = new URL((await call('/auth/login',{redirect:'manual'})).headers.get('location')!).searchParams.get('state')!;
+  const callback = await call(`/auth/callback?state=${state}&code=x`,{redirect:'manual',headers:{Cookie:`slopbot_state=${state}`}});
+  const cookie = callback.headers.getSetCookie()[0]!.split(';')[0]!;
+  const session = await (await call('/api/session',{headers:{Cookie:cookie}})).json() as { user: string; me: unknown };
+  assert.deepEqual(session.me, { displayName: 'Ada', avatarUrl: 'https://cdn.discordapp.com/avatars/1/a.png' });
+  assert.deepEqual(asked, ['123456789012345678@223456789012345678']);
+});

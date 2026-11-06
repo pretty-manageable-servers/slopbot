@@ -98,3 +98,17 @@ body {
 .page-note a {
   color: var(--chat-accent);
 }
+
+/* The Slopbot loader (Loader in logo.tsx), from the old console. */
+.slopbot-loader { display: block; flex: none; overflow: visible; }
+.slopbot-loader .all { transform-origin: 32px 32px; animation: slopbot-twist 2.2s ease-in-out infinite; }
+.slopbot-loader .p { transform-box: view-box; transform-origin: 32px 32px; animation: slopbot-pulse 2.2s ease-in-out infinite; }
+.slopbot-loader .p0 { --dx: 0px; --dy: 12px; animation-delay: 0s; }
+.slopbot-loader .p1 { --dx: -10.4px; --dy: 6px; animation-delay: .04s; }
+.slopbot-loader .p2 { --dx: -10.4px; --dy: -6px; animation-delay: .08s; }
+.slopbot-loader .p3 { --dx: 0px; --dy: -12px; animation-delay: .12s; }
+.slopbot-loader .p4 { --dx: 10.4px; --dy: -6px; animation-delay: .16s; }
+.slopbot-loader .p5 { --dx: 10.4px; --dy: 6px; animation-delay: .2s; }
+@keyframes slopbot-pulse { 0%, 70%, 100% { transform: translate(0, 0) scale(1); } 35% { transform: translate(var(--dx), var(--dy)) scale(.4); } }
+@keyframes slopbot-twist { 0%, 70%, 100% { transform: rotate(0); } 35% { transform: rotate(25deg); } }
+@media (prefers-reduced-motion: reduce) { .slopbot-loader .all, .slopbot-loader .p { animation: none; } }
