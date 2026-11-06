@@ -9,6 +9,7 @@ import { UsageMeter } from "./chat/usage-meter";
 import { applyBotEvent, chatMessages, emptyChat, toKitMessage, withRunSteps, type BotEvent, type BotMessage, type ChatState, type RunStep } from "./events";
 import { Loader, Logo } from "./logo";
 import { useConsoleDictation } from "./ui/dictation";
+import { usePausedComposer } from "./llm-status";
 import { notify, notifyError } from "./ui/feedback";
 import { uiComponents } from "./ui-components";
 
@@ -70,6 +71,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
   const [ask, setAsk] = useState(() => (id ? linkedAsks.get(id) : undefined));
   const [draft, setDraft] = useState(ask ?? "");
   const dictation = useConsoleDictation();
+  const paused = usePausedComposer();
   const fileInput = useRef<HTMLInputElement>(null);
   const made = useRef<Promise<string> | null>(null);
 
@@ -182,6 +184,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
         />
       }
       composer={{
+        isDisabled: paused.isDisabled,
         placeholder: messages.length ? "Reply to Slopbot…" : "How can I help you today?",
         value: draft,
         onChange: (text) => {
@@ -203,6 +206,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
         ),
         above: (
           <>
+            {paused.above}
             {ask !== undefined && (
               <div role="alert" className="mb-2 rounded-chat-sm bg-chat-warning-bg px-3 py-2 text-sm text-chat-fg">
                 <strong className="font-medium">This question came from a link. Read it before you send it.</strong> {ASK_WARNING}

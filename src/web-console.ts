@@ -14,6 +14,8 @@ import type { WebSessionStore } from './web-session-store.js';
 import type { ChatRoutes } from './web-chats.js';
 import { ChatError } from './web-chats.js';
 import { CHAT_FILE_MAX_BYTES } from './web-chat-files.js';
+import { handleTranscribe, handlesTranscribe, transcribeLimits } from './web-transcribe.js';
+import type { PmAudio } from './adapters/audio.js';
 import { runtimeVersion } from './operations-config.js';
 import type { InboxItem } from './inbox.js';
 import { SERVER_NON_ZDR_SETTING, USER_NON_ZDR_SETTING, type LlmMode } from './llm-mode.js';
@@ -36,6 +38,8 @@ export interface ConsoleAdmin {
   panel: AdminPanel;
 }
 export interface ConsoleBackend {
+  /** Speech to text for composer dictation (POST /api/transcribe). Without it the route answers 503. */
+  audio?: Pick<PmAudio, 'transcribeWav'> | undefined;
   /** Share links. Public page and snapshot routes, plus the admin list and writes. */
   shares?: ShareService;
   /** Copies a live share into a new private chat of the signed-in user. Errors with a ChatError keep their status. */
@@ -204,6 +208,7 @@ async function teamAccess(admin: ConsoleAdmin, user: string, editor: boolean): P
 }
 export function createConsole(options: ConsoleOptions, backend: ConsoleBackend): Server {
   const sessions = backend.sessions;
+  const transcribeState = transcribeLimits();
   const states = new Map<string, number>();
   const cookie = (name: string, value: string, age: number) => `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${options.origin.startsWith('https:') ? '; Secure' : ''}`;
   const cookies = (req: IncomingMessage) => Object.fromEntries((req.headers.cookie || '').split(';').map(part => part.trim().split('=')));
@@ -296,6 +301,7 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         // Transcript routes answer 403 without a session; their streams must not get a login redirect.
         if (req.method === 'GET' && backend.conversations?.handles(routePath)) return void await backend.conversations.handle(req, res, url, session?.user);
         if (!session) return send(res, 401, { error: 'Sign in with Discord to continue.' });
+        if (handlesTranscribe(req.method, routePath)) return void await handleTranscribe(req, res, session, { audio: backend.audio, origin: options.origin, limits: transcribeState });
         // Private chats. The stream is GET. Writes need the same origin and CSRF checks as the other writes.
         if (backend.chats?.handles(routePath)) {
           if (req.method === 'GET') return void await backend.chats.handle(req, res, url, session.user, undefined);

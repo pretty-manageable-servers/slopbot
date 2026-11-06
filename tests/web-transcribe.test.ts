@@ -34,21 +34,25 @@ test('rejects audio over 10 MB with 413', async t => {
   assert.equal((await post(new Uint8Array(10 * 1024 * 1024 + 1))).status, 413);
 });
 
-test('answers 429 while a request is running and after 30 in a minute', async t => {
+test('answers 429 while two requests are running and after 60 in a minute', async t => {
   let release!: () => void, entered!: () => void;
   const started = new Promise<void>(resolve => { entered = resolve; });
   const gate = new Promise<void>(resolve => { release = resolve; });
   const slow = await start({ audio: { transcribeWav: async () => { entered(); await gate; return 'x'; } } });
   t.after(slow.close);
+  // The final clip may start while a partial runs: two at once are allowed, a third is not.
   const first = slow.post(new Uint8Array(10));
   await started;
+  const second = slow.post(new Uint8Array(10));
+  await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal((await slow.post(new Uint8Array(10))).status, 429);
   release();
   assert.equal((await first).status, 200);
+  assert.equal((await second).status, 200);
 
   const fast = await start({ now: () => 1000 });
   t.after(fast.close);
-  for (let i = 0; i < 30; i++) assert.equal((await fast.post(new Uint8Array(10))).status, 200);
+  for (let i = 0; i < 60; i++) assert.equal((await fast.post(new Uint8Array(10))).status, 200);
   assert.equal((await fast.post(new Uint8Array(10))).status, 429);
 });
 

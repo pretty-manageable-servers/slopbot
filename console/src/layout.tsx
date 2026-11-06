@@ -8,6 +8,7 @@ import { Suspense, useEffect, useState } from "react";
 import { ApiError, api } from "./api";
 import { ShareDialog } from "./chat/share-dialog";
 import { chatsQuery, pickServer, sessionQuery, useServer } from "./data";
+import { LlmBanner } from "./llm-status";
 import { Loader, Logo } from "./logo";
 import { CommandPalette } from "./palette";
 import { BASE } from "./router";
@@ -83,6 +84,7 @@ function Shell() {
   return (
     <>
       <AppShell sidebar={sidebar}>
+        <LlmBanner />
         <Suspense fallback={busy}><Outlet /></Suspense>
       </AppShell>
       <SettingsDialog />

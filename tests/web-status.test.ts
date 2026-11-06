@@ -120,7 +120,7 @@ test('server non-zdr needs editor', async t => {
 });
 
 test('web app notes match the contract', async () => {
-  const app = await readFile(new URL('../../web/app.js', import.meta.url), 'utf8');
+  const app = await readFile(new URL('../../console/src/llm-status.tsx', import.meta.url), 'utf8');
   assert.ok(app.includes(DEGRADED_NOTE), 'the banner text is the contract note');
   assert.ok(app.includes(FALLBACK_NOTE), 'the fallback banner text is the contract note');
 });

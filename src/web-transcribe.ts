@@ -3,11 +3,13 @@ import { logError } from './errors.js';
 import type { PmAudio } from './adapters/audio.js';
 
 export const TRANSCRIBE_MAX_BYTES = 10 * 1024 * 1024;
-const PER_MINUTE = 30;
+const PER_MINUTE = 60;
+// The kit sends a partial every 2 s and never two partials at once, but the final clip can start while a partial runs.
+const AT_ONCE = 2;
 
-/** Per-user dictation limits: one request at a time, 30 per minute. */
-export interface TranscribeLimits { busy: Set<string>; recent: Map<string, number[]> }
-export const transcribeLimits = (): TranscribeLimits => ({ busy: new Set(), recent: new Map() });
+/** Per-user dictation limits: two requests at a time, 60 per minute. */
+export interface TranscribeLimits { busy: Map<string, number>; recent: Map<string, number[]> }
+export const transcribeLimits = (): TranscribeLimits => ({ busy: new Map(), recent: new Map() });
 
 export interface TranscribeDeps {
   /** Undefined when the bot has no audio config. */
@@ -29,8 +31,8 @@ export async function handleTranscribe(req: IncomingMessage, res: ServerResponse
   const { limits, user } = { limits: deps.limits, user: session.user };
   const now = (deps.now ?? Date.now)();
   const recent = (limits.recent.get(user) ?? []).filter(at => now - at < 60_000);
-  if (limits.busy.has(user) || recent.length >= PER_MINUTE) { req.resume(); return send(res, 429, { error: 'Too many dictation requests. Try again shortly.' }); }
-  limits.busy.add(user); limits.recent.set(user, [...recent, now]);
+  if ((limits.busy.get(user) ?? 0) >= AT_ONCE || recent.length >= PER_MINUTE) { req.resume(); return send(res, 429, { error: 'Too many dictation requests. Try again shortly.' }); }
+  limits.busy.set(user, (limits.busy.get(user) ?? 0) + 1); limits.recent.set(user, [...recent, now]);
   try {
     if (Number(req.headers['content-length']) > TRANSCRIBE_MAX_BYTES) { req.resume(); return send(res, 413, { error: 'Audio can be 10 MB or smaller.' }); }
     const chunks: Buffer[] = []; let size = 0;
@@ -45,5 +47,8 @@ export async function handleTranscribe(req: IncomingMessage, res: ServerResponse
       return send(res, 502, { error: 'Transcription failed.' });
     }
     send(res, 200, { text });
-  } finally { limits.busy.delete(user); }
+  } finally {
+    const left = (limits.busy.get(user) ?? 1) - 1;
+    if (left) limits.busy.set(user, left); else limits.busy.delete(user);
+  }
 }

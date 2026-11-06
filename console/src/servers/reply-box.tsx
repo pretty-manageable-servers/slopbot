@@ -5,6 +5,7 @@ import { useState } from "react";
 import { ApiError, post } from "../api";
 import type { ReplyResult } from "../api-types";
 import { useConsoleDictation } from "../ui/dictation";
+import { usePausedComposer } from "../llm-status";
 import { notify, notifyError } from "../ui/feedback";
 
 export function ReplyBox({ server, channel }: { server: string; channel: string }) {
@@ -24,6 +25,7 @@ export function ReplyBox({ server, channel }: { server: string; channel: string 
     },
   });
   const dictation = useConsoleDictation();
+  const paused = usePausedComposer();
   return (
     <Composer
       variant="docked"
@@ -34,6 +36,7 @@ export function ReplyBox({ server, channel }: { server: string; channel: string 
       submitDisabled={send.isPending}
       dictation={dictation.state}
       trailing={dictation.supported && <DictationButton onPress={dictation.start} />}
+      {...paused}
     />
   );
 }
