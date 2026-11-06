@@ -5,7 +5,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
-COPY web ./web
+COPY share ./share
 COPY architecture/BOT_GUIDE.md ./architecture/BOT_GUIDE.md
 # Tests run in the CI test job before deploy, not in the image build.
 RUN npm run build
@@ -16,6 +16,8 @@ RUN V=$(node -p 'require("@snazzah/davey/package.json").version') && P="@snazzah
   && mkdir -p "node_modules/$P" && npm pack "$P@$V" --silent | xargs -I{} tar -xzf {} -C "node_modules/$P" --strip-components=1 && rm -f snazzah-davey-*.tgz
 COPY site ./site
 RUN cd site && npm ci && npm run build
+COPY console ./console
+RUN cd console && npm ci && npm run build
 
 FROM tailscale/tailscale:stable AS tailscale
 FROM docker.io/searxng/searxng:2026.10.11-ad46ebd7d@sha256:ddd642cae6eac75412938fd846ddbf440a2df029cfeae8a562b8b205f4e35e25 AS runtime
@@ -31,8 +33,9 @@ COPY --from=build --chown=1000:1000 /app/package.json ./
 COPY --from=build --chown=1000:1000 /app/node_modules ./node_modules
 COPY --from=build --chown=1000:1000 /app/dist/src ./dist/src
 COPY --from=build --chown=1000:1000 /app/dist/architecture ./dist/architecture
-COPY --from=build --chown=1000:1000 /app/web ./web
+COPY --from=build --chown=1000:1000 /app/share ./share
 COPY --from=build --chown=1000:1000 /app/site/out ./site/out
+COPY --from=build --chown=1000:1000 /app/console/dist ./console/dist
 COPY --chown=1000:1000 scripts/deployment ./scripts/deployment
 COPY --chown=1000:1000 scripts/container-health.mjs ./scripts/container-health.mjs
 COPY --chown=1000:1000 services/search/settings.yml /etc/searxng/settings.yml

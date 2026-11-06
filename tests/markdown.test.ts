@@ -8,7 +8,7 @@ type Render = (text: string) => string;
 
 // The root package is "type": "module", so require() would not see module.exports.
 // Run the classic script in a fresh context instead, with the same globals a browser or CommonJS host gives it.
-const source = readFileSync(new URL("../../web/markdown.js", import.meta.url), "utf8");
+const source = readFileSync(new URL("../../share/markdown.js", import.meta.url), "utf8");
 
 function loadAsModule(): Render {
   const box: { exports: Record<string, unknown> } = { exports: {} };

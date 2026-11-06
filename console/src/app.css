@@ -1,0 +1,4 @@
+/* Tailwind builds the kit's utilities and the ones of our UI components (README "Using Tailwind v4?"). */
+@import "tailwindcss";
+@import "agentic-ui-kit/tailwind.css";
+@import "./theme.css";

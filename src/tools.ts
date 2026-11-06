@@ -84,8 +84,8 @@ export interface ToolDefinition {
   setting?: boolean;
   /** External/custom tool default. Native routing is defined centrally in thread-policy.ts. */
   execution?: "inline" | "thread";
-  /** The tool acts on Discord itself (posts or edits Discord messages, threads, reactions, or changes Discord server or channel settings), so it is not offered in private web chats. */
-  scope?: "discord";
+  /** "discord": the tool acts on Discord itself (posts or edits Discord messages, threads, reactions, or changes Discord server or channel settings), so it is not offered in private web chats. "web": only the web chat can show it, so only private web chats are offered it. */
+  scope?: "discord" | "web";
   /** Only a person's command or button runs this tool. The model is not offered it, and an agent call is refused with this text. */
   commandOnly?: string;
   publicResult?(args: ToolArgs): boolean;
@@ -157,6 +157,7 @@ export class ConfirmationRequired extends ToolError {
 
 /** Returned when a private chat calls a Discord-scoped tool. */
 export const discordOnlyMessage = "This action is only available in Discord.";
+export const webOnlyMessage = "This action is only available in the Slopbot web chat.";
 
 /** The kind of a value for an error message. */
 const kindOf = (value: unknown): string => value === null ? "null" : Array.isArray(value) ? "an array" : typeof value === "object" ? "an object" : `a ${typeof value}`;
@@ -248,7 +249,7 @@ export class ToolRegistry {
   catalog(message?: Message): string { return catalogOf(this.definitions(), message); }
   schemas(message?: Message): readonly ModelTool[] { return schemasOf(this.definitions(), message); }
   effect(name: string, args: ToolArgs): "read" | "write" { const tool = this.tools.get(name); return tool?.writes ? tool.writes(args) ? "write" : "read" : tool?.effect ?? "read"; }
-  scopeOf(name: string): "discord" | undefined { return this.tools.get(name)?.scope; }
+  scopeOf(name: string): "discord" | "web" | undefined { return this.tools.get(name)?.scope; }
   requiresThread(name: string, args: ToolArgs): boolean {
     const tool = this.tools.get(name);
     return toolNeedsThread(name, args, this.effect(name, args), tool?.provider, tool?.execution);
@@ -306,6 +307,7 @@ export class ToolRegistry {
     if (tool.commandOnly && source === "agent") throw new ToolError(tool.commandOnly);
     // A private chat cannot act on Discord. Every other tool follows the same rules as in Discord.
     if (isPrivateChannel(message.channel) && tool.scope === "discord") throw new ToolError(discordOnlyMessage);
+    if (!isPrivateChannel(message.channel) && tool.scope === "web") throw new ToolError(webOnlyMessage);
     if (this.effect(name, args) === "read") return this.perform(message, name, args, operationId, source, expectedVersion, invocation, notes);
     const key = tool.resource?.(message, args) ?? `server:${message.server}:tool:${name}`;
     const previous = this.writers.get(key) ?? Promise.resolve();
@@ -393,10 +395,11 @@ function sortedDefinitions(tools: ReadonlyMap<string, ToolDefinition>): readonly
   return [...tools.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** A private chat is offered every tool except Discord-scoped ones. Other channels are offered every tool. */
+/** A private chat is offered every tool except Discord-scoped ones. Other channels are offered every tool except web-scoped ones. */
 function offeredIn(tool: ToolDefinition, message?: Message): boolean {
   if (tool.commandOnly) return false;
-  return !message || !isPrivateChannel(message.channel) || tool.scope !== "discord";
+  if (!message) return true;
+  return isPrivateChannel(message.channel) ? tool.scope !== "discord" : tool.scope !== "web";
 }
 
 function catalogOf(definitions: readonly ToolDefinition[], message?: Message): string {

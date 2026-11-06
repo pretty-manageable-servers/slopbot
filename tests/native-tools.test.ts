@@ -298,3 +298,28 @@ test('request_edit_during_run_is_a_note', async t => {
   assert.equal(reply?.text, 'Done.'); assert.equal(requests, 2); assert.deepEqual(ran, ['one', 'two']);
   assert.equal((await store.canonicalMessage('s', 'request'))?.text, 'Look up the forecast for Oslo');
 });
+
+test('streamed tool arguments come as tool_input deltas once the name is known, then as one tool_call', async () => {
+  const llm = new ChatCompletionsLLM(options, async () => response([
+    {index:0,delta:{tool_calls:[{index:0,id:'call_ui',type:'function',function:{arguments:'{"markup":'}}]}},
+    {index:0,delta:{tool_calls:[{index:0,function:{name:'show_ui',arguments:'"<Stack>'}}]}},
+    {index:0,delta:{tool_calls:[{index:0,function:{arguments:'</Stack>"}'}}]},finish_reason:'tool_calls'},
+  ]));
+  const events = [];
+  for await (const event of llm.stream({prefixVersion:'v1',prefix:[],history:[],inputs:[],tools:[{name:'show_ui',description:'d',parameters:{type:'object'}}]} as unknown as Prompt)) events.push(event);
+  assert.deepEqual(events.filter(event => event.kind === 'tool_input').map(event => event.payload), [
+    {index:0,name:'show_ui',text:'{"markup":"<Stack>'},
+    {index:0,name:'show_ui',text:'</Stack>"}'},
+  ]);
+  assert.deepEqual(events.at(-1), {kind:'tool_call',payload:[{name:'show_ui',arguments:{markup:'<Stack></Stack>'},id:'call_ui'}]});
+});
+
+test('web-scoped tools are offered and run only in private web chats', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const registry = new ToolRegistry(store, async () => true);
+  registry.register(plainTool('show_ui', { surface: 'top', scope: 'web' }));
+  const web = { ...message, channel: 'web:chat-1', taskId: 'web:chat-1' };
+  assert.deepEqual(registry.schemas(web).map(item => item.function.name), ['show_ui']);
+  assert.deepEqual(registry.schemas(message).map(item => item.function.name), []);
+  await assert.rejects(registry.invokeResult(message, 'show_ui', {}, 'op', 'agent'), /only available in the Slopbot web chat/);
+});

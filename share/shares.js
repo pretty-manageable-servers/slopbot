@@ -1,4 +1,4 @@
-// Share links for the web console. Load with <script src="/console/shares.js" defer>.
+// Share links for the web console. Load with <script src="/share/shares.js" defer>.
 // Exposes window.SlopbotShares.renderShareButton, renderShareList and renderChatShare.
 // Text is always set with textContent or text nodes, never innerHTML.
 (() => {
@@ -222,7 +222,7 @@
 
   /* ---- Shared conversation page (/s/<id>). The page data is in #share-data, as JSON. ---- */
 
-  const LOGO = { light: '/console/assets/logo-light.svg', dark: '/console/assets/logo-dark.svg' };
+  const LOGO = { light: '/share/assets/logo-light.svg', dark: '/share/assets/logo-dark.svg' };
   const isLight = () => document.documentElement.classList.contains('light');
 
   function readTheme() {
@@ -302,7 +302,7 @@
         return;
       }
       const chat = await request(`/api/shares/${encodeURIComponent(id)}/continue`, { method: 'POST', headers: { 'X-CSRF-Token': session.csrf } });
-      location.href = `/chat/${encodeURIComponent(chat.id)}`;
+      location.href = `/console/chat/${encodeURIComponent(chat.id)}`;
     } catch (failure) {
       show(failure.status === 404 ? 'This shared chat is no longer available.' : failure.message);
       button.disabled = false;

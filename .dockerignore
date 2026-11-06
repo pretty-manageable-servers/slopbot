@@ -5,6 +5,8 @@ node_modules
 site/node_modules
 site/out
 site/.next
+console/node_modules
+console/dist
 dist
 data
 .tools

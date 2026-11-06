@@ -94,7 +94,10 @@ test('landing serves the static export, console serves under /console, and trave
   await writeFile(join(dir,'site/out/404.html'),'<!doctype html>');
   await writeFile(join(dir,'site/out/terms.html'),'<!doctype html><title>Terms</title>');
   await writeFile(join(dir,'secret.txt'),'secret');
-  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:join(dir,'site/out')},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});
+  await mkdir(join(dir,'console/dist/assets'),{recursive:true});
+  await writeFile(join(dir,'console/dist/index.html'),'<!doctype html><title>Next console</title>');
+  await writeFile(join(dir,'console/dist/assets/index-abc123.js'),'console.log(2)');
+  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:join(dir,'site/out'),nextDir:join(dir,'console/dist')},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});
   server.listen(0,'127.0.0.1');await once(server,'listening');
   t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
   const address=server.address();assert.ok(address&&typeof address!=='string');
@@ -116,18 +119,29 @@ test('landing serves the static export, console serves under /console, and trave
   assert.equal((await fetch(base+'/secret.txt')).status,404);
   assert.equal((await fetch(base+'/.env')).status,404);
   assert.equal((await fetch(base+'/app.js')).status,404);
-  // Console: its own paths and CSP, with no inline scripts.
-  const page=await fetch(base+'/console');assert.match(await page.text(),/Your team\. Your Slopbot/);
-  assert.match(page.headers.get('content-security-policy')!,/script-src 'self';/);
-  assert.equal((await fetch(base+'/console/')).status,200);
-  assert.equal((await fetch(base+'/console/app.js')).headers.get('content-type'),'text/javascript');
-  assert.equal((await fetch(base+'/console/style.css')).headers.get('content-type'),'text/css');
-  assert.equal((await fetch(base+'/console/assets/logo-light.svg')).status,200);
-  assert.equal((await fetch(base+'/console/assets/inter-latin-wght-normal.woff2')).headers.get('content-type'),'font/woff2');
-  assert.equal((await fetch(base+'/console/assets/%2e%2e%2f.env')).status,404);
-  assert.equal((await fetch(base+'/console/../package.json')).status,404);
+  // Share page files: their own paths, the console CSP with no inline scripts.
+  const style=await fetch(base+'/share/style.css');assert.equal(style.headers.get('content-type'),'text/css');
+  assert.match(style.headers.get('content-security-policy')!,/script-src 'self';/);
+  assert.equal((await fetch(base+'/share/shares.js')).headers.get('content-type'),'text/javascript');
+  assert.equal((await fetch(base+'/share/assets/logo-light.svg')).status,200);
+  assert.equal((await fetch(base+'/share/assets/inter-latin-wght-normal.woff2')).headers.get('content-type'),'font/woff2');
+  assert.equal((await fetch(base+'/share/assets/%2e%2e%2f.env')).status,404);
+  assert.equal((await fetch(base+'/share/../package.json')).status,404);
+  assert.equal((await fetch(base+'/share/app.js')).status,404);
   assert.equal((await fetch(base+'/style.css')).status,404);
   assert.equal((await fetch(base+'/assets/logo-light.svg')).status,404);
+  // Console: app pages give index.html, built assets are served, nothing else.
+  for(const path of ['/console','/console/','/console/chat/abc','/console/server/1/channel/2']){const page=await fetch(base+path);assert.match(await page.text(),/Next console/);assert.match(page.headers.get('content-security-policy')!,/script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline';/);}
+  assert.equal((await fetch(base+'/console/assets/index-abc123.js')).headers.get('content-type'),'text/javascript');
+  assert.equal((await fetch(base+'/console/assets/missing.js')).status,404);
+  assert.equal((await fetch(base+'/console/assets/..%2f..%2f..%2fsecret.txt')).status,404);
+  assert.equal((await fetch(base+'/console/secret.txt')).status,404);
+  assert.equal((await fetch(base+'/console/app.js')).status,404);
+  // Old addresses move to the console, with their query.
+  for(const [from,to] of [['/chat/abc?server=1','/console/chat/abc?server=1'],['/chat','/console'],['/team/123/run/r1','/console'],['/console/next/chat/abc','/console/chat/abc'],['/console/next','/console']]){const moved=await fetch(base+from,{redirect:'manual'});assert.equal(moved.status,301);assert.equal(moved.headers.get('location'),to);}
+  // The widget frame page lets inline scripts run, inside the sandboxed frame only.
+  const frame=await fetch(base+'/console/widget-frame.html');assert.equal(frame.status,200);assert.match(frame.headers.get('content-type')||'',/text\/html/);
+  assert.match(frame.headers.get('content-security-policy')||'',/script-src 'unsafe-inline'.*frame-ancestors 'self'/);assert.match(await frame.text(),/<script/i);
 });
 test('serves katex files',async t=>{
   const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:'site/out'},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});
@@ -135,9 +149,9 @@ test('serves katex files',async t=>{
   t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
   const address=server.address();assert.ok(address&&typeof address!=='string');
   const base=`http://127.0.0.1:${address.port}`;
-  assert.equal((await fetch(base+'/console/katex/katex.min.js')).headers.get('content-type'),'text/javascript');
-  assert.equal((await fetch(base+'/console/katex/katex.min.css')).headers.get('content-type'),'text/css');
-  assert.equal((await fetch(base+'/console/katex/fonts/KaTeX_Main-Regular.woff2')).headers.get('content-type'),'font/woff2');
+  assert.equal((await fetch(base+'/share/katex/katex.min.js')).headers.get('content-type'),'text/javascript');
+  assert.equal((await fetch(base+'/share/katex/katex.min.css')).headers.get('content-type'),'text/css');
+  assert.equal((await fetch(base+'/share/katex/fonts/KaTeX_Main-Regular.woff2')).headers.get('content-type'),'font/woff2');
 });
 test('rejects other katex paths',async t=>{
   const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:'site/out'},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});
@@ -145,16 +159,18 @@ test('rejects other katex paths',async t=>{
   t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
   const address=server.address();assert.ok(address&&typeof address!=='string');
   const base=`http://127.0.0.1:${address.port}`;
-  assert.equal((await fetch(base+'/console/katex/LICENSE')).status,404);
-  assert.equal((await fetch(base+'/console/katex/katex.js')).status,404);
-  assert.equal((await fetch(base+'/console/katex/fonts/KaTeX_Main-Regular.woff')).status,404);
-  assert.equal((await fetch(base+'/console/katex/fonts/KaTeX_Main-Regular.ttf')).status,404);
-  assert.equal((await fetch(base+'/console/katex/fonts/evil.woff2')).status,404);
-  assert.equal((await fetch(base+'/console/katex/fonts/%2e%2e%2fkatex.min.js')).status,404);
-  assert.equal((await fetch(base+'/console/katex/fonts/KaTeX_Main-Regular.woff2/..')).status,404);
+  assert.equal((await fetch(base+'/share/katex/LICENSE')).status,404);
+  assert.equal((await fetch(base+'/share/katex/katex.js')).status,404);
+  assert.equal((await fetch(base+'/share/katex/fonts/KaTeX_Main-Regular.woff')).status,404);
+  assert.equal((await fetch(base+'/share/katex/fonts/KaTeX_Main-Regular.ttf')).status,404);
+  assert.equal((await fetch(base+'/share/katex/fonts/evil.woff2')).status,404);
+  assert.equal((await fetch(base+'/share/katex/fonts/%2e%2e%2fkatex.min.js')).status,404);
+  assert.equal((await fetch(base+'/share/katex/fonts/KaTeX_Main-Regular.woff2/..')).status,404);
 });
 test('landing returns 404 when site/out is missing',async t=>{
-  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:join(tmpdir(),'slopbot-no-such-site')},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});
+  const nextDir=await mkdtemp(join(tmpdir(),'slopbot-console-'));t.after(()=>rm(nextDir,{recursive:true,force:true}));
+  await writeFile(join(nextDir,'index.html'),'<!doctype html><title>Console</title>');
+  const server=createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret',siteDir:join(tmpdir(),'slopbot-no-such-site'),nextDir},{ sessions: new SQLiteStore(), async canSignIn() { return true; },async snapshot(){return {};},async invoke(){return {};}});
   server.listen(0,'127.0.0.1');await once(server,'listening');
   t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
   const address=server.address();assert.ok(address&&typeof address!=='string');
@@ -741,4 +757,28 @@ test('/api/version is public and shows the build sha and time, or nulls for a mi
   assert.deepEqual(await version(), { sha: null, time: '2026-10-13T10:00:00.000Z', url: null });
   process.env.SLOPBOT_BUILD_SHA = sha; process.env.SLOPBOT_BUILD_TIME = 'yesterday';
   assert.deepEqual(await version(), { sha: 'a1b2c3d', time: null, url: `https://github.com/pretty-manageable-servers/slopbot/commit/${sha}` });
+});
+test('session gives the name and avatar of the first server for the account row', async t => {
+  const asked: string[] = [];
+  const server = createConsole({origin:'http://localhost:3000',host:'127.0.0.1',port:3000,clientId:'id',clientSecret:'secret'}, { sessions: new SQLiteStore(), async canSignIn() { return true; },
+    async snapshot(id) { return {user:id}; }, async invoke() { return {}; },
+    async servers() { return [{ id: '223456789012345678', name: 'PMS', icon: null, admin: false }]; },
+    async profile(user, guild) { asked.push(`${user}@${guild}`); return { displayName: 'Ada', avatarUrl: 'https://cdn.discordapp.com/avatars/1/a.png' }; },
+  });
+  server.listen(0,'127.0.0.1'); await once(server,'listening');
+  t.after(() => new Promise<void>(resolve => server.close(()=>resolve())));
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  const base = `http://127.0.0.1:${address.port}`, originalFetch = globalThis.fetch;
+  const call = (path:string, options?: RequestInit) => originalFetch(base+path, options);
+  t.mock.method(globalThis,'fetch',async (url: string | URL | Request, init?:RequestInit) => {
+    if (String(url) === 'https://discord.com/api/oauth2/token') return Response.json({access_token:'oauth-secret'});
+    if (String(url) === 'https://discord.com/api/users/@me') return Response.json({id:'123456789012345678'});
+    return originalFetch(url,init);
+  });
+  const state = new URL((await call('/auth/login',{redirect:'manual'})).headers.get('location')!).searchParams.get('state')!;
+  const callback = await call(`/auth/callback?state=${state}&code=x`,{redirect:'manual',headers:{Cookie:`slopbot_state=${state}`}});
+  const cookie = callback.headers.getSetCookie()[0]!.split(';')[0]!;
+  const session = await (await call('/api/session',{headers:{Cookie:cookie}})).json() as { user: string; me: unknown };
+  assert.deepEqual(session.me, { displayName: 'Ada', avatarUrl: 'https://cdn.discordapp.com/avatars/1/a.png' });
+  assert.deepEqual(asked, ['123456789012345678@223456789012345678']);
 });

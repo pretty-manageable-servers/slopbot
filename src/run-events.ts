@@ -246,14 +246,14 @@ export class RunEvents {
   }
 }
 
-/** Joins consecutive text (or thinking) deltas of the same run. Order is kept. */
+/** Joins consecutive text, thinking or tool input deltas of the same run and the same tool call. Order is kept. */
 function mergeDeltas(items: Pending[]): Pending[] {
   const out: Pending[] = [];
   for (const item of items) {
     const last = out.at(-1);
     if (last && last.kind === "run.delta" && item.kind === "run.delta" && last.server === item.server && last.channel === item.channel && last.ref === item.ref) {
-      const a = last.data as { part: string; text: string }, b = item.data as { part: string; text: string };
-      if (a.part === b.part) { last.data = { part: a.part, text: a.text + b.text }; continue; }
+      const a = last.data as { part: string; text: string; index?: number }, b = item.data as { part: string; text: string; index?: number };
+      if (a.part === b.part && a.index === b.index) { last.data = { ...a, text: a.text + b.text }; continue; }
     }
     out.push({ ...item });
   }
@@ -295,8 +295,17 @@ export function publishModelEvent(message: Message, runId: string, event: ModelE
   if (event.kind === "reasoning") {
     const text = reasoningText(event.payload);
     if (text) runEvents.publish(message.server, message.channel, "run.delta", runId, { part: "thinking", text });
+    return;
+  }
+  // Only tools whose input the web view draws while it streams. Other tool input is not sent.
+  if (event.kind === "tool_input" && LIVE_INPUT_TOOLS.has(event.payload.name)) {
+    const { index, name, text } = event.payload;
+    runEvents.publish(message.server, message.channel, "run.delta", runId, { part: "tool", index, name, text });
   }
 }
+
+/** Tools whose arguments stream to the web view: show_ui markup is drawn as it is written. */
+export const LIVE_INPUT_TOOLS: ReadonlySet<string> = new Set(["show_ui", "show_widget"]);
 
 /** Called by EventJournal when the model stream ends. */
 export function publishRunEnd(message: Message, runId: string, status: "done" | "failed"): void {

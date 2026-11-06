@@ -26,6 +26,8 @@ import {ScheduleWorker} from '../schedules/schedule-worker.js';
 import {SCHEDULE_KIND} from '../schedules/schedule-types.js';
 import {registerReportTools} from '../search/reports.js';
 import {UiRuntime,registerUiTool,registerPollTool} from '../ui/runtime.js';
+import {registerShowUiTool} from '../ui/show-ui.js';
+import {registerShowWidgetTool} from '../ui/show-widget.js';
 import type {UiDocument} from '../ui/schema.js';
 import {discordUi} from './discord-ui.js';
 import { DiscordToolProgress } from './discord-tool-progress.js';
@@ -298,6 +300,8 @@ export class DiscordServer implements ChatGateway {
       llmMode:()=>this.degraded?.mode()??"normal",
     });
     registerUiTool(this.tools);
+    registerShowUiTool(this.tools);
+    registerShowWidgetTool(this.tools);
     registerProfileTools(this.tools, store);
     // Free steps first. Team keys from the admin panel are used only when the free step fails.
     const webKeys = new WebKeySecrets();
@@ -1186,6 +1190,10 @@ export class DiscordAdapter {
     return false;
   }
   /** Servers that both Slopbot and the user are in. */
+  /** The user's name and avatar in one server, for the console's account row. */
+  async consoleProfile(user: string, server: string): Promise<{ displayName: string; avatarUrl: string | null } | undefined> {
+    return (await this.members?.profiles(server, [user]))?.get(user);
+  }
   async consoleServers(user: string): Promise<{ id: string; name: string; icon: string | null; admin: boolean }[]> {
     const cached = this.memberCache.get(user);
     if (cached && cached.at > Date.now() - MEMBER_TTL_MS) return cached.servers;

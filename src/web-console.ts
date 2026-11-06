@@ -14,10 +14,13 @@ import type { WebSessionStore } from './web-session-store.js';
 import type { ChatRoutes } from './web-chats.js';
 import { ChatError } from './web-chats.js';
 import { CHAT_FILE_MAX_BYTES } from './web-chat-files.js';
+import { handleTranscribe, handlesTranscribe, transcribeLimits } from './web-transcribe.js';
+import type { PmAudio } from './adapters/audio.js';
 import { runtimeVersion } from './operations-config.js';
 import type { InboxItem } from './inbox.js';
 import { SERVER_NON_ZDR_SETTING, USER_NON_ZDR_SETTING, type LlmMode } from './llm-mode.js';
 import { GLOBAL_SETTINGS_SCOPE } from './usage-cost.js';
+import { widgetFrameLoader } from 'agentic-ui-kit/core';
 import type { Json } from './domain.js';
 
 /** Team admin backend. Roles come from the Developer Portal team; panel holds the limits, prices and usage. */
@@ -35,6 +38,8 @@ export interface ConsoleAdmin {
   panel: AdminPanel;
 }
 export interface ConsoleBackend {
+  /** Speech to text for composer dictation (POST /api/transcribe). Without it the route answers 503. */
+  audio?: Pick<PmAudio, 'transcribeWav'> | undefined;
   /** Share links. Public page and snapshot routes, plus the admin list and writes. */
   shares?: ShareService;
   /** Copies a live share into a new private chat of the signed-in user. Errors with a ChatError keep their status. */
@@ -44,6 +49,8 @@ export interface ConsoleBackend {
   canSignIn(user: string): Promise<boolean>;
   /** The servers the user and Slopbot share, with the user's admin flag. Cached. Light: no channel or settings data. */
   servers?(user: string): Promise<{ id: string; name: string; icon: string | null; admin: boolean }[]>;
+  /** The user's name and avatar as one server shows them (nickname and server avatar first). Undefined when unknown. */
+  profile?(user: string, server: string): Promise<{ displayName: string; avatarUrl: string | null } | undefined>;
   invoke(user: string, server: string | undefined, channel: string, name: string, args: ToolArgs): Promise<unknown>;
   mcp?(user: string, server: string | undefined, input: unknown): Promise<unknown>;
   transcripts?(user: string, server: string): Promise<unknown>;
@@ -66,8 +73,8 @@ export interface ConsoleBackend {
   /** Login sessions. The database is the source of truth, so logins survive restarts. */
   sessions: WebSessionStore;
 }
-/** siteDir is the landing page export. It defaults to site/out. llmStatus gives the signed-in user's LLM mode; without it the mode is normal. settings holds the non-ZDR switches. */
-export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string; siteDir?: string; llmStatus?: (user: string) => { mode: LlmMode; canChat: boolean }; settings?: ConsoleSettings }
+/** siteDir is the landing page export. It defaults to site/out. nextDir is the Vite build of the console (console/dist). llmStatus gives the signed-in user's LLM mode; without it the mode is normal. settings holds the non-ZDR switches. */
+export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string; siteDir?: string; nextDir?: string; llmStatus?: (user: string) => { mode: LlmMode; canChat: boolean }; settings?: ConsoleSettings }
 /** Reads and writes of the non-ZDR switches. Users use the global scope; each server uses its own scope. */
 export interface ConsoleSettings { setting(server: string, key: string): unknown; setSetting(server: string, key: string, value: Json): void | Promise<void> }
 export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOptions | undefined {
@@ -147,17 +154,41 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
   return undefined;
 }
 type StaticFile = { content: Buffer; type: string };
-const contentTypes: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webp': 'image/webp', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8', '.json': 'application/json' };
+const contentTypes: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webp': 'image/webp', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.txt': 'text/plain; charset=utf-8', '.json': 'application/json' };
 const consoleCsp = "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 // The Next static export uses inline scripts. Only the landing HTML gets this relaxation.
 const landingCsp = consoleCsp.replace("script-src 'self'", "script-src 'self' 'unsafe-inline'");
-/** Console file for a /console path, or undefined. Only these names are served. */
+// The new console (agentic-ui-kit) needs two more rules. Shiki highlights code with a WebAssembly regex engine,
+// and the kit sets style attributes (code tokens, the composer height). No inline or eval'd script is allowed.
+/**
+ * The page the kit's show_widget frames load (WidgetHost.frameUrl). The kit posts the model's HTML into it, so
+ * its scripts run in an opaque-origin sandbox and the console's own CSP keeps 'self' scripts only.
+ */
+export const WIDGET_FRAME_PATH = '/console/widget-frame.html';
+const widgetFrameCsp = "default-src 'none'; script-src 'unsafe-inline' https:; style-src 'unsafe-inline' https:; img-src data: blob: https:; font-src data: https:; connect-src https:; frame-ancestors 'self'; base-uri 'none'";
+const nextCsp = consoleCsp.replace("script-src 'self'", "script-src 'self' 'wasm-unsafe-eval'").replace("style-src 'self'", "style-src 'self' 'unsafe-inline'");
+/** File of the public share page (/s/:id) for a /share path, or undefined. Only these names are served. */
+const shareFile = (path: string) => {
+  const name = path.startsWith('/share/') ? path.slice('/share/'.length) : '';
+  return /^(markdown\.js|highlight\.min\.js|style\.css|chat\.css|shares\.js|shares\.css|assets\/(logo-(light|dark)\.svg|favicon\.svg|[a-z0-9-]+\.woff2)|katex\/katex\.min\.js|katex\/katex\.min\.css|katex\/fonts\/KaTeX_[A-Za-z0-9_-]+\.woff2)$/.test(name) ? name : undefined;
+};
+/** File of the console (the Vite build) for a /console path, or undefined. Paths without a file extension are pages of the app. */
 const consoleFile = (path: string) => {
-  if (path === '/console' || path === '/console/') return 'index.html';
-  // Chat and channel addresses: /chat, /chat/<id>, /team, /team/<id> and /team/<id>/run/<runId>. The page reads the path.
-  if (/^\/(chat|team)(\/[^/]+)?\/?$/.test(path) || /^\/team\/[^/]+\/run\/[^/]+\/?$/.test(path)) return 'index.html';
-  const name = path.startsWith('/console/') ? path.slice('/console/'.length) : '';
-  return /^(app\.js|palette\.js|conversations\.js|markdown\.js|highlight\.min\.js|style\.css|chat\.css|console\.css|shares\.js|shares\.css|assets\/(logo-(light|dark)\.svg|favicon\.svg|[a-z0-9-]+\.woff2)|katex\/katex\.min\.js|katex\/katex\.min\.css|katex\/fonts\/KaTeX_[A-Za-z0-9_-]+\.woff2)$/.test(name) ? name : undefined;
+  if (path !== '/console' && !path.startsWith('/console/')) return undefined;
+  const name = path.slice('/console/'.length);
+  if (/^assets\/[A-Za-z0-9_.-]+$/.test(name)) return name;
+  return /^[A-Za-z0-9_/-]*$/.test(name) ? 'index.html' : undefined;
+};
+/**
+ * Old console addresses still in Discord messages and bookmarks: /chat/<id> (the "continue in web" link), /team/...
+ * and /console/next/... (the new console before the swap). Gives the address in the console, or undefined.
+ */
+export const movedPath = (path: string): string | undefined => {
+  const chat = /^\/chat(?:\/([^/]+))?\/?$/.exec(path);
+  if (chat) return chat[1] ? `/console/chat/${chat[1]}` : '/console';
+  if (/^\/team(\/.*)?$/.test(path)) return '/console';
+  if (path === '/console/next' || path.startsWith('/console/next/')) return `/console${path.slice('/console/next'.length)}` || '/console';
+  return undefined;
 };
 /** Landing file for a path: the home page, /_next/ files and top-level files such as /favicon.svg. */
 // A path with no extension is a page of the export, for example /terms gives terms.html.
@@ -169,7 +200,7 @@ async function readInside(root: string, name: string): Promise<StaticFile | unde
   const info = await stat(file).catch(() => undefined);
   return info?.isFile() ? { content: await readFile(file), type } : undefined;
 }
-const noticePage = (title: string, text: string, link: [string, string][]) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><link rel="stylesheet" href="/console/style.css"></head><body><main style="max-width:480px;margin:15vh auto;padding:0 16px;font-family:system-ui,sans-serif"><h1>${title}</h1><p>${text}</p><p>${link.map(([href, label]) => `<a href="${href}">${label}</a>`).join(' &middot; ')}</p></main></body></html>`;
+const noticePage = (title: string, text: string, link: [string, string][]) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><link rel="stylesheet" href="/share/style.css"></head><body><main style="max-width:480px;margin:15vh auto;padding:0 16px;font-family:system-ui,sans-serif"><h1>${title}</h1><p>${text}</p><p>${link.map(([href, label]) => `<a href="${href}">${label}</a>`).join(' &middot; ')}</p></main></body></html>`;
 /** Team routes for the non-ZDR switch. Reading needs membership; writing needs an editor. The errors match adminRoute's. */
 async function teamAccess(admin: ConsoleAdmin, user: string, editor: boolean): Promise<void> {
   if (!await admin.role(user)) throw new ToolError('Team membership is required.');
@@ -177,6 +208,7 @@ async function teamAccess(admin: ConsoleAdmin, user: string, editor: boolean): P
 }
 export function createConsole(options: ConsoleOptions, backend: ConsoleBackend): Server {
   const sessions = backend.sessions;
+  const transcribeState = transcribeLimits();
   const states = new Map<string, number>();
   const cookie = (name: string, value: string, age: number) => `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${options.origin.startsWith('https:') ? '; Secure' : ''}`;
   const cookies = (req: IncomingMessage) => Object.fromEntries((req.headers.cookie || '').split(';').map(part => part.trim().split('=')));
@@ -269,6 +301,7 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         // Transcript routes answer 403 without a session; their streams must not get a login redirect.
         if (req.method === 'GET' && backend.conversations?.handles(routePath)) return void await backend.conversations.handle(req, res, url, session?.user);
         if (!session) return send(res, 401, { error: 'Sign in with Discord to continue.' });
+        if (handlesTranscribe(req.method, routePath)) return void await handleTranscribe(req, res, session, { audio: backend.audio, origin: options.origin, limits: transcribeState });
         // Private chats. The stream is GET. Writes need the same origin and CSRF checks as the other writes.
         if (backend.chats?.handles(routePath)) {
           if (req.method === 'GET') return void await backend.chats.handle(req, res, url, session.user, undefined);
@@ -304,7 +337,11 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         if (req.method === 'GET' && routePath === '/api/session' && backend.servers) {
           // The light start of the page: who signs in, the CSRF token and the server list. No channel or settings data.
           if (!(await backend.canSignIn(session.user))) { await sessions.deleteSession(session.hash); res.setHeader('Set-Cookie', cookie('slopbot_session', '', 0)); return send(res, 401, { error: 'Sign in with Discord to continue.' }); }
-          return send(res, 200, { user: session.user, servers: await backend.servers(session.user), csrf: session.csrf });
+          const servers = await backend.servers(session.user);
+          // The name and avatar for the account row, from the first server. The page shows the user ID without them.
+          const found = servers[0] && backend.profile ? await backend.profile(session.user, servers[0].id).catch(() => undefined) : undefined;
+          const me = found ? { displayName: found.displayName, avatarUrl: found.avatarUrl } : null;
+          return send(res, 200, { user: session.user, me, servers, csrf: session.csrf });
         }
         if (req.method === 'GET' && routePath === '/api/settings') {
           const server = url.searchParams.get('server') ?? undefined;
@@ -448,8 +485,18 @@ export function createConsole(options: ConsoleOptions, backend: ConsoleBackend):
         return send(res, 200, await backend.invoke(session.user, input.server, input.channel, input.name, input.args || {}));
       }
       if (req.method !== 'GET') return send(res, 405, { error: 'Method not allowed.' });
+      if (routePath === WIDGET_FRAME_PATH) {
+        res.setHeader('Content-Security-Policy', widgetFrameCsp);
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache');
+        return void res.end(widgetFrameLoader);
+      }
+      const moved = movedPath(routePath);
+      if (moved) { res.writeHead(301, { Location: moved + url.search }); res.end(); return; }
+      const shareName = shareFile(routePath);
+      if (shareName) return sendFile(res, await readInside('share', shareName));
       const consoleName = consoleFile(routePath);
-      if (consoleName) return sendFile(res, await readInside('web', consoleName));
+      if (consoleName) { res.setHeader('Content-Security-Policy', nextCsp); return sendFile(res, await readInside(options.nextDir ?? 'console/dist', consoleName)); }
       const landingName = landingFile(routePath);
       if (!landingName) return send(res, 404, { error: 'Not found.' });
       if (landingName.endsWith('.html')) res.setHeader('Content-Security-Policy', landingCsp);

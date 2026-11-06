@@ -14,7 +14,7 @@ export interface FileDecoder { read(name: string, mime: string, data: Uint8Array
 export class WorkerFileDecoder implements FileDecoder {
   read(name: string, mime: string, data: Uint8Array): Promise<FileContents> {
     return new Promise((resolve, reject) => {
-      const worker = new Worker(new URL('./adapters/file-worker.js', import.meta.url), { execArgv: process.execArgv.filter(arg => !arg.startsWith('--input-type')), workerData: { name, mime, data }, resourceLimits: { maxOldGenerationSizeMb: 256 } });
+      const worker = new Worker(new URL('./adapters/file-worker.js', import.meta.url), { workerData: { name, mime, data }, resourceLimits: { maxOldGenerationSizeMb: 256 } });
       const timer = setTimeout(() => { void worker.terminate(); reject(new ToolError('File processing exceeded 20 seconds')); }, 20000);
       const finish = () => { clearTimeout(timer); void worker.terminate(); };
       worker.once('message', reply => { finish(); reply.error ? reject(new ToolError(reply.error)) : resolve(reply.value); });
