@@ -69,10 +69,11 @@ export function TextField({ label, showLabel, value, onChange, type = "text", pl
 }
 
 /** A whole-number field. An empty or bad entry gives NaN; check it before saving. */
-export function NumberField({ value, onChange, min, max, ...props }: Omit<TextProps, "value" | "onChange" | "type"> & { value: number; onChange: (value: number) => void; min?: number; max?: number }) {
+/** A number box. It does not clamp while typing (typing 5000 with min 1000 passes 5); callers check the range before saving. */
+export function NumberField({ value, onChange, min: _min, max: _max, ...props }: Omit<TextProps, "value" | "onChange" | "type"> & { value: number; onChange: (value: number) => void; min?: number; max?: number }) {
   return (
     <TextField {...props} type="number" value={Number.isFinite(value) ? String(value) : ""}
-      onChange={(text) => onChange(text.trim() === "" ? Number.NaN : Math.min(max ?? Infinity, Math.max(min ?? -Infinity, Number(text))))}
+      onChange={(text) => onChange(text.trim() === "" ? Number.NaN : Number(text))}
       className={props.className ?? "w-28"} />
   );
 }
