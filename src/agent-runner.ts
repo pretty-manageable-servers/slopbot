@@ -16,6 +16,7 @@ import { loadTaskSeed, refListParts, resolveRefs, type SettingsPort } from "./tr
 import { linkRefs } from "./reply-refs.js";
 import type { AgentTurn, LLM, Store } from "./ports.js";
 import { fallbackCallId } from "./run-events.js";
+import { instructionsApply, instructionsBlock, type UserInstructionsStore } from "./user-instructions.js";
 import type { Recall } from "./memory.js";
 import { attribution, streamMetered, type UsageMeter } from "./usage-meter.js";
 import { GLOBAL_SETTINGS_SCOPE } from "./usage-cost.js";
@@ -82,7 +83,7 @@ export class AgentRunner {
   private readonly renderer: ReplyRenderer;
 
   constructor(private readonly store: Store, private readonly llm: LLM, private readonly policy: Policy,
-    recall?: Recall, private readonly services: { profiles?: ProfileStore; tools?: ToolExecutor; counter?: TokenCounter; harness?: HarnessJournal; presentation?: PresentationPolicy; sandboxPrompt?: string; onToolActivity?: ToolActivityObserver; usage?: UsageMeter; images?: import('./model-images.js').ImageSource } = {}) {
+    recall?: Recall, private readonly services: { profiles?: ProfileStore; tools?: ToolExecutor; counter?: TokenCounter; harness?: HarnessJournal; presentation?: PresentationPolicy; sandboxPrompt?: string; onToolActivity?: ToolActivityObserver; usage?: UsageMeter; images?: import('./model-images.js').ImageSource; instructions?: import('./user-instructions.js').UserInstructionsStore } = {}) {
     if (policy.maxToolRounds !== undefined && (!Number.isSafeInteger(policy.maxToolRounds) || policy.maxToolRounds < 1 || policy.maxToolRounds > 1000)) throw new Error("maxToolRounds must be an integer from 1 to 1000");
     this.recentMessages = policy.recentMessages ?? 12;
     this.allowedChannels = new Set(policy.allowedChannels.map(scope => JSON.stringify([scope.server, scope.channel])));
@@ -109,6 +110,15 @@ export class AgentRunner {
   private systemPrefix(): readonly PromptItem[] {
     const saved = (this.store as { setting?(server: string, key: string): unknown }).setting?.(GLOBAL_SETTINGS_SCOPE, "system_prompt");
     return typeof saved === "string" && saved.trim() !== "" ? this.prefixFor(saved.trim()) : this.prefix;
+  }
+  /** The prefix plus the requester's saved instructions as one more system item, in web chats and DMs only. A failed load runs without them. */
+  private async withUserInstructions(message: Message, prefix: readonly PromptItem[]): Promise<readonly PromptItem[]> {
+    const store = this.services.instructions;
+    if (!store || message.isBot || !instructionsApply(message.channel)) return prefix;
+    let saved: Awaited<ReturnType<UserInstructionsStore["userInstructions"]>>;
+    try { saved = await store.userInstructions(message.author); } catch (error) { logError("user_instructions_load_failed", error, { stage: "user instructions" }, true); return prefix; }
+    if (!saved || saved.text.trim() === "") return prefix;
+    return Object.freeze([...prefix, Object.freeze({ role: "system" as const, content: instructionsBlock(saved.text) })]);
   }
   /** The effort of a request: the one on the message, else the server default. No default means the provider decides. */
   private effortFor(message: Message): { effort?: Effort } {
@@ -242,7 +252,8 @@ export class AgentRunner {
     const native = modelTools !== undefined;
     const base = this.systemPrefix();
     // The sandbox line comes from the profile probed at startup. It is the same text for every run until restart.
-    const prefix = tools ? base.map(item => ({ ...item, content: item.content + "\n" + nativeToolInstructions + (this.services.sandboxPrompt ? "\n" + this.services.sandboxPrompt : "") })) : base;
+    const toolPrefix = tools ? base.map(item => ({ ...item, content: item.content + "\n" + nativeToolInstructions + (this.services.sandboxPrompt ? "\n" + this.services.sandboxPrompt : "") })) : base;
+    const prefix = await this.withUserInstructions(message, toolPrefix);
     const schemaBudget = modelTools ? this.counter.count([{ role: "system", content: JSON.stringify(modelTools) }]) : 0;
     const inputLimit = this.inputLimit - schemaBudget;
     // The context is built once. Later changes reach the model as notes in its next tool round (see pendingNotes).
