@@ -64,6 +64,7 @@ import { ChannelAccess } from "../channel-access.js";
 import { TeamAdmins } from "../team-admins.js";
 import { displayToolResult, ToolError, ToolRegistry } from "../tools.js";
 import { isPrivateChannel, isDirectMessageChannel } from "../private-chat.js";
+import { hasUserInstructions } from "../user-instructions.js";
 import { registerOperationsTools } from '../operations.js';
 import { issueDraftTools } from '../issue-drafts.js';
 import { HttpOperationsClient } from '../adapters/operations-client.js';
@@ -259,7 +260,7 @@ export class EngineWorkspace implements Workspace {
       recentMessages: savedLimit("reply_context", config.replyContextMessages, 100),
       maxContextTokens: config.contextTokens, maxInputChars: config.contextTokens,
       maxOutputTokens: config.outputTokens, checkpointTokens: config.checkpointTokens, maxToolRounds: config.maxToolRounds,
-    }, store, { usage, onToolActivity: async (message, activity) => { if (this.bot.accepts(message.server, message.channel)) publishTool(message, activity); }, presentation: discordPresentation, ...(sandboxPrompt ? { sandboxPrompt } : {}), profiles: store, harness: store, images: imageSource, tools: {
+    }, store, { usage, onToolActivity: async (message, activity) => { if (this.bot.accepts(message.server, message.channel)) publishTool(message, activity); }, presentation: discordPresentation, ...(sandboxPrompt ? { sandboxPrompt } : {}), profiles: store, harness: store, images: imageSource, ...(hasUserInstructions(store) ? { instructions: store } : {}), tools: {
       catalog: message => this.tools.catalog(message), schemas: message => this.tools.schemas(message), suggest: message => this.tools.suggest(message),
       execute: (message, call, id, version, invocation) => this.bot.executeTool(message, call, id, version, invocation),
       snapshot: () => {
