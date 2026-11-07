@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { parseMessage, type Effort, type Json, type Message, type ModelEvent, type Prompt, type PromptItem } from "../domain.js";
 import type { Store, AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow, TokenTotals, UserTokenTotalRow, TokenTotalsSummary, KnownUserPage } from "../ports.js";
 import type { KeyedProvider, ProviderKeyRow, ProviderKeyUsage } from "../web-providers.js";
+import type { UserInstructions, UserInstructionsStore } from "../user-instructions.js";
 import { cosine, searchTerms, newMemory, patchMemory, memoryMetadata, memoryFromRow, memorySearchText, rankMemories, type MemoryOptions, type MemoryPatch, type MemoryQuery, type Embeddings, type Evidence, type MemoryRecord, type Knowledge, type Recall } from "../memory.js";
 import { attribution, type Attribution } from "../usage-meter.js";
 
@@ -42,7 +43,7 @@ function inboxItemFromRow(row: Record<string, any>): InboxItem {
 function providerKeyRow(row: Record<string, unknown>): ProviderKeyRow {
   return { id: String(row.id), provider: String(row.provider) as KeyedProvider, owner: String(row.owner), label: String(row.label), last4: String(row.last4), secretEncrypted: String(row.secret_encrypted), createdAt: Number(row.created_at) };
 }
-export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore {
+export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore, UserInstructionsStore {
   async participationHistory(server: string, channel: string, query: ParticipationHistoryQuery) {
     return readParticipationHistory(async (sql, values) => this.db.prepare(sql).all(...values), server, channel, query);
   }
@@ -398,6 +399,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       CREATE INDEX IF NOT EXISTS web_chats_owner ON web_chats(server,owner,updated);
       CREATE TABLE IF NOT EXISTS web_provider_keys (id TEXT PRIMARY KEY, provider TEXT NOT NULL, owner TEXT NOT NULL, label TEXT NOT NULL, last4 TEXT NOT NULL, secret_encrypted TEXT NOT NULL, created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS web_provider_usage (key_id TEXT NOT NULL, month TEXT NOT NULL, used INTEGER NOT NULL, exhausted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(key_id, month));
+      CREATE TABLE IF NOT EXISTS user_instructions (user_id TEXT PRIMARY KEY, text TEXT NOT NULL, updated INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS inbox_items (id TEXT PRIMARY KEY, server TEXT NOT NULL, target TEXT NOT NULL, sender TEXT NOT NULL, channel TEXT NOT NULL, source_ids TEXT NOT NULL, summary TEXT NOT NULL, created_at INTEGER NOT NULL, done_at INTEGER);
       CREATE INDEX IF NOT EXISTS inbox_items_target ON inbox_items(server,target,done_at,created_at);
       CREATE INDEX IF NOT EXISTS inbox_items_sender ON inbox_items(server,sender,created_at);
@@ -1094,6 +1096,16 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   async providerKeyUsage(month: string): Promise<ProviderKeyUsage[]> {
     return this.db.prepare("SELECT key_id,month,used,exhausted FROM web_provider_usage WHERE month=? ORDER BY key_id").all(month)
       .map(row => ({ keyId: String(row.key_id), month: String(row.month), used: Number(row.used), exhausted: Number(row.exhausted) !== 0 }));
+  }
+  async userInstructions(user: string): Promise<UserInstructions | undefined> {
+    const row = this.db.prepare("SELECT text,updated FROM user_instructions WHERE user_id=?").get(user);
+    return row ? { text: String(row.text), updated: Number(row.updated) } : undefined;
+  }
+  async setUserInstructions(user: string, text: string, at: number): Promise<void> {
+    this.db.prepare("INSERT INTO user_instructions (user_id,text,updated) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET text=excluded.text,updated=excluded.updated").run(user, text, at);
+  }
+  async deleteUserInstructions(user: string): Promise<void> {
+    this.db.prepare("DELETE FROM user_instructions WHERE user_id=?").run(user);
   }
 
   reindex(server: string, channels: readonly string[]): number {
