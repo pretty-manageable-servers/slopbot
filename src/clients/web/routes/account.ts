@@ -5,6 +5,7 @@ import { handleTranscribe, transcribeLimits } from '../web-transcribe.js';
 import { SNOWFLAKE, check, looseBody, readInput, readJson, snowflakeField } from '../body.js';
 import { alreadySent, applyOut, json, notFound, userOf, type WebApp, type WebContext, type WebDeps } from '../env.js';
 import { endSession } from './auth.js';
+import { USER_INSTRUCTIONS_MAX_CHARS, type UserInstructions } from '../../../user-instructions.js';
 
 const allowed = new Set(['calibration', 'monitoring', 'context', 'cooldown', 'channels', 'index', 'profile', 'timing', 'tool_display', 'default_effort', 'voice']);
 /** The web may only read and set the voice style. Join, leave and propose need Discord. */
@@ -19,6 +20,9 @@ const TRANSCRIPT = 'Invalid web transcript setting.';
 const transcriptBody = z.object({ server: snowflakeField(TRANSCRIPT), channel: snowflakeField(TRANSCRIPT), enabled: z.boolean({ error: TRANSCRIPT }) }, { error: TRANSCRIPT });
 const UNSUPPORTED = 'Unsupported setting.';
 const settingBody = z.object({ server: z.string().optional(), channel: z.string({ error: UNSUPPORTED }), name: z.string({ error: UNSUPPORTED }).refine(name => allowed.has(name), UNSUPPORTED), args: z.unknown() }, { error: UNSUPPORTED });
+const instructionsBody = z.object({ text: z.string({ error: 'Send text as a string.' }) }, { error: 'Send text as a string.' });
+/** The saved instructions as the page reads them. No saved text reads as null. */
+const instructionsShape = (saved: UserInstructions | null | undefined) => ({ text: saved?.text ?? null, updated: saved?.updated ?? null, max: USER_INSTRUCTIONS_MAX_CHARS });
 
 /** The signed-in user's own routes: login state, settings, status, usage, inbox, replies, MCP and dictation. */
 export function accountRoutes(app: WebApp, deps: WebDeps): void {
@@ -142,5 +146,21 @@ export function accountRoutes(app: WebApp, deps: WebDeps): void {
     if (name === 'voice' && !webVoiceActions.has(String((input.value.args as { action?: unknown } | undefined)?.action))) return json(400, { error: UNSUPPORTED });
     if (name === 'profile' && !['set', 'remove', 'lock'].includes(String(args.action))) return json(400, { error: 'Unsupported profile action.' });
     return json(200, await backend.invoke(userOf(c), server, channel, name, args));
+  });
+
+  // The user's saved instructions (Settings). Saves are checked before they are stored; a flagged save answers 422 and keeps the old text.
+  app.get('/api/settings/instructions', async c => {
+    if (!options.instructions) return notFound();
+    return json(200, instructionsShape(await options.instructions.get(userOf(c))));
+  });
+  app.post('/api/settings/instructions', guard(), async c => {
+    if (!options.instructions) return notFound();
+    const body = await readInput(c, 16384);
+    if ('error' in body) return body.error;
+    const input = check(instructionsBody, looseBody(body.value));
+    if ('error' in input) return input.error;
+    const result = await options.instructions.save(userOf(c), input.value.text);
+    if (!result.ok) return json(422, { error: result.message, reason: result.reason, ...(result.category ? { category: result.category } : {}) });
+    return json(200, instructionsShape(result.saved));
   });
 }
