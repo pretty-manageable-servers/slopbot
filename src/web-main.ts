@@ -31,6 +31,9 @@ import { DEFAULT_WORLD_PATH, loadLocalWorld } from "./local/world.js";
 import { LocalDirectory, localChannelAccessSource, localMemberSource, localTeamSource } from "./local/local-sources.js";
 import { LocalServer } from "./local/local-server.js";
 import { localConsoleAdmin, localConsoleBackend } from "./local/local-console.js";
+import { VaneSafetyClassifier } from "./adapters/safety-classifier.js";
+import { UserInstructionsService } from "./user-instructions-service.js";
+import { hasUserInstructions } from "./user-instructions.js";
 
 export interface LocalConsole {
   web: Server;
@@ -90,7 +93,10 @@ export async function startLocalConsole(env: NodeJS.ProcessEnv = process.env): P
   if (degraded) panel.setLlmState(() => degraded.health.state());
   const admin = localConsoleAdmin({ world, team, panel });
   const localBackend = localConsoleBackend({ world, config, store, members, usage });
-  const consoleOptionsLive = degraded ? { ...webOptions, llmStatus: () => ({ mode: degraded.health.state().mode, canChat: degraded.router.select(undefined) !== undefined }), settings: store } : webOptions;
+  // Saved user instructions: the store keeps the table; the vane check fails closed without a key, so saves are refused.
+  const classifier = config.baseUrl && config.apiKey && !config.mock ? new VaneSafetyClassifier({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.jevModel, usage }) : undefined;
+  const instructions = hasUserInstructions(store) ? new UserInstructionsService(store, classifier) : undefined;
+  const consoleOptionsLive = { ...webOptions, ...(degraded ? { llmStatus: () => ({ mode: degraded.health.state().mode, canChat: degraded.router.select(undefined) !== undefined }), settings: store } : {}), ...(instructions ? { instructions } : {}) };
   const web = createConsole(consoleOptionsLive, {
     ...localBackend, access, admin, chats: createChatRoutes(chats),
     continueShare: (user, id) => chats.continueShare(user, id, shares), shares, sessions: store,

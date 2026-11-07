@@ -12,6 +12,7 @@ import type { ChatRoutes } from './web-chats.js';
 import type { PmAudio } from '../../adapters/audio.js';
 import type { InboxItem } from '../../inbox.js';
 import type { LlmMode } from '../../llm-mode.js';
+import type { InstructionsService } from '../../user-instructions.js';
 import { widgetFrameLoader } from 'agentic-ui-kit/visuals/core';
 import type { Json } from '../../domain.js';
 import { createApp } from './app.js';
@@ -70,8 +71,8 @@ export interface ConsoleBackend {
   /** Login sessions. The database is the source of truth, so logins survive restarts. */
   sessions: WebSessionStore;
 }
-/** siteDir is the landing page export. It defaults to site/out. nextDir is the Vite build of the console (console/dist). llmStatus gives the signed-in user's LLM mode; without it the mode is normal. settings holds the non-ZDR switches. oauthBase replaces https://discord.com for local development only (see scripts/development/dev-oauth.mjs). */
-export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string; siteDir?: string; nextDir?: string; llmStatus?: (user: string) => { mode: LlmMode; canChat: boolean }; settings?: ConsoleSettings; oauthBase?: string }
+/** siteDir is the landing page export. It defaults to site/out. nextDir is the Vite build of the console (console/dist). llmStatus gives the signed-in user's LLM mode; without it the mode is normal. settings holds the non-ZDR switches. oauthBase replaces https://discord.com for local development only (see scripts/development/dev-oauth.mjs). instructions saves the signed-in user's own instructions; without it the instructions routes answer 404. */
+export interface ConsoleOptions { origin: string; clientId: string; clientSecret: string; port: number; host: string; siteDir?: string; nextDir?: string; llmStatus?: (user: string) => { mode: LlmMode; canChat: boolean }; settings?: ConsoleSettings; oauthBase?: string; instructions?: InstructionsService }
 /** Reads and writes of the non-ZDR switches. Users use the global scope; each server uses its own scope. */
 export interface ConsoleSettings { setting(server: string, key: string): unknown; setSetting(server: string, key: string, value: Json): void | Promise<void> }
 export function consoleOptions(env: NodeJS.ProcessEnv = process.env): ConsoleOptions | undefined {
