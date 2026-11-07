@@ -20,6 +20,7 @@ const section = (id: string, label: string, icon: ReactNode, group: SectionGroup
 
 export const SECTIONS: SectionInfo[] = [
   section("account", "Account", icons.account, "you", ["profile", "name", "avatar", "profile fields", "allow edits", "non-zdr", "data retention", "log out"], () => import("./sections/account")),
+  section("instructions", "Instructions", icons.account, "you", ["instructions", "custom instructions", "preferences", "personalization", "markdown", "about me", "tone"], () => import("./sections/instructions")),
   section("appearance", "Appearance", icons.appearance, "you", ["theme", "dark", "light", "text size", "font", "content width"], () => import("./sections/appearance")),
   section("usage", "Usage", icons.usage, "you", ["limits", "plan", "5 hour", "week", "reset", "banked"], () => import("./sections/usage")),
   section("server", "Server", icons.server, "server", ["monitoring", "join the conversation", "calibration", "participation", "context", "cooldown", "tool display", "default effort", "timing", "voice", "web transcripts"], () => import("./sections/server")),

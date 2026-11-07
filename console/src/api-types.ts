@@ -74,6 +74,8 @@ export interface SettingArgs {
 export interface ToolResult { text: string; status?: "ok" | "rejected" | "failed"; reason?: string }
 
 export interface NonZdr { allow: boolean }
+/** GET and POST /api/settings/instructions. text is null when nothing is saved. max is the length limit in code points. */
+export interface UserInstructionsView { text: string | null; updated: number | null; max: number }
 export interface TranscriptChannel { id: string; name: string; enabled: boolean }
 export interface Usage { plan: string; windows: { kind: string; percent: number | null; resetAt: number | null; banked: number }[] }
 

@@ -22,6 +22,9 @@ import { createTranscripts } from './clients/web/web-transcripts.js';
 import { configuredChannels } from './server-tools.js';
 import { startConversationEventRetention } from './run-events.js';
 import { createChatRoutes, WebChatService } from './clients/web/web-chats.js';
+import { VaneSafetyClassifier } from './adapters/safety-classifier.js';
+import { UserInstructionsService } from './user-instructions-service.js';
+import { hasUserInstructions } from './user-instructions.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -52,8 +55,11 @@ async function main(): Promise<void> {
   const chats = new WebChatService(store, { engine: discord.engine, directory: discord.directory, limiter: discord.usage.limiter, access: discord.access, ...(discord.images ? { images: discord.images } : {}) });
   if (webOptions) discord.webChat = { continueMessage: async (user, server, source) => `${webOptions.origin}/chat/${encodeURIComponent((await chats.continueMessage(user, server, source)).id)}?server=${encodeURIComponent(server)}` };
   const conversations = createTranscripts({ store, access: discord.access, configured: server => configuredChannels(config, store, server), channelName: (server, channel) => discord.channelName(server, channel), shareRule: discord.shareRule, members: discord.members, ownsPrivateChat: (server, channel, user) => chats.owns(user, server, channel) });
+  // Saved user instructions: the store keeps the table; the vane check fails closed without a key, so saves are refused.
+  const classifier = config.baseUrl && config.apiKey && !config.mock ? new VaneSafetyClassifier({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.jevModel, usage: discord.usage }) : undefined;
+  const instructions = hasUserInstructions(store) ? new UserInstructionsService(store, classifier) : undefined;
   // Mock runs keep the console as before: no mode banner and no non-ZDR switch.
-  const consoleOptionsLive = webOptions && degraded ? { ...webOptions, llmStatus: () => ({ mode: degraded.health.state().mode, canChat: degraded.router.select(undefined) !== undefined }), settings: store } : webOptions;
+  const consoleOptionsLive = webOptions && { ...webOptions, ...(degraded ? { llmStatus: () => ({ mode: degraded.health.state().mode, canChat: degraded.router.select(undefined) !== undefined }), settings: store } : {}), ...(instructions ? { instructions } : {}) };
   // The Discord-only calls of the console: authority, settings, snapshots, webhooks. Same signatures as the adapter methods.
   const discordConsole: Pick<ConsoleBackend, "canSignIn" | "servers" | "profile" | "snapshot" | "usage" | "useReset" | "invoke" | "mcp" | "transcripts" | "inbox" | "setTranscript"> = { canSignIn: user => discord.canSignIn(user), servers: user => discord.consoleServers(user), profile: (user, server) => discord.consoleProfile(user, server), snapshot: (user, server) => discord.consoleSnapshot(user, server), usage: (user, server) => discord.consoleUsage(user, server), useReset: (user, server, kind) => discord.consoleUseReset(user, server, kind), invoke: (user, server, channel, name, args) => discord.consoleInvoke(user, server, channel, name, args), mcp: (user, server, input) => discord.consoleMcp(user, server, input), transcripts: (user, server) => discord.consoleTranscripts(user, server), inbox: { list: (user, server, includeDone) => discord.consoleInbox(user, server, includeDone), done: (user, server, ids) => discord.consoleInboxDone(user, server, ids) }, setTranscript: (user, server, channel, enabled) => discord.consoleSetTranscript(user, server, channel, enabled) };
   const web = consoleOptionsLive ? createConsole(consoleOptionsLive, { audio: config.apiKey && config.voice ? new PmAudio(config.baseUrl, config.apiKey, config.voice.voice, undefined, config.voice.sttModel) : undefined, ...discordConsole, access: discord.access, admin, conversations, chats: createChatRoutes(chats), continueShare: (user, id) => chats.continueShare(user, id, discord.shares), reply: (user, server, channel, text) => discord.consoleReply(user, server, channel, text), shares: discord.shares, sessions: store }) : undefined;

@@ -19,7 +19,7 @@ export class Application {
   private readonly taskTails = new Map<string, Promise<void>>();
   private readonly runner: AgentRunner;
   constructor(private readonly store: Store, llm: LLM, policy: Policy, recall?: Recall,
-    services: { profiles?: ProfileStore; tools?: ToolExecutor; counter?: TokenCounter; harness?: HarnessJournal; presentation?: PresentationPolicy; sandboxPrompt?: string; onToolActivity?: ToolActivityObserver; usage?: UsageMeter; images?: ImageSource } = {}) {
+    services: { profiles?: ProfileStore; tools?: ToolExecutor; counter?: TokenCounter; harness?: HarnessJournal; presentation?: PresentationPolicy; sandboxPrompt?: string; onToolActivity?: ToolActivityObserver; usage?: UsageMeter; images?: ImageSource; instructions?: import('./user-instructions.js').UserInstructionsStore } = {}) {
     this.runner = new AgentRunner(store, llm, policy, recall, services);
   }
   interrupt(server: string, messageId: string): Promise<boolean> { return this.runner.interrupt(server, messageId); }
