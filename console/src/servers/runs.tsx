@@ -40,9 +40,9 @@ export function RunsPanel({ server, channel, active, onClose, className }: { ser
               variant="ghost"
               aria-current={item.id === active ? "true" : undefined}
               onPress={() => void navigate({ to: ".", search: (prev: Record<string, unknown>) => ({ ...prev, run: item.id }) })}
-              className="flex h-auto! w-full flex-col items-start gap-0.5 py-2 text-left"
+              className="flex h-auto! w-full flex-col items-start gap-0.5 py-2 text-left whitespace-normal"
             >
-              <span className="line-clamp-2 font-medium">{item.title}</span>
+              <span className="line-clamp-2 min-w-0 max-w-full break-words font-medium">{item.title}</span>
               <span className="text-chat-muted text-(length:--chat-ui-font-size-sm)">
                 {item.authorName} · {ago(item.end)} · {item.messageCount} {item.messageCount === 1 ? "message" : "messages"}
               </span>
