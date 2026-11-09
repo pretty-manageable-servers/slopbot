@@ -2,9 +2,10 @@
 // (GET /api/conversations/:channel/runs). Picking one sets ?run=<id> on the page, which shows that conversation.
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { Button, Panel, formatRelativeTime } from "agentic-ui-kit";
+import { Button, Panel } from "agentic-ui-kit";
 import type { ConversationSummary } from "../api-types";
 import { get, qs } from "../api";
+import { ago } from "../ui/time";
 
 const PAGE = 20;
 
@@ -31,6 +32,7 @@ export function RunsPanel({ server, channel, active, onClose, className }: { ser
       className={className}
     >
       {runs.isPending && <p className="px-4 text-chat-muted">Loading…</p>}
+      {runs.isError && <p className="px-4 text-chat-muted">Conversations are not available right now.</p>}
       {runs.isSuccess && items.length === 0 && <p className="px-4 text-chat-muted">No conversations yet.</p>}
       <ul className="flex flex-col gap-1 p-2">
         {items.map((item) => (
@@ -43,7 +45,7 @@ export function RunsPanel({ server, channel, active, onClose, className }: { ser
             >
               <span className="line-clamp-2 font-medium">{item.title}</span>
               <span className="text-chat-muted text-(length:--chat-ui-font-size-sm)">
-                {item.authorName} · {formatRelativeTime(new Date(item.end).toISOString())} · {item.messageCount} {item.messageCount === 1 ? "message" : "messages"}
+                {item.authorName} · {ago(item.end)} · {item.messageCount} {item.messageCount === 1 ? "message" : "messages"}
               </span>
             </Button>
           </li>

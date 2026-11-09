@@ -2,7 +2,7 @@
 // (handlers.ts) serve it; stories that need other data override one handler with `parameters.msw.handlers`.
 import type { EngineEnvelope, EngineEvent, ShareData } from "@slopbot/contracts";
 import type { BotMessage } from "../events";
-import type { AdminMe, ChatSummary, Conversation, ConversationSummary, InboxItem, ServerShare, ServerSnapshot, ServerSummary, Session, Status, TranscriptPage, Usage } from "../api-types";
+import type { AdminMe, ChatShare, ChatSummary, Conversation, ConversationSummary, InboxItem, ServerShare, ServerSnapshot, ServerSummary, Session, Status, TranscriptPage, Usage } from "../api-types";
 
 const HOUR = 3_600_000;
 /** A fixed "now", so dates in stories do not change from day to day. */
@@ -143,3 +143,37 @@ export const shareData: ShareData = {
     { author: "Slopbot", bot: true, at: NOW - HOUR + 40_000, text: "Usually a missing index. Run `EXPLAIN ANALYZE` on the slowest query.", tools: [{ name: "explain_query", status: "completed" }], thinking: "", images: [{ src: "/api/shares/s1aaaaaaaaaaaaaaaaaa/images/1", name: "plan.png" }], files: [{ name: "orders.sql", size: 2048 }], other: 0 },
   ],
 };
+
+/** The same chat, but the question comes with a picture and a file. */
+export const chatWithAttachments: BotMessage[] = chatSaved.map((m) => (!m.slopbot
+  ? { ...m, images: [{ imageId: "img1", name: "query-plan.png", contentType: "image/png", size: 48_213 }], files: [{ fileId: "file1", name: "orders-indexes.sql", contentType: "application/sql", size: 2048 }] }
+  : m));
+
+/** A picture for the attachments of stories, served for any image URL: a plain card. */
+export const sampleImage = '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200" viewBox="0 0 320 200"><rect width="320" height="200" fill="#3d5a80"/><rect x="24" y="24" width="272" height="24" rx="4" fill="#98c1d9"/><rect x="24" y="64" width="180" height="16" rx="4" fill="#e0fbfc"/></svg>';
+
+/** The share link of chat c1: active, with newer messages to add. */
+export const chatShares: ChatShare[] = [
+  { id: "cs1aaaaaaaaaaaaaaaaa", created_at: NOW - 24 * HOUR, revoked: false, frozen_at: NOW - 23 * HOUR, newer: true },
+];
+
+/** A long channel: `count` messages from three people, as one page with older ones to load. */
+export const longTranscript = (channel: string, count = 200): TranscriptPage => {
+  const people = [["Sam", SAM], ["Ari", ARI], ["DerpZ", session.user]] as const;
+  return {
+    channel: { id: channel, name: "general", parent: null },
+    canSend: true,
+    canShare: true,
+    streamId: 1,
+    hasMore: true,
+    messages: Array.from({ length: count }, (_, i) => {
+      const [authorName, author] = people[i % people.length]!;
+      return { id: `l${i}`, channel, author, authorName, username: null, avatarUrl: null, text: `Message ${i + 1} of the very long thread. ${"The cron job still runs at 03:00 UTC. ".repeat(1 + (i % 3))}`, timestamp: NOW - (count - i) * 60_000, editedAt: null, slopbot: false, runIds: [], used: false };
+    }),
+  };
+};
+
+/** A live reply in a channel: Sam asks Slopbot something and the answer streams in (no thinking row: the kit draws it with an h3 that fails the heading-order check). */
+export const channelLive = (channel: string): EngineEvent[] => chatLive.filter((event) => event.type !== "thinking.delta").map((event) => (event.type === "message.upsert"
+  ? { ...event, message: { ...event.message, channel, author: SAM, authorName: "Sam", text: "@Slopbot can you check the orders table too?" } }
+  : event));

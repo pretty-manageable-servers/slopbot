@@ -4,7 +4,7 @@
 // while the palette is open.
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { IconButton, Modal, defaultIcons, formatRelativeTime } from "agentic-ui-kit";
+import { IconButton, Modal, defaultIcons } from "agentic-ui-kit";
 import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { get, qs } from "./api";
 import type { Conversation, ConversationSearch } from "./api-types";
@@ -14,6 +14,7 @@ import { buildSections, FILTERS, parseRecent, pushRecent, RECENT_KEY, recentItem
 import { useOpenSettings } from "./settings/dialog";
 import { SECTIONS } from "./settings/sections";
 import { icons } from "./ui/icons";
+import { ago } from "./ui/time";
 import { ServerMark } from "./ui/layout";
 
 /** A row as drawn: the item, its icon and detail, a snippet for a message hit, and what Enter does. */
@@ -66,19 +67,18 @@ function Palette({ onDone }: { onDone: () => void }) {
   });
   const loading = text.length >= 2 && (debounced !== text || search.isFetching);
   const channelNames = new Map((search.data?.channels ?? []).map(channel => [channel.id, channel.name]));
-  const when = (ts: number) => formatRelativeTime(new Date(ts).toISOString());
   const light = document.documentElement.dataset.chatTheme === "light";
 
   const all: Row[] = [
     ...chats.map((chat): Row => ({
       key: `chat:${chat.id}`, group: "chats", name: chat.title || "New chat", ts: chat.updated,
-      icon: icons.chats, detail: when(chat.updated),
+      icon: icons.chats, detail: ago(chat.updated),
       run: () => void navigate({ to: "/chat/$chatId", params: { chatId: chat.id } }),
     })),
     ...conversations.map((conversation): Row => ({
       key: `channel:${conversation.id}`, group: "channels", name: conversation.name, ts: conversation.newest ?? undefined,
       icon: conversation.kind === "thread" ? icons.thread : icons.channels,
-      detail: conversation.newest ? when(conversation.newest) : undefined,
+      detail: conversation.newest ? ago(conversation.newest) : undefined,
       run: () => void navigate({ to: "/server/$serverId/channel/$channelId", params: { serverId: server.id, channelId: conversation.id } }),
     })),
     ...servers.map((picked): Row => ({
@@ -101,7 +101,7 @@ function Palette({ onDone }: { onDone: () => void }) {
   const messageRows: Row[] = messagesReady
     ? (search.data?.messages ?? []).map((message): Row => ({
       key: `message:${message.id}`, group: "messages", name: message.text, icon: icons.chats,
-      detail: message.timestamp ? when(message.timestamp) : undefined,
+      detail: message.timestamp ? ago(message.timestamp) : undefined,
       snippet: { text: snippetOf(message.text, text), meta: `${channelNames.get(message.channel) ?? ""} · ${message.authorName}` },
       run: () => void navigate({ to: "/server/$serverId/channel/$channelId", params: { serverId: server.id, channelId: message.channel } }),
     }))
@@ -146,7 +146,7 @@ function Palette({ onDone }: { onDone: () => void }) {
     <div className="flex max-h-[70dvh] min-h-0 flex-col">
       <div className="flex items-center gap-2 py-2 pr-2 pl-4">
         <span className="text-chat-muted">{icons.search}</span>
-        <input ref={inputRef} autoFocus type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list"
+        <input ref={inputRef} autoFocus type="text" role="combobox" aria-expanded={shown.length > 0} aria-controls="palette-list" aria-autocomplete="list"
           aria-activedescendant={index >= 0 ? `palette-opt-${index}` : undefined} aria-label="Search" placeholder="Search" autoComplete="off" spellCheck={false}
           maxLength={200} value={query} onChange={event => { setQuery(event.target.value); setActive(0); }} onKeyDown={onKeyDown}
           className="min-w-0 flex-1 bg-transparent text-base text-chat-fg outline-none placeholder:text-chat-muted" />
@@ -162,7 +162,8 @@ function Palette({ onDone }: { onDone: () => void }) {
         ))}
       </div>
       <hr className="m-0 border-chat-divider" />
-      <ul id="palette-list" role="listbox" aria-label="Results" className="m-0 min-h-0 list-none overflow-y-auto p-2">
+      {/* With no rows (a search status only) it is a plain group: a listbox needs options. */}
+      <ul id="palette-list" role={shown.length ? "listbox" : "group"} aria-label="Results" className="m-0 min-h-0 list-none overflow-y-auto p-2">
         {layout.map(section => (
           <Fragment key={section.title}>
             <li role="presentation" className="px-2.5 pt-2 pb-1 text-xs text-chat-muted">{section.title}</li>

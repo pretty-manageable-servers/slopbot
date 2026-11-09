@@ -1,6 +1,6 @@
 // The share page's view: a frozen chat drawn with the kit, like a chat. share-page.tsx mounts it on the page; the
 // stories draw it on the fake bot's copy (src/mocks/data.ts shareData).
-import { Button, ChatHeader, ChatTranscript, ToolViewsProvider, defaultToolViews } from "agentic-ui-kit";
+import { AttachmentCard, Button, ChatHeader, ChatTranscript, ToolViewsProvider, defaultToolViews } from "agentic-ui-kit";
 import { VisualsProvider, uiMarkupToolView, widgetToolView } from "agentic-ui-kit/visuals";
 import type { ShareData } from "@slopbot/contracts";
 import { useState } from "react";
@@ -46,7 +46,11 @@ export function SharePage({ data }: { data: ShareData }) {
         <ChatTranscript
           className="h-dvh"
           messages={messages}
-          renderPart={(part) => (part.type === "custom" && part.kind === AUTHOR ? <p className="text-sm font-medium text-chat-fg">{String(part.data)}</p> : undefined)}
+          renderPart={(part) => {
+            if (part.type === "custom" && part.kind === AUTHOR) return <p className="text-sm font-medium text-chat-fg">{String(part.data)}</p>;
+            // The kit draws only the viewer's own attachments; the shared bot messages need their cards drawn here.
+            return part.type === "attachment" ? <AttachmentCard attachment={part} size="sm" /> : undefined;
+          }}
           header={
             <ChatHeader
               leading={<a href="/" aria-label="Slopbot" className="inline-flex"><Logo size={22} /></a>}
