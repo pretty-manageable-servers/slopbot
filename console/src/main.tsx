@@ -13,6 +13,12 @@ import { stashAsk } from "./chat-page";
 
 stashAsk();
 
+// `pnpm dev:mock`: answer /api from the fake bot in src/mocks before the first call.
+if (import.meta.env.VITE_MOCK_API) {
+  const { worker } = await import("./mocks/browser");
+  await worker.start({ serviceWorker: { url: `${import.meta.env.BASE_URL}mockServiceWorker.js` } });
+}
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>

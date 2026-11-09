@@ -88,7 +88,8 @@ export function TextArea({ label, showLabel, value, onChange, placeholder, maxLe
   );
 }
 
-export interface Column<Row> { id: string; label: string; cell: (row: Row) => ReactNode; align?: "left" | "right"; className?: string }
+/** `hideLabel` keeps the header for screen readers only, e.g. "Actions" over a column of buttons. */
+export interface Column<Row> { id: string; label: string; hideLabel?: boolean; cell: (row: Row) => ReactNode; align?: "left" | "right"; className?: string }
 
 /** A plain table as in claude.ai's connector list: muted headers, a divider under each row. */
 export function Table<Row>({ label, columns, rows, rowKey, onRowPress, empty = "Nothing here yet." }: {
@@ -100,7 +101,7 @@ export function Table<Row>({ label, columns, rows, rowKey, onRowPress, empty = "
       <table aria-label={label} className="w-full border-collapse text-sm">
         <thead>
           <tr className="border-b border-chat-divider text-left text-chat-muted">
-            {columns.map((c) => <th key={c.id} scope="col" className={`px-3 py-2 font-normal ${c.align === "right" ? "text-right" : ""}`}>{c.label}</th>)}
+            {columns.map((c) => <th key={c.id} scope="col" className={`px-3 py-2 font-normal ${c.align === "right" ? "text-right" : ""}`}>{c.hideLabel ? <span className="sr-only">{c.label}</span> : c.label}</th>)}
           </tr>
         </thead>
         <tbody>

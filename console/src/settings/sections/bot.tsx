@@ -149,7 +149,7 @@ function WebKeysGroup({ edit }: { edit: boolean }) {
       ),
     },
     {
-      id: "actions", label: "", align: "right", cell: (key) => (
+      id: "actions", label: "Actions", hideLabel: true, align: "right", cell: (key) => (
         <div className="flex justify-end gap-1">
           {edit && (key.exhausted || key.lastError) && <Button variant="ghost" size="sm" isDisabled={reset.isPending} onPress={() => reset.mutate(key.id)}>Reset</Button>}
           {(key.mine || edit) && <Button variant="ghost" size="sm" isDisabled={remove.isPending} onPress={() => askRemove(key)}>Delete</Button>}

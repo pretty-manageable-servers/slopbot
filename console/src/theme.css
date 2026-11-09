@@ -34,6 +34,7 @@
   --chat-border: #33322f;
   --chat-fg: #e2e0d9;
   --chat-muted: #9a978f;
+  --chat-subtle: #94918a;
   --chat-accent: #7ea6ff;
   --chat-accent-fg: #161615;
   --chat-focus: #7ea6ff;
@@ -59,8 +60,8 @@
   --chat-code-border: #e2dfd5;
   --chat-inline-code: #e9e6dc;
   --chat-fg: #2d2c28;
-  --chat-muted: #737069;
-  --chat-subtle: #8a8475;
+  --chat-muted: #68655e;
+  --chat-subtle: #6c675b;
   --chat-accent: #2f5fd0;
   --chat-accent-fg: #ffffff;
   --chat-check: #2f5fd0;

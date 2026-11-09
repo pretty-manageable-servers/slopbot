@@ -136,7 +136,7 @@ function ModelPrices({ canEdit }: { canEdit: boolean }) {
   const fallback = data.fallback;
   const actions: Column<PriceRow> = {
     id: "actions",
-    label: "",
+    label: "Actions", hideLabel: true,
     align: "right",
     cell: (row) => edit?.model === row.model ? (
       <span className="flex justify-end gap-1">

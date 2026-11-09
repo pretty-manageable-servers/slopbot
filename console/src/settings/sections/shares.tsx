@@ -59,7 +59,7 @@ export default function Section() {
     { id: "link", label: "Link", cell: (share) => share.revoked
       ? <span className="text-chat-muted">Link removed</span>
       : <Button size="sm" variant="ghost" onPress={() => copy(share.id)}>Copy link</Button> },
-    { id: "revoke", label: "", align: "right", cell: (share) => share.revoked ? null
+    { id: "revoke", label: "Actions", hideLabel: true, align: "right", cell: (share) => share.revoked ? null
       : <Button size="sm" variant="ghost" isDisabled={revoke.isPending} onPress={() => askRevoke(share)}>Revoke</Button> },
   ];
 
