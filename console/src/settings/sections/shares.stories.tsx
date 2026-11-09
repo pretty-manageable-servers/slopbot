@@ -1,4 +1,4 @@
-// Pages/Settings/Shared links: the Settings dialog open on the picked server's share links.
+// Components/Settings dialog/Shared links: the Settings dialog open on the picked server's share links.
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { HttpResponse, http } from "msw";
 import { expect, userEvent, waitFor, within } from "storybook/test";
@@ -7,7 +7,7 @@ import { failure, forever } from "../../mocks/handlers";
 import { SettingsDialog } from "../dialog";
 
 const meta: Meta = {
-  title: "Pages/Settings/Shared links",
+  title: "Components/Settings dialog/Shared links",
   render: () => <SettingsDialog />,
   parameters: { route: "/?settings=shares" },
 };
