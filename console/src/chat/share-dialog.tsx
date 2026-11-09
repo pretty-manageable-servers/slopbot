@@ -2,7 +2,8 @@
 // to when it was made, at /s/<id> on this site. Access is "Only you" (no active link) or "Anyone with the link".
 // The settings view changes it: Save makes a link and copies it, or removes every active link.
 import { queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button, IconButton, Menu, MenuItem, MenuTrigger, Modal, Popover, useIcons } from "agentic-ui-kit";
+import { Button, IconButton, Modal, Popover, useIcons } from "agentic-ui-kit";
+import { DropdownMenu } from "../ui/menu";
 import { useState, type ReactNode, type RefObject } from "react";
 import { Dialog, Heading } from "react-aria-components";
 import { api } from "../api";
@@ -140,26 +141,15 @@ function AccessPicker({ value, onChange }: { value: Access; onChange: (access: A
   return (
     <div className="flex flex-col gap-1.5">
       <p className="text-xs text-chat-muted">Who has access</p>
-      <MenuTrigger>
-        <Button variant="subtle" className="w-full justify-start gap-2">
-          {ACCESS[value].icon}
-          <span className="flex-1 text-left">{ACCESS[value].label}</span>
-          {kit.dropdown}
-        </Button>
-        <Popover placement="bottom start" width="trigger" sheet={false}>
-          <Menu
-            aria-label="Who has access"
-            selectionMode="single"
-            selectedKeys={[value]}
-            disallowEmptySelection
-            onSelectionChange={(keys) => { const key = [...(keys as Set<string>)][0]; if (key) onChange(key as Access); }}
-          >
-            {(Object.keys(ACCESS) as Access[]).map((key) => (
-              <MenuItem key={key} id={key} icon={ACCESS[key].icon}>{ACCESS[key].label}</MenuItem>
-            ))}
-          </Menu>
-        </Popover>
-      </MenuTrigger>
+      <DropdownMenu label="Who has access" width="trigger" sheet={false} selected={value} onSelect={(key) => onChange(key as Access)}
+        items={(Object.keys(ACCESS) as Access[]).map((key) => ({ id: key, label: ACCESS[key].label, icon: ACCESS[key].icon }))}
+        trigger={
+          <Button variant="subtle" className="w-full justify-start gap-2">
+            {ACCESS[value].icon}
+            <span className="flex-1 text-left">{ACCESS[value].label}</span>
+            {kit.dropdown}
+          </Button>
+        } />
     </div>
   );
 }

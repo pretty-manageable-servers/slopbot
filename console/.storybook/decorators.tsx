@@ -10,6 +10,7 @@ import { RouterProvider as LinkRouter } from "react-aria-components";
 import { useState, type ReactNode } from "react";
 import { Loader, Logo } from "../src/logo";
 import { routeTree } from "../src/router";
+import { themeIcons } from "../src/ui/sidebar";
 
 export type Theme = "dark" | "light";
 export interface ConsoleParameters { route?: string; app?: boolean }
@@ -36,7 +37,7 @@ export const withConsole: Decorator = (Story, { parameters }) => {
   const [router] = useState(() => storyRouter(route, app, () => <Story />));
   return (
     <QueryClientProvider client={client}>
-      <ChatTheme className="contents" icons={{ activity: <Loader size={18} />, activityDone: <Logo size={18} /> }}>
+      <ChatTheme className="contents" icons={{ ...themeIcons, activity: <Loader size={18} />, activityDone: <Logo size={18} /> }}>
         <LinkRouter navigate={(href) => void router.history.push(href)}>
           {/* The memory router's types are not the app's registered router. */}
           <RouterProvider router={router as never} />

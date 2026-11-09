@@ -1,11 +1,12 @@
 // Form controls the kit does not have (it is for chat parts): a switch, a select, text fields and a table. Built
 // on react-aria-components, as the kit is, and styled only with the kit's tokens, so they follow its themes.
-import { Popover, defaultIcons } from "agentic-ui-kit";
+import { defaultIcons } from "agentic-ui-kit";
 import type { ReactNode } from "react";
 import {
-  Button as AriaButton, Input, Label, ListBox, ListBoxItem, Select as AriaSelect, SelectValue,
+  Button as AriaButton, Input, Label,
   Switch as AriaSwitch, TextArea as AriaTextArea, TextField as AriaTextField,
 } from "react-aria-components";
+import { DropdownMenu } from "./menu";
 
 const field = "w-full rounded-chat-sm border border-chat-border bg-chat-surface px-2.5 py-1.5 text-sm text-chat-fg outline-none placeholder:text-chat-muted data-focused:border-chat-focus data-disabled:opacity-50";
 
@@ -26,26 +27,18 @@ export interface Option<T extends string> { id: T; label: string; description?: 
 export function Select<T extends string>({ label, options, value, onChange, disabled, className }: {
   label: string; options: readonly Option<T>[]; value: T; onChange: (value: T) => void; disabled?: boolean; className?: string;
 }) {
+  const current = options.find((option) => option.id === value);
   return (
-    <AriaSelect aria-label={label} selectedKey={value} onSelectionChange={(key) => key !== null && onChange(key as T)} isDisabled={disabled ?? false} className={className ?? ""}>
-      <AriaButton className="flex min-h-8 items-center gap-1.5 rounded-chat-sm px-2 text-sm text-chat-fg outline-none data-hovered:bg-chat-hover data-focus-visible:outline-2 data-focus-visible:outline-chat-focus data-disabled:opacity-50">
-        <SelectValue className="truncate" />
-        <span className="text-chat-muted [&_svg]:size-4">{defaultIcons.dropdown}</span>
-      </AriaButton>
-      <Popover placement="bottom end">
-        <ListBox className="max-h-80 min-w-44 overflow-auto p-1.5 outline-none">
-          {options.map((option) => (
-            <ListBoxItem key={option.id} id={option.id} textValue={option.label} className="group flex cursor-pointer items-center gap-2.5 rounded-chat-sm px-2 py-1 text-sm outline-none data-focused:bg-chat-popover-hover">
-              <span className="flex min-w-0 flex-1 flex-col">
-                <span>{option.label}</span>
-                {option.description && <span className="text-xs text-chat-muted">{option.description}</span>}
-              </span>
-              <span className="invisible text-chat-check group-data-selected:visible [&_svg]:size-4">{defaultIcons.check}</span>
-            </ListBoxItem>
-          ))}
-        </ListBox>
-      </Popover>
-    </AriaSelect>
+    <div className={className ?? ""}>
+      <DropdownMenu label={label} placement="bottom end" sheet={false} selected={value} onSelect={(id) => onChange(id as T)}
+        items={options.map((option) => ({ id: option.id, label: option.label, ...(option.description && { description: option.description }) }))}
+        trigger={
+          <AriaButton aria-label={label} isDisabled={disabled ?? false} className="flex min-h-8 items-center gap-1.5 rounded-chat-sm px-2 text-sm text-chat-fg outline-none data-hovered:bg-chat-hover data-focus-visible:outline-2 data-focus-visible:outline-chat-focus data-disabled:opacity-50">
+            <span className="truncate">{current ? current.label : value}</span>
+            <span className="text-chat-muted [&_svg]:size-4">{defaultIcons.dropdown}</span>
+          </AriaButton>
+        } />
+    </div>
   );
 }
 

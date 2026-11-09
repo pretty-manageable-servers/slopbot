@@ -1,12 +1,14 @@
 // One private chat on screen: the saved messages, then the bot's live stream folded into kit messages.
-import { AttachButton, AttachmentRow, Button, ChatHeader, ChatTitleMenu, ChatView, DictationButton, EmptyState, Menu, MenuItem, ModelPicker, SidebarToggle, ToolViewsProvider, defaultToolViews, useAttachments } from "agentic-ui-kit";
+import { AttachButton, AttachmentRow, Button, ChatHeader, ChatView, DictationButton, EmptyState, ModelPicker, SidebarToggle, ToolViewsProvider, defaultToolViews, useAttachments } from "agentic-ui-kit";
 import { VisualsProvider, uiMarkupToolView, widgetToolView } from "agentic-ui-kit/visuals";
+import { Paperclip, Share } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { useServer } from "./data";
 import { attachmentIds, attachmentKind, attachmentProblem } from "./chat/attachments";
 import { ImageViewer, imageClicked, type ViewedImage } from "./chat/image-viewer";
 import { ShareDialog } from "./chat/share-dialog";
+import { MenuList } from "./ui/menu";
 import { UsageMeter } from "./chat/usage-meter";
 import type { EngineEnvelope } from "@slopbot/contracts";
 import { applyEngineEvent, chatMessages, emptyChat, pendingSend, repliesOf, runTurnsOf, timedEvents, toKitMessage, withPending, type PendingSend, type BotMessage, type ChatState, type TurnSource } from "./events";
@@ -194,7 +196,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
         <ChatHeader
           leading={<SidebarToggle drawerOnly />}
           title={messages.length ? title || "New chat" : ""}
-          menu={id && messages.length ? <ChatTitleMenu onShare={() => setSharing(id)} /> : undefined}
+          menu={id && messages.length ? <MenuList label="Chat actions" items={[{ id: "share", label: "Share", icon: <Share />, onAction: () => setSharing(id) }]} /> : undefined}
           actions={(status || (id && messages.length)) ? (
             <>
               {status && <span role="status">{status}</span>}
@@ -217,9 +219,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
         leading: (
           <>
             <AttachButton label="Attach">
-              <Menu aria-label="Add to this message">
-                <MenuItem id="files" onAction={() => fileInput.current?.click()}>Add images or files</MenuItem>
-              </Menu>
+              <MenuList label="Add to this message" items={[{ id: "files", label: "Add images or files", icon: <Paperclip />, onAction: () => fileInput.current?.click() }]} />
             </AttachButton>
             <UsageMeter server={server.id} busy={busy} />
           </>

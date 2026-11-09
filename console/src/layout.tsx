@@ -3,7 +3,8 @@
 // switches between Chat and Code. The mode follows the page: chat pages are Chats, server pages are Servers.
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { Outlet, useMatchRoute, useNavigate } from "@tanstack/react-router";
-import { AppShell, ChatList, ChatTitleMenu, Menu, MenuItem, MenuSeparator, SegmentedControl, Sidebar, SidebarItem, SidebarUser, defaultIcons } from "agentic-ui-kit";
+import { AppShell, ChatList, SegmentedControl, SidebarItem, defaultIcons } from "agentic-ui-kit";
+import { LogOut, Pencil, Settings, Share, Trash2 } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
 import { ApiError, api } from "./api";
 import { ShareDialog } from "./chat/share-dialog";
@@ -15,7 +16,10 @@ import { BASE } from "./router";
 import { ServersPane } from "./servers/pane";
 import { SettingsDialog, useOpenSettings } from "./settings/dialog";
 import { FeedbackHost, confirmAction, notifyError } from "./ui/feedback";
+import { AccountMenu } from "./ui/account-menu";
 import { icons } from "./ui/icons";
+import { MenuList } from "./ui/menu";
+import { Drawer } from "./ui/sidebar";
 
 const busy = <div className="page-note" aria-busy="true"><Loader size={56} /></div>;
 
@@ -54,32 +58,29 @@ function Shell() {
   }, [serverPage && serverPage.serverId]);
 
   const sidebar = (
-    <Sidebar
+    <Drawer
       brand="Slopbot"
-      brandIcon={<Logo size={22} />}
-      headerActions={
+      logo={<Logo size={28} />}
+      switcher={
         <SegmentedControl label="View" value={mode}
           options={[{ id: "chats", label: "Chats", icon: icons.chats, iconOnly: true }, { id: "servers", label: "Servers", icon: icons.server, iconOnly: true }]}
           onChange={(next: string) => void (next === "servers" ? navigate({ to: "/server/$serverId", params: { serverId: server.id } }) : navigate({ to: "/" }))} />
       }
       nav={mode === "chats" ? <NewChat /> : undefined}
       footer={
-        <SidebarUser
+        <AccountMenu
           name={session.me?.displayName ?? session.user}
           {...(session.me?.avatarUrl && { avatarUrl: session.me.avatarUrl })}
-          detail={server.name}
-          menu={
-            <Menu aria-label="Account">
-              <MenuItem id="settings" onAction={() => openSettings()}>Settings</MenuItem>
-              <MenuSeparator />
-              <MenuItem id="logout" onAction={() => void api.logout().then(() => location.reload(), notifyError)}>Log out</MenuItem>
-            </Menu>
-          }
+          items={[
+            { id: "settings", label: "Settings", icon: <Settings />, onAction: () => openSettings() },
+            "separator",
+            { id: "logout", label: "Log out", icon: <LogOut />, onAction: () => void api.logout().then(() => location.reload(), notifyError) },
+          ]}
         />
       }
     >
       <Suspense fallback={null}>{mode === "chats" ? <Chats /> : <ServersPane />}</Suspense>
-    </Sidebar>
+    </Drawer>
   );
   return (
     <>
@@ -128,7 +129,14 @@ function Chats() {
         aria-label="Chats"
         sections={[{ id: "chats", title: "Chats", items: chats.map((c) => ({ id: c.id, title: c.title || "New chat", href: `${BASE}/chat/${c.id}` })) }]}
         {...(activeId && { activeId })}
-        rowMenu={(chat) => <ChatTitleMenu onRename={() => void rename(chat)} onShare={() => setSharing(chat.id)} onDelete={() => void remove(chat.id)} />}
+        rowMenu={(chat) => (
+          <MenuList label="Chat actions" items={[
+            { id: "rename", label: "Rename", icon: <Pencil />, onAction: () => void rename(chat) },
+            { id: "share", label: "Share", icon: <Share />, onAction: () => setSharing(chat.id) },
+            "separator",
+            { id: "delete", label: "Delete", icon: <Trash2 />, danger: true, onAction: () => void remove(chat.id) },
+          ]} />
+        )}
       />
       <ShareDialog chatId={sharing} onClose={() => setSharing(null)} />
     </>
