@@ -8,7 +8,10 @@ import { get, post } from "../../api";
 import type { Breaker, KeyedProvider, Llm, LlmOverride, SystemPrompt, WebKey, WebKeys } from "../../api-types";
 import { adminMeQuery } from "../../data";
 import { notify, notifyError, confirmAction } from "../../ui/feedback";
-import { NumberField, Select, Switch, Table, TextArea, TextField, type Column, type Option } from "../../ui/controls";
+import { NumberField, TextArea, TextField } from "../../ui/text-field";
+import { Select, type Option } from "../../ui/select";
+import { Switch } from "../../ui/switch";
+import { Table, type Column } from "../../ui/table";
 import { SettingsGroup, SettingsRow } from "../../ui/layout";
 import {
   PROVIDER_NAMES, addKeyBody, backupKeyText, capsProblem, keyErrorText, llmBody, llmFormFrom, llmProblem, llmStateText, secretProblem,

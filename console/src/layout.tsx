@@ -10,7 +10,7 @@ import { ApiError, api } from "./api";
 import { ShareDialog } from "./chat/share-dialog";
 import { chatsQuery, pickServer, sessionQuery, useServer } from "./data";
 import { LlmBanner } from "./llm-status";
-import { Loader, Logo } from "./logo";
+import { Logo } from "./logo";
 import { CommandPalette } from "./palette";
 import { BASE } from "./router";
 import { ServersPane } from "./servers/pane";
@@ -18,26 +18,22 @@ import { SettingsDialog, useOpenSettings } from "./settings/dialog";
 import { FeedbackHost, confirmAction, notifyError } from "./ui/feedback";
 import { AccountMenu } from "./ui/account-menu";
 import { icons } from "./ui/icons";
+import { PageLoading, PageNote } from "./ui/page-state";
 import { MenuList } from "./ui/menu";
 import { Drawer } from "./ui/sidebar";
-
-const busy = <div className="page-note" aria-busy="true"><Loader size={56} /></div>;
 
 export function Layout() {
   const session = useQuery(sessionQuery);
   if (session.error) {
     const signIn = session.error instanceof ApiError && session.error.status === 401;
     return (
-      <div className="page-note">
-        <p>{session.error.message}</p>
-        {signIn && <a href="/auth/login">Sign in with Discord</a>}
-      </div>
+      <PageNote action={signIn && <a href="/auth/login">Sign in with Discord</a>}>{session.error.message}</PageNote>
     );
   }
-  if (!session.data) return busy;
-  if (!session.data.servers.length) return <div className="page-note"><p>You and Slopbot need to share a Discord server to chat.</p></div>;
+  if (!session.data) return <PageLoading />;
+  if (!session.data.servers.length) return <PageNote>You and Slopbot need to share a Discord server to chat.</PageNote>;
   return (
-    <Suspense fallback={busy}>
+    <Suspense fallback={<PageLoading />}>
       <Shell />
     </Suspense>
   );
@@ -86,7 +82,7 @@ function Shell() {
     <>
       <AppShell sidebar={sidebar}>
         <LlmBanner />
-        <Suspense fallback={busy}><Outlet /></Suspense>
+        <Suspense fallback={<PageLoading />}><Outlet /></Suspense>
       </AppShell>
       <SettingsDialog />
       <CommandPalette />

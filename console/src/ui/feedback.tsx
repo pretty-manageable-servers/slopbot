@@ -3,6 +3,7 @@
 import { Button, Modal } from "agentic-ui-kit";
 import { useEffect, useState } from "react";
 
+/** A message at the bottom of the screen. */
 interface Toast { id: number; text: string; tone: "info" | "error" }
 interface Ask { title: string; body?: string; confirmLabel?: string; danger?: boolean; resolve: (ok: boolean) => void }
 
@@ -20,6 +21,7 @@ export function confirmAction(request: Omit<Ask, "resolve">): Promise<boolean> {
   return new Promise((resolve) => ask({ ...request, resolve }));
 }
 
+/** Draws the toasts and the confirm dialog. Mount it once, inside the theme and router (the app shell and every story do). */
 export function FeedbackHost() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [request, setRequest] = useState<Ask | null>(null);

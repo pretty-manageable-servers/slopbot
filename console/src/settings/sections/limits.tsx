@@ -7,7 +7,8 @@ import { useState } from "react";
 import { get, post } from "../../api";
 import type { BotReplies, LimitsView, ModelPrice, Prices, ScheduleLimits, UsageRow, UsageTotals } from "../../api-types";
 import { adminMeQuery } from "../../data";
-import { NumberField, Table, TextField, type Column } from "../../ui/controls";
+import { NumberField, TextField } from "../../ui/text-field";
+import { Table, type Column } from "../../ui/table";
 import { confirmAction, notify, notifyError } from "../../ui/feedback";
 import { ServerMark, SettingsGroup, SettingsRow } from "../../ui/layout";
 import {

@@ -6,7 +6,7 @@ import { ApiError, get, post, qs } from "../../api";
 import type { ServerShare } from "../../api-types";
 import { settingsQuery, useServer } from "../../data";
 import { confirmAction, notify, notifyError } from "../../ui/feedback";
-import { Table, type Column } from "../../ui/controls";
+import { Table, type Column } from "../../ui/table";
 import { SectionNote, SettingsGroup } from "../../ui/layout";
 import { activeShares, channelLabel, revokedNotice, shareStatus, shareUrl } from "./shares-format";
 

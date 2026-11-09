@@ -6,7 +6,8 @@ import { useState } from "react";
 import { ApiError, api, get, post } from "../../api";
 import type { NonZdr, ServerSnapshot, SettingArgs, UserProfile } from "../../api-types";
 import { settingsQuery, useSaveSetting, useServer } from "../../data";
-import { Switch, TextField } from "../../ui/controls";
+import { Switch } from "../../ui/switch";
+import { TextField } from "../../ui/text-field";
 import { confirmAction, notify, notifyError } from "../../ui/feedback";
 import { SectionNote, SettingsGroup, SettingsRow } from "../../ui/layout";
 

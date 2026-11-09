@@ -6,7 +6,7 @@ import { Button, Markdown, SegmentedControl } from "agentic-ui-kit";
 import { useState } from "react";
 import { get, post } from "../../api";
 import type { UserInstructionsView } from "../../api-types";
-import { TextArea } from "../../ui/controls";
+import { TextArea } from "../../ui/text-field";
 import { notify, notifyError } from "../../ui/feedback";
 import { SettingsGroup, SettingsRow } from "../../ui/layout";
 import { canSave, instructionsLength, rejectMessage } from "./instructions-form";
