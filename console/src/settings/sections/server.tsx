@@ -7,7 +7,9 @@ import { useState } from "react";
 import { get, post, qs } from "../../api";
 import type { ServerSettings, ToolResult, TranscriptChannel } from "../../api-types";
 import { settingsQuery, useSaveSetting, useServer } from "../../data";
-import { NumberField, Select, Switch, TextArea, type Option } from "../../ui/controls";
+import { NumberField, TextArea } from "../../ui/text-field";
+import { Select, type Option } from "../../ui/select";
+import { Switch } from "../../ui/switch";
 import { notify, notifyError } from "../../ui/feedback";
 import { SectionNote, SettingsGroup, SettingsRow } from "../../ui/layout";
 import {

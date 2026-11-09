@@ -8,6 +8,11 @@ export function PageLoading() {
 }
 
 /** A page that cannot show its content: the reason, in place of it. */
-export function PageNote({ children }: { children: ReactNode }) {
-  return <div className="page-note"><p>{children}</p></div>;
+export function PageNote({ children, action }: {
+  /** The reason. */
+  children: ReactNode;
+  /** A link under it, e.g. to sign in. */
+  action?: ReactNode;
+}) {
+  return <div className="page-note"><p>{children}</p>{action}</div>;
 }

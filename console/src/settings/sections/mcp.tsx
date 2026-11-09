@@ -7,7 +7,10 @@ import { useState, type ReactNode } from "react";
 import { post } from "../../api";
 import type { McpBody, McpConnection, McpSnapshot, McpTool, ServerSnapshot } from "../../api-types";
 import { settingsQuery, useServer } from "../../data";
-import { NumberField, Select, Switch, Table, TextField, type Column, type Option } from "../../ui/controls";
+import { NumberField, TextField } from "../../ui/text-field";
+import { Select, type Option } from "../../ui/select";
+import { Switch } from "../../ui/switch";
+import { Table, type Column } from "../../ui/table";
 import { confirmAction, notify, notifyError } from "../../ui/feedback";
 import { SectionNote, SettingsGroup, SettingsRow } from "../../ui/layout";
 import {

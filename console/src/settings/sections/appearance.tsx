@@ -2,7 +2,7 @@
 import { SegmentedControl } from "agentic-ui-kit";
 import { useState } from "react";
 import { THEMES, TEXT_SIZES, readPrefs, savePrefs, type Prefs, type TextSize, type Theme, type Width } from "../../prefs";
-import { Select } from "../../ui/controls";
+import { Select } from "../../ui/select";
 import { SettingsGroup, SettingsRow } from "../../ui/layout";
 
 const THEME_ICONS: Record<Theme, React.ReactNode> = {

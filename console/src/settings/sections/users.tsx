@@ -7,7 +7,9 @@ import { useEffect, useState, type ReactNode } from "react";
 import { get, post, qs } from "../../api";
 import type { MemberProfile, UserDetail, UserLimitOverride, UserRow, UserUsageWindow, UsersPage } from "../../api-types";
 import { adminMeQuery } from "../../data";
-import { NumberField, Select, Table, TextField, type Column, type Option } from "../../ui/controls";
+import { NumberField, TextField } from "../../ui/text-field";
+import { Select, type Option } from "../../ui/select";
+import { Table, type Column } from "../../ui/table";
 import { confirmAction, notify, notifyError } from "../../ui/feedback";
 import { SectionNote, SettingsGroup, SettingsRow } from "../../ui/layout";
 import {

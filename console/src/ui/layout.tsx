@@ -1,9 +1,20 @@
 // Settings page parts, in claude.ai's style: a group heading with an optional note, then rows with the label and
 // help on the left and the control on the right, a divider between rows.
-import { defaultIcons } from "agentic-ui-kit";
 import type { ReactNode } from "react";
 
-export function SettingsGroup({ title, description, actions, children }: { title?: string; description?: ReactNode; actions?: ReactNode; children: ReactNode }) {
+interface SettingsGroupProps {
+  /** The group heading. */
+  title?: string;
+  /** A muted note under the heading. */
+  description?: ReactNode;
+  /** Controls on the heading's right, e.g. an "Add" button. */
+  actions?: ReactNode;
+  /** The rows (SettingsRow or a Table). */
+  children: ReactNode;
+}
+
+/** A titled group of settings rows with dividers between them. */
+export function SettingsGroup({ title, description, actions, children }: SettingsGroupProps) {
   return (
     <section className="mb-8 last:mb-0">
       {(title || actions) && (
@@ -19,7 +30,16 @@ export function SettingsGroup({ title, description, actions, children }: { title
 }
 
 /** One setting. With `stack` the control goes under the text (long fields, text areas). */
-export function SettingsRow({ label, help, children, stack }: { label: ReactNode; help?: ReactNode; children?: ReactNode; stack?: boolean }) {
+export function SettingsRow({ label, help, children, stack }: {
+  /** What the setting is called. */
+  label: ReactNode;
+  /** A muted line under the label. */
+  help?: ReactNode;
+  /** The control, on the right (or below with `stack`). */
+  children?: ReactNode;
+  /** Put the control under the text instead of beside it. */
+  stack?: boolean;
+}) {
   return (
     <div className={`flex gap-3 py-3 ${stack ? "flex-col" : "flex-col sm:flex-row sm:items-center sm:justify-between sm:gap-6"}`}>
       <div className="min-w-0">
@@ -31,26 +51,21 @@ export function SettingsRow({ label, help, children, stack }: { label: ReactNode
   );
 }
 
-/** A row that opens something, with a chevron on the right ("How we use your data  >"). */
-export function LinkRow({ label, help, onPress, detail }: { label: ReactNode; help?: ReactNode; detail?: ReactNode; onPress: () => void }) {
-  return (
-    <button type="button" onClick={onPress} className="flex w-full items-center justify-between gap-4 py-3 text-left text-sm text-chat-fg outline-none hover:opacity-80 focus-visible:outline-2 focus-visible:outline-chat-focus">
-      <span className="min-w-0">
-        <span className="block">{label}</span>
-        {help && <span className="block text-chat-muted">{help}</span>}
-      </span>
-      <span className="flex items-center gap-2 text-chat-muted">{detail}<span className="-rotate-90 [&_svg]:size-4">{defaultIcons.dropdown}</span></span>
-    </button>
-  );
-}
-
 /** A note in place of a section's body: no access, nothing yet, an error. */
-export function SectionNote({ children }: { children: ReactNode }) {
+export function SectionNote({ children }: {
+  /** The words to show. */
+  children: ReactNode;
+}) {
   return <p className="m-0 py-6 text-sm text-chat-muted">{children}</p>;
 }
 
 /** A server's icon, or its first letter on a tile. */
-export function ServerMark({ server, size = 20 }: { server: { name: string; icon?: string | null }; size?: number }) {
+export function ServerMark({ server, size = 20 }: {
+  /** The server to draw. Without an `icon` the tile shows the first letter of the name. */
+  server: { name: string; icon?: string | null };
+  /** Side of the square in px. */
+  size?: number;
+}) {
   return server.icon
     ? <img src={server.icon} alt="" width={size} height={size} className="shrink-0 rounded-md" referrerPolicy="no-referrer" />
     : <span aria-hidden="true" className="grid shrink-0 place-items-center rounded-md bg-chat-raised text-xs font-semibold" style={{ width: size, height: size }}>{server.name.slice(0, 1).toUpperCase()}</span>;
