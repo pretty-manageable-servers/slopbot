@@ -8,13 +8,15 @@ import type { Part } from "agentic-ui-kit/core";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, get, post, qs } from "../api";
 import type { ChannelHeader, Conversation, ConversationSummary, TranscriptMessage, TranscriptPage } from "../api-types";
-import type { EngineEnvelope, EngineEvent } from "@slopbot/contracts";
+import type { EngineEvent } from "@slopbot/contracts";
 import { chatMessages, emptyChat, repliesOf, runTurnsOf, timedEvents, type ChatState, type TurnSource } from "../events";
 import { useTurns } from "../use-turns";
 import { sessionQuery } from "../data";
-import { Loader, Logo } from "../logo";
+import { Logo } from "../logo";
 import { channelRoute } from "../router";
 import { notify, notifyError } from "../ui/feedback";
+import { openEngineStream } from "../ui/live";
+import { PageLoading, PageNote } from "../ui/page-state";
 import { ReplyBox } from "./reply-box";
 import { conversationsQuery } from "./queries";
 import { RunsPanel } from "./runs";
@@ -38,7 +40,7 @@ export function ChannelPage() {
   const { data: session } = useSuspenseQuery(sessionQuery);
   // The conversation list says whether web transcripts are on for the channel. The messages route only refuses.
   const list = useQuery(conversationsQuery(serverId));
-  if (list.isPending) return <div className="page-note" aria-busy="true"><Loader size={56} /></div>;
+  if (list.isPending) return <PageLoading />;
   const listed = list.data?.find((item) => item.id === channelId);
   if (listed?.enabled === false) {
     const admin = session.servers.find((server) => server.id === serverId)?.admin === true;
@@ -121,28 +123,20 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
   stateRef.current = state;
   useEffect(() => {
     if (!ready) return;
-    const source = new EventSource(`${base}/events${qs({ server: serverId })}`);
-    source.addEventListener("engine", (event) => {
-      let envelope: EngineEnvelope;
-      try { envelope = JSON.parse((event as MessageEvent<string>).data) as EngineEnvelope; } catch { return; }
-      setState((s) => (s ? applyTranscriptEvent(s, envelope, channelId, user) : s));
-      // A new message or a finished turn can change the conversations and the open conversation.
-      const type = envelope.event.type;
-      if (type === "message.upsert" || type === "turn.end") {
-        if (type === "turn.end" || envelope.event.message.slopbot) refreshUsed();
-        void client.invalidateQueries({ queryKey: [...scope, "runs"] });
-        void client.invalidateQueries({ queryKey: [...scope, "run"] });
-      }
+    return openEngineStream(`${base}/events${qs({ server: serverId })}`, {
+      onEvent: (envelope) => {
+        setState((s) => (s ? applyTranscriptEvent(s, envelope, channelId, user) : s));
+        // A new message or a finished turn can change the conversations and the open conversation.
+        const type = envelope.event.type;
+        if (type === "message.upsert" || type === "turn.end") {
+          if (type === "turn.end" || envelope.event.message.slopbot) refreshUsed();
+          void client.invalidateQueries({ queryKey: [...scope, "runs"] });
+          void client.invalidateQueries({ queryKey: [...scope, "run"] });
+        }
+      },
+      onClosed: (reason = "access") => setStatus(reason === "access" ? "Access ended. Reload to check again." : "Live updates stopped."),
+      onStatus: setStatus,
     });
-    source.addEventListener("closed", (event) => {
-      source.close();
-      let reason = "access";
-      try { reason = JSON.parse((event as MessageEvent<string>).data).reason; } catch { /* keep the default */ }
-      setStatus(reason === "access" ? "Access ended. Reload to check again." : "Live updates stopped.");
-    });
-    source.onopen = () => setStatus("");
-    source.onerror = () => setStatus(source.readyState === EventSource.CLOSED ? "Disconnected." : "Reconnecting…");
-    return () => source.close();
   }, [serverId, channelId, ready, loaded, user]);
 
   const channel = newest.data?.channel;
@@ -188,8 +182,8 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
   };
 
   const error = newest.error ?? (run !== undefined ? conversation.error : null);
-  if (error) return <div className="page-note"><p>{error.message}</p></div>;
-  if (!state || !channel) return <div className="page-note" aria-busy="true"><Loader size={56} /></div>;
+  if (error) return <PageNote>{error.message}</PageNote>;
+  if (!state || !channel) return <PageLoading />;
 
   const name = `${channel.parent ? "" : "#"}${channel.name}`;
   const runTitle = run !== undefined ? conversation.data?.conversation.title : undefined;

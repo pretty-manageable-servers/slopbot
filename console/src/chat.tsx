@@ -10,13 +10,14 @@ import { ImageViewer, imageClicked, type ViewedImage } from "./chat/image-viewer
 import { ShareDialog } from "./chat/share-dialog";
 import { MenuList } from "./ui/menu";
 import { UsageMeter } from "./chat/usage-meter";
-import type { EngineEnvelope } from "@slopbot/contracts";
 import { applyEngineEvent, chatMessages, emptyChat, pendingSend, repliesOf, runTurnsOf, timedEvents, toKitMessage, withPending, type PendingSend, type BotMessage, type ChatState, type TurnSource } from "./events";
 import { useTurns } from "./use-turns";
-import { Loader, Logo } from "./logo";
+import { Logo } from "./logo";
 import { useConsoleDictation } from "./ui/dictation";
 import { usePausedComposer } from "./llm-status";
 import { notify, notifyError } from "./ui/feedback";
+import { openEngineStream } from "./ui/live";
+import { PageLoading, PageNote } from "./ui/page-state";
 import { uiComponents } from "./ui-components";
 
 /** show_widget frames load the bot's frame page (WIDGET_FRAME_PATH in src/web-console.ts), outside the page CSP. */
@@ -82,25 +83,21 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
 
   useEffect(() => {
     if (!id) return;
-    let source: EventSource | undefined, closed = false;
+    let close: (() => void) | undefined, closed = false;
     const open = async () => {
       const page = await api.messages(id);
       if (closed) return;
       const messages = page.messages as BotMessage[];
       setState(emptyChat(messages.map((m) => toKitMessage(m, id)), repliesOf(messages), runTurnsOf(messages)));
       // Live engine events from the newest on. The steps of earlier replies are loaded by useTurns.
-      source = new EventSource(api.eventsUrl(id));
-      source.addEventListener("engine", (event) => {
-        let envelope: EngineEnvelope;
-        try { envelope = JSON.parse((event as MessageEvent<string>).data) as EngineEnvelope; } catch { return; }
-        setState((s) => (s ? applyEngineEvent(s, envelope, id) : s));
+      close = openEngineStream(api.eventsUrl(id), {
+        onEvent: (envelope) => setState((s) => (s ? applyEngineEvent(s, envelope, id) : s)),
+        onClosed: () => setStatus("Live updates stopped. Reload to check again."),
+        onStatus: setStatus,
       });
-      source.addEventListener("closed", () => { source?.close(); setStatus("Live updates stopped. Reload to check again."); });
-      source.onopen = () => setStatus("");
-      source.onerror = () => setStatus(source?.readyState === EventSource.CLOSED ? "Disconnected." : "Reconnecting…");
     };
     open().catch((e: Error) => setError(e.message));
-    return () => { closed = true; source?.close(); };
+    return () => { closed = true; close?.(); };
   }, [id]);
 
   const turnSource = useMemo<TurnSource | undefined>(() => (id ? {
@@ -178,8 +175,8 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
     }).finally(() => setSending(false));
   };
 
-  if (error) return <div className="page-note"><p>{error}</p></div>;
-  if (!state) return <div className="page-note" aria-busy="true"><Loader size={56} /></div>;
+  if (error) return <PageNote>{error}</PageNote>;
+  if (!state) return <PageLoading />;
   return (
     <VisualsProvider components={uiComponents} host={WIDGET_HOST}>
     <ToolViewsProvider tools={toolViews}>
