@@ -126,6 +126,9 @@ importers:
 
   console:
     dependencies:
+      '@phosphor-icons/react':
+        specifier: ^2.1.10
+        version: 2.1.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@slopbot/contracts':
         specifier: workspace:*
         version: link:../packages/contracts
@@ -1316,6 +1319,13 @@ packages:
     resolution: {integrity: sha512-VPoCAhKvCQTlG7vxqaBXcmuvbh77BfnGXj8g0pbvVXpm1F/R8rDVwqIWcEbMzrI1JvJlm8v7T9uMVQb6UctMRg==}
     cpu: [x64]
     os: [win32]
+
+  '@phosphor-icons/react@2.1.10':
+    resolution: {integrity: sha512-vt8Tvq8GLjheAZZYa+YG/pW7HDbov8El/MANW8pOAz4eGxrwhnbfrQZq0Cp4q8zBEu8NIhHdnr+r8thnfRSNYA==}
+    engines: {node: '>=10'}
+    peerDependencies:
+      react: '>= 16.8'
+      react-dom: '>= 16.8'
 
   '@polka/url@1.0.0-next.29':
     resolution: {integrity: sha512-wwQAWhWSuHaag8c4q/KN/vCoeOJYshAIvMQwD4GpSb3OiZklFfvAgmj0VCBBImRpuF/aFgIRzllXlVX93Jevww==}
@@ -5636,6 +5646,11 @@ snapshots:
 
   '@oxc-resolver/binding-win32-x64-msvc@11.21.2':
     optional: true
+
+  '@phosphor-icons/react@2.1.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+    dependencies:
+      react: 19.3.1
+      react-dom: 19.3.1(react@19.3.1)
 
   '@polka/url@1.0.0-next.29': {}
 

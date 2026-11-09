@@ -7,7 +7,7 @@ import { RouterProvider, createMemoryHistory, createRootRoute, createRoute, crea
 import type { Decorator } from "@storybook/react-vite";
 import { ChatTheme } from "agentic-ui-kit";
 import { RouterProvider as LinkRouter } from "react-aria-components";
-import { useState, type ReactNode } from "react";
+import { Suspense, useState, type ReactNode } from "react";
 import { Loader, Logo } from "../src/logo";
 import { FeedbackHost } from "../src/ui/feedback";
 import { routeTree } from "../src/router";
@@ -19,7 +19,9 @@ export interface ConsoleParameters { route?: string; app?: boolean }
 function storyRouter(route: string, app: boolean, render: () => ReactNode) {
   const history = createMemoryHistory({ initialEntries: [`/console${route}`] });
   if (app) return createRouter({ routeTree, history, basepath: "/console" });
-  const root = createRootRoute({ component: render });
+  // Pages read with useSuspenseQuery; the app shell has its own boundaries, a bare story gets this one.
+  // Like the app shell, a bare story gets a FeedbackHost inside the router for toasts and confirms.
+  const root = createRootRoute({ component: () => <><Suspense fallback={<Loader size={40} />}>{render()}</Suspense><FeedbackHost /></> });
   // Any path matches, so links and navigation inside the story stay on it.
   return createRouter({ routeTree: root.addChildren([createRoute({ getParentRoute: () => root, path: "$" })]), history, basepath: "/console" });
 }
@@ -42,8 +44,6 @@ export const withConsole: Decorator = (Story, { parameters }) => {
         <LinkRouter navigate={(href) => void router.history.push(href)}>
           {/* The memory router's types are not the app's registered router. */}
           <RouterProvider router={router as never} />
-          {/* The app shell mounts its own host; stories that draw a bare page need one for toasts and confirms. */}
-          {!app && <FeedbackHost />}
         </LinkRouter>
       </ChatTheme>
     </QueryClientProvider>

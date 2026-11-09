@@ -13,6 +13,7 @@
     "test:stories": "vitest run --project \"storybook-*\""
   },
   "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
     "@slopbot/contracts": "workspace:*",
     "@tanstack/react-query": "5.106.1",
     "@tanstack/react-router": "1.170.46",
