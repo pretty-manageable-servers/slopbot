@@ -23,6 +23,7 @@ function resetsLabel(resetAt: number, now = Date.now()): string {
   return `Resets in ${days ? `${days}d ${hours}h` : hours ? `${hours}h ${rest}m` : `${rest}m`}`;
 }
 
+/** The usage ring of the composer, with its popover of windows and banked resets. */
 export function UsageMeter({ server, busy }: { server: string; busy: boolean }) {
   const client = useQueryClient();
   const { data: usage, isError } = useQuery(usageQuery(server));

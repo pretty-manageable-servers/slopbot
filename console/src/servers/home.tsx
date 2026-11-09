@@ -7,6 +7,7 @@ import { SectionNote } from "../ui/layout";
 import { InboxList, useMarkInboxDone } from "./inbox";
 import { inboxQuery } from "./queries";
 
+/** The Inbox page of the picked server: its open items, Show done and Mark all done. */
 export function ServerHome() {
   const server = useServer();
   const [showDone, setShowDone] = useState(false);

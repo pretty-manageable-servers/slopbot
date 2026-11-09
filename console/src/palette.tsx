@@ -20,6 +20,7 @@ import { ServerMark } from "./ui/layout";
 /** A row as drawn: the item, its icon and detail, a snippet for a message hit, and what Enter does. */
 type Row = PaletteItem & { icon: ReactNode; detail?: string; snippet?: { text: string; meta: string }; run: () => void };
 
+/** The command palette: Ctrl+K or Cmd+K opens it. */
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
   useEffect(() => {

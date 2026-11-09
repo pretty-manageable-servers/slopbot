@@ -6,8 +6,8 @@ import { useNavigate } from "@tanstack/react-router";
 import { AttachmentCard, Button, ChatHeader, ChatTranscript, Drawer, DRAWER_QUERY, SidebarToggle, useMediaQuery } from "agentic-ui-kit";
 import type { Part } from "agentic-ui-kit/core";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { api, get, post, qs } from "../api";
-import type { ChannelHeader, Conversation, ConversationSummary, TranscriptMessage, TranscriptPage } from "../api-types";
+import { get, post, qs } from "../api";
+import type { ChannelHeader, ConversationSummary, TranscriptMessage, TranscriptPage } from "../api-types";
 import type { EngineEvent } from "@slopbot/contracts";
 import { chatMessages, emptyChat, repliesOf, runTurnsOf, timedEvents, type ChatState, type TurnSource } from "../events";
 import { useTurns } from "../use-turns";
@@ -34,6 +34,11 @@ interface RunPage extends ChannelHeader {
   messages: TranscriptMessage[];
 }
 
+/** The state of a chat for a page of the channel's messages: the messages, the replies and the turns their runs ran. */
+const chatOf = (messages: TranscriptMessage[], user: string, channel: string): ChatState =>
+  emptyChat(messages.map((message) => channelMessage(message, user, channel)), repliesOf(messages), runTurnsOf(messages));
+
+/** A channel or thread page: the transcript, or a note when web transcripts are off for it. */
 export function ChannelPage() {
   const { serverId, channelId } = channelRoute.useParams();
   const { run } = channelRoute.useSearch();
@@ -104,7 +109,7 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
   // The newest page starts the page. A reload of it starts over.
   useEffect(() => {
     if (!newest.data) return;
-    setState(emptyChat(newest.data.messages.map((message) => channelMessage(message, user, channelId)), repliesOf(newest.data.messages), runTurnsOf(newest.data.messages)));
+    setState(chatOf(newest.data.messages, user, channelId));
     setHasMore(newest.data.hasMore);
   }, [newest.data, user, channelId]);
 
@@ -144,7 +149,7 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
   const [convState, setConvState] = useState<ChatState | null>(null);
   useEffect(() => {
     const found = conversation.data?.messages;
-    setConvState(found ? emptyChat(found.map((message) => channelMessage(message, user, channelId)), repliesOf(found), runTurnsOf(found)) : null);
+    setConvState(found ? chatOf(found, user, channelId) : null);
   }, [conversation.data, user, channelId]);
   const source = useMemo<TurnSource>(() => ({
     turnEvents: (turn) => get<{ events: EngineEvent[]; at?: (number | null)[] }>(`${base}/turns/${encodeURIComponent(turn)}/events${qs({ server: serverId })}`).then(timedEvents),

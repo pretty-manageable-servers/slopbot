@@ -8,6 +8,7 @@ import { useConsoleDictation } from "../ui/dictation";
 import { usePausedComposer } from "../llm-status";
 import { notify, notifyError } from "../ui/feedback";
 
+/** The reply box under a channel: sends the text to the channel through the bot and says how it went. */
 export function ReplyBox({ server, channel }: { server: string; channel: string }) {
   const [text, setText] = useState("");
   const send = useMutation({

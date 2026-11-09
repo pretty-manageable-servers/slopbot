@@ -1,8 +1,8 @@
 // Renders for the show_ui components. The names, descriptions and props are the bot's (showUiSpecs in
 // @slopbot/contracts), so the tool, the markup check and the chat use one list. The renders follow the agentic-ui-kit
 // playground set (apps/playground/src/lib/ui-components.tsx).
-import { Button } from "agentic-ui-kit";
-import { uiComponentSet, useUiAction, useUiState, type UiComponent } from "agentic-ui-kit/visuals";
+import { Button, ToolViewsProvider, defaultToolViews } from "agentic-ui-kit";
+import { VisualsProvider, uiComponentSet, uiMarkupToolView, useUiAction, useUiState, widgetToolView, type UiComponent } from "agentic-ui-kit/visuals";
 import { showUiSpecs } from "@slopbot/contracts";
 import type { ReactNode } from "react";
 
@@ -117,3 +117,16 @@ for (const spec of showUiSpecs) {
   if (!renders[spec.name]) throw new Error(`No render for show_ui component ${spec.name}.`);
 }
 export const uiComponents = uiComponentSet({ renders });
+
+/** show_widget frames load the bot's frame page (WIDGET_FRAME_PATH in src/web-console.ts), outside the page CSP. */
+const WIDGET_HOST = { frameUrl: "/console/widget-frame.html" };
+const toolViews = { ...defaultToolViews, show_ui: uiMarkupToolView(), show_widget: widgetToolView() };
+
+/** What the chat and the share page need to draw the bot's show_ui and show_widget tool calls. */
+export function ChatVisuals({ children }: { children: ReactNode }) {
+  return (
+    <VisualsProvider components={uiComponents} host={WIDGET_HOST}>
+      <ToolViewsProvider tools={toolViews}>{children}</ToolViewsProvider>
+    </VisualsProvider>
+  );
+}

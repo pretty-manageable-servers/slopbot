@@ -10,6 +10,7 @@ import { ServerPicker } from "./picker";
 import { conversationsQuery, inboxQuery } from "./queries";
 import { serverSections } from "./tree";
 
+/** The drawer content of the Servers view: the picker, the Inbox row (with the open count), channels and threads. */
 export function ServersPane() {
   const server = useServer();
   const navigate = useNavigate();

@@ -19,6 +19,7 @@ export function useMarkInboxDone(server: string) {
   });
 }
 
+/** The rows of an Inbox, or a note when there are none. */
 export function InboxList({ server, items }: { server: string; items: InboxItem[] }) {
   if (!items.length) return <SectionNote>Your inbox is empty.</SectionNote>;
   return (

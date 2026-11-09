@@ -23,6 +23,7 @@ export function RunsPanel({ server, channel, active, onClose, className }: { ser
     getNextPageParam: (last, pages) => (last.hasMore ? pages.reduce((count, page) => count + page.conversations.length, 0) : undefined),
   });
   const items = runs.data?.pages.flatMap((page) => page.conversations) ?? [];
+  const note = runs.isPending ? "Loading…" : runs.isError ? "Conversations are not available right now." : items.length === 0 ? "No conversations yet." : null;
   return (
     <Panel
       title="Conversations"
@@ -31,9 +32,7 @@ export function RunsPanel({ server, channel, active, onClose, className }: { ser
       aria-label="Conversations"
       className={className}
     >
-      {runs.isPending && <p className="px-4 text-chat-muted">Loading…</p>}
-      {runs.isError && <p className="px-4 text-chat-muted">Conversations are not available right now.</p>}
-      {runs.isSuccess && items.length === 0 && <p className="px-4 text-chat-muted">No conversations yet.</p>}
+      {note && <p className="px-4 text-chat-muted">{note}</p>}
       <ul className="flex flex-col gap-1 p-2">
         {items.map((item) => (
           <li key={item.id}>
