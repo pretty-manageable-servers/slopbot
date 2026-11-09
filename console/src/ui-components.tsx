@@ -95,9 +95,9 @@ const renders: Record<string, UiComponent["render"]> = {
       const [, set] = useUiState();
       const current = value ?? options[0]!.id;
       return (
-        <div role="tablist" className="inline-flex max-w-full flex-wrap gap-1 self-start rounded-chat-md border border-chat-border p-0.5">
+        <div role="group" className="inline-flex max-w-full flex-wrap gap-1 self-start rounded-chat-md border border-chat-border p-0.5">
           {options.map((o) => (
-            <Button key={o.id} size="sm" variant={o.id === current ? "subtle" : "ghost"} onPress={() => set(stateKey, o.id)} aria-selected={o.id === current}>
+            <Button key={o.id} size="sm" variant={o.id === current ? "subtle" : "ghost"} onPress={() => set(stateKey, o.id)} aria-pressed={o.id === current}>
               {o.label}
             </Button>
           ))}

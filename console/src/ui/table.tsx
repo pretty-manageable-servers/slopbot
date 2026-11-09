@@ -35,8 +35,9 @@ interface TableProps<Row> {
 /** A plain table as in claude.ai's connector list: muted headers, a divider under each row. */
 export function Table<Row>({ label, columns, rows, rowKey, onRowPress, empty = "Nothing here yet." }: TableProps<Row>) {
   if (!rows.length) return <SectionNote>{empty}</SectionNote>;
+  // The box is focusable so the keyboard can scroll it when the table is wider than its box.
   return (
-    <div className="overflow-x-auto">
+    <div role="region" aria-label={label} tabIndex={0} className="overflow-x-auto outline-none focus-visible:outline-2 focus-visible:outline-chat-focus">
       <table aria-label={label} className="w-full border-collapse text-sm">
         <thead>
           <tr className="border-b border-chat-divider text-left text-chat-muted">
