@@ -58,7 +58,8 @@ export const OpensOnAPhone: Story = {
       await userEvent.click(within(canvasElement).getByRole("button", { name: /Open sidebar/ }));
     });
     await step("The drawer slides over the page", async () => {
-      await expect(await within(document.body).findByText("Slopbot")).toBeVisible();
+      const name = await within(document.body).findByText("Slopbot");
+      await waitFor(() => expect(name).toBeVisible());
     });
   },
 };

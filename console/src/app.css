@@ -2,3 +2,6 @@
 @import "tailwindcss";
 @import "agentic-ui-kit/tailwind.css";
 @import "./theme.css";
+
+/* The kit sets a menu's header and shortcuts in its "subtle" color, which is under 4.5:1 on the dark popover. */
+[role="menu"] header, [role="menu"] kbd { color: var(--chat-muted); }

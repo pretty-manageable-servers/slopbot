@@ -68,7 +68,8 @@ export const BrowsesTheLearnMoreSubmenu: Story = {
   play: async ({ canvasElement, step }) => {
     await step("Open the menu", async () => {
       await userEvent.click(within(canvasElement).getByRole("button", { name: "Open menu" }));
-      await expect(await screen.findByRole("menu", { name: "Account" })).toBeVisible();
+      const menu = await screen.findByRole("menu", { name: "Open menu" });
+      await waitFor(() => expect(menu).toBeVisible());
     });
     await step("Open the submenu beside its row", async () => {
       await userEvent.click(screen.getByRole("menuitem", { name: "Learn more" }));

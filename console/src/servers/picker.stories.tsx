@@ -1,7 +1,8 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { Suspense } from "react";
 import { expect, screen, userEvent, waitFor, within } from "storybook/test";
-import { baseRoutes, servers, session } from "../stories/fixtures";
+import { HttpResponse, http } from "msw";
+import { houseoverwatch, session } from "../mocks/data";
 import { ServerPicker } from "./picker";
 
 /** The server picker at the top of the Servers view. With one shared server it is a plain label. */
@@ -17,7 +18,7 @@ type Story = StoryObj<typeof meta>;
 export const Playground: Story = {};
 
 export const OneServer: Story = {
-  parameters: { console: { api: { ...baseRoutes, "GET /api/session": { ...session, servers: [servers[0]!] } } } },
+  parameters: { msw: { handlers: { session: http.get("/api/session", () => HttpResponse.json({ ...session, servers: [houseoverwatch] })) } } },
 };
 
 export const PicksAnotherServer: Story = {

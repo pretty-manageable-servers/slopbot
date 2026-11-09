@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { LogOut, Settings } from "lucide-react";
-import { expect, screen, userEvent, within } from "storybook/test";
+import { expect, screen, userEvent, waitFor, within } from "storybook/test";
 import { AccountMenu } from "./account-menu";
 
 /**
@@ -33,8 +33,10 @@ export const OpensAccountMenu: Story = {
       await userEvent.click(within(canvasElement).getByRole("button", { name: "Account menu" }));
     });
     await step("The menu shows the name, Settings and Log out", async () => {
-      const menu = await screen.findByRole("menu", { name: "Account" });
-      await expect(within(menu).getByText("DerpZ")).toBeVisible();
+      // A menu is named by its trigger button.
+      const menu = await screen.findByRole("menu", { name: "Account menu" });
+      // The popover fades in; wait for it.
+      await waitFor(() => expect(within(menu).getByText("DerpZ")).toBeVisible());
       await expect(within(menu).getByRole("menuitem", { name: "Settings" })).toBeVisible();
       await expect(within(menu).getByRole("menuitem", { name: "Log out" })).toBeVisible();
     });
