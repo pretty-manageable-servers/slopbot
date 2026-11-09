@@ -50,3 +50,8 @@ export const shares: ServerShare[] = [
   { id: "s1aaaaaaaaaaaaaaaaaa", channel: channels[0]!.id, created_at: NOW - 7 * 24 * HOUR, revoked: false },
   { id: "s2aaaaaaaaaaaaaaaaaa", channel: channels[1]!.id, created_at: NOW - 19 * 24 * HOUR, revoked: true },
 ];
+
+/** Links shared from a thread. The thread is not in the server's channel list, so the table shows its ID. */
+export const threadShares: ServerShare[] = [
+  { id: "t1aaaaaaaaaaaaaaaaaa", channel: "300000000000000099", created_at: NOW - 2 * HOUR, revoked: false },
+];

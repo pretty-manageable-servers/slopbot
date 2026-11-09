@@ -13,6 +13,8 @@ export const handlers = {
   adminMe: http.get("/api/admin/me", () => HttpResponse.json(data.adminMe)),
   status: http.get("/api/status", () => HttpResponse.json(data.status)),
   shares: http.get("/api/shares", () => HttpResponse.json({ shares: data.shares })),
+  revokeShare: http.post("/api/shares/:id/revoke", () => HttpResponse.json({})),
+  revokeAllShares: http.post("/api/shares/revoke-all", () => HttpResponse.json({ revoked: data.shares.filter((s) => !s.revoked).length })),
 } satisfies Record<string, HttpHandler>;
 
 /** The bot's error body for a status, as `ApiError` reads it. */

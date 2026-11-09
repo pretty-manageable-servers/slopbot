@@ -9,6 +9,7 @@ import { ChatTheme } from "agentic-ui-kit";
 import { RouterProvider as LinkRouter } from "react-aria-components";
 import { useState, type ReactNode } from "react";
 import { Loader, Logo } from "../src/logo";
+import { FeedbackHost } from "../src/ui/feedback";
 import { routeTree } from "../src/router";
 import { themeIcons } from "../src/ui/sidebar";
 
@@ -41,6 +42,8 @@ export const withConsole: Decorator = (Story, { parameters }) => {
         <LinkRouter navigate={(href) => void router.history.push(href)}>
           {/* The memory router's types are not the app's registered router. */}
           <RouterProvider router={router as never} />
+          {/* The app shell mounts its own host; stories that draw a bare page need one for toasts and confirms. */}
+          {!app && <FeedbackHost />}
         </LinkRouter>
       </ChatTheme>
     </QueryClientProvider>
