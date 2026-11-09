@@ -8,6 +8,7 @@ import { useConsoleDictation } from "../ui/dictation";
 import { usePausedComposer } from "../llm-status";
 import { notify, notifyError } from "../ui/feedback";
 
+/** The reply box under a channel: sends the text to the channel through the bot and says how it went. */
 export function ReplyBox({ server, channel }: { server: string; channel: string }) {
   const [text, setText] = useState("");
   const send = useMutation({
@@ -17,7 +18,9 @@ export function ReplyBox({ server, channel }: { server: string; channel: string 
       if (result.status === "posted") notify("Sent. Slopbot will answer in the channel.");
       else notify("Sent to Discord, but Slopbot did not pick it up in time, so it will not answer.", "error");
     },
-    onError: (error) => {
+    onError: (error, body) => {
+      // The composer empties on send; the text comes back when the field is still empty, as in a private chat.
+      setText((current) => current || body);
       // A usage limit's error body has resetAt (see the reply route in src/web-console.ts).
       const resetAt = error instanceof ApiError ? error.data.resetAt : undefined;
       if (typeof resetAt === "number") notify(`Limit reached, resets ${new Date(resetAt).toLocaleString()}.`, "error");

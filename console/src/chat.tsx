@@ -1,6 +1,5 @@
 // One private chat on screen: the saved messages, then the bot's live stream folded into kit messages.
-import { AttachButton, AttachmentRow, Button, ChatHeader, ChatView, DictationButton, EmptyState, ModelPicker, SidebarToggle, ToolViewsProvider, defaultToolViews, useAttachments } from "agentic-ui-kit";
-import { VisualsProvider, uiMarkupToolView, widgetToolView } from "agentic-ui-kit/visuals";
+import { AttachButton, AttachmentRow, Button, ChatHeader, ChatView, DictationButton, EmptyState, ModelPicker, SidebarToggle, useAttachments } from "agentic-ui-kit";
 import { Paperclip, Share } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
@@ -18,11 +17,8 @@ import { usePausedComposer } from "./llm-status";
 import { notify, notifyError } from "./ui/feedback";
 import { openEngineStream } from "./ui/live";
 import { PageLoading, PageNote } from "./ui/page-state";
-import { uiComponents } from "./ui-components";
+import { ChatVisuals } from "./ui-components";
 
-/** show_widget frames load the bot's frame page (WIDGET_FRAME_PATH in src/web-console.ts), outside the page CSP. */
-const WIDGET_HOST = { frameUrl: "/console/widget-frame.html" };
-const toolViews = { ...defaultToolViews, show_ui: uiMarkupToolView(), show_widget: widgetToolView() };
 const ASK_WARNING = "Only send what you wrote yourself. A prompt from someone else can make Slopbot use tools or read data you did not mean to share.";
 
 /** The question of a link, waiting in its chat's composer until it is sent or cleared. Kept for the page's life. */
@@ -62,6 +58,7 @@ interface ChatProps {
   onSent: (chatId: string) => void;
 }
 
+/** One private chat: the saved messages and the live stream, with the composer. A chat without an `id` is new. */
 export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProps) {
   const server = useServer();
   const [pending, setPending] = useState(() => (id ? pendingSends.get(id) : undefined));
@@ -178,8 +175,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
   if (error) return <PageNote>{error}</PageNote>;
   if (!state) return <PageLoading />;
   return (
-    <VisualsProvider components={uiComponents} host={WIDGET_HOST}>
-    <ToolViewsProvider tools={toolViews}>
+    <ChatVisuals>
     <div className="contents [&_ul>li_img]:cursor-zoom-in" onClick={(event) => {
       const image = imageClicked(event);
       if (image) setViewing(image);
@@ -256,7 +252,6 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
     </div>
     <ImageViewer image={viewing} onClose={() => setViewing(null)} />
     <ShareDialog chatId={sharing} triggerRef={shareButton} onClose={() => setSharing(null)} />
-    </ToolViewsProvider>
-    </VisualsProvider>
+    </ChatVisuals>
   );
 }

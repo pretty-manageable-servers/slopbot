@@ -31,6 +31,8 @@
   --chat-sidebar: #1f1e1d;
   --chat-surface: #1f1e1d;
   --chat-selected: #2b2a28;
+  /* The kit's dark hover (#3d3d3d) left muted text under 4.5:1; this one keeps it above. */
+  --chat-hover: #2e2d2b;
   --chat-border: #33322f;
   --chat-fg: #e2e0d9;
   --chat-muted: #9a978f;

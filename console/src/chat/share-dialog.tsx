@@ -45,6 +45,7 @@ export function ShareDialog({ chatId, triggerRef, onClose }: { chatId: string | 
   );
 }
 
+/** The body of the share dialog: who has access, the link, and the settings view. */
 export function SharePanel({ chatId, onClose }: { chatId: string; onClose: () => void }) {
   const client = useQueryClient();
   // Always refetch on open, so `newer` is current.

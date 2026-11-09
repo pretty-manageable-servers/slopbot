@@ -22,6 +22,7 @@ export function useLlmStatus(): Status {
   return useQuery(statusQuery).data ?? NORMAL;
 }
 
+/** The banner for a backup model or a model service that is down. Draws nothing when all is well. */
 export function LlmBanner() {
   const { mode } = useLlmStatus();
   if (mode === "normal") return null;

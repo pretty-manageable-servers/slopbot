@@ -13,6 +13,7 @@ export function imageClicked(event: MouseEvent): ViewedImage | undefined {
   return { src: target.currentSrc || target.src, alt: target.alt };
 }
 
+/** The modal that shows `image` large. It is closed while `image` is null. */
 export function ImageViewer({ image, onClose }: { image: ViewedImage | null; onClose: () => void }) {
   return (
     <Modal isOpen={image !== null} onOpenChange={(open) => !open && onClose()} aria-label={image?.alt || "Image"}
