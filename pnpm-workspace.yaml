@@ -22,3 +22,6 @@ minimumReleaseAgeExclude:
   - agentic-ui-kit@0.9.1
   - lucide-react@1.69.0
   - vite@8.3.6
+
+allowBuilds:
+  esbuild: false
