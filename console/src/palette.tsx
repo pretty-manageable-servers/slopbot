@@ -153,7 +153,7 @@ function useDebounced<T>(value: T, ms: number): T {
 function highlight(text: string, query: string): ReactNode {
   const words = query.split(/\s+/).filter(Boolean).map(word => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   if (!words.length) return text;
-  return text.split(new RegExp(`(${words.join("|")})`, "gi")).map((part, i) => (i % 2 ? <mark key={i}>{part}</mark> : part));
+  return text.split(new RegExp(`(${words.join("|")})`, "gi")).map((part, i) => (i % 2 ? <mark key={i} className="rounded-sm bg-selected text-fg">{part}</mark> : part));
 }
 
 // The recent picks live in this browser. Storage can be unavailable (private mode): then there are no picks.
