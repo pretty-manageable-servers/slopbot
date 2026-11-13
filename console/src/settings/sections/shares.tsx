@@ -1,12 +1,11 @@
 // Shared links settings: the share links of the picked server, with copy and revoke, as the old console's list
 // (web/shares.js renderShareList). Listing needs Manage Server; without it the bot answers 403 and the section says so.
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { Badge, Button } from "agentic-ui-kit";
+import { Badge, Button, Cell, Column, Row, Table, TableBody, TableHeader } from "slop-ui-components";
 import { ApiError, get, post, qs } from "../../api";
 import type { ServerShare } from "../../api-types";
 import { settingsQuery, useServer } from "../../data";
 import { confirmAction, notify, notifyError } from "../../ui/feedback";
-import { Table, type Column } from "../../ui/table";
 import { SectionNote, SettingsGroup } from "../../ui/layout";
 import { activeShares, channelLabel, revokedNotice, shareStatus, shareUrl } from "./shares-format";
 
@@ -52,23 +51,31 @@ export default function Section() {
   };
   const copy = (id: string) => navigator.clipboard.writeText(shareUrl(location.origin, id)).then(() => notify("Link copied"), notifyError);
 
-  const columns: Column<ServerShare>[] = [
-    { id: "channel", label: "Channel", cell: (share) => channelLabel(share.channel, snapshot.channels) },
-    { id: "created", label: "Created", cell: (share) => new Date(share.created_at).toLocaleString() },
-    { id: "status", label: "Status", cell: (share) => <Badge tone={share.revoked ? undefined : "outline"}>{shareStatus(share)}</Badge> },
-    { id: "link", label: "Link", cell: (share) => share.revoked
-      ? <span className="text-chat-muted">Link removed</span>
-      : <Button size="sm" variant="ghost" onPress={() => copy(share.id)}>Copy link</Button> },
-    { id: "revoke", label: "Actions", hideLabel: true, align: "right", cell: (share) => share.revoked ? null
-      : <Button size="sm" variant="ghost" isDisabled={revoke.isPending} onPress={() => askRevoke(share)}>Revoke</Button> },
-  ];
-
   return (
     <SettingsGroup
       title="Share links"
       actions={activeShares(shares).length ? <Button size="sm" variant="danger" isDisabled={revokeAll.isPending} onPress={askRevokeAll}>Revoke all</Button> : null}
     >
-      <Table label="Share links" columns={columns} rows={shares} rowKey={(share) => share.id} empty="No share links yet." />
+      <Table aria-label="Share links">
+        <TableHeader>
+          <Column isRowHeader>Channel</Column>
+          <Column>Created</Column>
+          <Column>Status</Column>
+          <Column>Link</Column>
+          <Column align="end"><span className="sr-only">Actions</span></Column>
+        </TableHeader>
+        <TableBody items={shares} emptyState="No share links yet.">
+          {(share) => (
+            <Row id={share.id}>
+              <Cell>{channelLabel(share.channel, snapshot.channels)}</Cell>
+              <Cell>{new Date(share.created_at).toLocaleString()}</Cell>
+              <Cell><Badge tone={share.revoked ? "danger" : "success"}>{shareStatus(share)}</Badge></Cell>
+              <Cell>{share.revoked ? <span className="text-muted">Link removed</span> : <Button size="sm" variant="ghost" onPress={() => copy(share.id)}>Copy link</Button>}</Cell>
+              <Cell align="end">{!share.revoked && <Button size="sm" variant="ghost" isDisabled={revoke.isPending} onPress={() => askRevoke(share)}>Revoke</Button>}</Cell>
+            </Row>
+          )}
+        </TableBody>
+      </Table>
     </SettingsGroup>
   );
 }

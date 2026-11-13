@@ -1,14 +1,11 @@
 // Servers (Slopbot team only): every server the bot is in. A server opens to its web transcripts per channel, the
 // cloud-model switch and the webhook rotation. Everyone on the team sees it; without canEdit the writes are disabled.
 import { keepPreviousData, queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button } from "agentic-ui-kit";
+import { Button, Cell, Column, Row, Switch, Table, TableBody, TableHeader, TextField } from "slop-ui-components";
 import { useEffect, useState } from "react";
 import { ApiError, get, post, qs } from "../../api";
 import type { AdminServer, NonZdr, TranscriptChannel } from "../../api-types";
 import { adminMeQuery } from "../../data";
-import { type Column, Table } from "../../ui/table";
-import { Switch } from "../../ui/switch";
-import { TextField } from "../../ui/text-field";
 import { confirmAction, notify, notifyError } from "../../ui/feedback";
 import { SectionNote, ServerMark, SettingsGroup, SettingsRow } from "../../ui/layout";
 import { SERVER_PAGE, pageLabel } from "./servers-format";
@@ -59,12 +56,6 @@ export default function Section() {
   );
 }
 
-const SERVER_COLUMNS: Column<AdminServer>[] = [
-  { id: "server", label: "Server", cell: (s) => <span className="flex min-w-0 items-center gap-2.5"><ServerMark server={s} /><span className="truncate">{s.name}</span></span> },
-  { id: "channels", label: "Channels", align: "right", cell: (s) => s.channelCount },
-  { id: "transcripts", label: "Transcripts on", align: "right", cell: (s) => s.transcriptsOn },
-];
-
 function ServerList({ search, onSearch, offset, onOffset, onOpen }: {
   search: string; onSearch: (text: string) => void; offset: number; onOffset: (offset: number) => void; onOpen: (server: AdminServer) => void;
 }) {
@@ -73,12 +64,27 @@ function ServerList({ search, onSearch, offset, onOffset, onOpen }: {
   const total = data?.total ?? 0;
   return (
     <SettingsGroup title="Servers" description="Web transcripts for each server. Read-only members can view everything.">
-      <TextField label="Find a server" type="search" value={search} onChange={onSearch} placeholder="Server name" maxLength={100} autoComplete="off" className="mb-2" />
+      <TextField aria-label="Find a server" type="search" value={search} onChange={onSearch} placeholder="Server name" maxLength={100} autoComplete="off" className="mb-2" />
       {error ? <SectionNote>{error.message}</SectionNote> : !data ? <SectionNote>Loading…</SectionNote> : (
-        <Table label="Servers" columns={SERVER_COLUMNS} rows={data.servers} rowKey={(s) => s.id} onRowPress={onOpen} empty="No servers match." />
+        <Table aria-label="Servers">
+          <TableHeader>
+            <Column isRowHeader>Server</Column>
+            <Column align="end">Channels</Column>
+            <Column align="end">Transcripts on</Column>
+          </TableHeader>
+          <TableBody items={data.servers} emptyState="No servers match.">
+            {(s) => (
+              <Row id={s.id} onAction={() => onOpen(s)}>
+                <Cell><span className="flex min-w-0 items-center gap-2.5"><ServerMark server={s} /><span className="truncate">{s.name}</span></span></Cell>
+                <Cell numeric>{s.channelCount}</Cell>
+                <Cell numeric>{s.transcriptsOn}</Cell>
+              </Row>
+            )}
+          </TableBody>
+        </Table>
       )}
-      <div className="flex items-center justify-between gap-3 py-3 text-sm">
-        <span className="text-chat-muted tabular-nums">{pageLabel(offset, data?.servers.length ?? 0, total)}</span>
+      <div className="flex items-center justify-between gap-3 py-3 text-ui">
+        <span className="text-muted tabular-nums">{pageLabel(offset, data?.servers.length ?? 0, total)}</span>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" isDisabled={offset === 0} onPress={() => onOffset(offset - SERVER_PAGE)}>Previous</Button>
           <Button variant="outline" size="sm" isDisabled={offset + SERVER_PAGE >= total} onPress={() => onOffset(offset + SERVER_PAGE)}>Next</Button>
@@ -135,22 +141,6 @@ function ServerDetail({ server, canEdit, onBack }: { server: AdminServer; canEdi
     if (ok) rotate.mutate(channel);
   };
 
-  const columns: Column<TranscriptChannel>[] = [
-    { id: "channel", label: "Channel", cell: (c) => `#${c.name}` },
-    { id: "transcripts", label: "Web transcripts", cell: (c) => {
-      const saving = setTranscripts.isPending && setTranscripts.variables?.channel.id === c.id;
-      return (
-        <span className="flex items-center gap-2.5">
-          <Switch label={`Web transcripts for #${c.name}`} checked={c.enabled} disabled={!canEdit || saving} onChange={(enabled) => setTranscripts.mutate({ channel: c, enabled })} />
-          <span className="text-chat-muted">{c.enabled ? "On" : "Off"}</span>
-        </span>
-      );
-    } },
-    { id: "webhook", label: "Webhook", align: "right", cell: (c) => (
-      <Button variant="outline" size="sm" isDisabled={!canEdit || (rotate.isPending && rotate.variables?.id === c.id)} onPress={() => void askRotate(c)}>Rotate webhook</Button>
-    ) },
-  ];
-
   return (
     <>
       <Button variant="ghost" size="sm" className="-ml-2 mb-3" onPress={onBack}>Back to servers</Button>
@@ -159,13 +149,32 @@ function ServerDetail({ server, canEdit, onBack }: { server: AdminServer; canEdi
         <h3 className="m-0 min-w-0 truncate text-base font-semibold">{server.name}</h3>
       </div>
       <SettingsGroup title="Cloud models" description="This server only">
-        <SettingsRow label="Allow cloud models in channels" help={NON_ZDR_HELP}>
-          <Switch label="Allow cloud models in channels" checked={nonZdr.data?.allow ?? false} disabled={!canEdit || !nonZdr.data || setNonZdr.isPending} onChange={(allow) => setNonZdr.mutate(allow)} />
-        </SettingsRow>
+        <Switch toggleSide="end" className="py-3" description={NON_ZDR_HELP} isSelected={nonZdr.data?.allow ?? false} isDisabled={!canEdit || !nonZdr.data || setNonZdr.isPending} onChange={(allow) => setNonZdr.mutate(allow)}>Allow cloud models in channels</Switch>
       </SettingsGroup>
       <SettingsGroup title="Web transcripts" description="Per channel. Off by default. Discord permissions still decide who can see a transcript.">
         {channels.error ? <SectionNote>{channels.error.message}</SectionNote> : !channels.data ? <SectionNote>Loading…</SectionNote> : (
-          <Table label="Channels" columns={columns} rows={channels.data.channels} rowKey={(c) => c.id} empty="Slopbot serves no channels in this server yet." />
+          <Table aria-label="Channels">
+            <TableHeader>
+              <Column isRowHeader>Channel</Column>
+              <Column>Web transcripts</Column>
+              <Column align="end">Webhook</Column>
+            </TableHeader>
+            <TableBody items={channels.data.channels} emptyState="Slopbot serves no channels in this server yet.">
+              {(c) => (
+                <Row id={c.id}>
+                  <Cell>#{c.name}</Cell>
+                  <Cell>
+                    <Switch aria-label={`Web transcripts for #${c.name}`} isSelected={c.enabled} isDisabled={!canEdit || (setTranscripts.isPending && setTranscripts.variables?.channel.id === c.id)} onChange={(enabled) => setTranscripts.mutate({ channel: c, enabled })}>
+                      <span className="text-muted">{c.enabled ? "On" : "Off"}</span>
+                    </Switch>
+                  </Cell>
+                  <Cell align="end">
+                    <Button variant="outline" size="sm" isDisabled={!canEdit || (rotate.isPending && rotate.variables?.id === c.id)} onPress={() => void askRotate(c)}>Rotate webhook</Button>
+                  </Cell>
+                </Row>
+              )}
+            </TableBody>
+          </Table>
         )}
       </SettingsGroup>
     </>

@@ -19,7 +19,7 @@ export const ManagerReviewsShareLinks: Story = {
   play: async ({ canvasElement, step }) => {
     const dialog = within(canvasElement.ownerDocument.body);
     await step("The links list their channel, status and actions", async () => {
-      await expect(await dialog.findByRole("table", { name: "Share links" })).toBeVisible();
+      await expect(await dialog.findByRole("grid", { name: "Share links" })).toBeVisible();
       await expect(dialog.getByText("#general")).toBeVisible();
       await expect(dialog.getByText("Revoked")).toBeVisible();
       await expect(dialog.getByRole("button", { name: "Revoke all" })).toBeVisible();
@@ -29,7 +29,7 @@ export const ManagerReviewsShareLinks: Story = {
       await expect(await dialog.findByText("Revoke this link?")).toBeVisible();
       await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
       await waitFor(() => expect(dialog.queryByText("Revoke this link?")).toBeNull());
-      await expect(dialog.getByRole("table", { name: "Share links" })).toBeVisible();
+      await expect(dialog.getByRole("grid", { name: "Share links" })).toBeVisible();
     });
   },
 };
@@ -75,7 +75,7 @@ export const LinksAreLoading: Story = {
     const dialog = within(canvasElement.ownerDocument.body);
     await step("The dialog is open and no table is shown yet", async () => {
       await expect(await dialog.findByRole("heading", { name: "Settings" })).toBeVisible();
-      await expect(dialog.queryByRole("table")).toBeNull();
+      await expect(dialog.queryByRole("grid")).toBeNull();
     });
   },
 };
