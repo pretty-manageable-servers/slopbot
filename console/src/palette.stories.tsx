@@ -32,7 +32,7 @@ export const FindAChatOrAnAction: Story = {
     await step("Recent chats and channels and the actions are listed", async () => {
       const results = within(await within(palette).findByRole("menu"));
       await expect(await results.findByText("Why is my Postgres slow")).toBeVisible();
-      await expect(results.getByText("Why is the build red")).toBeVisible();
+      await expect(await results.findByText("Why is the build red")).toBeVisible();
       await expect(results.getByText("New chat")).toBeVisible();
     });
     await step("Typing a server name finds the server", async () => {

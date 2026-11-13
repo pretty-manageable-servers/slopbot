@@ -3,7 +3,8 @@
 // switches between Chat and Code. The mode follows the page: chat pages are Chats, server pages are Servers.
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { Outlet, useMatchRoute, useNavigate } from "@tanstack/react-router";
-import { AppShell, ChatList, Menu, MenuItem, MenuSeparator, SegmentedControl, SidebarItem, defaultIcons } from "agentic-ui-kit";
+import { AppShell, ChatList, Menu, MenuItem, MenuSeparator, SidebarItem, defaultIcons } from "agentic-ui-kit";
+import { SegmentedControl } from "slop-ui-components";
 import { Pencil, Share, Trash2 } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
 import { ApiError, api } from "./api";
@@ -57,9 +58,9 @@ function Shell() {
       brand="Slopbot"
       logo={<Logo size={28} />}
       switcher={
-        <SegmentedControl label="View" value={mode}
-          options={[{ id: "chats", label: "Chats", icon: icons.chats, iconOnly: true }, { id: "servers", label: "Servers", icon: icons.server, iconOnly: true }]}
-          onChange={(next: string) => void (next === "servers" ? navigate({ to: "/server/$serverId", params: { serverId: server.id } }) : navigate({ to: "/" }))} />
+        <SegmentedControl aria-label="View" value={mode} iconOnly size="sm"
+          options={[{ id: "chats", label: "Chats", icon: icons.chats }, { id: "servers", label: "Servers", icon: icons.server }]}
+          onChange={(next) => void (next === "servers" ? navigate({ to: "/server/$serverId", params: { serverId: server.id } }) : navigate({ to: "/" }))} />
       }
       nav={mode === "chats" ? <NewChat /> : undefined}
       footer={
