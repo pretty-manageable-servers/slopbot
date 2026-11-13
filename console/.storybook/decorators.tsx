@@ -31,6 +31,7 @@ export const withTheme: Decorator = (Story, { globals }) => {
   const root = document.documentElement;
   if (globals.theme === "light") root.dataset.chatTheme = "light";
   else delete root.dataset.chatTheme;
+  root.dataset.theme = globals.theme === "light" ? "light" : "dark";
   return <Story />;
 };
 

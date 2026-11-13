@@ -74,6 +74,35 @@
   --chat-shadow-popover: 0 8px 24px rgb(41 38 27 / 0.12);
 }
 
+/*
+ * slop-ui-components (the non-chat controls) read --ui-* tokens. They take the kit's colors so both look alike.
+ * The selector beats the library's OS-dark rule (0,2,0); prefs.ts keeps data-theme equal to the chat theme.
+ */
+:root[data-theme] {
+  --ui-bg: var(--chat-bg);
+  --ui-sidebar: var(--chat-sidebar);
+  --ui-surface: var(--chat-bg);
+  --ui-popover: var(--chat-popover);
+  --ui-hover: var(--chat-hover);
+  --ui-selected: var(--chat-selected);
+  --ui-border: var(--chat-border);
+  --ui-divider: var(--chat-divider);
+  --ui-fg: var(--chat-fg);
+  --ui-muted: var(--chat-muted);
+  --ui-subtle: var(--chat-subtle);
+  --ui-accent: var(--chat-accent);
+  --ui-accent-fg: var(--chat-accent-fg);
+  --ui-interactive: var(--chat-accent);
+  --ui-interactive-fg: var(--chat-accent-fg);
+  --ui-focus: var(--chat-focus);
+  --ui-danger: var(--chat-danger);
+  --ui-warning: var(--chat-warning);
+  --ui-shadow-popover: var(--chat-shadow-popover);
+  --ui-font-sans: var(--chat-font-sans);
+  --ui-font-serif: var(--chat-font-serif);
+  --ui-font-mono: var(--chat-font-mono);
+}
+
 html,
 body,
 #root {

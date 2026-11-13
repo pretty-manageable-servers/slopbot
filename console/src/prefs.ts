@@ -34,12 +34,13 @@ export function savePrefs(prefs: Prefs) {
 
 const light = matchMedia("(prefers-color-scheme: light)");
 
-/** Puts the preferences on <html>. Dark is the kit's and the brand's default, so only light sets the attribute. */
+/** Puts the preferences on <html>. Dark is the kit's default, so only light sets data-chat-theme; slop-ui-components always needs data-theme. */
 export function applyPrefs(prefs = readPrefs()) {
   const root = document.documentElement;
   const isLight = prefs.theme === "light" || (prefs.theme === "system" && light.matches);
   if (isLight) root.dataset.chatTheme = "light";
   else delete root.dataset.chatTheme;
+  root.dataset.theme = isLight ? "light" : "dark";
   root.style.fontSize = prefs.textSize === "100" ? "" : `${prefs.textSize}%`;
   root.style.setProperty("--chat-content-width", WIDTHS[prefs.width]);
 }
