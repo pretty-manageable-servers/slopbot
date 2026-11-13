@@ -1,7 +1,7 @@
 // Usage: the plan and one row per limit window, with its bar, percent and reset time, and a button to use a banked
 // reset. Port of the old console's usage meter (web/conversations.js usageMeter, paintUsage, resetButton).
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { Button } from "agentic-ui-kit";
+import { Button, Meter, type ProgressTone } from "slop-ui-components";
 import { get, post, qs } from "../../api";
 import type { Usage } from "../../api-types";
 import { useServer } from "../../data";
@@ -15,7 +15,7 @@ export const usageQuery = (server: string) => queryOptions({
 });
 
 type UsageWindow = Usage["windows"][number];
-const BAR_COLOR: Record<UsageLevel, string> = { low: "bg-chat-accent", mid: "bg-chat-warning", high: "bg-chat-danger" };
+const BAR_TONE: Record<UsageLevel, ProgressTone> = { low: "default", mid: "warning", high: "danger" };
 /** The reset's name in the old console: "5-hour" for the 5-hour window, "full" for the week (which resets both). */
 const resetName = (item: UsageWindow) => (item.kind === "5h" ? "5-hour" : "full");
 
@@ -47,14 +47,11 @@ export default function UsageSettings() {
         <SettingsRow key={item.kind} label={windowName(item.kind)} help={item.resetAt ? resetsLabel(item.resetAt) : undefined}>
           <div className="flex w-56 flex-col items-end gap-1.5">
             {item.percent === null ? (
-              <span className="text-sm text-chat-muted">No limit</span>
+              <span className="text-ui text-muted">No limit</span>
             ) : (
               <div className="flex w-full items-center gap-3">
-                <div role="meter" aria-label={`${windowName(item.kind)} usage`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={item.percent}
-                  className="h-1.5 flex-1 overflow-hidden rounded-full bg-chat-border-strong">
-                  <div className={`h-full rounded-full ${BAR_COLOR[usageLevel(item.percent)]}`} style={{ width: `${Math.min(100, item.percent)}%` }} />
-                </div>
-                <span className="w-20 text-right text-sm tabular-nums">{item.percent}% used</span>
+                <Meter aria-label={`${windowName(item.kind)} usage`} value={item.percent} tone={BAR_TONE[usageLevel(item.percent)]} className="flex-1" />
+                <span className="w-20 text-right text-ui tabular-nums">{item.percent}% used</span>
               </div>
             )}
             {item.banked > 0 && (

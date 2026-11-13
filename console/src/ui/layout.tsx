@@ -1,5 +1,6 @@
 // Settings page parts, in claude.ai's style: a group heading with an optional note, then rows with the label and
 // help on the left and the control on the right, a divider between rows.
+import { Heading } from "slop-ui-components";
 import type { ReactNode } from "react";
 
 interface SettingsGroupProps {
@@ -19,17 +20,17 @@ export function SettingsGroup({ title, description, actions, children }: Setting
     <section className="mb-8 last:mb-0">
       {(title || actions) && (
         <div className="mb-1 flex items-center justify-between gap-4">
-          {title && <h3 className="m-0 text-base font-semibold">{title}</h3>}
+          {title && <Heading as="h3">{title}</Heading>}
           {actions}
         </div>
       )}
-      {description && <p className="m-0 mb-2 text-sm text-chat-muted">{description}</p>}
-      <div className="flex flex-col divide-y divide-chat-divider">{children}</div>
+      {description && <p className="m-0 mb-2 text-ui-sm text-muted">{description}</p>}
+      <div className="flex flex-col divide-y divide-divider">{children}</div>
     </section>
   );
 }
 
-/** One setting. With `stack` the control goes under the text (long fields, text areas). */
+/** One setting: label and help on the left, the control on the right (below with `stack`). The library example's Row. */
 export function SettingsRow({ label, help, children, stack }: {
   /** What the setting is called. */
   label: ReactNode;
@@ -41,12 +42,12 @@ export function SettingsRow({ label, help, children, stack }: {
   stack?: boolean;
 }) {
   return (
-    <div className={`flex gap-3 py-3 ${stack ? "flex-col" : "flex-col sm:flex-row sm:items-center sm:justify-between sm:gap-6"}`}>
-      <div className="min-w-0">
-        <div className="text-sm">{label}</div>
-        {help && <div className="text-sm text-chat-muted">{help}</div>}
+    <div className={`flex gap-x-4 gap-y-2 py-3 ${stack ? "flex-col" : "flex-wrap items-center justify-between"}`}>
+      <div className="flex min-w-0 flex-col">
+        <span className="text-ui leading-5">{label}</span>
+        {help && <span className="text-ui-sm leading-4 text-muted">{help}</span>}
       </div>
-      {children && <div className={stack ? "" : "flex shrink-0 items-center gap-2"}>{children}</div>}
+      {children}
     </div>
   );
 }
@@ -56,7 +57,7 @@ export function SectionNote({ children }: {
   /** The words to show. */
   children: ReactNode;
 }) {
-  return <p className="m-0 py-6 text-sm text-chat-muted">{children}</p>;
+  return <p className="m-0 py-6 text-ui text-muted">{children}</p>;
 }
 
 /** A server's icon, or its first letter on a tile. */
@@ -68,5 +69,5 @@ export function ServerMark({ server, size = 20 }: {
 }) {
   return server.icon
     ? <img src={server.icon} alt="" width={size} height={size} className="shrink-0 rounded-md" referrerPolicy="no-referrer" />
-    : <span aria-hidden="true" className="grid shrink-0 place-items-center rounded-md bg-chat-raised text-xs font-semibold" style={{ width: size, height: size }}>{server.name.slice(0, 1).toUpperCase()}</span>;
+    : <span aria-hidden="true" className="grid shrink-0 place-items-center rounded-md bg-hover text-xs font-semibold" style={{ width: size, height: size }}>{server.name.slice(0, 1).toUpperCase()}</span>;
 }

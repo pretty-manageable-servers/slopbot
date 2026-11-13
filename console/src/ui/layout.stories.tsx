@@ -1,10 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { Button } from "agentic-ui-kit";
 import { expect, within } from "storybook/test";
+import { Button, Select, Switch, TextField } from "slop-ui-components";
 import { SectionNote, SettingsGroup, SettingsRow } from "./layout";
-import { Select } from "./select";
-import { Switch } from "./switch";
-import { TextArea } from "./text-field";
 
 /**
  * The parts of a Settings page, in claude.ai's style: `SettingsGroup` is a heading with an optional note and
@@ -32,10 +29,10 @@ type Story = StoryObj<typeof meta>;
 const rows = (
   <>
     <SettingsRow label="Answer in threads" help="Slopbot replies in a new thread instead of the channel.">
-      <Switch label="Answer in threads" checked onChange={() => {}} />
+      <Switch aria-label="Answer in threads" isSelected onChange={() => {}} />
     </SettingsRow>
     <SettingsRow label="Reply length">
-      <Select label="Reply length" options={[{ id: "short", label: "Short" }, { id: "normal", label: "Normal" }]} value="normal" onChange={() => {}} />
+      <Select aria-label="Reply length" variant="quiet" options={[{ id: "short", label: "Short" }, { id: "normal", label: "Normal" }]} value="normal" />
     </SettingsRow>
   </>
 );
@@ -47,10 +44,10 @@ export const Playground: Story = { args: { title: "Behavior", description: "How 
 export const Gallery: Story = {
   render: () => (
     <>
-      <SettingsGroup title="With actions" actions={<Button size="sm" variant="subtle">Add</Button>}>{rows}</SettingsGroup>
+      <SettingsGroup title="With actions" actions={<Button size="sm">Add</Button>}>{rows}</SettingsGroup>
       <SettingsGroup title="Stacked row" description="Long fields go under the text.">
         <SettingsRow stack label="Instructions" help="Slopbot follows these in every chat.">
-          <TextArea label="Instructions" value="" onChange={() => {}} rows={3} className="w-full" />
+          <TextField aria-label="Instructions" multiline value="" rows={3} className="w-full" />
         </SettingsRow>
       </SettingsGroup>
       <SettingsGroup title="Nothing to show"><SectionNote>You need Manage Server to see this.</SectionNote></SettingsGroup>
@@ -64,7 +61,7 @@ export const ReadingALongSettingName: Story = {
   render: () => (
     <SettingsGroup title="Behavior">
       <SettingsRow label="Answer in a new thread whenever a message in the channel mentions Slopbot" help="Turn off to answer in the channel.">
-        <Switch label="Answer in a new thread" checked={false} onChange={() => {}} />
+        <Switch aria-label="Answer in a new thread" isSelected={false} onChange={() => {}} />
       </SettingsRow>
     </SettingsGroup>
   ),
