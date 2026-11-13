@@ -2,11 +2,11 @@
 // import progress, pause or resume, and the window of days kept). Ported from the old console's Channels tab; the
 // pure parts are in channels-format.ts.
 import { useSuspenseQuery } from "@tanstack/react-query";
-import { Button, NumberField, ProgressBar, Switch, TextField } from "slop-ui-components";
+import { Button, NumberField, ProgressBar, Switch, TextField, confirm } from "slop-ui-components";
 import { useState } from "react";
 import type { SnapshotChannel } from "../../api-types";
 import { settingsQuery, useSaveSetting, useServer, type SaveSetting } from "../../data";
-import { confirmAction, notify, notifyError } from "../../ui/feedback";
+import { notify, notifyError } from "../../ui/feedback";
 import { SectionNote, SettingsGroup, SettingsRow } from "../../ui/layout";
 import { historyProgress, historyStatus, isWindowDays, needsChannelFilter, visibleChannels, type HistoryStatus } from "./channels-format";
 
@@ -48,13 +48,13 @@ function ChannelRow({ server, channel }: { server: string; channel: SnapshotChan
 
   const saveSetting = (payload: SaveSetting) => save.mutate(payload, { onSuccess: (result) => notify(result.text || "Saved."), onError: notifyError });
   const setMonitored = async (on: boolean) => {
-    if (!on && !(await confirmAction({ title: "Stop monitoring this channel?", body: "This purges searchable content and dependent task context. Operational logs remain.", confirmLabel: "Stop monitoring", danger: true }))) return;
+    if (!on && !(await confirm({ title: "Stop monitoring this channel?", description: "This purges searchable content and dependent task context. Operational logs remain.", confirmLabel: "Stop monitoring", destructive: true }))) return;
     saveSetting({ name: "channels", args: { action: on ? "add" : "remove", channel: id }, channel: id });
   };
   const saveWindow = async () => {
     if (!isWindowDays(days)) return;
     // A shorter window deletes saved messages. Cancel changes nothing.
-    if (history && days < history.days && !(await confirmAction({ title: "Delete older messages?", body: `Delete saved messages older than ${days} days in #${name}? This cannot be undone.`, confirmLabel: "Delete", danger: true }))) return;
+    if (history && days < history.days && !(await confirm({ title: "Delete older messages?", description: `Delete saved messages older than ${days} days in #${name}? This cannot be undone.`, confirmLabel: "Delete", destructive: true }))) return;
     saveSetting({ name: "index", args: { action: "window", days }, channel: id });
   };
 

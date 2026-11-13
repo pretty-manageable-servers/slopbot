@@ -2,9 +2,9 @@
 // with its reset time and the banked resets that can be used now. It loads with the server and again after each reply.
 import { queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
-import { Button, IconButton, Meter, Popover, PopoverTrigger, type ProgressTone } from "slop-ui-components";
+import { Button, IconButton, Meter, Popover, PopoverTrigger, type ProgressTone, confirm } from "slop-ui-components";
 import { api } from "../api";
-import { confirmAction, notify, notifyError } from "../ui/feedback";
+import { notify, notifyError } from "../ui/feedback";
 
 const usageQuery = (server: string) => queryOptions({ queryKey: ["usage", server], queryFn: () => api.usage(server) });
 
@@ -46,9 +46,9 @@ export function UsageMeter({ server, busy }: { server: string; busy: boolean }) 
 
   const askReset = async (kind: string) => {
     const fiveHour = kind === "5h";
-    const ok = await confirmAction({
+    const ok = await confirm({
       title: "Use a reset?",
-      body: fiveHour ? "Your 5-hour usage goes back to 0%." : "Your 5-hour and weekly usage go back to 0%.",
+      description: fiveHour ? "Your 5-hour usage goes back to 0%." : "Your 5-hour and weekly usage go back to 0%.",
       confirmLabel: "Use reset",
     });
     if (ok) reset.mutate(kind);

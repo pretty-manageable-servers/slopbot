@@ -3,12 +3,12 @@
 // rules and texts that can be tested are in bot-format.ts.
 import { queryOptions, useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { Markdown } from "agentic-ui-kit";
-import { Badge, Button, Cell, Column, Modal, NumberField, Row, SegmentedControl, Select, Switch, Table, TableBody, TableHeader, TextField, type SelectOption } from "slop-ui-components";
+import { Badge, Button, Cell, Column, Modal, NumberField, Row, SegmentedControl, Select, Switch, Table, TableBody, TableHeader, TextField, type SelectOption, confirm } from "slop-ui-components";
 import { useState } from "react";
 import { get, post } from "../../api";
 import type { Breaker, KeyedProvider, Llm, LlmOverride, SystemPrompt, WebKey, WebKeys } from "../../api-types";
 import { adminMeQuery } from "../../data";
-import { notify, notifyError, confirmAction } from "../../ui/feedback";
+import { notify, notifyError } from "../../ui/feedback";
 import { SettingsGroup, SettingsRow } from "../../ui/layout";
 import {
   PROVIDER_NAMES, addKeyBody, backupKeyText, capsProblem, keyErrorText, llmBody, llmFormFrom, llmProblem, llmStateText, secretProblem,
@@ -64,7 +64,7 @@ function SystemPromptGroup({ edit }: { edit: boolean }) {
     onError: notifyError,
   });
   const useDefault = async () => {
-    if (!await confirmAction({ title: "Use the default prompt?", body: "The saved prompt is removed for all servers. The default applies to new replies.", confirmLabel: "Use default", danger: true })) return;
+    if (!await confirm({ title: "Use the default prompt?", description: "The saved prompt is removed for all servers. The default applies to new replies.", confirmLabel: "Use default", destructive: true })) return;
     setDraft(prompt.default);
     save.mutate("");
   };
@@ -126,7 +126,7 @@ function WebKeysGroup({ edit }: { edit: boolean }) {
     onError: notifyError,
   });
   const askRemove = async (key: WebKey) => {
-    if (await confirmAction({ title: "Delete this key?", body: "Slopbot stops using it at once.", confirmLabel: "Delete", danger: true })) remove.mutate(key.id);
+    if (await confirm({ title: "Delete this key?", description: "Slopbot stops using it at once.", confirmLabel: "Delete", destructive: true })) remove.mutate(key.id);
   };
   const saveCapsNow = () => {
     const problem = capsProblem(caps);

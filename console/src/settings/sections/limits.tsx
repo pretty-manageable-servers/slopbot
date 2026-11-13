@@ -2,12 +2,12 @@
 // caps, and lifetime usage. Ported from the old console's Bot admin and Users tab (web/app.js 473-660, 966-1024).
 // Money, number and range rules are in limits-format.ts.
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery, type QueryKey } from "@tanstack/react-query";
-import { Badge, Button, Cell, Column, NumberField, ProgressBar, Row, Table, TableBody, TableHeader, TextField } from "slop-ui-components";
+import { Badge, Button, Cell, Column, NumberField, ProgressBar, Row, Table, TableBody, TableHeader, TextField, confirm } from "slop-ui-components";
 import { useState } from "react";
 import { get, post } from "../../api";
 import type { BotReplies, LimitsView, ModelPrice, Prices, ScheduleLimits, UsageRow, UsageTotals } from "../../api-types";
 import { adminMeQuery } from "../../data";
-import { confirmAction, notify, notifyError } from "../../ui/feedback";
+import { notify, notifyError } from "../../ui/feedback";
 import { ServerMark, SettingsGroup, SettingsRow } from "../../ui/layout";
 import {
   BOT_REPLY_RULES, LIMITS_RULES, PRICE_RULES, SCHEDULE_RULES, botRepliesBody, botRepliesForm, botRepliesIssues, checkFields,
@@ -128,7 +128,7 @@ function ModelPrices({ canEdit }: { canEdit: boolean }) {
     save.mutate(priceBody(added.model.trim(), added.form), { onSuccess: () => setAdded({ model: "", form: BLANK_PRICES, tried: false }) });
   };
   const resetPrice = async (model: string) => {
-    if (!await confirmAction({ title: "Reset the price?", body: `The override for ${model} is removed. The default price applies again.`, confirmLabel: "Reset", danger: true })) return;
+    if (!await confirm({ title: "Reset the price?", description: `The override for ${model} is removed. The default price applies again.`, confirmLabel: "Reset", destructive: true })) return;
     save.mutate({ model, remove: true });
   };
 

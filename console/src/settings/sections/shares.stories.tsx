@@ -28,7 +28,7 @@ export const ManagerReviewsShareLinks: Story = {
       await userEvent.click(dialog.getAllByRole("button", { name: "Revoke" })[0]!);
       await expect(await dialog.findByText("Revoke this link?")).toBeVisible();
       await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
-      await waitFor(() => expect(dialog.queryByText("Revoke this link?")).toBeNull());
+      await waitFor(() => expect(dialog.queryByText("Revoke this link?")).toBeNull(), { timeout: 3000 });
       await expect(dialog.getByRole("grid", { name: "Share links" })).toBeVisible();
     });
   },

@@ -1,11 +1,11 @@
 // Usage: the plan and one row per limit window, with its bar, percent and reset time, and a button to use a banked
 // reset. Port of the old console's usage meter (web/conversations.js usageMeter, paintUsage, resetButton).
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { Button, Meter, type ProgressTone } from "slop-ui-components";
+import { Button, Meter, type ProgressTone, confirm } from "slop-ui-components";
 import { get, post, qs } from "../../api";
 import type { Usage } from "../../api-types";
 import { useServer } from "../../data";
-import { confirmAction, notify, notifyError } from "../../ui/feedback";
+import { notify, notifyError } from "../../ui/feedback";
 import { SettingsGroup, SettingsRow } from "../../ui/layout";
 import { resetsLabel, usageLevel, windowName, type UsageLevel } from "./usage-format";
 
@@ -33,9 +33,9 @@ export default function UsageSettings() {
   });
 
   const askAndReset = async (item: UsageWindow) => {
-    const confirmed = await confirmAction({
+    const confirmed = await confirm({
       title: `Use a ${resetName(item)} reset?`,
-      body: item.kind === "5h" ? "Your 5-hour usage goes back to 0%." : "Your 5-hour and weekly usage go back to 0%.",
+      description: item.kind === "5h" ? "Your 5-hour usage goes back to 0%." : "Your 5-hour and weekly usage go back to 0%.",
       confirmLabel: "Use reset",
     });
     if (confirmed) reset.mutate(item);

@@ -1,12 +1,12 @@
 // Account: your profile in the picked server (name, avatar, the fields you saved, who may edit them), the cloud-model
 // opt-in and log out. Port of the old console's My profile tab (web/app.js renderSettings) and nonZdrUserCard.
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { Button, Switch, TextField } from "slop-ui-components";
+import { Button, Switch, TextField, confirm } from "slop-ui-components";
 import { useState } from "react";
 import { ApiError, api, get, post } from "../../api";
 import type { NonZdr, ServerSnapshot, SettingArgs, UserProfile } from "../../api-types";
 import { settingsQuery, useSaveSetting, useServer } from "../../data";
-import { confirmAction, notify, notifyError } from "../../ui/feedback";
+import { notify, notifyError } from "../../ui/feedback";
 import { SectionNote, SettingsGroup, SettingsRow } from "../../ui/layout";
 
 // Same limits as the old form.
@@ -51,7 +51,7 @@ function ProfileGroups({ snapshot, profile }: { snapshot: ServerSnapshot; profil
     onError: notifyError,
   });
   const remove = async (field: string) => {
-    if (await confirmAction({ title: `Remove ${field}?`, confirmLabel: "Remove", danger: true })) saveProfile({ action: "remove", field });
+    if (await confirm({ title: `Remove ${field}?`, confirmLabel: "Remove", destructive: true })) saveProfile({ action: "remove", field });
   };
   const canSave = fieldName.trim() !== "" && fieldValue.trim() !== "";
 
@@ -103,9 +103,9 @@ function DataGroup() {
 
   const change = async (allow: boolean) => {
     // Turning it on needs a confirm. Cancel leaves the switch off.
-    if (allow && !await confirmAction({
+    if (allow && !await confirm({
       title: "Allow cloud models?",
-      body: "When Slopbot's own models are down, your prompts can go to cloud models. Those providers do not keep zero data retention.",
+      description: "When Slopbot's own models are down, your prompts can go to cloud models. Those providers do not keep zero data retention.",
       confirmLabel: "Allow",
     })) return;
     save.mutate(allow);

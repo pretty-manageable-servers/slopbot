@@ -1,12 +1,12 @@
 // Servers (Slopbot team only): every server the bot is in. A server opens to its web transcripts per channel, the
 // cloud-model switch and the webhook rotation. Everyone on the team sees it; without canEdit the writes are disabled.
 import { keepPreviousData, queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button, Cell, Column, Row, Switch, Table, TableBody, TableHeader, TextField } from "slop-ui-components";
+import { Button, Cell, Column, Row, Switch, Table, TableBody, TableHeader, TextField, confirm } from "slop-ui-components";
 import { useEffect, useState } from "react";
 import { ApiError, get, post, qs } from "../../api";
 import type { AdminServer, NonZdr, TranscriptChannel } from "../../api-types";
 import { adminMeQuery } from "../../data";
-import { confirmAction, notify, notifyError } from "../../ui/feedback";
+import { notify, notifyError } from "../../ui/feedback";
 import { SectionNote, ServerMark, SettingsGroup, SettingsRow } from "../../ui/layout";
 import { SERVER_PAGE, pageLabel } from "./servers-format";
 
@@ -137,7 +137,7 @@ function ServerDetail({ server, canEdit, onBack }: { server: AdminServer; canEdi
     onError: notifyError,
   });
   const askRotate = async (channel: TranscriptChannel) => {
-    const ok = await confirmAction({ title: "Make a new web webhook?", body: `The old webhook for #${channel.name} stops working at once.`, confirmLabel: "Make new webhook", danger: true });
+    const ok = await confirm({ title: "Make a new web webhook?", description: `The old webhook for #${channel.name} stops working at once.`, confirmLabel: "Make new webhook", destructive: true });
     if (ok) rotate.mutate(channel);
   };
 

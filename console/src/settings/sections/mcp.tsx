@@ -2,12 +2,12 @@
 // Ported from web/app.js renderMcp. Writes go to POST /api/mcp, which answers { text, mcp }. Connections open in a
 // dialog from their table row; the add form is a dialog from the Add button.
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { Badge, Button, Cell, Column, Disclosure, Modal, NumberField, Row, Select, Switch, Table, TableBody, TableHeader, TextField, type SelectOption } from "slop-ui-components";
+import { Badge, Button, Cell, Column, Disclosure, Modal, NumberField, Row, Select, Switch, Table, TableBody, TableHeader, TextField, type SelectOption, confirm } from "slop-ui-components";
 import { useState, type ReactNode } from "react";
 import { post } from "../../api";
 import type { McpBody, McpConnection, McpSnapshot, McpTool, ServerSnapshot } from "../../api-types";
 import { settingsQuery, useServer } from "../../data";
-import { confirmAction, notify, notifyError } from "../../ui/feedback";
+import { notify, notifyError } from "../../ui/feedback";
 import { SectionNote, SettingsGroup, SettingsRow } from "../../ui/layout";
 import {
   CONCURRENCY, TIMEOUT_MS, connectionReady, draftFromConnection, hostOf, inRange, isConnectionId, newConnectionBody, newConnectionReady,
@@ -148,7 +148,7 @@ function EditForm({ connection, credentialsEnabled, pending, send, close }: {
   const ready = connectionReady(draft);
   const tools: McpTool[] = connection.tools;
   const remove = async () => {
-    if (!(await confirmAction({ title: "Remove this connection?", body: "Its saved credential is removed too.", confirmLabel: "Remove", danger: true }))) return;
+    if (!(await confirm({ title: "Remove this connection?", description: "Its saved credential is removed too.", confirmLabel: "Remove", destructive: true }))) return;
     send({ action: "remove", id: connection.id }, close);
   };
   return (

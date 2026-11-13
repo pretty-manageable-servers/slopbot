@@ -1,11 +1,11 @@
 // Shared links settings: the share links of the picked server, with copy and revoke, as the old console's list
 // (web/shares.js renderShareList). Listing needs Manage Server; without it the bot answers 403 and the section says so.
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { Badge, Button, Cell, Column, Row, Table, TableBody, TableHeader } from "slop-ui-components";
+import { Badge, Button, Cell, Column, Row, Table, TableBody, TableHeader, confirm } from "slop-ui-components";
 import { ApiError, get, post, qs } from "../../api";
 import type { ServerShare } from "../../api-types";
 import { settingsQuery, useServer } from "../../data";
-import { confirmAction, notify, notifyError } from "../../ui/feedback";
+import { notify, notifyError } from "../../ui/feedback";
 import { SectionNote, SettingsGroup } from "../../ui/layout";
 import { activeShares, channelLabel, revokedNotice, shareStatus, shareUrl } from "./shares-format";
 
@@ -44,10 +44,10 @@ export default function Section() {
   if (shares === null) return <SectionNote>Manage Server permission is required to see share links.</SectionNote>;
 
   const askRevoke = async (share: ServerShare) => {
-    if (await confirmAction({ title: "Revoke this link?", body: "Anyone with the link loses access at once.", confirmLabel: "Revoke", danger: true })) revoke.mutate(share.id);
+    if (await confirm({ title: "Revoke this link?", description: "Anyone with the link loses access at once.", confirmLabel: "Revoke", destructive: true })) revoke.mutate(share.id);
   };
   const askRevokeAll = async () => {
-    if (await confirmAction({ title: "Revoke every share link?", body: "Links in this server stop working at once.", confirmLabel: "Revoke all", danger: true })) revokeAll.mutate();
+    if (await confirm({ title: "Revoke every share link?", description: "Links in this server stop working at once.", confirmLabel: "Revoke all", destructive: true })) revokeAll.mutate();
   };
   const copy = (id: string) => navigator.clipboard.writeText(shareUrl(location.origin, id)).then(() => notify("Link copied"), notifyError);
 

@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { Button } from "slop-ui-components";
+import { Button, confirm } from "slop-ui-components";
 import { expect, screen, userEvent, waitFor, within } from "storybook/test";
-import { confirmAction, notify, notifyError } from "./feedback";
+import { notify, notifyError } from "./feedback";
 
 interface Args {
   /** The toast text. */
@@ -21,7 +21,7 @@ interface Args {
 /**
  * Short messages after an action and a confirm dialog before one that deletes things. Both are plain functions:
  * `notify(text, tone)` shows a toast, `notifyError(error)` shows a failed call's message, and
- * `confirmAction({ title, body, confirmLabel, danger })` returns a promise that resolves true on confirm and false
+ * `confirm({ title, body, confirmLabel, danger })` returns a promise that resolves true on confirm and false
  * on cancel or Escape. `FeedbackHost` draws them and is mounted once in the app shell (and in every story). The
  * buttons here call the functions the way the console does.
  */
@@ -41,7 +41,7 @@ const meta = {
   render: (args) => (
     <div className="flex items-center gap-3">
       <Button variant="secondary" onPress={() => notify(args.text, args.tone)}>Show toast</Button>
-      <Button variant="secondary" onPress={() => void confirmAction({ title: args.title, body: args.body, confirmLabel: args.confirmLabel, danger: args.danger })}>Ask to confirm</Button>
+      <Button variant="secondary" onPress={() => void confirm({ title: args.title, description: args.body, confirmLabel: args.confirmLabel, destructive: args.danger })}>Ask to confirm</Button>
     </div>
   ),
 } satisfies Meta<Args>;
@@ -65,7 +65,7 @@ export const Gallery: Story = {
 export const ConfirmingADestructiveAction: Story = {
   render: function Render(args) {
     return (
-      <Button variant="danger" onPress={() => void confirmAction({ title: args.title, body: args.body, confirmLabel: args.confirmLabel, danger: true }).then((ok) => notify(ok ? "All links revoked." : "Nothing changed."))}>
+      <Button variant="danger" onPress={() => void confirm({ title: args.title, description: args.body, confirmLabel: args.confirmLabel, destructive: true }).then((ok) => notify(ok ? "All links revoked." : "Nothing changed."))}>
         Revoke all
       </Button>
     );

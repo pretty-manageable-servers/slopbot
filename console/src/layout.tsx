@@ -4,7 +4,7 @@
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { Outlet, useMatchRoute, useNavigate } from "@tanstack/react-router";
 import { AppShell, ChatList, Menu, MenuItem, MenuSeparator, SidebarItem, defaultIcons } from "agentic-ui-kit";
-import { SegmentedControl } from "slop-ui-components";
+import { SegmentedControl, confirm } from "slop-ui-components";
 import { Pencil, Share, Trash2 } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
 import { ApiError, api } from "./api";
@@ -16,7 +16,7 @@ import { CommandPalette } from "./palette";
 import { BASE } from "./router";
 import { ServersPane } from "./servers/pane";
 import { SettingsDialog, useOpenSettings } from "./settings/dialog";
-import { FeedbackHost, confirmAction, notifyError } from "./ui/feedback";
+import { FeedbackHost, notifyError } from "./ui/feedback";
 import { AccountMenu } from "./ui/account-menu";
 import { icons } from "./ui/icons";
 import { PageLoading, PageNote } from "./ui/page-state";
@@ -105,7 +105,7 @@ function Chats() {
   const [sharing, setSharing] = useState<string | null>(null);
 
   const remove = async (id: string) => {
-    if (!(await confirmAction({ title: "Delete this chat?", body: "This cannot be undone.", confirmLabel: "Delete", danger: true }))) return;
+    if (!(await confirm({ title: "Delete this chat?", description: "This cannot be undone.", confirmLabel: "Delete", destructive: true }))) return;
     await api.remove(id).catch(notifyError);
     if (id === activeId) void navigate({ to: "/" });
     refresh();

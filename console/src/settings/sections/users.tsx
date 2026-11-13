@@ -2,12 +2,12 @@
 // Ported from the old console's Manage users (web/app.js renderUsersAdmin and openUser). The list keeps its search
 // and page when a user is opened, so the detail's Back button returns to the same page.
 import { keepPreviousData, queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Badge, Button, Cell, ProgressBar, Column, NumberField, Row, Select, Table, TableBody, TableHeader, TextField, type SelectOption } from "slop-ui-components";
+import { Badge, Button, Cell, ProgressBar, Column, NumberField, Row, Select, Table, TableBody, TableHeader, TextField, type SelectOption, confirm } from "slop-ui-components";
 import { useEffect, useState, type ReactNode } from "react";
 import { get, post, qs } from "../../api";
 import type { MemberProfile, UserDetail, UserLimitOverride, UserRow, UserUsageWindow, UsersPage } from "../../api-types";
 import { adminMeQuery } from "../../data";
-import { confirmAction, notify, notifyError } from "../../ui/feedback";
+import { notify, notifyError } from "../../ui/feedback";
 import { SectionNote, SettingsGroup, SettingsRow } from "../../ui/layout";
 import {
   avatarSrc, hasWindow, limitError, limitText, money, overrideBody, pageText, serverSummary, sharePct, usageText, when, windowOf, type WindowKind,
@@ -174,7 +174,7 @@ function UserBody({ view, canEdit }: { view: UserDetail; canEdit: boolean }) {
   const write = useUserWrite();
   const reset = async (kind: WindowKind) => {
     const text = RESET[kind];
-    if (await confirmAction({ title: text.title, body: text.body, confirmLabel: "Reset", danger: true })) {
+    if (await confirm({ title: text.title, description: text.body, confirmLabel: "Reset", destructive: true })) {
       write.mutate({ path: "reset", body: { user: view.user.id, kind }, done: text.done });
     }
   };
@@ -287,7 +287,7 @@ function OverrideForm({ userId, override, write }: { userId: string; override: U
     write.mutate({ path: "override", body, done: cleared ? "The override is cleared. The global limit applies." : "The override is saved." });
   };
   const remove = async () => {
-    const ok = await confirmAction({ title: "Remove this override?", body: "The user goes back to the global limits in all servers.", confirmLabel: "Remove", danger: true });
+    const ok = await confirm({ title: "Remove this override?", description: "The user goes back to the global limits in all servers.", confirmLabel: "Remove", destructive: true });
     if (ok) write.mutate({ path: "override", body: overrideBody(userId, "", ""), done: "The override is cleared. The global limit applies." });
   };
   return (
