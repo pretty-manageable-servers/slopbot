@@ -3,13 +3,12 @@
 // rules and texts that can be tested are in bot-format.ts.
 import { queryOptions, useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { Markdown } from "agentic-ui-kit";
-import { Badge, Button, Cell, Column, Modal, NumberField, Row, SegmentedControl, Select, Switch, Table, TableBody, TableHeader, TextField, type SelectOption, confirm } from "slop-ui-components";
+import { Badge, Button, confirm, DataTable, Modal, NumberField, SegmentedControl, Select, SettingsGroup, SettingsRow, Switch, TextField } from "slop-ui-components";
 import { useState } from "react";
 import { get, post } from "../../api";
 import type { Breaker, KeyedProvider, Llm, LlmOverride, SystemPrompt, WebKey, WebKeys } from "../../api-types";
 import { adminMeQuery } from "../../data";
 import { notify, notifyError } from "../../ui/feedback";
-import { SettingsGroup, SettingsRow } from "../../ui/layout";
 import {
   PROVIDER_NAMES, addKeyBody, backupKeyText, capsProblem, keyErrorText, llmBody, llmFormFrom, llmProblem, llmStateText, secretProblem,
   type LlmBody, type LlmForm,
@@ -24,12 +23,12 @@ interface LlmTest { ok: boolean; code?: string; ms: number }
 type Caps = Record<KeyedProvider, number>;
 
 const PROVIDERS: { id: KeyedProvider; label: string }[] = [{ id: "tavily", label: "Tavily" }, { id: "firecrawl", label: "Firecrawl" }];
-const OVERRIDES: SelectOption[] = [
+const OVERRIDES = [
   { id: "auto", label: "Auto (the breaker decides)" },
   { id: "normal", label: "Normal" },
   { id: "fallback", label: "Backup model" },
   { id: "offline", label: "Offline" },
-];
+] as const;
 
 export default function Section() {
   const { data: team } = useSuspenseQuery(adminMeQuery);
@@ -70,11 +69,10 @@ function SystemPromptGroup({ edit }: { edit: boolean }) {
   };
 
   return (
-    <SettingsGroup title="System prompt" description="For all servers. Empty uses the default."
-      actions={edit && <Button variant="secondary" size="sm" isDisabled={save.isPending} onPress={() => save.mutate(draft.trim())}>Save</Button>}>
-      <SettingsRow stack label="Instructions">
+    <SettingsGroup title="System prompt" description="For all servers. Empty uses the default.">
+      <SettingsRow label="Instructions" className="flex-col items-stretch">
         <div className="flex flex-col gap-1">
-          <SegmentedControl aria-label="Editor view" options={PROMPT_VIEWS} value={view} onChange={(next) => setView(next as PromptView)} className="self-start" />
+          <SegmentedControl aria-label="Editor view" options={PROMPT_VIEWS} value={view} onChange={(next) => setView(next)} className="self-start" />
           {view === "preview"
             ? <div className="min-h-60 rounded-sm border border-border bg-surface px-2.5 py-1.5 text-ui">
                 <Markdown>{draft.trim() ? draft : prompt.default}</Markdown>
@@ -83,10 +81,10 @@ function SystemPromptGroup({ edit }: { edit: boolean }) {
           <p className="m-0 text-right text-ui-sm text-muted" aria-live="polite">{draft.length} / {prompt.max}</p>
         </div>
       </SettingsRow>
-      <SettingsRow label="Default prompt" help="Replaces the saved prompt for all servers.">
+      <SettingsRow label="Default prompt" description="Replaces the saved prompt for all servers.">
         <Button variant="outline" size="sm" isDisabled={!edit || save.isPending} onPress={useDefault}>Use default</Button>
       </SettingsRow>
-      <SettingsRow label="Full prompt" help="Read only. The tool list is sent as function definitions with their schemas, which are not shown here.">
+      <SettingsRow label="Full prompt" description="Read only. The tool list is sent as function definitions with their schemas, which are not shown here.">
         <Button variant="outline" size="sm" onPress={() => setShowFull(true)}>Show the full prompt</Button>
       </SettingsRow>
       <Modal isOpen={showFull} onOpenChange={setShowFull} title="Full prompt the model gets" size="lg">
@@ -96,6 +94,7 @@ function SystemPromptGroup({ edit }: { edit: boolean }) {
             : <Markdown>{full.data}</Markdown>}
         </div>
       </Modal>
+    {edit && <div className="flex justify-end"><Button variant="secondary" size="sm" isDisabled={save.isPending} onPress={() => save.mutate(draft.trim())}>Save</Button></div>}
     </SettingsGroup>
   );
 }
@@ -135,9 +134,8 @@ function WebKeysGroup({ edit }: { edit: boolean }) {
   };
 
   return (
-    <SettingsGroup title="Web search keys" description="Team keys for Tavily and Firecrawl. You can delete your own keys. Editors can delete any key."
-      actions={<Button variant="secondary" size="sm" isDisabled={!webKeys.enabled} onPress={() => setAdding(true)}>Add key</Button>}>
-      <SettingsRow label="Web search" help={`Usage counts per key for ${webKeys.month}.`}>
+    <SettingsGroup title="Web search keys" description="Team keys for Tavily and Firecrawl. You can delete your own keys. Editors can delete any key.">
+      <SettingsRow label="Web search" description={`Usage counts per key for ${webKeys.month}.`}>
         <Badge tone={webKeys.enabled ? "success" : "warning"}>{webKeys.enabled ? "On" : "Off"}</Badge>
       </SettingsRow>
       {!webKeys.enabled && (
@@ -145,43 +143,38 @@ function WebKeysGroup({ edit }: { edit: boolean }) {
           Web search keys are off. The operator must set WEB_KEYS_SECRET on the server, then restart Slopbot. Until then no key can be added.
         </p>
       )}
-      <div className="py-3">
-        <Table aria-label="Web search keys">
-          <TableHeader>
-            <Column isRowHeader>Service</Column>
-            <Column>Label</Column>
-            <Column>Key</Column>
-            <Column>Added by</Column>
-            <Column align="end">Used this month</Column>
-            <Column>Status</Column>
-            <Column align="end"><span className="sr-only">Actions</span></Column>
-          </TableHeader>
-          <TableBody items={webKeys.keys} emptyState="No keys yet.">
-            {(key) => (
-              <Row id={key.id}>
-                <Cell>{PROVIDER_NAMES[key.provider]}</Cell>
-                <Cell>{key.label || PROVIDER_NAMES[key.provider]}</Cell>
-                <Cell><code>••••{key.last4}</code></Cell>
-                <Cell>{key.mine ? "You" : <code>{key.owner}</code>}</Cell>
-                <Cell align="end">{key.used} / {webKeys.caps[key.provider]} credits</Cell>
-                <Cell>
-                  <div className="flex flex-col items-start gap-1">
-                    {key.exhausted && <Badge tone="warning">Out of credits</Badge>}
-                    {key.lastError && <span className={`text-ui-sm ${key.lastError.exhausted ? "text-danger" : "text-muted"}`}>{keyErrorText(key.lastError)}</span>}
-                  </div>
-                </Cell>
-                <Cell align="end">
-                  <div className="flex justify-end gap-1">
-                    {edit && (key.exhausted || key.lastError) && <Button variant="ghost" size="sm" isDisabled={reset.isPending} onPress={() => reset.mutate(key.id)}>Reset</Button>}
-                    {(key.mine || edit) && <Button variant="ghost" size="sm" isDisabled={remove.isPending} onPress={() => askRemove(key)}>Delete</Button>}
-                  </div>
-                </Cell>
-              </Row>
-            )}
-          </TableBody>
-        </Table>
-      </div>
-      <SettingsRow label="Monthly cap per key" help="Credits one key may use each month before Slopbot moves on to another key.">
+      <DataTable
+        aria-label="Web search keys"
+        rows={webKeys.keys}
+        rowKey={(key) => key.id}
+        emptyState="No keys yet."
+        columns={[
+          { id: "service", header: "Service", cell: (key) => PROVIDER_NAMES[key.provider] },
+          { id: "label", header: "Label", cell: (key) => key.label || PROVIDER_NAMES[key.provider] },
+          { id: "key", header: "Key", cell: (key) => <code>••••{key.last4}</code> },
+          { id: "owner", header: "Added by", cell: (key) => key.mine ? "You" : <code>{key.owner}</code> },
+          { id: "used", header: "Used this month", align: "end", cell: (key) => `${key.used} / ${webKeys.caps[key.provider]} credits` },
+          {
+            id: "status", header: "Status", cellClassName: "h-auto py-2 whitespace-normal",
+            cell: (key) => (
+              <div className="flex flex-col items-start gap-1">
+                {key.exhausted && <Badge tone="warning">Out of credits</Badge>}
+                {key.lastError && <span className={`text-ui-sm ${key.lastError.exhausted ? "text-danger" : "text-muted"}`}>{keyErrorText(key.lastError)}</span>}
+              </div>
+            ),
+          },
+          {
+            id: "actions", header: <span className="sr-only">Actions</span>, align: "end",
+            cell: (key) => (
+              <div className="flex justify-end gap-1">
+                {edit && (key.exhausted || key.lastError) && <Button variant="ghost" size="sm" isDisabled={reset.isPending} onPress={() => reset.mutate(key.id)}>Reset</Button>}
+                {(key.mine || edit) && <Button variant="ghost" size="sm" isDisabled={remove.isPending} onPress={() => askRemove(key)}>Delete</Button>}
+              </div>
+            ),
+          },
+        ]}
+      />
+      <SettingsRow label="Monthly cap per key" description="Credits one key may use each month before Slopbot moves on to another key.">
         {edit ? (
           <div className="flex flex-wrap items-end gap-2">
             {PROVIDERS.map((p) => (
@@ -195,6 +188,7 @@ function WebKeysGroup({ edit }: { edit: boolean }) {
         )}
       </SettingsRow>
       <AddKeyModal open={adding} onClose={() => setAdding(false)} onAdded={keep} enabled={webKeys.enabled} />
+    <div className="flex justify-end"><Button variant="secondary" size="sm" isDisabled={!webKeys.enabled} onPress={() => setAdding(true)}>Add key</Button></div>
     </SettingsGroup>
   );
 }
@@ -225,7 +219,7 @@ function AddKeyModal({ open, onClose, onAdded, enabled }: { open: boolean; onClo
         </>
       )}>
       <div className="flex flex-col gap-3 text-ui">
-        <Select label="Service" options={PROVIDERS} value={provider} onChange={(id) => setProvider(id as KeyedProvider)} isDisabled={!enabled} />
+        <Select label="Service" options={PROVIDERS} value={provider} onChange={(id) => setProvider(id)} isDisabled={!enabled} />
         <TextField label="Label (optional)" value={label} onChange={setLabel} maxLength={60} autoComplete="off" isDisabled={!enabled} />
         <TextField label="API key" type="password" value={secret} onChange={setSecret} maxLength={200} autoComplete="off" isDisabled={!enabled} />
         <p className="m-0 text-muted">Only the last four characters show again. The key is not sent back to the browser.</p>
@@ -261,11 +255,10 @@ function ModelGroup({ edit }: { edit: boolean }) {
   const { fallback } = llm.settings;
 
   return (
-    <SettingsGroup title="Model" description="Slopbot's own models and the backup model. Applies to all servers."
-      actions={edit && <Button variant="secondary" size="sm" isDisabled={save.isPending} onPress={submit}>Save</Button>}>
+    <SettingsGroup title="Model" description="Slopbot's own models and the backup model. Applies to all servers.">
       <p className="m-0 py-3 text-ui">{llmStateText(llm.state)}</p>
       <SettingsRow label="Mode">
-        <Select variant="quiet" aria-label="Mode" options={OVERRIDES} value={form.override} onChange={(override) => patch({ override: override as LlmOverride })} isDisabled={!edit} />
+        <Select variant="quiet" aria-label="Mode" options={OVERRIDES} value={form.override} onChange={(override) => patch({ override: override })} isDisabled={!edit} />
       </SettingsRow>
 
       <h4 className="m-0 pt-5 text-ui font-semibold">Circuit breaker</h4>
@@ -299,8 +292,8 @@ function ModelGroup({ edit }: { edit: boolean }) {
       <SettingsRow label="Output tokens">
         <NumberField aria-label="Output tokens" value={form.backup.outputTokens} onChange={(outputTokens) => patchBackup({ outputTokens })} isDisabled={!edit} />
       </SettingsRow>
-      <Switch toggleSide="end" className="py-3" description="Untick ZDR for a cloud model. A cloud model answers only users who opted in (see Account)." isSelected={form.backup.zdr} onChange={(zdr) => patchBackup({ zdr })} isDisabled={!edit}>Zero data retention (ZDR)</Switch>
-      <SettingsRow label="API key" help={backupKeyText(fallback)}>
+      <Switch toggleSide="end" description="Untick ZDR for a cloud model. A cloud model answers only users who opted in (see Account)." isSelected={form.backup.zdr} onChange={(zdr) => patchBackup({ zdr })} isDisabled={!edit}>Zero data retention (ZDR)</Switch>
+      <SettingsRow label="API key" description={backupKeyText(fallback)}>
         <div className="flex flex-wrap items-center gap-2">
           <TextField aria-label="API key" type="password" value={form.key} onChange={(key) => patch({ key, clearKey: false })} autoComplete="off"
             placeholder={fallback?.keyLast4 ? `Saved (…${fallback.keyLast4}). Leave blank to keep` : "Paste the key"} isDisabled={!edit} className="w-64" />
@@ -313,10 +306,11 @@ function ModelGroup({ edit }: { edit: boolean }) {
         </div>
       </SettingsRow>
       {edit && (
-        <SettingsRow label="Test the backup model" help="The test uses the saved backup model. Save first.">
+        <SettingsRow label="Test the backup model" description="The test uses the saved backup model. Save first.">
           <Button variant="outline" size="sm" isDisabled={test.isPending} onPress={() => test.mutate()}>Test</Button>
         </SettingsRow>
       )}
+    {edit && <div className="flex justify-end"><Button variant="secondary" size="sm" isDisabled={save.isPending} onPress={submit}>Save</Button></div>}
     </SettingsGroup>
   );
 }

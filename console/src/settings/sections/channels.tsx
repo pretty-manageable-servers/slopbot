@@ -2,12 +2,12 @@
 // import progress, pause or resume, and the window of days kept). Ported from the old console's Channels tab; the
 // pure parts are in channels-format.ts.
 import { useSuspenseQuery } from "@tanstack/react-query";
-import { Button, NumberField, ProgressBar, Switch, TextField, confirm } from "slop-ui-components";
+import { Button, confirm, NumberField, ProgressBar, SearchField, SettingsGroup, SettingsRow, Switch } from "slop-ui-components";
 import { useState } from "react";
 import type { SnapshotChannel } from "../../api-types";
 import { settingsQuery, useSaveSetting, useServer, type SaveSetting } from "../../data";
 import { notify, notifyError } from "../../ui/feedback";
-import { SectionNote, SettingsGroup, SettingsRow } from "../../ui/layout";
+import { SectionNote } from "../../ui/layout";
 import { historyProgress, historyStatus, isWindowDays, needsChannelFilter, visibleChannels, type HistoryStatus } from "./channels-format";
 
 // While an import runs, the snapshot is read again every 2 seconds, as the old console did.
@@ -26,7 +26,7 @@ export default function Section() {
   const rows = visibleChannels(channels, filter);
   return (
     <SettingsGroup description="Manage monitored channels and saved chat history. Only saved lessons and memories use embeddings.">
-      {needsChannelFilter(channels.length) && <TextField type="search" aria-label="Filter channels" placeholder="Filter channels" value={filter} onChange={setFilter} className="py-3" />}
+      {needsChannelFilter(channels.length) && <SearchField aria-label="Filter channels" placeholder="Filter channels" value={filter} onChange={setFilter} className="py-3" />}
       {!channels.length
         ? <SectionNote>No text channels are visible to both you and Slopbot.</SectionNote>
         : rows.length
@@ -66,7 +66,7 @@ function ChannelRow({ server, channel }: { server: string; channel: SnapshotChan
 
   return (
     <div className="flex flex-col">
-      <SettingsRow label={`#${name}`} help={help}>
+      <SettingsRow label={`#${name}`} description={help}>
         <Switch aria-label={`Monitor #${name}`} isSelected={monitored} onChange={setMonitored} isDisabled={busy} />
       </SettingsRow>
       {monitored && history && (

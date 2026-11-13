@@ -2,13 +2,13 @@
 // caps, and lifetime usage. Ported from the old console's Bot admin and Users tab (web/app.js 473-660, 966-1024).
 // Money, number and range rules are in limits-format.ts.
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery, type QueryKey } from "@tanstack/react-query";
-import { Badge, Button, Cell, Column, NumberField, ProgressBar, Row, Table, TableBody, TableHeader, TextField, confirm } from "slop-ui-components";
+import { Badge, Button, confirm, DataTable, NumberField, ProgressBar, SettingsGroup, SettingsRow, TextField } from "slop-ui-components";
 import { useState } from "react";
 import { get, post } from "../../api";
 import type { BotReplies, LimitsView, ModelPrice, Prices, ScheduleLimits, UsageRow, UsageTotals } from "../../api-types";
 import { adminMeQuery } from "../../data";
 import { notify, notifyError } from "../../ui/feedback";
-import { ServerMark, SettingsGroup, SettingsRow } from "../../ui/layout";
+import { ServerMark } from "../../ui/layout";
 import {
   BOT_REPLY_RULES, LIMITS_RULES, PRICE_RULES, SCHEDULE_RULES, botRepliesBody, botRepliesForm, botRepliesIssues, checkFields,
   costText, count, dollarsOf, iconUrl, limitsBody, modelError, money, priceBody, priceLabel, scheduleBody, sharePercent,
@@ -60,7 +60,7 @@ function Help({ text, error }: { text?: string; error?: string }) {
 }
 
 function SaveButton({ pending, onPress }: { pending: boolean; onPress: () => void }) {
-  return <Button variant="secondary" size="sm" onPress={onPress} isDisabled={pending}>Save</Button>;
+  return <div className="flex justify-end"><Button variant="secondary" size="sm" onPress={onPress} isDisabled={pending}>Save</Button></div>;
 }
 
 export default function Limits() {
@@ -91,16 +91,17 @@ function CostLimits({ canEdit }: { canEdit: boolean }) {
   const shown = tried ? issues : {};
   const defaults = data.defaults;
   return (
-    <SettingsGroup title="Usage limits" description="For each user, across all servers. Zero means no limit." actions={canEdit && <SaveButton pending={save.isPending} onPress={submit} />}>
-      <SettingsRow label="5-hour limit" help={<Help text={`In dollars. Default ${money(defaults.five_hour_cost_micros)}.`} error={shown.five} />}>
+    <SettingsGroup title="Usage limits" description="For each user, across all servers. Zero means no limit.">
+      <SettingsRow label="5-hour limit" description={<Help text={`In dollars. Default ${money(defaults.five_hour_cost_micros)}.`} error={shown.five} />}>
         <NumberField aria-label="5-hour limit" value={form.five} onChange={(five) => setForm({ ...form, five })} isDisabled={!canEdit} />
       </SettingsRow>
-      <SettingsRow label="Weekly limit" help={<Help text={`In dollars. Default ${money(defaults.week_cost_micros)}.`} error={shown.week} />}>
+      <SettingsRow label="Weekly limit" description={<Help text={`In dollars. Default ${money(defaults.week_cost_micros)}.`} error={shown.week} />}>
         <NumberField aria-label="Weekly limit" value={form.week} onChange={(week) => setForm({ ...form, week })} isDisabled={!canEdit} />
       </SettingsRow>
-      <SettingsRow label="Grace percent" help={<Help text={`Default ${defaults.grace_percent}%.`} error={shown.grace} />}>
+      <SettingsRow label="Grace percent" description={<Help text={`Default ${defaults.grace_percent}%.`} error={shown.grace} />}>
         <NumberField aria-label="Grace percent" value={form.grace} onChange={(grace) => setForm({ ...form, grace })} isDisabled={!canEdit} />
       </SettingsRow>
+    {canEdit && <SaveButton pending={save.isPending} onPress={submit} />}
     </SettingsGroup>
   );
 }
@@ -138,54 +139,45 @@ function ModelPrices({ canEdit }: { canEdit: boolean }) {
       title="Model prices"
       description={`Dollars per 1 million tokens, for all servers. Each model starts at its default: the configured price, or the fallback (${priceLabel(fallback.input)} input, ${priceLabel(fallback.cached_input)} cached input, ${priceLabel(fallback.output)} output) when none is set.`}
     >
-      <Table aria-label="Model prices">
-        <TableHeader>
-          <Column isRowHeader>Model</Column>
-          {PRICE_FIELDS.map(([key, label]) => <Column key={key} id={key} align="end">{label}</Column>)}
-          <Column>Source</Column>
-          {canEdit && <Column align="end"><span className="sr-only">Actions</span></Column>}
-        </TableHeader>
-        <TableBody items={data.models} emptyState="No models yet.">
-          {(row) => {
-            const editing = edit?.model === row.model ? edit : null;
-            return (
-              <Row id={row.model}>
-                <Cell><span className="flex items-center gap-2"><code>{row.model}</code>{row.override && <Badge tone="info">Override</Badge>}</span></Cell>
-                {PRICE_FIELDS.map(([key, label]) => (
-                  <Cell key={key} align="end">
-                    {editing ? (
-                      <span className="inline-flex flex-col items-end gap-1">
-                        <NumberField aria-label={`${label} for ${row.model}`} value={editing.form[key]} onChange={(value) => setEdit({ ...editing, form: { ...editing.form, [key]: value } })} className="w-24" />
-                        {editIssues[key] && <span role="alert" className="text-ui-sm text-danger">{editIssues[key]}</span>}
-                      </span>
-                    ) : <PriceText row={row} field={key} />}
-                  </Cell>
-                ))}
-                <Cell><span className="text-muted">{row.default.source === "fallback" ? "Fallback" : "Config"}</span></Cell>
-                {canEdit && (
-                  <Cell align="end">
-                    <span className="flex justify-end gap-1">
-                      {editing ? (
-                        <>
-                          <Button variant="secondary" size="sm" onPress={saveEdit} isDisabled={save.isPending}>Save</Button>
-                          <Button variant="ghost" size="sm" onPress={() => setEdit(null)}>Cancel</Button>
-                        </>
-                      ) : (
-                        <>
-                          <Button variant="ghost" size="sm" onPress={() => setEdit({ model: row.model, form: pricesForm(row.override ?? row.default), tried: false })}>Edit</Button>
-                          {row.override && <Button variant="ghost" size="sm" onPress={() => resetPrice(row.model)}>Reset</Button>}
-                        </>
-                      )}
-                    </span>
-                  </Cell>
+      <DataTable
+        aria-label="Model prices"
+        rows={data.models}
+        rowKey={(row) => row.model}
+        emptyState="No models yet."
+        columns={[
+          { id: "model", header: "Model", cell: (row) => <span className="flex items-center gap-2"><code>{row.model}</code>{row.override && <Badge>Override</Badge>}</span> },
+          ...PRICE_FIELDS.map(([key, label]) => ({
+            id: key, header: label, align: "end" as const,
+            cell: (row: PriceRow) => edit?.model === row.model ? (
+              <span className="inline-flex flex-col items-end gap-1">
+                <NumberField aria-label={`${label} for ${row.model}`} value={edit.form[key]} onChange={(value) => setEdit({ ...edit, form: { ...edit.form, [key]: value } })} className="w-24" />
+                {editIssues[key] && <span role="alert" className="text-ui-sm text-danger">{editIssues[key]}</span>}
+              </span>
+            ) : <PriceText row={row} field={key} />,
+          })),
+          { id: "source", header: "Source", cell: (row) => <span className="text-muted">{row.default.source === "fallback" ? "Fallback" : "Config"}</span> },
+          ...(canEdit ? [{
+            id: "actions", header: <span className="sr-only">Actions</span>, align: "end" as const,
+            cell: (row: PriceRow) => (
+              <span className="flex justify-end gap-1">
+                {edit?.model === row.model ? (
+                  <>
+                    <Button variant="secondary" size="sm" onPress={saveEdit} isDisabled={save.isPending}>Save</Button>
+                    <Button variant="ghost" size="sm" onPress={() => setEdit(null)}>Cancel</Button>
+                  </>
+                ) : (
+                  <>
+                    <Button variant="ghost" size="sm" onPress={() => setEdit({ model: row.model, form: pricesForm(row.override ?? row.default), tried: false })}>Edit</Button>
+                    {row.override && <Button variant="ghost" size="sm" onPress={() => resetPrice(row.model)}>Reset</Button>}
+                  </>
                 )}
-              </Row>
-            );
-          }}
-        </TableBody>
-      </Table>
+              </span>
+            ),
+          }] : []),
+        ]}
+      />
       {canEdit && (
-        <SettingsRow label="Add a model" stack help={<Help text="Sets an override for a model that is not in the list." error={addError} />}>
+        <SettingsRow label="Add a model" className="flex-col items-stretch" description={<Help text="Sets an override for a model that is not in the list." error={addError} />}>
           <div className="flex flex-wrap items-end gap-2">
             <TextField aria-label="Model ID" value={added.model} onChange={(model) => setAdded({ ...added, model })} placeholder="Model ID" className="w-52" />
             {PRICE_FIELDS.map(([key, label]) => (
@@ -239,26 +231,26 @@ function BotReplyLimits({ canEdit }: { canEdit: boolean }) {
     <SettingsGroup
       title="Bot replies"
       description={`For all servers, counted for each channel. Default: ${defaults.replies} in ${defaults.minutes} minutes. Zero replies stops all replies to bots.`}
-      actions={canEdit && <SaveButton pending={save.isPending} onPress={submit} />}
     >
-      <SettingsRow label="Replies" help={<Help text="Replies allowed in the window below." error={shown.replies} />}>
+      <SettingsRow label="Replies" description={<Help text="Replies allowed in the window below." error={shown.replies} />}>
         <NumberField aria-label="Replies" value={form.replies} onChange={(replies) => setForm({ ...form, replies })} isDisabled={!canEdit} />
       </SettingsRow>
-      <SettingsRow label="Minutes" help={<Help text="The window the replies count in." error={shown.minutes} />}>
+      <SettingsRow label="Minutes" description={<Help text="The window the replies count in." error={shown.minutes} />}>
         <NumberField aria-label="Minutes" value={form.minutes} onChange={(minutes) => setForm({ ...form, minutes })} isDisabled={!canEdit} />
       </SettingsRow>
-      <SettingsRow label="Temporary limit" help={temporaryText}>
+      <SettingsRow label="Temporary limit" description={temporaryText}>
         {canEdit && temporary && <Button variant="outline" size="sm" onPress={endTemporary} isDisabled={save.isPending}>End temporary limit</Button>}
       </SettingsRow>
-      <SettingsRow label="Temporary replies" help={<Help error={shown.tempReplies} />}>
+      <SettingsRow label="Temporary replies" description={<Help error={shown.tempReplies} />}>
         <NumberField aria-label="Temporary replies" value={form.tempReplies} onChange={(tempReplies) => setForm({ ...form, tempReplies })} isDisabled={!canEdit} />
       </SettingsRow>
-      <SettingsRow label="Temporary minutes" help={<Help error={shown.tempMinutes} />}>
+      <SettingsRow label="Temporary minutes" description={<Help error={shown.tempMinutes} />}>
         <NumberField aria-label="Temporary minutes" value={form.tempMinutes} onChange={(tempMinutes) => setForm({ ...form, tempMinutes })} isDisabled={!canEdit} />
       </SettingsRow>
-      <SettingsRow label="Lasts (minutes)" help={<Help text="How long the temporary limit lasts. Empty leaves the temporary limit as it is." error={shown.tempFor} />}>
+      <SettingsRow label="Lasts (minutes)" description={<Help text="How long the temporary limit lasts. Empty leaves the temporary limit as it is." error={shown.tempFor} />}>
         <NumberField aria-label="Lasts (minutes)" value={form.tempFor} onChange={(tempFor) => setForm({ ...form, tempFor })} isDisabled={!canEdit} />
       </SettingsRow>
+    {canEdit && <SaveButton pending={save.isPending} onPress={submit} />}
     </SettingsGroup>
   );
 }
@@ -285,12 +277,13 @@ function ScheduleCaps({ canEdit }: { canEdit: boolean }) {
     { key: "minTool", label: "Minimum minutes: tool", help: `Default ${defaults.minMinutes.tool}.` },
   ];
   return (
-    <SettingsGroup title="Schedules" description="For all servers. Caps the scheduled tasks each server and user may have, and how often each kind may run." actions={canEdit && <SaveButton pending={save.isPending} onPress={submit} />}>
+    <SettingsGroup title="Schedules" description="For all servers. Caps the scheduled tasks each server and user may have, and how often each kind may run.">
       {rows.map(({ key, label, help }) => (
-        <SettingsRow key={key} label={label} help={<Help text={help} error={shown[key]} />}>
+        <SettingsRow key={key} label={label} description={<Help text={help} error={shown[key]} />}>
           <NumberField aria-label={label} value={form[key]} onChange={(value) => setForm({ ...form, [key]: value })} isDisabled={!canEdit} />
         </SettingsRow>
       ))}
+    {canEdit && <SaveButton pending={save.isPending} onPress={submit} />}
     </SettingsGroup>
   );
 }
@@ -300,58 +293,29 @@ function TotalUsage() {
   const { data } = useSuspenseQuery(totalsQuery);
   const total = data.total;
   const share = (row: UsageRow) => sharePercent(row.cost_micros, total.cost_micros);
-  const heads = (first: string) => (
-    <TableHeader>
-      <Column isRowHeader>{first}</Column>
-      <Column align="end">Requests</Column>
-      <Column align="end">Total tokens</Column>
-      <Column align="end">Cost ($)</Column>
-      <Column align="end">Share of cost</Column>
-    </TableHeader>
-  );
-  const numbers = (row: UsageRow) => (
-    <>
-      <Cell numeric>{count(row.requests)}</Cell>
-      <Cell numeric>{count(row.total_tokens)}</Cell>
-      <Cell numeric>{costText(row.cost_micros)}</Cell>
-      <Cell align="end"><ShareBar percent={share(row)} /></Cell>
-    </>
-  );
+  const numbers = [
+    { id: "requests", header: "Requests", numeric: true, cell: (row: UsageRow) => count(row.requests) },
+    { id: "tokens", header: "Total tokens", numeric: true, cell: (row: UsageRow) => count(row.total_tokens) },
+    { id: "cost", header: "Cost ($)", numeric: true, cell: (row: UsageRow) => costText(row.cost_micros) },
+    { id: "share", header: "Share of cost", align: "end" as const, cell: (row: UsageRow) => <ShareBar percent={share(row)} /> },
+  ];
   return (
     <SettingsGroup title="Total usage" description="Lifetime totals for every server. Total tokens is input (uncached) plus input (cached) plus output. The server and model tables show the top 10 by cost.">
-      <Table aria-label="Total usage, all servers">
-        <TableHeader>
-          <Column isRowHeader>Scope</Column>
-          <Column align="end">Requests</Column>
-          <Column align="end">Total tokens</Column>
-          <Column align="end">Cost ($)</Column>
-        </TableHeader>
-        <TableBody>
-          <Row id="all">
-            <Cell>All servers</Cell>
-            <Cell numeric>{count(total.requests)}</Cell>
-            <Cell numeric>{count(total.total_tokens)}</Cell>
-            <Cell numeric>{costText(total.cost_micros)}</Cell>
-          </Row>
-        </TableBody>
-      </Table>
-      <Table aria-label="Usage by server">
-        {heads("Server")}
-        <TableBody items={data.servers} emptyState="No usage yet.">
-          {(row) => (
-            <Row id={row.server}>
-              <Cell><span className="flex items-center gap-2"><ServerMark server={{ name: row.name, icon: iconUrl(row.icon) }} />{row.name}</span></Cell>
-              {numbers(row)}
-            </Row>
-          )}
-        </TableBody>
-      </Table>
-      <Table aria-label="Usage by model">
-        {heads("Model")}
-        <TableBody items={data.models} emptyState="No usage yet.">
-          {(row) => <Row id={row.model}><Cell><code>{row.model}</code></Cell>{numbers(row)}</Row>}
-        </TableBody>
-      </Table>
+      <DataTable aria-label="Total usage, all servers" rows={[total]} rowKey={() => "all"} columns={numbers.slice(0, 3)} />
+      <DataTable
+        aria-label="Usage by server"
+        rows={data.servers}
+        rowKey={(row) => row.server}
+        emptyState="No usage yet."
+        columns={[{ id: "server", header: "Server", cell: (row) => <span className="flex items-center gap-2"><ServerMark server={{ name: row.name, icon: iconUrl(row.icon) }} />{row.name}</span> }, ...numbers]}
+      />
+      <DataTable
+        aria-label="Usage by model"
+        rows={data.models}
+        rowKey={(row) => row.model}
+        emptyState="No usage yet."
+        columns={[{ id: "model", header: "Model", cell: (row) => <code>{row.model}</code> }, ...numbers]}
+      />
     </SettingsGroup>
   );
 }
