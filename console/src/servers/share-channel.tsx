@@ -1,7 +1,7 @@
-// The share link of one channel, in a kit Modal. A link is a frozen copy of the channel's newest messages (up to 200)
+// The share link of one channel, in a Modal. A link is a frozen copy of the channel's newest messages (up to 200)
 // at /s/<id> on this site. "Create link" makes one (POST /api/shares, src/web-console.ts) and copies it.
 import { useMutation } from "@tanstack/react-query";
-import { Button, Modal } from "agentic-ui-kit";
+import { Button, Checkbox, Modal } from "slop-ui-components";
 import { useState } from "react";
 import { post } from "../api";
 import type { CreateShareBody } from "../api-types";
@@ -20,17 +20,16 @@ export function ShareChannelDialog({ server, channel, open, onClose }: { server:
   });
 
   return (
-    <Modal isOpen={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Share this conversation" className="max-w-md">
-      <div className="flex flex-col gap-4 text-sm">
-        <p className="text-chat-muted">Shares the newest messages in this channel (up to 200). The copy is frozen; later messages are not added. Search engines do not list the link.</p>
-        <label className="flex items-center gap-2 font-chat-sans text-(length:--chat-ui-font-size)">
-          <input type="checkbox" className="accent-(--chat-accent)" checked={thinking} onChange={(e) => setThinking(e.target.checked)} />
-          Include Slopbot reasoning and tool activity
-        </label>
-        <div className="flex justify-end gap-2">
+    <Modal isOpen={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Share this conversation" size="md"
+      footer={
+        <>
           <Button variant="outline" onPress={onClose}>Close</Button>
           <Button variant="primary" isDisabled={create.isPending} onPress={() => create.mutate()}>Create link</Button>
-        </div>
+        </>
+      }>
+      <div className="flex flex-col gap-4">
+        <p className="m-0 text-muted">Shares the newest messages in this channel (up to 200). The copy is frozen; later messages are not added. Search engines do not list the link.</p>
+        <Checkbox isSelected={thinking} onChange={setThinking}>Include Slopbot reasoning and tool activity</Checkbox>
       </div>
     </Modal>
   );

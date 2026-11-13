@@ -2,7 +2,8 @@
 // (GET /api/conversations/:channel/runs). Picking one sets ?run=<id> on the page, which shows that conversation.
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { Button, Panel } from "agentic-ui-kit";
+import { Panel } from "agentic-ui-kit";
+import { Button } from "slop-ui-components";
 import type { ConversationSummary } from "../api-types";
 import { get, qs } from "../api";
 import { ago } from "../ui/time";
@@ -32,7 +33,7 @@ export function RunsPanel({ server, channel, active, onClose, className }: { ser
       aria-label="Conversations"
       className={className}
     >
-      {note && <p className="px-4 text-chat-muted">{note}</p>}
+      {note && <p className="px-4 text-muted">{note}</p>}
       <ul className="flex flex-col gap-1 p-2">
         {items.map((item) => (
           <li key={item.id}>
@@ -40,10 +41,10 @@ export function RunsPanel({ server, channel, active, onClose, className }: { ser
               variant="ghost"
               aria-current={item.id === active ? "true" : undefined}
               onPress={() => void navigate({ to: ".", search: (prev: Record<string, unknown>) => ({ ...prev, run: item.id }) })}
-              className="flex h-auto! w-full flex-col items-start gap-0.5 py-2 text-left whitespace-normal"
+              className="flex h-auto w-full flex-col items-start gap-0.5 py-2 text-left whitespace-normal"
             >
               <span className="line-clamp-2 min-w-0 max-w-full break-words font-medium">{item.title}</span>
-              <span className="text-chat-muted text-(length:--chat-ui-font-size-sm)">
+              <span className="text-muted text-sm">
                 {item.authorName} · {ago(item.end)} · {item.messageCount} {item.messageCount === 1 ? "message" : "messages"}
               </span>
             </Button>

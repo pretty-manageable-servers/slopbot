@@ -3,8 +3,9 @@
 // src/web-transcripts.ts (the conversation list, messages, stream, runs and reply).
 import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { AttachmentCard, Button, ChatHeader, ChatTranscript, Drawer, DRAWER_QUERY, SidebarToggle, useMediaQuery } from "agentic-ui-kit";
+import { AttachmentCard, ChatHeader, ChatTranscript, Drawer, DRAWER_QUERY, SidebarToggle, useMediaQuery } from "agentic-ui-kit";
 import type { Part } from "agentic-ui-kit/core";
+import { Button } from "slop-ui-components";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { get, post, qs } from "../api";
 import type { ChannelHeader, ConversationSummary, TranscriptMessage, TranscriptPage } from "../api-types";
@@ -69,7 +70,7 @@ function OffNote({ server, channel, title, admin }: { server: string; channel: s
     <div className="flex h-full min-h-0 flex-col bg-chat-bg text-chat-fg">
       <ChatHeader leading={<SidebarToggle drawerOnly />} title={title} />
       <div className="page-note flex-1">
-        <h2 className="font-medium text-chat-fg">Web transcripts are off for this channel.</h2>
+        <h2 className="font-medium text-fg">Web transcripts are off for this channel.</h2>
         {admin
           ? <Button variant="primary" isDisabled={turnOn.isPending} onPress={() => turnOn.mutate()}>Turn on web transcripts</Button>
           : <p>A server admin can turn them on.</p>}
@@ -244,7 +245,7 @@ function renderPart(part: Part, toggleFold: (key: string) => void): ReactNode {
 /** Messages from other people that no reply used, in one muted row. A press shows them, and a second press folds them again. */
 function FoldButton({ fold, onToggle }: { fold: FoldRow; onToggle: (key: string) => void }) {
   return (
-    <Button variant="ghost" size="sm" aria-expanded={fold.open} onPress={() => onToggle(fold.key)} className="self-start text-chat-muted">
+    <Button variant="ghost" size="sm" aria-expanded={fold.open} onPress={() => onToggle(fold.key)} className="self-start text-muted">
       {`${fold.count} ${fold.count === 1 ? "message" : "messages"} Slopbot did not read ›`}
     </Button>
   );
