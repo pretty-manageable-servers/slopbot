@@ -10,8 +10,8 @@ catalogs:
       specifier: ^2.1.6
       version: 2.1.6
     agentic-ui-kit:
-      specifier: 0.9.1
-      version: 0.9.1
+      specifier: 0.10.1
+      version: 0.10.1
     hono:
       specifier: ^4.13.16
       version: 4.13.16
@@ -58,7 +58,7 @@ importers:
         version: link:packages/contracts
       agentic-ui-kit:
         specifier: 'catalog:'
-        version: 0.9.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        version: 0.10.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -137,7 +137,7 @@ importers:
         version: 1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       agentic-ui-kit:
         specifier: 'catalog:'
-        version: 0.9.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        version: 0.10.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       react:
         specifier: ^19.3.1
         version: 19.3.1
@@ -180,7 +180,7 @@ importers:
     dependencies:
       agentic-ui-kit:
         specifier: 'catalog:'
-        version: 0.9.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        version: 0.10.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       zod:
         specifier: 'catalog:'
         version: 4.6.7
@@ -1373,8 +1373,8 @@ packages:
     resolution: {integrity: sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng==}
     engines: {node: '>= 0.6'}
 
-  agentic-ui-kit@0.9.1:
-    resolution: {integrity: sha512-WDABlXE5YBuuKEawEQSNly0gycVs3Grb3d6XosgXruljohqHg422u6kPCF+64dZBIwr88a4fqdqlq47IYx4gLA==}
+  agentic-ui-kit@0.10.1:
+    resolution: {integrity: sha512-xD+P2/Lzv/70aZOT07UDl8e9bo3eDi32L5MUwGUQ9ZyWLLGAe57jCzwFswjlpgVu64Qrf9ONUzmgLdKdZtOfKA==}
     peerDependencies:
       react: ^19
       react-dom: ^19
@@ -4463,7 +4463,7 @@ snapshots:
       mime-types: 3.0.2
       negotiator: 1.1.0
 
-  agentic-ui-kit@0.9.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1):
+  agentic-ui-kit@0.10.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1):
     dependencies:
       '@streamdown/code': 2.0.0(react@19.3.1)
       '@streamdown/math': 1.0.3(react@19.3.1)
