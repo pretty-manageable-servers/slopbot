@@ -8,7 +8,7 @@ import type { ChannelAccess } from "../../channel-access.js";
 import type { Directory, Engine, Workspace } from "../../engine/api.js";
 import type { UserLimiter } from "../../user-limiter.js";
 import { ToolError } from "../../tools.js";
-import { PRIVATE_CHANNEL_PREFIX, PRIVATE_CHAT_MAX_CHARS, PRIVATE_CHAT_TITLE_CHARS, isPrivateChannel, newPrivateChatId, privateChannel, privateChatTitle } from "../../private-chat.js";
+import { PRIVATE_CHANNEL_PREFIX, PRIVATE_CHAT_TITLE_CHARS, isPrivateChannel, newPrivateChatId, privateChannel, privateChatTitle } from "../../private-chat.js";
 import { fileLabel, publishMessage, slopbotId, withoutFileLabelText } from "../../run-events.js";
 import type { EngineEvent } from "@slopbot/contracts";
 import { engineEvents } from "../../engine/event-log.js";
@@ -189,7 +189,7 @@ export class WebChatService {
     await this.requireMember(user, server);
     const workspace = await this.handle(server);
     const id = newPrivateChatId(), channel = privateChannel(id), at = this.now();
-    const text = [...source.text].slice(0, PRIVATE_CHAT_MAX_CHARS).join("");
+    const text = source.text;
     await this.store.insertWebChat({ id, server, owner: user, title: privateChatTitle(text), created: at, updated: at, deleted: false });
     await this.store.ingest({
       id: `chat-message-${randomUUID()}`, server, channel, author: source.author,
@@ -238,7 +238,6 @@ export class WebChatService {
     const text = typeof raw === "string" ? raw.trim() : "";
     if (!text && !images.length && !files.length) throw new ChatError(400, "Write a message.");
     const body = text || (files.length ? "Please look at the attached file(s)." : "Please look at the attached image" + (images.length > 1 ? "s." : "."));
-    if ([...body].length > PRIVATE_CHAT_MAX_CHARS) throw new ChatError(400, `Write ${PRIVATE_CHAT_MAX_CHARS} characters or fewer.`);
     const limit = await this.host.limiter.check(user);
     if (!limit.allowed) throw new ChatError(429, "Usage limit reached.", limit.resetAt);
     const workspace = await this.handle(chat.server);
