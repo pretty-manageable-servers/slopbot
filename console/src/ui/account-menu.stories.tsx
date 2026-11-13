@@ -1,6 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { LogOut, Settings } from "lucide-react";
-import { expect, screen, userEvent, waitFor, within } from "storybook/test";
+import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 import { AccountMenu } from "./account-menu";
 
 /**
@@ -13,13 +12,9 @@ const meta = {
   tags: ["autodocs"],
   args: {
     name: "DerpZ",
-    items: [
-      { id: "settings", label: "Settings", icon: <Settings /> },
-      "separator",
-      { id: "logout", label: "Log out", icon: <LogOut /> },
-    ],
+    onSettings: fn(),
+    onLogout: fn(),
   },
-  argTypes: { items: { control: "object" } },
   decorators: [(Story) => <div className="fixed bottom-0 left-0 w-64 border-t border-chat-divider p-2"><Story /></div>],
 } satisfies Meta<typeof AccountMenu>;
 export default meta;
