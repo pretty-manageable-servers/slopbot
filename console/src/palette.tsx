@@ -1,18 +1,16 @@
 // Command palette (Cmd+K on Mac, Ctrl+K elsewhere): the library's CommandPalette over sections of chats, channels,
 // servers, actions and message hits, as web/palette.js. The matching and the sections are in palette-search.ts: the
-// library's own filter is made to pass every row (each row carries the query as a keyword), so the fuzzy ranking
-// decides what shows. Opening it again starts empty: the state lives in the part that is mounted while it is open.
+// library's own filter is off (filter={false}), so the fuzzy ranking decides what shows. Opening it again starts empty: the state lives in the part that is mounted while it is open.
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { defaultIcons } from "agentic-ui-kit";
-import { useContext, useEffect, useState, type ReactNode } from "react";
-import { AutocompleteStateContext } from "react-aria-components";
-import { CommandItem, CommandPalette as LibraryPalette, CommandSection, useCommandPaletteShortcut } from "slop-ui-components";
+import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
+import { Button, CommandItem, CommandPalette as LibraryPalette, CommandSection, Kbd, useCommandPaletteShortcut } from "slop-ui-components";
 import { get, qs } from "./api";
 import type { Conversation, ConversationSearch } from "./api-types";
 import { adminMeQuery, chatsQuery, pickServer, sessionQuery, useServer } from "./data";
 import { readPrefs, savePrefs } from "./prefs";
-import { buildSections, parseRecent, pushRecent, RECENT_KEY, recentItems, snippetOf, type PaletteItem } from "./palette-search";
+import { buildSections, FILTERS, parseRecent, pushRecent, RECENT_KEY, recentItems, snippetOf, type Filter, type PaletteItem } from "./palette-search";
 import { useOpenSettings } from "./settings/dialog";
 import { SECTIONS } from "./settings/sections";
 import { icons } from "./ui/icons";
@@ -29,13 +27,6 @@ export function CommandPalette() {
   return open ? <Palette onDone={() => setOpen(false)} /> : null;
 }
 
-/** Hands the search field's text up, since the library palette keeps it inside. Renders nothing. */
-function QueryBridge({ onQuery }: { onQuery: (text: string) => void }) {
-  const text = useContext(AutocompleteStateContext)?.inputValue ?? "";
-  useEffect(() => onQuery(text), [text, onQuery]);
-  return null;
-}
-
 function Palette({ onDone }: { onDone: () => void }) {
   const navigate = useNavigate();
   const openSettings = useOpenSettings();
@@ -49,9 +40,9 @@ function Palette({ onDone }: { onDone: () => void }) {
   });
 
   const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<Filter>("all");
   const [picks] = useState(readRecent);
   const text = query.trim();
-
 
   // Message search waits 250 ms after the last key, and runs from two letters. Hits show once the search is done.
   const debounced = useDebounced(text, 250);
@@ -103,8 +94,19 @@ function Palette({ onDone }: { onDone: () => void }) {
     : [];
   const messageStatus = loading ? "Searching messages…" : search.error ? search.error.message : messageRows.length ? undefined : "No messages match";
 
-  const sections = buildSections(all, text, "all", recentItems(all, picks), { items: messageRows, status: messageStatus });
+  const sections = buildSections(all, text, filter, recentItems(all, picks), { items: messageRows, status: messageStatus });
   const status = sections.flatMap(section => section.status ?? []);
+
+  // Left and Right step the filter when the field is empty or the caret is collapsed at the start (Left) or end (Right).
+  const stepFilter = (event: KeyboardEvent<HTMLInputElement>) => {
+    const { selectionStart, selectionEnd, value } = event.currentTarget;
+    const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+    const collapsed = selectionStart === selectionEnd;
+    if (!step || (value && !(collapsed && (step > 0 ? selectionEnd === value.length : selectionStart === 0)))) return;
+    event.preventDefault();
+    const at = FILTERS.findIndex(([key]) => key === filter);
+    setFilter(FILTERS[(at + step + FILTERS.length) % FILTERS.length]![0]);
+  };
 
   const choose = (row: Row) => {
     if (row.group !== "messages") saveRecent(pushRecent(picks, row.key));
@@ -113,22 +115,22 @@ function Palette({ onDone }: { onDone: () => void }) {
 
   return (
     <LibraryPalette isOpen onOpenChange={open => !open && onDone()} placeholder="Search" emptyMessage="No matches."
-      footer={
-        <>
-          <QueryBridge onQuery={setQuery} />
-          {status.map(note => <span key={note} className="basis-full">{note}</span>)}
-          <span>Close: Esc</span>
-          <span>Open: Enter</span>
-        </>
-      }>
+      query={query} onQueryChange={setQuery} filter={false} onInputKeyDown={stepFilter}
+      toolbar={
+        <div className="flex flex-wrap gap-1">
+          {FILTERS.map(([key, name]) => (
+            <Button key={key} size="sm" variant={key === filter ? "secondary" : "ghost"} aria-pressed={key === filter} onPress={() => setFilter(key)}>{name}</Button>
+          ))}
+        </div>
+      }
+      status={status.length ? status.join(" · ") : undefined}
+      footer={<><span>Close <Kbd>Esc</Kbd></span><span>Change type <Kbd>←</Kbd> <Kbd>→</Kbd></span><span>Open <Kbd>↵</Kbd></span></>}>
       {sections.filter(section => section.items.length).map(section => (
         <CommandSection key={section.title} title={section.title}>
           {section.items.map(item => (
-            <CommandItem key={item.key} id={`${section.title}:${item.key}`} keywords={[text]} icon={item.icon}
-              {...(item.detail && { shortcut: item.detail })}
-              {...(item.snippet && { description: item.snippet.meta })}
-              onAction={() => choose(item)}>
-              {item.snippet ? item.snippet.text : item.name}
+            <CommandItem key={item.key} id={`${section.title}:${item.key}`} textValue={item.name} icon={item.icon} detail={item.detail}
+              description={item.snippet?.meta} onAction={() => choose(item)}>
+              {item.snippet ? highlight(item.snippet.text, text) : item.name}
             </CommandItem>
           ))}
         </CommandSection>
@@ -145,6 +147,13 @@ function useDebounced<T>(value: T, ms: number): T {
     return () => clearTimeout(timer);
   }, [value, ms]);
   return shown;
+}
+
+/** Marks each word of the query in the text. */
+function highlight(text: string, query: string): ReactNode {
+  const words = query.split(/\s+/).filter(Boolean).map(word => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (!words.length) return text;
+  return text.split(new RegExp(`(${words.join("|")})`, "gi")).map((part, i) => (i % 2 ? <mark key={i}>{part}</mark> : part));
 }
 
 // The recent picks live in this browser. Storage can be unavailable (private mode): then there are no picks.

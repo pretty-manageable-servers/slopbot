@@ -7,7 +7,7 @@ import { failure } from "./mocks/handlers";
 
 /**
  * The command palette: Ctrl+K or Cmd+K opens a search over chats, channels, servers, actions and, from two letters,
- * the messages of the picked server. Enter opens the row.
+ * the messages of the picked server. Left and Right change the filter; Enter opens the row.
  */
 const meta = {
   title: "Components/Chat/CommandPalette",
@@ -39,6 +39,13 @@ export const FindAChatOrAnAction: Story = {
       await userEvent.type(within(palette).getByRole("searchbox"), "second");
       await expect(await within(palette).findByText("Second Lab")).toBeVisible();
     });
+    await step("The Servers filter lists the servers", async () => {
+      await userEvent.clear(within(palette).getByRole("searchbox"));
+      await userEvent.click(within(palette).getByRole("button", { name: "Servers" }));
+      await expect(within(palette).getByRole("button", { name: "Servers" })).toHaveAttribute("aria-pressed", "true");
+      await expect(await within(palette).findByText("Second Lab")).toBeVisible();
+      await expect(within(palette).queryByText("New chat")).toBeNull();
+    });
   },
 };
 
@@ -48,6 +55,7 @@ export const SearchTheMessages: Story = {
     const palette = await openPalette();
     await userEvent.type(within(palette).getByRole("searchbox"), "backup");
     await expect(await within(palette).findByText("general · Sam")).toBeVisible();
+    await expect(within(palette).getAllByText("backup", { selector: "mark" }).length).toBeGreaterThan(0);
   },
 };
 
@@ -68,5 +76,25 @@ export const MessageSearchIsDown: Story = {
     const palette = await openPalette();
     await userEvent.type(within(palette).getByRole("searchbox"), "backup");
     await expect(await within(palette).findByText("Search is down")).toBeVisible();
+  },
+};
+
+/** Left and Right step the filter at the edges of the text and move the caret inside it. */
+export const StepTheFilterWithArrows: Story = {
+  play: async () => {
+    const palette = await openPalette();
+    const field = within(palette).getByRole("searchbox") as HTMLInputElement;
+    const checked = () => within(palette).getByRole("button", { pressed: true });
+    await expect(checked()).toHaveAccessibleName("All");
+    await userEvent.keyboard("{ArrowRight}");
+    await expect(checked()).toHaveAccessibleName("Chats");
+    await userEvent.keyboard("{ArrowLeft}{ArrowLeft}");
+    await expect(checked()).toHaveAccessibleName("Actions");
+    await userEvent.type(field, "abc");
+    await userEvent.keyboard("{ArrowLeft}");
+    await expect(field.selectionStart).toBe(2);
+    await expect(checked()).toHaveAccessibleName("Actions");
+    await userEvent.keyboard("{ArrowRight}{ArrowRight}");
+    await expect(checked()).toHaveAccessibleName("All");
   },
 };
