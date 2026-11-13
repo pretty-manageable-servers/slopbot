@@ -48,7 +48,7 @@ export function SettingsDialog() {
           </TabList>
           {!shown.length && <p className="m-0 px-5 text-ui-sm text-muted">No settings match.</p>}
         </div>
-        <TabPanel id={current.id} className="px-5 py-4 md:px-6">
+        <TabPanel id={current.id} className="flex flex-col gap-8 px-5 py-4 md:px-6">
           <SectionBoundary key={`${current.id}:${server.id}`}>
             <Suspense fallback={<div className="grid place-items-center py-16"><Loader size={40} /></div>}>
               <View />
