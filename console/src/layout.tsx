@@ -3,8 +3,8 @@
 // switches between Chat and Code. The mode follows the page: chat pages are Chats, server pages are Servers.
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { Outlet, useMatchRoute, useNavigate } from "@tanstack/react-router";
-import { AppShell, ChatList, Menu, MenuItem, MenuSeparator, SidebarItem, defaultIcons } from "agentic-ui-kit";
-import { SegmentedControl, confirm } from "slop-ui-components";
+import { AppShell, ChatList, SidebarItem, defaultIcons } from "agentic-ui-kit";
+import { MenuItem, MenuList, MenuSeparator, SegmentedControl, confirm } from "slop-ui-components";
 import { Pencil, Share, Trash2 } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
 import { ApiError, api } from "./api";
@@ -123,13 +123,13 @@ function Chats() {
         sections={[{ id: "chats", title: "Chats", items: chats.map((c) => ({ id: c.id, title: c.title || "New chat", href: `${BASE}/chat/${c.id}` })) }]}
         {...(activeId && { activeId })}
         rowMenu={(chat) => (
-          // The kit's row supplies the popover, so this is the kit's Menu.
-          <Menu aria-label="Chat actions" className="min-w-56">
+          // The kit's row supplies the popover, so this is the library's MenuList.
+          <MenuList aria-label="Chat actions" className="min-w-56">
             <MenuItem icon={<Pencil />} onAction={() => void rename(chat)}>Rename</MenuItem>
             <MenuItem icon={<Share />} onAction={() => setSharing(chat.id)}>Share</MenuItem>
             <MenuSeparator />
             <MenuItem icon={<Trash2 />} tone="danger" onAction={() => void remove(chat.id)}>Delete</MenuItem>
-          </Menu>
+          </MenuList>
         )}
       />
       <ShareDialog chatId={sharing} onClose={() => setSharing(null)} />

@@ -2,11 +2,10 @@
 // Marking items done writes through POST /api/servers/:id/inbox/done, then refreshes every Inbox query of the server.
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { Badge, Button } from "slop-ui-components";
+import { Badge, Button, EmptyState } from "slop-ui-components";
 import { post } from "../api";
 import type { InboxItem } from "../api-types";
 import { notifyError } from "../ui/feedback";
-import { SectionNote } from "../ui/layout";
 import { ago } from "../ui/time";
 
 /** Marks items done: their ids, or "all" for every open item of the server. */
@@ -21,7 +20,7 @@ export function useMarkInboxDone(server: string) {
 
 /** The rows of an Inbox, or a note when there are none. */
 export function InboxList({ server, items }: { server: string; items: InboxItem[] }) {
-  if (!items.length) return <SectionNote>Your inbox is empty.</SectionNote>;
+  if (!items.length) return <EmptyState headingLevel={2} title="Your inbox is empty." />;
   return (
     <ol className="m-0 flex list-none flex-col divide-y divide-divider p-0">
       {items.map((item) => <InboxRow key={item.id} server={server} item={item} />)}
@@ -40,7 +39,7 @@ function InboxRow({ server, item }: { server: string; item: InboxItem }) {
       </div>
       <p className="m-0 text-sm whitespace-pre-wrap">{item.summary}</p>
       <div className="flex items-center gap-3 text-sm">
-        <Link to="/server/$serverId/channel/$channelId" params={{ serverId: server, channelId: item.channel }} className="text-accent hover:underline">Open channel</Link>
+        <Link to="/server/$serverId/channel/$channelId" params={{ serverId: server, channelId: item.channel }} className="text-link hover:underline">Open channel</Link>
         {item.done_at
           ? <Badge>Done</Badge>
           : <Button variant="outline" size="sm" isDisabled={markDone.isPending} onPress={() => markDone.mutate([item.id])}>Done</Button>}

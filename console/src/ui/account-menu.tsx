@@ -1,8 +1,8 @@
 // The account pill at the bottom of the drawer, as in claude.ai: the avatar, the name and a chevron. Pressing it opens
 // the account menu upward. On the collapsed rail it is the avatar.
-import { Avatar, Button, Menu, MenuHeader, MenuItem, MenuSection, MenuSeparator, MenuTrigger } from "slop-ui-components";
+import { Menu, MenuHeader, MenuItem, MenuSection, MenuSeparator, MenuTrigger, SidebarUser } from "slop-ui-components";
 import { useSidebar } from "agentic-ui-kit";
-import { ChevronDown, LogOut, Settings } from "lucide-react";
+import { LogOut, Settings } from "lucide-react";
 
 export interface AccountMenuProps {
   /** The display name or Discord username. It is the pill's text and the menu's muted header. */
@@ -16,10 +16,7 @@ export function AccountMenu({ name, avatarUrl, onSettings, onLogout }: AccountMe
   const { collapsed } = useSidebar();
   return (
     <MenuTrigger>
-      <Button variant="ghost" aria-label={collapsed ? name : "Account menu"} className="max-w-full justify-start">
-        <Avatar name={name} src={avatarUrl} />
-        {!collapsed && <><span className="min-w-0 truncate">{name}</span><ChevronDown aria-hidden className="size-3.5 shrink-0 text-muted" /></>}
-      </Button>
+      <SidebarUser name={name} collapsed={collapsed} aria-label={collapsed ? name : "Account menu"} {...(avatarUrl && { avatarUrl })} />
       <Menu placement="top start" aria-label="Account" onAction={(key) => (key === "settings" ? onSettings : onLogout)()}>
         <MenuSection aria-label="Account">
           <MenuHeader>{name}</MenuHeader>

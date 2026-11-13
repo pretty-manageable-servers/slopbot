@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tansta
 import { useNavigate } from "@tanstack/react-router";
 import { AttachmentCard, ChatHeader, ChatTranscript, Drawer, DRAWER_QUERY, SidebarToggle, useMediaQuery } from "agentic-ui-kit";
 import type { Part } from "agentic-ui-kit/core";
-import { Button } from "slop-ui-components";
+import { Button, EmptyState } from "slop-ui-components";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { get, post, qs } from "../api";
 import type { ChannelHeader, ConversationSummary, TranscriptMessage, TranscriptPage } from "../api-types";
@@ -69,12 +69,13 @@ function OffNote({ server, channel, title, admin }: { server: string; channel: s
   return (
     <div className="flex h-full min-h-0 flex-col bg-chat-bg text-chat-fg">
       <ChatHeader leading={<SidebarToggle drawerOnly />} title={title} />
-      <div className="page-note flex-1">
-        <h2 className="font-medium text-fg">Web transcripts are off for this channel.</h2>
-        {admin
-          ? <Button variant="primary" isDisabled={turnOn.isPending} onPress={() => turnOn.mutate()}>Turn on web transcripts</Button>
-          : <p>A server admin can turn them on.</p>}
-      </div>
+      <EmptyState
+        className="flex-1 justify-center"
+        headingLevel={2}
+        title="Web transcripts are off for this channel."
+        {...(!admin && { description: "A server admin can turn them on." })}
+        actions={admin ? <Button variant="primary" isDisabled={turnOn.isPending} onPress={() => turnOn.mutate()}>Turn on web transcripts</Button> : undefined}
+      />
     </div>
   );
 }

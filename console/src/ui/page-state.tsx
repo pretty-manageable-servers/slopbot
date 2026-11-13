@@ -10,5 +10,5 @@ export function PageLoading() {
 
 /** A page that cannot show its content: the reason, in place of it. `action` is a link under it, e.g. to sign in. */
 export function PageNote({ children, action }: { children: ReactNode; action?: ReactNode }) {
-  return <EmptyState className="h-full justify-center" title={children} actions={action} />;
+  return <EmptyState className="h-full justify-center" headingLevel={2} title={children} actions={action} />;
 }

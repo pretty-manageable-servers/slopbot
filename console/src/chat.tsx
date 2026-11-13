@@ -1,5 +1,6 @@
 // One private chat on screen: the saved messages, then the bot's live stream folded into kit messages.
-import { AttachButton, AttachmentRow, Button, ChatHeader, ChatView, DictationButton, EmptyState, Menu, MenuItem, ModelPicker, SidebarToggle, useAttachments } from "agentic-ui-kit";
+import { AttachButton, AttachmentRow, Button, ChatHeader, ChatView, DictationButton, EmptyState, ModelPicker, SidebarToggle, useAttachments } from "agentic-ui-kit";
+import { MenuItem, MenuList } from "slop-ui-components";
 import { Paperclip, Share } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
@@ -188,7 +189,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
         <ChatHeader
           leading={<SidebarToggle drawerOnly />}
           title={messages.length ? title || "New chat" : ""}
-          menu={id && messages.length ? <Menu aria-label="Chat actions" className="min-w-56"><MenuItem icon={<Share />} onAction={() => setSharing(id)}>Share</MenuItem></Menu> : undefined}
+          menu={id && messages.length ? <MenuList aria-label="Chat actions" className="min-w-56"><MenuItem icon={<Share />} onAction={() => setSharing(id)}>Share</MenuItem></MenuList> : undefined}
           actions={(status || (id && messages.length)) ? (
             <>
               {status && <span role="status">{status}</span>}
@@ -211,7 +212,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
         leading: (
           <>
             <AttachButton label="Attach">
-              <Menu aria-label="Add to this message" className="min-w-56"><MenuItem icon={<Paperclip />} onAction={() => fileInput.current?.click()}>Add images or files</MenuItem></Menu>
+              <MenuList aria-label="Add to this message" className="min-w-56"><MenuItem icon={<Paperclip />} onAction={() => fileInput.current?.click()}>Add images or files</MenuItem></MenuList>
             </AttachButton>
             <UsageMeter server={server.id} busy={busy} />
           </>
