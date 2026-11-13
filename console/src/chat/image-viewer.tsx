@@ -1,6 +1,6 @@
 // The full image of a message attachment, in a modal. The kit's attachment cards open only pasted text, so the chat
 // catches clicks on attachment images (imageClicked) and shows them here.
-import { Modal } from "agentic-ui-kit";
+import { Modal } from "slop-ui-components";
 import type { MouseEvent } from "react";
 
 export interface ViewedImage { src: string; alt: string }
@@ -13,11 +13,11 @@ export function imageClicked(event: MouseEvent): ViewedImage | undefined {
   return { src: target.currentSrc || target.src, alt: target.alt };
 }
 
+/** The modal that shows `image` large. It is closed while `image` is null. */
 export function ImageViewer({ image, onClose }: { image: ViewedImage | null; onClose: () => void }) {
   return (
-    <Modal isOpen={image !== null} onOpenChange={(open) => !open && onClose()} aria-label={image?.alt || "Image"}
-      className="w-auto! max-w-[min(1200px,calc(100vw-2rem))]! overflow-hidden p-0">
-      {image && <img src={image.src} alt={image.alt} className="block max-h-[85dvh] max-w-full object-contain" />}
+    <Modal isOpen={image !== null} onOpenChange={(open) => !open && onClose()} title={image?.alt || "Image"} size="xl" flush>
+      {image && <img src={image.src} alt={image.alt} className="block max-h-[75dvh] max-w-full self-center object-contain" />}
     </Modal>
   );
 }

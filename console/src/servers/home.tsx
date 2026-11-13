@@ -1,12 +1,14 @@
 // /server/$serverId: the server's Inbox, the page the Servers view opens on. The picked server is the one shown.
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { Button, ChatHeader, SidebarToggle } from "agentic-ui-kit";
+import { ChatHeader, SidebarToggle } from "agentic-ui-kit";
+import { Button } from "slop-ui-components";
 import { useState } from "react";
 import { useServer } from "../data";
 import { SectionNote } from "../ui/layout";
 import { InboxList, useMarkInboxDone } from "./inbox";
 import { inboxQuery } from "./queries";
 
+/** The Inbox page of the picked server: its open items, Show done and Mark all done. */
 export function ServerHome() {
   const server = useServer();
   const [showDone, setShowDone] = useState(false);

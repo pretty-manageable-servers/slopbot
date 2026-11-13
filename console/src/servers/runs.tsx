@@ -2,9 +2,11 @@
 // (GET /api/conversations/:channel/runs). Picking one sets ?run=<id> on the page, which shows that conversation.
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { Button, Panel, formatRelativeTime } from "agentic-ui-kit";
+import { Panel } from "agentic-ui-kit";
+import { Button } from "slop-ui-components";
 import type { ConversationSummary } from "../api-types";
 import { get, qs } from "../api";
+import { ago } from "../ui/time";
 
 const PAGE = 20;
 
@@ -22,6 +24,7 @@ export function RunsPanel({ server, channel, active, onClose, className }: { ser
     getNextPageParam: (last, pages) => (last.hasMore ? pages.reduce((count, page) => count + page.conversations.length, 0) : undefined),
   });
   const items = runs.data?.pages.flatMap((page) => page.conversations) ?? [];
+  const note = runs.isPending ? "Loading…" : runs.isError ? "Conversations are not available right now." : items.length === 0 ? "No conversations yet." : null;
   return (
     <Panel
       title="Conversations"
@@ -30,8 +33,7 @@ export function RunsPanel({ server, channel, active, onClose, className }: { ser
       aria-label="Conversations"
       className={className}
     >
-      {runs.isPending && <p className="px-4 text-chat-muted">Loading…</p>}
-      {runs.isSuccess && items.length === 0 && <p className="px-4 text-chat-muted">No conversations yet.</p>}
+      {note && <p className="px-4 text-muted">{note}</p>}
       <ul className="flex flex-col gap-1 p-2">
         {items.map((item) => (
           <li key={item.id}>
@@ -39,11 +41,11 @@ export function RunsPanel({ server, channel, active, onClose, className }: { ser
               variant="ghost"
               aria-current={item.id === active ? "true" : undefined}
               onPress={() => void navigate({ to: ".", search: (prev: Record<string, unknown>) => ({ ...prev, run: item.id }) })}
-              className="flex h-auto! w-full flex-col items-start gap-0.5 py-2 text-left"
+              className="flex h-auto w-full flex-col items-start gap-0.5 py-2 text-left whitespace-normal"
             >
-              <span className="line-clamp-2 font-medium">{item.title}</span>
-              <span className="text-chat-muted text-(length:--chat-ui-font-size-sm)">
-                {item.authorName} · {formatRelativeTime(new Date(item.end).toISOString())} · {item.messageCount} {item.messageCount === 1 ? "message" : "messages"}
+              <span className="line-clamp-2 min-w-0 max-w-full break-words font-medium">{item.title}</span>
+              <span className="text-muted text-sm">
+                {item.authorName} · {ago(item.end)} · {item.messageCount} {item.messageCount === 1 ? "message" : "messages"}
               </span>
             </Button>
           </li>

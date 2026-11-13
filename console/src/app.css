@@ -1,4 +1,8 @@
-/* Tailwind builds the kit's utilities and the ones of our UI components (README "Using Tailwind v4?"). */
-@import "tailwindcss";
+/* slop-ui-components brings Tailwind, its tokens and its theme; the kit adds its utilities on top. */
+@import "slop-ui-components/styles.css";
 @import "agentic-ui-kit/tailwind.css";
 @import "./theme.css";
+@source "../node_modules/slop-ui-components/src";
+
+/* The kit sets a menu's header and shortcuts in its "subtle" color, which is under 4.5:1 on the dark popover. */
+[role="menu"] header, [role="menu"] kbd { color: var(--chat-muted); }

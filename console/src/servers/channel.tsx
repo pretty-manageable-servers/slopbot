@@ -3,18 +3,21 @@
 // src/web-transcripts.ts (the conversation list, messages, stream, runs and reply).
 import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { AttachmentCard, Button, ChatHeader, ChatTranscript, Drawer, DRAWER_QUERY, SidebarToggle, useMediaQuery } from "agentic-ui-kit";
+import { AttachmentCard, ChatHeader, ChatTranscript, Drawer, DRAWER_QUERY, SidebarToggle, useMediaQuery } from "agentic-ui-kit";
 import type { Part } from "agentic-ui-kit/core";
+import { Avatar, Button, EmptyState } from "slop-ui-components";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { api, get, post, qs } from "../api";
-import type { ChannelHeader, Conversation, ConversationSummary, TranscriptMessage, TranscriptPage } from "../api-types";
-import type { EngineEnvelope, EngineEvent } from "@slopbot/contracts";
+import { get, post, qs } from "../api";
+import type { ChannelHeader, ConversationSummary, TranscriptMessage, TranscriptPage } from "../api-types";
+import type { EngineEvent } from "@slopbot/contracts";
 import { chatMessages, emptyChat, repliesOf, runTurnsOf, timedEvents, type ChatState, type TurnSource } from "../events";
 import { useTurns } from "../use-turns";
 import { sessionQuery } from "../data";
-import { Loader, Logo } from "../logo";
+import { Logo } from "../logo";
 import { channelRoute } from "../router";
 import { notify, notifyError } from "../ui/feedback";
+import { openEngineStream } from "../ui/live";
+import { PageLoading, PageNote } from "../ui/page-state";
 import { ReplyBox } from "./reply-box";
 import { conversationsQuery } from "./queries";
 import { RunsPanel } from "./runs";
@@ -32,13 +35,18 @@ interface RunPage extends ChannelHeader {
   messages: TranscriptMessage[];
 }
 
+/** The state of a chat for a page of the channel's messages: the messages, the replies and the turns their runs ran. */
+const chatOf = (messages: TranscriptMessage[], user: string, channel: string): ChatState =>
+  emptyChat(messages.map((message) => channelMessage(message, user, channel)), repliesOf(messages), runTurnsOf(messages));
+
+/** A channel or thread page: the transcript, or a note when web transcripts are off for it. */
 export function ChannelPage() {
   const { serverId, channelId } = channelRoute.useParams();
   const { run } = channelRoute.useSearch();
   const { data: session } = useSuspenseQuery(sessionQuery);
   // The conversation list says whether web transcripts are on for the channel. The messages route only refuses.
   const list = useQuery(conversationsQuery(serverId));
-  if (list.isPending) return <div className="page-note" aria-busy="true"><Loader size={56} /></div>;
+  if (list.isPending) return <PageLoading />;
   const listed = list.data?.find((item) => item.id === channelId);
   if (listed?.enabled === false) {
     const admin = session.servers.find((server) => server.id === serverId)?.admin === true;
@@ -59,14 +67,15 @@ function OffNote({ server, channel, title, admin }: { server: string; channel: s
     onError: (error) => notifyError(error),
   });
   return (
-    <div className="flex h-full min-h-0 flex-col bg-chat-bg text-chat-fg">
+    <div className="flex h-full min-h-0 flex-col bg-bg text-fg">
       <ChatHeader leading={<SidebarToggle drawerOnly />} title={title} />
-      <div className="page-note flex-1">
-        <h2 className="font-medium text-chat-fg">Web transcripts are off for this channel.</h2>
-        {admin
-          ? <Button variant="primary" isDisabled={turnOn.isPending} onPress={() => turnOn.mutate()}>Turn on web transcripts</Button>
-          : <p>A server admin can turn them on.</p>}
-      </div>
+      <EmptyState
+        className="flex-1 justify-center"
+        headingLevel={2}
+        title="Web transcripts are off for this channel."
+        {...(!admin && { description: "A server admin can turn them on." })}
+        actions={admin ? <Button variant="primary" isDisabled={turnOn.isPending} onPress={() => turnOn.mutate()}>Turn on web transcripts</Button> : undefined}
+      />
     </div>
   );
 }
@@ -102,7 +111,7 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
   // The newest page starts the page. A reload of it starts over.
   useEffect(() => {
     if (!newest.data) return;
-    setState(emptyChat(newest.data.messages.map((message) => channelMessage(message, user, channelId)), repliesOf(newest.data.messages), runTurnsOf(newest.data.messages)));
+    setState(chatOf(newest.data.messages, user, channelId));
     setHasMore(newest.data.hasMore);
   }, [newest.data, user, channelId]);
 
@@ -121,28 +130,20 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
   stateRef.current = state;
   useEffect(() => {
     if (!ready) return;
-    const source = new EventSource(`${base}/events${qs({ server: serverId })}`);
-    source.addEventListener("engine", (event) => {
-      let envelope: EngineEnvelope;
-      try { envelope = JSON.parse((event as MessageEvent<string>).data) as EngineEnvelope; } catch { return; }
-      setState((s) => (s ? applyTranscriptEvent(s, envelope, channelId, user) : s));
-      // A new message or a finished turn can change the conversations and the open conversation.
-      const type = envelope.event.type;
-      if (type === "message.upsert" || type === "turn.end") {
-        if (type === "turn.end" || envelope.event.message.slopbot) refreshUsed();
-        void client.invalidateQueries({ queryKey: [...scope, "runs"] });
-        void client.invalidateQueries({ queryKey: [...scope, "run"] });
-      }
+    return openEngineStream(`${base}/events${qs({ server: serverId })}`, {
+      onEvent: (envelope) => {
+        setState((s) => (s ? applyTranscriptEvent(s, envelope, channelId, user) : s));
+        // A new message or a finished turn can change the conversations and the open conversation.
+        const type = envelope.event.type;
+        if (type === "message.upsert" || type === "turn.end") {
+          if (type === "turn.end" || envelope.event.message.slopbot) refreshUsed();
+          void client.invalidateQueries({ queryKey: [...scope, "runs"] });
+          void client.invalidateQueries({ queryKey: [...scope, "run"] });
+        }
+      },
+      onClosed: (reason = "access") => setStatus(reason === "access" ? "Access ended. Reload to check again." : "Live updates stopped."),
+      onStatus: setStatus,
     });
-    source.addEventListener("closed", (event) => {
-      source.close();
-      let reason = "access";
-      try { reason = JSON.parse((event as MessageEvent<string>).data).reason; } catch { /* keep the default */ }
-      setStatus(reason === "access" ? "Access ended. Reload to check again." : "Live updates stopped.");
-    });
-    source.onopen = () => setStatus("");
-    source.onerror = () => setStatus(source.readyState === EventSource.CLOSED ? "Disconnected." : "Reconnecting…");
-    return () => source.close();
   }, [serverId, channelId, ready, loaded, user]);
 
   const channel = newest.data?.channel;
@@ -150,7 +151,7 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
   const [convState, setConvState] = useState<ChatState | null>(null);
   useEffect(() => {
     const found = conversation.data?.messages;
-    setConvState(found ? emptyChat(found.map((message) => channelMessage(message, user, channelId)), repliesOf(found), runTurnsOf(found)) : null);
+    setConvState(found ? chatOf(found, user, channelId) : null);
   }, [conversation.data, user, channelId]);
   const source = useMemo<TurnSource>(() => ({
     turnEvents: (turn) => get<{ events: EngineEvent[]; at?: (number | null)[] }>(`${base}/turns/${encodeURIComponent(turn)}/events${qs({ server: serverId })}`).then(timedEvents),
@@ -188,13 +189,13 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
   };
 
   const error = newest.error ?? (run !== undefined ? conversation.error : null);
-  if (error) return <div className="page-note"><p>{error.message}</p></div>;
-  if (!state || !channel) return <div className="page-note" aria-busy="true"><Loader size={56} /></div>;
+  if (error) return <PageNote>{error.message}</PageNote>;
+  if (!state || !channel) return <PageLoading />;
 
   const name = `${channel.parent ? "" : "#"}${channel.name}`;
   const runTitle = run !== undefined ? conversation.data?.conversation.title : undefined;
   const notice = (
-    <div className="flex flex-col items-center gap-2 text-chat-muted">
+    <div className="flex flex-col items-center gap-2 text-muted">
       {run === undefined && hasMore && <Button variant="ghost" size="sm" isDisabled={olderBusy} onPress={() => void loadOlder()}>Load older messages</Button>}
       {run === undefined && messages.length === 0 && <p>No messages yet.</p>}
       {run !== undefined && (
@@ -208,7 +209,7 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
   // Sharing stays on the whole channel, so it is not offered in a conversation (the old console's rule).
   const actions = (
     <div className="flex items-center gap-2">
-      {status && <span role="status" className="text-(length:--chat-ui-font-size-sm) text-chat-muted">{status}</span>}
+      {status && <span role="status" className="text-(length:--chat-ui-font-size-sm) text-muted">{status}</span>}
       {run === undefined && newest.data?.canShare === true && <Button variant="ghost" size="sm" onPress={() => setSharing(true)}>Share</Button>}
       <Button variant="ghost" size="sm" aria-expanded={panel} onPress={() => setPanel((open) => !open)}>Conversations</Button>
     </div>
@@ -225,7 +226,7 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
         renderPart={renderRow}
         footer={canSend ? <ReplyBox server={serverId} channel={channelId} /> : undefined}
       />
-      {panel && !phone && runs("w-80 shrink-0 border-l border-chat-border")}
+      {panel && !phone && runs("w-80 shrink-0 border-l border-border")}
       <Drawer side="right" isOpen={panel && phone} onOpenChange={setPanel}>{runs("h-full w-80 max-w-full")}</Drawer>
       <ShareChannelDialog server={serverId} channel={channelId} open={sharing} onClose={() => setSharing(false)} />
     </div>
@@ -245,7 +246,7 @@ function renderPart(part: Part, toggleFold: (key: string) => void): ReactNode {
 /** Messages from other people that no reply used, in one muted row. A press shows them, and a second press folds them again. */
 function FoldButton({ fold, onToggle }: { fold: FoldRow; onToggle: (key: string) => void }) {
   return (
-    <Button variant="ghost" size="sm" aria-expanded={fold.open} onPress={() => onToggle(fold.key)} className="self-start text-chat-muted">
+    <Button variant="ghost" size="sm" aria-expanded={fold.open} onPress={() => onToggle(fold.key)} className="self-start text-muted">
       {`${fold.count} ${fold.count === 1 ? "message" : "messages"} Slopbot did not read ›`}
     </Button>
   );
@@ -254,19 +255,19 @@ function FoldButton({ fold, onToggle }: { fold: FoldRow; onToggle: (key: string)
 function AuthorLine({ meta }: { meta: Meta }) {
   if (meta.continued) return null;
   return (
-    <div className="mb-1 flex items-center gap-2 font-chat-sans text-(length:--chat-ui-font-size-sm) text-chat-muted">
-      {meta.slopbot ? <Logo size={20} /> : <Avatar name={meta.name} src={meta.avatarUrl} />}
-      <strong className="font-medium text-chat-fg" title={meta.username ? `@${meta.username}` : undefined}>{meta.name}</strong>
-      {meta.edited && <span className="text-chat-subtle">edited</span>}
+    <div className="mb-1 flex items-center gap-2 font-chat-sans text-(length:--chat-ui-font-size-sm) text-muted">
+      {meta.slopbot ? <Logo size={20} /> : <PersonAvatar name={meta.name} src={meta.avatarUrl} />}
+      <strong className="font-medium text-fg" title={meta.username ? `@${meta.username}` : undefined}>{meta.name}</strong>
+      {meta.edited && <span className="text-subtle">edited</span>}
     </div>
   );
 }
 
 /** A person's avatar, or their initial when there is none or it does not load. */
-function Avatar({ name, src }: { name: string; src: string | null }) {
+function PersonAvatar({ name, src }: { name: string; src: string | null }) {
   const [failed, setFailed] = useState(false);
   if (src && !failed) {
-    return <img src={src} alt="" width={24} height={24} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} className="size-6 rounded-full" />;
+    return <img src={src} alt="" width={24} height={24} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} className="size-6 shrink-0 rounded-full object-cover" />;
   }
-  return <span aria-hidden="true" className="grid size-6 place-items-center rounded-full bg-chat-surface">{Array.from(name)[0]?.toUpperCase() ?? "?"}</span>;
+  return <Avatar name={name} />;
 }

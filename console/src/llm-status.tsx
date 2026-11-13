@@ -1,6 +1,7 @@
 // The LLM mode from GET /api/status: a banner over the page while Slopbot runs on a backup model or its model service
 // is down, and paused composers while the user cannot chat. Polled every 30 seconds, as the old console did.
 import { queryOptions, useQuery } from "@tanstack/react-query";
+import { Alert } from "slop-ui-components";
 import { get } from "./api";
 import type { Status } from "./api-types";
 
@@ -22,18 +23,19 @@ export function useLlmStatus(): Status {
   return useQuery(statusQuery).data ?? NORMAL;
 }
 
+/** The banner for a backup model or a model service that is down. Draws nothing when all is well. */
 export function LlmBanner() {
   const { mode } = useLlmStatus();
   if (mode === "normal") return null;
   return (
-    <div role="status" className={`border-b border-chat-border px-4 py-2 text-sm ${mode === "offline" ? "text-chat-danger" : "text-chat-muted"}`}>
+    <Alert tone={mode === "offline" ? "danger" : "warning"} className="m-3">
       {mode === "offline" ? DEGRADED_TEXT : FALLBACK_TEXT}
-    </div>
+    </Alert>
   );
 }
 
 /** Composer props while the user cannot chat: the composer is off, with a note above it. */
 export function usePausedComposer(): { isDisabled?: boolean; above?: React.ReactNode } {
   const { canChat } = useLlmStatus();
-  return canChat ? {} : { isDisabled: true, above: <p className="px-3 pt-2 text-sm text-chat-muted">{PAUSED_TEXT}</p> };
+  return canChat ? {} : { isDisabled: true, above: <p className="px-3 pt-2 text-sm text-muted">{PAUSED_TEXT}</p> };
 }

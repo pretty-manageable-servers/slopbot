@@ -2,31 +2,30 @@
 // on its own: a Switch or Select saves on change, a number group with its Save button. The bot's answer to a save
 // shows as a notice; a failed save shows its error.
 import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { Button } from "agentic-ui-kit";
+import { Button, NumberField, Select, SettingsGroup, SettingsRow, Switch, TextField } from "slop-ui-components";
 import { useState } from "react";
 import { get, post, qs } from "../../api";
 import type { ServerSettings, ToolResult, TranscriptChannel } from "../../api-types";
 import { settingsQuery, useSaveSetting, useServer } from "../../data";
-import { NumberField, Select, Switch, TextArea, type Option } from "../../ui/controls";
 import { notify, notifyError } from "../../ui/feedback";
-import { SectionNote, SettingsGroup, SettingsRow } from "../../ui/layout";
+import { SectionNote } from "../../ui/layout";
 import {
   badNumbers, calibrationArgs, cutoffsFrom, RANGES, VOICE_MAX_LENGTH, VOICE_RESET, voiceArgs,
   type NumberCheck, type Range,
 } from "./server-form";
 
 const VOICE_DEFAULT = "A clear, warm young adult American woman with a medium pitch, a smooth and even pace, crisp articulation and a calm, friendly, helpful assistant tone.";
-const TOOL_DISPLAY: Option<ServerSettings["tool_display"]>[] = [
+const TOOL_DISPLAY = [
   { id: "none", label: "No tool calls" },
   { id: "summary", label: "Summary" },
   { id: "full", label: "Full expansion" },
-];
-const EFFORT: Option<ServerSettings["default_effort"]>[] = [
+] as const;
+const EFFORT = [
   { id: "default", label: "Default" },
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium" },
   { id: "xhigh", label: "Extra" },
-];
+] as const;
 const CUTOFFS = [
   { key: "addressed", label: "Addressed, %" },
   { key: "respond", label: "Addressed reply, %" },
@@ -65,10 +64,7 @@ function Monitoring({ server, settings }: Props) {
   const save = useSaveSetting(server);
   return (
     <SettingsGroup title="Join the conversation" description={settings.mock ? "Applies to this server. Mock mode disables automatic participation." : "Applies to this server."}>
-      <SettingsRow label="Monitor unaddressed conversations" help="Direct mentions and replies still work when monitoring is off.">
-        <Switch label="Monitor unaddressed conversations" checked={settings.monitoring} disabled={save.isPending}
-          onChange={(enabled) => save.mutate({ name: "monitoring", args: { enabled } }, showAnswer)} />
-      </SettingsRow>
+      <Switch toggleSide="end" description="Direct mentions and replies still work when monitoring is off." isSelected={settings.monitoring} isDisabled={save.isPending} onChange={(enabled) => save.mutate({ name: "monitoring", args: { enabled } }, showAnswer)}>Monitor unaddressed conversations</Switch>
     </SettingsGroup>
   );
 }
@@ -81,12 +77,11 @@ function Participation({ server, settings }: Props) {
     <SettingsGroup
       title="Participation"
       description="Applies immediately to this server. Lower cutoffs allow more participation. Use Slopbot’s why tool to compare recorded scores with the cutoffs used. Reaction frequency is a separate setting."
-      actions={saveButton(save.isPending || bad.length > 0, () => save.mutate({ name: "calibration", args: calibrationArgs(cutoffs) }, showAnswer))}
+      actions={<Button variant="secondary" size="sm" isDisabled={save.isPending || bad.length > 0} onPress={() => save.mutate({ name: "calibration", args: calibrationArgs(cutoffs) }, showAnswer)}>Save</Button>}
     >
       {CUTOFFS.map(({ key, label }) => (
         <NumberRow key={key} label={label} value={cutoffs[key]} range={RANGES.cutoff} onChange={(value) => setCutoffs((c) => ({ ...c, [key]: value }))} />
       ))}
-      <NumberProblems bad={bad} />
     </SettingsGroup>
   );
 }
@@ -113,10 +108,9 @@ function Context({ server, settings }: Props) {
     }
   }
   return (
-    <SettingsGroup title="Context" description="Applies to this server." actions={saveButton(save.isPending || bad.length > 0, submit)}>
+    <SettingsGroup title="Context" description="Applies to this server." actions={<Button variant="secondary" size="sm" isDisabled={save.isPending || bad.length > 0} onPress={submit}>Save</Button>}>
       <NumberRow label="Participation context, messages" value={context.jev} range={RANGES.jevContext} onChange={(jev) => setContext((c) => ({ ...c, jev }))} />
       <NumberRow label="Reply context, messages" value={context.reply} range={RANGES.replyContext} onChange={(reply) => setContext((c) => ({ ...c, reply }))} />
-      <NumberProblems bad={bad} />
     </SettingsGroup>
   );
 }
@@ -129,12 +123,10 @@ function Cooldown({ server, settings }: Props) {
     { label: "Replies per hour", value: cooldown.perHour, range: RANGES.repliesPerHour },
   ]);
   return (
-    <SettingsGroup title="Cooldown" description="Server policy, counted separately for each channel."
-      actions={saveButton(save.isPending || bad.length > 0, () => save.mutate({ name: "cooldown", args: { seconds: cooldown.seconds, per_hour: cooldown.perHour } }, showAnswer))}>
+    <SettingsGroup title="Cooldown" description="Server policy, counted separately for each channel." actions={<Button variant="secondary" size="sm" isDisabled={save.isPending || bad.length > 0} onPress={() => save.mutate({ name: "cooldown", args: { seconds: cooldown.seconds, per_hour: cooldown.perHour } }, showAnswer)}>Save</Button>}>
       <NumberRow label="Minimum interval, seconds" value={cooldown.seconds} range={RANGES.cooldownSeconds} onChange={(seconds) => setCooldown((c) => ({ ...c, seconds }))} />
       <NumberRow label="Replies per hour" help="Zero replies per hour disables unsolicited replies. Direct requests bypass these limits."
         value={cooldown.perHour} range={RANGES.repliesPerHour} onChange={(perHour) => setCooldown((c) => ({ ...c, perHour }))} />
-      <NumberProblems bad={bad} />
     </SettingsGroup>
   );
 }
@@ -143,18 +135,15 @@ function Replies({ server, settings }: Props) {
   const save = useSaveSetting(server);
   return (
     <SettingsGroup title="Replies">
-      <SettingsRow label="Tool activity" help="Summary shows one grey line with counts. Full expansion adds failed calls and their reasons.">
-        <Select label="Tool activity" options={TOOL_DISPLAY} value={settings.tool_display} disabled={save.isPending}
-          onChange={(mode) => save.mutate({ name: "tool_display", args: { mode } }, showAnswer)} />
+      <SettingsRow label="Tool activity" description="Summary shows one grey line with counts. Full expansion adds failed calls and their reasons.">
+        <Select variant="quiet" aria-label="Tool activity" options={TOOL_DISPLAY} value={settings.tool_display} isDisabled={save.isPending}
+          onChange={(mode) => save.mutate({ name: "tool_display", args: { mode: mode } }, showAnswer)} />
       </SettingsRow>
-      <SettingsRow label="Reasoning effort" help="Default for this server. Web chats can pick their own and use medium when nothing is set. Models without effort support ignore this.">
-        <Select label="Reasoning effort" options={EFFORT} value={settings.default_effort} disabled={save.isPending}
-          onChange={(level) => save.mutate({ name: "default_effort", args: { level } }, showAnswer)} />
+      <SettingsRow label="Reasoning effort" description="Default for this server. Web chats can pick their own and use medium when nothing is set. Models without effort support ignore this.">
+        <Select variant="quiet" aria-label="Reasoning effort" options={EFFORT} value={settings.default_effort} isDisabled={save.isPending}
+          onChange={(level) => save.mutate({ name: "default_effort", args: { level: level } }, showAnswer)} />
       </SettingsRow>
-      <SettingsRow label="Show request timing in reply footers">
-        <Switch label="Show request timing in reply footers" checked={settings.timing_footer} disabled={save.isPending}
-          onChange={(enabled) => save.mutate({ name: "timing", args: { enabled } }, showAnswer)} />
-      </SettingsRow>
+      <Switch toggleSide="end" isSelected={settings.timing_footer} isDisabled={save.isPending} onChange={(enabled) => save.mutate({ name: "timing", args: { enabled } }, showAnswer)}>Show request timing in reply footers</Switch>
     </SettingsGroup>
   );
 }
@@ -172,13 +161,12 @@ function Voice({ server, channel }: { server: string; channel: string | undefine
   });
   const current = status.isPending ? "Loading current voice…" : status.error ? status.error.message : status.data;
   return (
-    <SettingsGroup title="Voice" description="Applies to voice channels in this server."
-      actions={saveButton(save.isPending, () => save.mutate({ name: "voice", args: voiceArgs(instructions) }, showAnswer))}>
-      <p className={`m-0 py-3 text-sm ${status.error ? "text-chat-danger" : "text-chat-muted"}`}>{current}</p>
-      <SettingsRow label="Voice instructions" stack help="Describe how Slopbot sounds in voice channels: gender, age, pitch, pace and tone. Leave empty for the default.">
-        <TextArea label="Voice instructions" value={instructions} onChange={setInstructions} placeholder={VOICE_DEFAULT} maxLength={VOICE_MAX_LENGTH} rows={3} />
+    <SettingsGroup title="Voice" description="Applies to voice channels in this server." actions={<Button variant="secondary" size="sm" isDisabled={save.isPending} onPress={() => save.mutate({ name: "voice", args: voiceArgs(instructions) }, showAnswer)}>Save</Button>}>
+      <SettingsRow label="Current voice" description={current} />
+      <SettingsRow label="Voice instructions" layout="stacked" description="Describe how Slopbot sounds in voice channels: gender, age, pitch, pace and tone. Leave empty for the default.">
+        <TextField multiline aria-label="Voice instructions" value={instructions} onChange={setInstructions} placeholder={VOICE_DEFAULT} maxLength={VOICE_MAX_LENGTH} rows={3} />
       </SettingsRow>
-      <div className="pb-3">
+      <div>
         <Button variant="ghost" size="sm" isDisabled={save.isPending} onPress={() => save.mutate({ name: "voice", args: VOICE_RESET }, showAnswer)}>Reset to default</Button>
       </div>
     </SettingsGroup>
@@ -199,12 +187,12 @@ function WebTranscripts({ server }: { server: string }) {
   return (
     <SettingsGroup title="Web transcripts" description="Per channel. Off by default. Turn a channel on to show its transcript in the web console. Discord permissions still decide who can see it.">
       {channels.isPending && <SectionNote>Loading channels…</SectionNote>}
-      {channels.error && <p className="m-0 py-3 text-sm text-chat-danger">{channels.error.message}</p>}
+      {channels.error && <p className="m-0 py-3 text-ui text-danger">{channels.error.message}</p>}
       {channels.data?.length === 0 && <SectionNote>Slopbot serves no channels in this server yet.</SectionNote>}
       {channels.data?.map((channel) => (
         <SettingsRow key={channel.id} label={`#${channel.name}`}>
-          <span className="text-sm text-chat-muted">{channel.enabled ? "On" : "Off"}</span>
-          <Switch label={`Web transcripts for #${channel.name}`} checked={channel.enabled} disabled={toggle.isPending && toggle.variables?.channel === channel.id}
+          <span className="text-ui text-muted">{channel.enabled ? "On" : "Off"}</span>
+          <Switch aria-label={`Web transcripts for #${channel.name}`} isSelected={channel.enabled} isDisabled={toggle.isPending && toggle.variables?.channel === channel.id}
             onChange={(enabled) => toggle.mutate({ channel: channel.id, name: channel.name, enabled }, {
               onSuccess: (result) => notify(`Web transcripts ${result.enabled ? "on" : "off"} for #${channel.name}`),
               onError: notifyError,
@@ -218,16 +206,9 @@ function WebTranscripts({ server }: { server: string }) {
 /** A number row: the label and help on the left, a field with the range's limits on the right. */
 function NumberRow({ label, help, value, range, onChange }: { label: string; help?: string; value: number; range: Range; onChange: (value: number) => void }) {
   return (
-    <SettingsRow label={label} help={help}>
-      <NumberField label={label} value={value} min={range.min} max={range.max} onChange={onChange} />
+    <SettingsRow label={label} description={help}>
+      <NumberField aria-label={label} errorMessage={badNumbers([{ label, value, range }]).length ? `Must be a whole number from ${range.min} to ${range.max}.` : undefined} value={value} minValue={range.min} maxValue={range.max} onChange={onChange} />
     </SettingsRow>
   );
 }
 
-/** Names the number fields that block Save, with their limits. */
-function NumberProblems({ bad }: { bad: NumberCheck[] }) {
-  if (!bad.length) return null;
-  return <p className="m-0 pt-3 text-sm text-chat-danger">{bad.map(({ label, range }) => `${label} must be a whole number from ${range.min} to ${range.max}.`).join(" ")}</p>;
-}
-
-const saveButton = (disabled: boolean, onPress: () => void) => <Button variant="subtle" size="sm" isDisabled={disabled} onPress={onPress}>Save</Button>;

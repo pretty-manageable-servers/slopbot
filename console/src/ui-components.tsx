@@ -1,8 +1,8 @@
 // Renders for the show_ui components. The names, descriptions and props are the bot's (showUiSpecs in
 // @slopbot/contracts), so the tool, the markup check and the chat use one list. The renders follow the agentic-ui-kit
 // playground set (apps/playground/src/lib/ui-components.tsx).
-import { Button } from "agentic-ui-kit";
-import { uiComponentSet, useUiAction, useUiState, type UiComponent } from "agentic-ui-kit/visuals";
+import { Button, ToolViewsProvider, defaultToolViews } from "agentic-ui-kit";
+import { VisualsProvider, uiComponentSet, uiMarkupToolView, useUiAction, useUiState, widgetToolView, type UiComponent } from "agentic-ui-kit/visuals";
 import { showUiSpecs } from "@slopbot/contracts";
 import type { ReactNode } from "react";
 
@@ -13,6 +13,10 @@ const toneClass: Record<string, string> = {
   warning: "text-chat-warning",
   bad: "text-chat-danger",
 };
+
+// The text size and face every show_ui render shares.
+const body = "font-chat-sans text-(length:--chat-ui-font-size)";
+const heading = `${body} font-semibold`;
 
 type Kids = { children?: ReactNode };
 
@@ -36,7 +40,7 @@ const renders: Record<string, UiComponent["render"]> = {
       <section className={`rounded-chat-lg border p-3 ${tone === "accent" ? "border-chat-accent" : "border-chat-border"}`}>
         {(title || tag) && (
           <header className="mb-1 flex items-center gap-2">
-            {title && <h3 className="font-chat-sans text-(length:--chat-ui-font-size) font-semibold">{title}</h3>}
+            {title && <h3 className={heading}>{title}</h3>}
             {tag && <Tag quiet={tone !== "accent"}>{tag}</Tag>}
           </header>
         )}
@@ -44,9 +48,9 @@ const renders: Record<string, UiComponent["render"]> = {
         {children}
       </section>
     ),
-  Heading: ({ text }: { text: string }) => <h2 className="font-chat-sans text-(length:--chat-ui-font-size) font-semibold">{text}</h2>,
+  Heading: ({ text }: { text: string }) => <h2 className={heading}>{text}</h2>,
   Text: ({ text, tone = "default" }: { text: string; tone?: string }) => (
-      <p className={`font-chat-sans text-(length:--chat-ui-font-size) leading-relaxed ${tone === "muted" ? "text-chat-muted" : ""}`}>{text}</p>
+      <p className={`${body} leading-relaxed ${tone === "muted" ? "text-chat-muted" : ""}`}>{text}</p>
     ),
   Metric: ({ label, value, note, tone = "default" }: { label: string; value: string | number; note?: string; tone?: string }) => (
       <div className="min-w-24">
@@ -58,7 +62,7 @@ const renders: Record<string, UiComponent["render"]> = {
   List: ({ items }: { items: { label: string; detail?: string; tag?: string }[] }) => (
       <ul className="divide-y divide-chat-divider">
         {items.map((item, i) => (
-          <li key={i} className="flex items-baseline gap-2 py-1.5 font-chat-sans text-(length:--chat-ui-font-size)">
+          <li key={i} className={`flex items-baseline gap-2 py-1.5 ${body}`}>
             <span className={item.tag ? "text-chat-accent" : ""}>{item.label}</span>
             {item.tag && <Tag>{item.tag}</Tag>}
             {item.detail && <span className="ml-auto text-chat-muted tabular-nums">{item.detail}</span>}
@@ -73,7 +77,7 @@ const renders: Record<string, UiComponent["render"]> = {
         <ul className="flex flex-col gap-1">
           {items.map((item) => (
             <li key={item}>
-              <label className="flex items-center gap-2 font-chat-sans text-(length:--chat-ui-font-size)">
+              <label className={`flex items-center gap-2 ${body}`}>
                 <input
                   type="checkbox"
                   className="accent-(--chat-accent)"
@@ -91,9 +95,9 @@ const renders: Record<string, UiComponent["render"]> = {
       const [, set] = useUiState();
       const current = value ?? options[0]!.id;
       return (
-        <div role="tablist" className="inline-flex max-w-full flex-wrap gap-1 self-start rounded-chat-md border border-chat-border p-0.5">
+        <div role="group" className="inline-flex max-w-full flex-wrap gap-1 self-start rounded-chat-md border border-chat-border p-0.5">
           {options.map((o) => (
-            <Button key={o.id} size="sm" variant={o.id === current ? "subtle" : "ghost"} onPress={() => set(stateKey, o.id)} aria-selected={o.id === current}>
+            <Button key={o.id} size="sm" variant={o.id === current ? "subtle" : "ghost"} onPress={() => set(stateKey, o.id)} aria-pressed={o.id === current}>
               {o.label}
             </Button>
           ))}
@@ -117,3 +121,16 @@ for (const spec of showUiSpecs) {
   if (!renders[spec.name]) throw new Error(`No render for show_ui component ${spec.name}.`);
 }
 export const uiComponents = uiComponentSet({ renders });
+
+/** show_widget frames load the bot's frame page (WIDGET_FRAME_PATH in src/web-console.ts), outside the page CSP. */
+const WIDGET_HOST = { frameUrl: "/console/widget-frame.html" };
+const toolViews = { ...defaultToolViews, show_ui: uiMarkupToolView(), show_widget: widgetToolView() };
+
+/** What the chat and the share page need to draw the bot's show_ui and show_widget tool calls. */
+export function ChatVisuals({ children }: { children: ReactNode }) {
+  return (
+    <VisualsProvider components={uiComponents} host={WIDGET_HOST}>
+      <ToolViewsProvider tools={toolViews}>{children}</ToolViewsProvider>
+    </VisualsProvider>
+  );
+}

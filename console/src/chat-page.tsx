@@ -39,6 +39,7 @@ function takeAsk(): string {
 /** A failed call as a notice. A 404 gets the page's own words. */
 const failed = (error: unknown, gone: string) => notifyError(error instanceof ApiError && error.status === 404 ? new Error(gone) : error);
 
+/** The chat page for `id`, or a new chat. It also opens a question or shared chat that came with a link. */
 export function ChatPage({ id }: { id?: string }) {
   const client = useQueryClient();
   const navigate = useNavigate();

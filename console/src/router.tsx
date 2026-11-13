@@ -34,8 +34,10 @@ export const channelRoute = createRoute({
   },
 });
 
+export const routeTree = rootRoute.addChildren([newChatRoute, chatRoute, serverRoute, channelRoute]);
+
 export const router = createRouter({
-  routeTree: rootRoute.addChildren([newChatRoute, chatRoute, serverRoute, channelRoute]),
+  routeTree,
   basepath: BASE,
   defaultPreload: "intent",
 });

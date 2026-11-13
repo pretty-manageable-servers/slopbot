@@ -2,13 +2,12 @@
 // web chats and Discord DMs, not in server channels. The bot checks each save and answers a rejected one with 422 and
 // the reason. The rules that can be tested are in instructions-form.ts.
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { Button, Markdown, SegmentedControl } from "agentic-ui-kit";
+import { Markdown } from "agentic-ui-kit";
+import { Button, SegmentedControl, SettingsGroup, SettingsRow, TextField } from "slop-ui-components";
 import { useState } from "react";
 import { get, post } from "../../api";
 import type { UserInstructionsView } from "../../api-types";
-import { TextArea } from "../../ui/controls";
 import { notify, notifyError } from "../../ui/feedback";
-import { SettingsGroup, SettingsRow } from "../../ui/layout";
 import { canSave, instructionsLength, rejectMessage } from "./instructions-form";
 
 const instructionsKey = ["settings", "instructions"] as const;
@@ -47,25 +46,21 @@ export default function Instructions() {
     <SettingsGroup title="Instructions"
       description="Tell Slopbot how to answer you: tone, format, what to know about you. Used in your web chats and Discord DMs, not in server channels. Markdown works."
       actions={
-        <div className="flex gap-2">
+        <>
           {current.text && <Button variant="outline" size="sm" isDisabled={save.isPending} onPress={() => send("")}>Clear</Button>}
-          <Button variant="subtle" size="sm" isDisabled={!canSave(draft, current.text, current.max, save.isPending)} onPress={() => send(draft)}>Save</Button>
-        </div>
+          <Button variant="secondary" size="sm" isDisabled={!canSave(draft, current.text, current.max, save.isPending)} onPress={() => send(draft)}>Save</Button>
+        </>
       }>
-      <SettingsRow label="Instructions" stack>
+      <SettingsRow label="Instructions" layout="stacked" description="Checked for safety when you save.">
         <div className="flex flex-col gap-1">
-          <SegmentedControl label="Editor view" options={EDITOR_VIEWS} value={editor} onChange={setEditor} className="self-start" />
+          <SegmentedControl aria-label="Editor view" options={EDITOR_VIEWS} value={editor} onChange={(next) => setEditor(next)} className="self-start" />
           {editor === "preview"
-            ? <div className="min-h-60 rounded-chat-sm border border-chat-border bg-chat-surface px-2.5 py-1.5 text-sm">
+            ? <div className="min-h-60 rounded-sm border border-border bg-surface px-2.5 py-1.5 text-ui">
                 <Markdown>{draft.trim() ? draft : "Nothing to preview."}</Markdown>
               </div>
-            : <TextArea label="Instructions" value={draft} onChange={setDraft} maxLength={current.max} rows={12}
-                placeholder="For example: Answer in British English. Use short paragraphs and code blocks for commands." />}
-          <div className="flex items-start justify-between gap-3 text-xs">
-            <p className="m-0 text-chat-muted">Checked for safety when you save.</p>
-            <p className={`m-0 shrink-0 ${length > current.max ? "text-chat-danger" : "text-chat-muted"}`} aria-live="polite">{length} / {current.max}</p>
-          </div>
-          {rejected && <p role="alert" className="m-0 text-sm text-chat-danger">{rejected}</p>}
+            : <TextField multiline aria-label="Instructions" value={draft} onChange={setDraft} maxLength={current.max} rows={12}
+                placeholder="For example: Answer in British English. Use short paragraphs and code blocks for commands."
+                description={`${length} / ${current.max}`} errorMessage={rejected ?? undefined} />}
         </div>
       </SettingsRow>
     </SettingsGroup>

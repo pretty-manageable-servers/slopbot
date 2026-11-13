@@ -8,7 +8,7 @@ import { SharePanel } from "./share-dialog";
 function render(shares: ChatShare[]): string {
   const client = new QueryClient();
   client.setQueryData(["shares", "chat-1"], shares);
-  return renderToString(<QueryClientProvider client={client}><SharePanel chatId="chat-1" onClose={() => {}} /></QueryClientProvider>);
+  return renderToString(<QueryClientProvider client={client}><SharePanel chatId="chat-1" draft={null} setDraft={() => {}} /></QueryClientProvider>);
 }
 
 const link = (newer: boolean): ChatShare => ({ id: "s1", created_at: 1000, revoked: false, frozen_at: 2000, newer });

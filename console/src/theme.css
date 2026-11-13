@@ -31,9 +31,12 @@
   --chat-sidebar: #1f1e1d;
   --chat-surface: #1f1e1d;
   --chat-selected: #2b2a28;
+  /* The kit's dark hover (#3d3d3d) left muted text under 4.5:1; this one keeps it above. */
+  --chat-hover: #2e2d2b;
   --chat-border: #33322f;
   --chat-fg: #e2e0d9;
   --chat-muted: #9a978f;
+  --chat-subtle: #94918a;
   --chat-accent: #7ea6ff;
   --chat-accent-fg: #161615;
   --chat-focus: #7ea6ff;
@@ -59,8 +62,8 @@
   --chat-code-border: #e2dfd5;
   --chat-inline-code: #e9e6dc;
   --chat-fg: #2d2c28;
-  --chat-muted: #737069;
-  --chat-subtle: #8a8475;
+  --chat-muted: #68655e;
+  --chat-subtle: #6c675b;
   --chat-accent: #2f5fd0;
   --chat-accent-fg: #ffffff;
   --chat-check: #2f5fd0;
@@ -69,6 +72,36 @@
   --chat-warning-bg: #fbf1e3;
   --chat-danger: #b3261e;
   --chat-shadow-popover: 0 8px 24px rgb(41 38 27 / 0.12);
+}
+
+/*
+ * slop-ui-components (the non-chat controls) read --ui-* tokens. They take the kit's colors so both look alike.
+ * The selector beats the library's OS-dark rule (0,2,0); prefs.ts keeps data-theme equal to the chat theme.
+ */
+:root[data-theme] {
+  --ui-bg: var(--chat-bg);
+  --ui-sidebar: var(--chat-sidebar);
+  --ui-surface: var(--chat-bg);
+  --ui-popover: var(--chat-popover);
+  --ui-hover: var(--chat-hover);
+  --ui-selected: var(--chat-selected);
+  --ui-track: var(--chat-hover);
+  --ui-border: var(--chat-border);
+  --ui-divider: var(--chat-divider);
+  --ui-fg: var(--chat-fg);
+  --ui-muted: var(--chat-muted);
+  --ui-subtle: var(--chat-subtle);
+  --ui-accent: var(--chat-accent);
+  --ui-accent-fg: var(--chat-accent-fg);
+  --ui-interactive: var(--chat-accent);
+  --ui-interactive-fg: var(--chat-accent-fg);
+  --ui-focus: var(--chat-focus);
+  --ui-danger: var(--chat-danger);
+  --ui-warning: var(--chat-warning);
+  --ui-shadow-popover: var(--chat-shadow-popover);
+  --ui-font-sans: var(--chat-font-sans);
+  --ui-font-serif: var(--chat-font-serif);
+  --ui-font-mono: var(--chat-font-mono);
 }
 
 html,

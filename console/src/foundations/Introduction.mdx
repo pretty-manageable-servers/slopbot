@@ -1,0 +1,35 @@
+import { Meta } from "@storybook/addon-docs/blocks";
+
+<Meta title="Foundations/Introduction" />
+
+# Slopbot console
+
+The web console of Slopbot: private chats, the Servers view of a Discord server, and Settings. Every part here
+draws on a fake bot (MSW handlers in `src/mocks/`), so no bot, database or Discord is needed.
+`pnpm dev:mock` runs the whole console on the same fake bot.
+
+## Principles
+
+- **Claude.ai is the reference.** The drawer, menus, chat and Settings follow claude.ai's layout and behavior.
+  When in doubt, do what claude.ai does.
+- **Chat parts come from the kit.** Messages, the composer, the drawer frame, menus and buttons are
+  `agentic-ui-kit` parts. The console adds only what the kit does not have (`src/ui/`) and styles the kit
+  through its `--chat-*` theme variables (`src/theme.css`), never by forking it.
+- **One color source.** All colors are the `--chat-*` variables in `src/theme.css`, dark by default and light
+  with `data-chat-theme="light"`. No other hex values in components.
+- **Quiet and dense.** Thin borders, no gradients or glows, line icons (lucide) at 16px, tabular numbers,
+  monospace for IDs.
+- **Personal before server.** Private chats belong to the user, not to a server; server details show only on
+  server pages and in server settings.
+
+## Where things are
+
+| Sidebar | What |
+| --- | --- |
+| Foundations | Colors, type and the two themes |
+| Components | Console parts by area: Menu, Drawer, Settings, Servers, Chat |
+| Pages | One page at a time, on the fake bot |
+| App | The whole console with its drawer and routing |
+
+Toolbar **Theme** switches dark and light. The Vitest run (`pnpm test:stories`) runs every story in both
+themes with accessibility checks.

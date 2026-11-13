@@ -2,18 +2,17 @@
 // import progress, pause or resume, and the window of days kept). Ported from the old console's Channels tab; the
 // pure parts are in channels-format.ts.
 import { useSuspenseQuery } from "@tanstack/react-query";
-import { Button } from "agentic-ui-kit";
+import { Button, confirm, NumberField, ProgressBar, SearchField, SettingsGroup, SettingsRow, Switch } from "slop-ui-components";
 import { useState } from "react";
 import type { SnapshotChannel } from "../../api-types";
 import { settingsQuery, useSaveSetting, useServer, type SaveSetting } from "../../data";
-import { NumberField, Switch, TextField } from "../../ui/controls";
-import { confirmAction, notify, notifyError } from "../../ui/feedback";
-import { SectionNote, SettingsGroup, SettingsRow } from "../../ui/layout";
+import { notify, notifyError } from "../../ui/feedback";
+import { SectionNote } from "../../ui/layout";
 import { historyProgress, historyStatus, isWindowDays, needsChannelFilter, visibleChannels, type HistoryStatus } from "./channels-format";
 
 // While an import runs, the snapshot is read again every 2 seconds, as the old console did.
 const POLL_MS = 2000;
-const TONE: Record<HistoryStatus["tone"], string> = { danger: "text-chat-danger", warning: "text-chat-warning", muted: "text-chat-muted" };
+const TONE: Record<HistoryStatus["tone"], string> = { danger: "text-danger", warning: "text-warning", muted: "text-muted" };
 
 export default function Section() {
   const server = useServer();
@@ -27,7 +26,7 @@ export default function Section() {
   const rows = visibleChannels(channels, filter);
   return (
     <SettingsGroup description="Manage monitored channels and saved chat history. Only saved lessons and memories use embeddings.">
-      {needsChannelFilter(channels.length) && <TextField type="search" label="Filter channels" placeholder="Filter channels" value={filter} onChange={setFilter} className="py-3" />}
+      {needsChannelFilter(channels.length) && <SearchField aria-label="Filter channels" placeholder="Filter channels" value={filter} onChange={setFilter} className="py-3" />}
       {!channels.length
         ? <SectionNote>No text channels are visible to both you and Slopbot.</SectionNote>
         : rows.length
@@ -49,13 +48,13 @@ function ChannelRow({ server, channel }: { server: string; channel: SnapshotChan
 
   const saveSetting = (payload: SaveSetting) => save.mutate(payload, { onSuccess: (result) => notify(result.text || "Saved."), onError: notifyError });
   const setMonitored = async (on: boolean) => {
-    if (!on && !(await confirmAction({ title: "Stop monitoring this channel?", body: "This purges searchable content and dependent task context. Operational logs remain.", confirmLabel: "Stop monitoring", danger: true }))) return;
+    if (!on && !(await confirm({ title: "Stop monitoring this channel?", description: "This purges searchable content and dependent task context. Operational logs remain.", confirmLabel: "Stop monitoring", destructive: true }))) return;
     saveSetting({ name: "channels", args: { action: on ? "add" : "remove", channel: id }, channel: id });
   };
   const saveWindow = async () => {
     if (!isWindowDays(days)) return;
     // A shorter window deletes saved messages. Cancel changes nothing.
-    if (history && days < history.days && !(await confirmAction({ title: "Delete older messages?", body: `Delete saved messages older than ${days} days in #${name}? This cannot be undone.`, confirmLabel: "Delete", danger: true }))) return;
+    if (history && days < history.days && !(await confirm({ title: "Delete older messages?", description: `Delete saved messages older than ${days} days in #${name}? This cannot be undone.`, confirmLabel: "Delete", destructive: true }))) return;
     saveSetting({ name: "index", args: { action: "window", days }, channel: id });
   };
 
@@ -67,19 +66,15 @@ function ChannelRow({ server, channel }: { server: string; channel: SnapshotChan
 
   return (
     <div className="flex flex-col">
-      <SettingsRow label={`#${name}`} help={help}>
-        <Switch label={`Monitor #${name}`} checked={monitored} onChange={setMonitored} disabled={busy} />
+      <SettingsRow label={`#${name}`} description={help}>
+        <Switch aria-label={`Monitor #${name}`} isSelected={monitored} onChange={setMonitored} isDisabled={busy} />
       </SettingsRow>
       {monitored && history && (
         <div className="flex flex-col gap-3 pb-3">
           {progress && (
             <div className="flex flex-col gap-1.5">
-              {progress.percent !== null && (
-                <div role="progressbar" aria-label="Import progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.percent} className="h-1 overflow-hidden rounded-full bg-chat-hover">
-                  <div className="h-full bg-chat-accent" style={{ width: `${progress.percent}%` }} />
-                </div>
-              )}
-              <p className="m-0 text-sm text-chat-muted">{progress.text}</p>
+              {progress.percent !== null && <ProgressBar aria-label="Import progress" value={progress.percent} />}
+              <p className="m-0 text-ui text-muted">{progress.text}</p>
             </div>
           )}
           <div>
@@ -87,11 +82,10 @@ function ChannelRow({ server, channel }: { server: string; channel: SnapshotChan
           </div>
           <form className="flex flex-col gap-1" onSubmit={(event) => { event.preventDefault(); void saveWindow(); }}>
             <div className="flex flex-wrap items-center gap-2">
-              <NumberField label="History window in days" value={days} onChange={setDraft} min={1} max={3650} />
-              <span className="text-sm text-chat-muted">days</span>
+              <NumberField aria-label="History window in days" value={days} onChange={setDraft} minValue={1} maxValue={3650} description="Lowering the window deletes saved messages older than the new window." />
+              <span className="text-ui text-muted">days</span>
               <Button type="submit" variant="outline" size="sm" isDisabled={busy || !isWindowDays(days)}>Save</Button>
             </div>
-            <p className="m-0 text-xs text-chat-muted">Lowering the window deletes saved messages older than the new window.</p>
           </form>
         </div>
       )}

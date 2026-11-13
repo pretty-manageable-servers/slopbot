@@ -3,37 +3,37 @@
 // switches between Chat and Code. The mode follows the page: chat pages are Chats, server pages are Servers.
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { Outlet, useMatchRoute, useNavigate } from "@tanstack/react-router";
-import { AppShell, ChatList, ChatTitleMenu, Menu, MenuItem, MenuSeparator, SegmentedControl, Sidebar, SidebarItem, SidebarUser, defaultIcons } from "agentic-ui-kit";
+import { AppShell, ChatList, SidebarItem, defaultIcons } from "agentic-ui-kit";
+import { MenuItem, MenuList, MenuSeparator, SegmentedControl, confirm } from "slop-ui-components";
+import { Pencil, Share, Trash2 } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
 import { ApiError, api } from "./api";
 import { ShareDialog } from "./chat/share-dialog";
 import { chatsQuery, pickServer, sessionQuery, useServer } from "./data";
 import { LlmBanner } from "./llm-status";
-import { Loader, Logo } from "./logo";
+import { Logo } from "./logo";
 import { CommandPalette } from "./palette";
 import { BASE } from "./router";
 import { ServersPane } from "./servers/pane";
 import { SettingsDialog, useOpenSettings } from "./settings/dialog";
-import { FeedbackHost, confirmAction, notifyError } from "./ui/feedback";
+import { FeedbackHost, notifyError } from "./ui/feedback";
+import { AccountMenu } from "./ui/account-menu";
 import { icons } from "./ui/icons";
-
-const busy = <div className="page-note" aria-busy="true"><Loader size={56} /></div>;
+import { PageLoading, PageNote } from "./ui/page-state";
+import { Drawer } from "./ui/sidebar";
 
 export function Layout() {
   const session = useQuery(sessionQuery);
   if (session.error) {
     const signIn = session.error instanceof ApiError && session.error.status === 401;
     return (
-      <div className="page-note">
-        <p>{session.error.message}</p>
-        {signIn && <a href="/auth/login">Sign in with Discord</a>}
-      </div>
+      <PageNote action={signIn && <a href="/auth/login">Sign in with Discord</a>}>{session.error.message}</PageNote>
     );
   }
-  if (!session.data) return busy;
-  if (!session.data.servers.length) return <div className="page-note"><p>You and Slopbot need to share a Discord server to chat.</p></div>;
+  if (!session.data) return <PageLoading />;
+  if (!session.data.servers.length) return <PageNote>You and Slopbot need to share a Discord server to chat.</PageNote>;
   return (
-    <Suspense fallback={busy}>
+    <Suspense fallback={<PageLoading />}>
       <Shell />
     </Suspense>
   );
@@ -54,38 +54,32 @@ function Shell() {
   }, [serverPage && serverPage.serverId]);
 
   const sidebar = (
-    <Sidebar
+    <Drawer
       brand="Slopbot"
-      brandIcon={<Logo size={22} />}
-      headerActions={
-        <SegmentedControl label="View" value={mode}
-          options={[{ id: "chats", label: "Chats", icon: icons.chats, iconOnly: true }, { id: "servers", label: "Servers", icon: icons.server, iconOnly: true }]}
-          onChange={(next: string) => void (next === "servers" ? navigate({ to: "/server/$serverId", params: { serverId: server.id } }) : navigate({ to: "/" }))} />
+      logo={<Logo size={28} />}
+      switcher={
+        <SegmentedControl aria-label="View" value={mode} iconOnly size="sm"
+          options={[{ id: "chats", label: "Chats", icon: icons.chats }, { id: "servers", label: "Servers", icon: icons.server }]}
+          onChange={(next) => void (next === "servers" ? navigate({ to: "/server/$serverId", params: { serverId: server.id } }) : navigate({ to: "/" }))} />
       }
       nav={mode === "chats" ? <NewChat /> : undefined}
       footer={
-        <SidebarUser
+        <AccountMenu
           name={session.me?.displayName ?? session.user}
           {...(session.me?.avatarUrl && { avatarUrl: session.me.avatarUrl })}
-          detail={server.name}
-          menu={
-            <Menu aria-label="Account">
-              <MenuItem id="settings" onAction={() => openSettings()}>Settings</MenuItem>
-              <MenuSeparator />
-              <MenuItem id="logout" onAction={() => void api.logout().then(() => location.reload(), notifyError)}>Log out</MenuItem>
-            </Menu>
-          }
+          onSettings={() => openSettings()}
+          onLogout={() => void api.logout().then(() => location.reload(), notifyError)}
         />
       }
     >
       <Suspense fallback={null}>{mode === "chats" ? <Chats /> : <ServersPane />}</Suspense>
-    </Sidebar>
+    </Drawer>
   );
   return (
     <>
       <AppShell sidebar={sidebar}>
         <LlmBanner />
-        <Suspense fallback={busy}><Outlet /></Suspense>
+        <Suspense fallback={<PageLoading />}><Outlet /></Suspense>
       </AppShell>
       <SettingsDialog />
       <CommandPalette />
@@ -111,7 +105,7 @@ function Chats() {
   const [sharing, setSharing] = useState<string | null>(null);
 
   const remove = async (id: string) => {
-    if (!(await confirmAction({ title: "Delete this chat?", body: "This cannot be undone.", confirmLabel: "Delete", danger: true }))) return;
+    if (!(await confirm({ title: "Delete this chat?", description: "This cannot be undone.", confirmLabel: "Delete", destructive: true }))) return;
     await api.remove(id).catch(notifyError);
     if (id === activeId) void navigate({ to: "/" });
     refresh();
@@ -128,7 +122,15 @@ function Chats() {
         aria-label="Chats"
         sections={[{ id: "chats", title: "Chats", items: chats.map((c) => ({ id: c.id, title: c.title || "New chat", href: `${BASE}/chat/${c.id}` })) }]}
         {...(activeId && { activeId })}
-        rowMenu={(chat) => <ChatTitleMenu onRename={() => void rename(chat)} onShare={() => setSharing(chat.id)} onDelete={() => void remove(chat.id)} />}
+        rowMenu={(chat) => (
+          // The kit's row supplies the popover, so this is the library's MenuList.
+          <MenuList aria-label="Chat actions" className="min-w-56">
+            <MenuItem icon={<Pencil />} onAction={() => void rename(chat)}>Rename</MenuItem>
+            <MenuItem icon={<Share />} onAction={() => setSharing(chat.id)}>Share</MenuItem>
+            <MenuSeparator />
+            <MenuItem icon={<Trash2 />} tone="danger" onAction={() => void remove(chat.id)}>Delete</MenuItem>
+          </MenuList>
+        )}
       />
       <ShareDialog chatId={sharing} onClose={() => setSharing(null)} />
     </>

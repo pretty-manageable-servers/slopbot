@@ -1,9 +1,7 @@
 // Appearance: display preferences for this browser (prefs.ts), as in claude.ai's General group.
-import { SegmentedControl } from "agentic-ui-kit";
+import { SegmentedControl, Select, SettingsGroup, SettingsRow } from "slop-ui-components";
 import { useState } from "react";
 import { THEMES, TEXT_SIZES, readPrefs, savePrefs, type Prefs, type TextSize, type Theme, type Width } from "../../prefs";
-import { Select } from "../../ui/controls";
-import { SettingsGroup, SettingsRow } from "../../ui/layout";
 
 const THEME_ICONS: Record<Theme, React.ReactNode> = {
   system: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" aria-hidden="true"><path d="M3 5h18v11H3z" /><path d="M8 20h8" /></svg>,
@@ -18,13 +16,13 @@ export default function Appearance() {
   return (
     <SettingsGroup title="General" description="For this browser only.">
       <SettingsRow label="Theme">
-        <SegmentedControl label="Theme" options={THEMES.map((t) => ({ id: t.id, label: t.label, icon: THEME_ICONS[t.id], iconOnly: true }))} value={prefs.theme} onChange={(theme: Theme) => change({ theme })} />
+        <SegmentedControl aria-label="Theme" iconOnly options={THEMES.map((t) => ({ id: t.id, label: t.label, icon: THEME_ICONS[t.id] }))} value={prefs.theme} onChange={(theme) => change({ theme: theme })} />
       </SettingsRow>
       <SettingsRow label="Text size">
-        <Select label="Text size" options={TEXT_SIZES.map((id) => ({ id, label: `${SIZE_LABELS[id]} · ${id}%` }))} value={prefs.textSize} onChange={(textSize: TextSize) => change({ textSize })} />
+        <Select variant="quiet" aria-label="Text size" options={TEXT_SIZES.map((id) => ({ id, label: `${SIZE_LABELS[id]} · ${id}%` }))} value={prefs.textSize} onChange={(textSize) => change({ textSize: textSize })} />
       </SettingsRow>
-      <SettingsRow label="Content width" help="How wide the chat is on a large screen.">
-        <Select label="Content width" options={[{ id: "narrow", label: "Narrow" }, { id: "medium", label: "Medium" }, { id: "wide", label: "Wide" }] as const} value={prefs.width} onChange={(width: Width) => change({ width })} />
+      <SettingsRow label="Content width" description="How wide the chat is on a large screen.">
+        <Select variant="quiet" aria-label="Content width" options={[{ id: "narrow", label: "Narrow" }, { id: "medium", label: "Medium" }, { id: "wide", label: "Wide" }] } value={prefs.width} onChange={(width) => change({ width: width })} />
       </SettingsRow>
     </SettingsGroup>
   );

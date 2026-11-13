@@ -1,6 +1,7 @@
 // One private chat on screen: the saved messages, then the bot's live stream folded into kit messages.
-import { AttachButton, AttachmentRow, Button, ChatHeader, ChatTitleMenu, ChatView, DictationButton, EmptyState, Menu, MenuItem, ModelPicker, SidebarToggle, ToolViewsProvider, defaultToolViews, useAttachments } from "agentic-ui-kit";
-import { VisualsProvider, uiMarkupToolView, widgetToolView } from "agentic-ui-kit/visuals";
+import { AttachButton, AttachmentRow, Button, ChatHeader, ChatView, DictationButton, EmptyState, ModelPicker, SidebarToggle, useAttachments } from "agentic-ui-kit";
+import { MenuItem, MenuList } from "slop-ui-components";
+import { Paperclip, Share } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { useServer } from "./data";
@@ -8,18 +9,16 @@ import { attachmentIds, attachmentKind, attachmentProblem } from "./chat/attachm
 import { ImageViewer, imageClicked, type ViewedImage } from "./chat/image-viewer";
 import { ShareDialog } from "./chat/share-dialog";
 import { UsageMeter } from "./chat/usage-meter";
-import type { EngineEnvelope } from "@slopbot/contracts";
 import { applyEngineEvent, chatMessages, emptyChat, pendingSend, repliesOf, runTurnsOf, timedEvents, toKitMessage, withPending, type PendingSend, type BotMessage, type ChatState, type TurnSource } from "./events";
 import { useTurns } from "./use-turns";
-import { Loader, Logo } from "./logo";
+import { Logo } from "./logo";
 import { useConsoleDictation } from "./ui/dictation";
 import { usePausedComposer } from "./llm-status";
 import { notify, notifyError } from "./ui/feedback";
-import { uiComponents } from "./ui-components";
+import { openEngineStream } from "./ui/live";
+import { PageLoading, PageNote } from "./ui/page-state";
+import { ChatVisuals } from "./ui-components";
 
-/** show_widget frames load the bot's frame page (WIDGET_FRAME_PATH in src/web-console.ts), outside the page CSP. */
-const WIDGET_HOST = { frameUrl: "/console/widget-frame.html" };
-const toolViews = { ...defaultToolViews, show_ui: uiMarkupToolView(), show_widget: widgetToolView() };
 const ASK_WARNING = "Only send what you wrote yourself. A prompt from someone else can make Slopbot use tools or read data you did not mean to share.";
 
 /** The question of a link, waiting in its chat's composer until it is sent or cleared. Kept for the page's life. */
@@ -59,6 +58,7 @@ interface ChatProps {
   onSent: (chatId: string) => void;
 }
 
+/** One private chat: the saved messages and the live stream, with the composer. A chat without an `id` is new. */
 export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProps) {
   const server = useServer();
   const [pending, setPending] = useState(() => (id ? pendingSends.get(id) : undefined));
@@ -80,25 +80,21 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
 
   useEffect(() => {
     if (!id) return;
-    let source: EventSource | undefined, closed = false;
+    let close: (() => void) | undefined, closed = false;
     const open = async () => {
       const page = await api.messages(id);
       if (closed) return;
       const messages = page.messages as BotMessage[];
       setState(emptyChat(messages.map((m) => toKitMessage(m, id)), repliesOf(messages), runTurnsOf(messages)));
       // Live engine events from the newest on. The steps of earlier replies are loaded by useTurns.
-      source = new EventSource(api.eventsUrl(id));
-      source.addEventListener("engine", (event) => {
-        let envelope: EngineEnvelope;
-        try { envelope = JSON.parse((event as MessageEvent<string>).data) as EngineEnvelope; } catch { return; }
-        setState((s) => (s ? applyEngineEvent(s, envelope, id) : s));
+      close = openEngineStream(api.eventsUrl(id), {
+        onEvent: (envelope) => setState((s) => (s ? applyEngineEvent(s, envelope, id) : s)),
+        onClosed: () => setStatus("Live updates stopped. Reload to check again."),
+        onStatus: setStatus,
       });
-      source.addEventListener("closed", () => { source?.close(); setStatus("Live updates stopped. Reload to check again."); });
-      source.onopen = () => setStatus("");
-      source.onerror = () => setStatus(source?.readyState === EventSource.CLOSED ? "Disconnected." : "Reconnecting…");
     };
     open().catch((e: Error) => setError(e.message));
-    return () => { closed = true; source?.close(); };
+    return () => { closed = true; close?.(); };
   }, [id]);
 
   const turnSource = useMemo<TurnSource | undefined>(() => (id ? {
@@ -176,11 +172,10 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
     }).finally(() => setSending(false));
   };
 
-  if (error) return <div className="page-note"><p>{error}</p></div>;
-  if (!state) return <div className="page-note" aria-busy="true"><Loader size={56} /></div>;
+  if (error) return <PageNote>{error}</PageNote>;
+  if (!state) return <PageLoading />;
   return (
-    <VisualsProvider components={uiComponents} host={WIDGET_HOST}>
-    <ToolViewsProvider tools={toolViews}>
+    <ChatVisuals>
     <div className="contents [&_ul>li_img]:cursor-zoom-in" onClick={(event) => {
       const image = imageClicked(event);
       if (image) setViewing(image);
@@ -194,7 +189,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
         <ChatHeader
           leading={<SidebarToggle drawerOnly />}
           title={messages.length ? title || "New chat" : ""}
-          menu={id && messages.length ? <ChatTitleMenu onShare={() => setSharing(id)} /> : undefined}
+          menu={id && messages.length ? <MenuList aria-label="Chat actions" className="min-w-56"><MenuItem icon={<Share />} onAction={() => setSharing(id)}>Share</MenuItem></MenuList> : undefined}
           actions={(status || (id && messages.length)) ? (
             <>
               {status && <span role="status">{status}</span>}
@@ -217,9 +212,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
         leading: (
           <>
             <AttachButton label="Attach">
-              <Menu aria-label="Add to this message">
-                <MenuItem id="files" onAction={() => fileInput.current?.click()}>Add images or files</MenuItem>
-              </Menu>
+              <MenuList aria-label="Add to this message" className="min-w-56"><MenuItem icon={<Paperclip />} onAction={() => fileInput.current?.click()}>Add images or files</MenuItem></MenuList>
             </AttachButton>
             <UsageMeter server={server.id} busy={busy} />
           </>
@@ -259,7 +252,6 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
     </div>
     <ImageViewer image={viewing} onClose={() => setViewing(null)} />
     <ShareDialog chatId={sharing} triggerRef={shareButton} onClose={() => setSharing(null)} />
-    </ToolViewsProvider>
-    </VisualsProvider>
+    </ChatVisuals>
   );
 }
