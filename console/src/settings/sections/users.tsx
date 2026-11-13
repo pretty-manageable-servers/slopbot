@@ -2,13 +2,13 @@
 // Ported from the old console's Manage users (web/app.js renderUsersAdmin and openUser). The list keeps its search
 // and page when a user is opened, so the detail's Back button returns to the same page.
 import { keepPreviousData, queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Badge, Button, Cell, ProgressBar, Column, NumberField, Row, Select, Table, TableBody, TableHeader, TextField, type SelectOption, confirm } from "slop-ui-components";
+import { Badge, Button, confirm, DataTable, NumberField, ProgressBar, Select, type SelectOption, SettingsGroup, SettingsRow, TextField } from "slop-ui-components";
 import { useEffect, useState, type ReactNode } from "react";
 import { get, post, qs } from "../../api";
 import type { MemberProfile, UserDetail, UserLimitOverride, UserRow, UserUsageWindow, UsersPage } from "../../api-types";
 import { adminMeQuery } from "../../data";
 import { notify, notifyError } from "../../ui/feedback";
-import { SectionNote, SettingsGroup, SettingsRow } from "../../ui/layout";
+import { SectionNote } from "../../ui/layout";
 import {
   avatarSrc, hasWindow, limitError, limitText, money, overrideBody, pageText, serverSummary, sharePct, usageText, when, windowOf, type WindowKind,
 } from "./users-format";
@@ -17,7 +17,7 @@ const PAGE_SIZES = [5, 10, 25, 50];
 const DEFAULT_PAGE_SIZE = 10;
 const SEARCH_MAX = 100;
 const PAGE_OPTIONS: SelectOption[] = PAGE_SIZES.map((size) => ({ id: String(size), label: `${size} per page` }));
-const KIND_OPTIONS: SelectOption[] = [{ id: "5h", label: "5-hour" }, { id: "week", label: "Weekly" }];
+const KIND_OPTIONS = [{ id: "5h", label: "5-hour" }, { id: "week", label: "Weekly" }] as const;
 const KIND_NAME: Record<WindowKind, string> = { "5h": "5-hour", week: "weekly" };
 const WINDOW_LABEL: Record<WindowKind, string> = { "5h": "5-hour window", week: "Weekly window" };
 const WINDOW_KINDS: WindowKind[] = ["5h", "week"];
@@ -93,24 +93,19 @@ function UserTable({ list, onPage, onOpen }: { list: ListState; onPage: (offset:
   return (
     <>
       <div className={query.isPlaceholderData ? "opacity-60 transition-opacity" : ""}>
-        <Table aria-label="Users">
-          <TableHeader>
-            <Column isRowHeader>Person</Column>
-            <Column>Servers</Column>
-            <Column>5-hour</Column>
-            <Column>Weekly</Column>
-          </TableHeader>
-          <TableBody items={page.users} emptyState={list.q ? "No users match this search." : "No users are known yet."}>
-            {(row) => (
-              <Row id={row.user.id} onAction={() => onOpen(row.user.id)}>
-                <Cell><Person user={row.user} badge={row.override !== null && <Badge tone="info">Override</Badge>} /></Cell>
-                <Cell><ServerNames servers={row.servers} /></Cell>
-                <Cell><WindowCell win={windowOf(row, "5h")} /></Cell>
-                <Cell><WindowCell win={windowOf(row, "week")} /></Cell>
-              </Row>
-            )}
-          </TableBody>
-        </Table>
+        <DataTable
+          aria-label="Users"
+          rows={page.users}
+          rowKey={(row) => row.user.id}
+          onRowPress={(row) => onOpen(row.user.id)}
+          emptyState={list.q ? "No users match this search." : "No users are known yet."}
+          columns={[
+            { id: "person", header: "Person", cell: (row) => <Person user={row.user} badge={row.override !== null && <Badge>Override</Badge>} /> },
+            { id: "servers", header: "Servers", cell: (row) => <ServerNames servers={row.servers} /> },
+            { id: "5h", header: "5-hour", cell: (row) => <WindowCell win={windowOf(row, "5h")} /> },
+            { id: "week", header: "Weekly", cell: (row) => <WindowCell win={windowOf(row, "week")} /> },
+          ]}
+        />
       </div>
       <div className="flex items-center justify-between gap-3 py-3 text-ui">
         <Button variant="ghost" size="sm" isDisabled={offset === 0} onPress={() => onPage(Math.max(0, offset - limit))}>Previous</Button>
@@ -192,34 +187,23 @@ function UserBody({ view, canEdit }: { view: UserDetail; canEdit: boolean }) {
       {canEdit && <GrantGroup userId={view.user.id} write={write} />}
       <OverrideGroup view={view} canEdit={canEdit} write={write} />
       <SettingsGroup title="Lifetime totals" description="All usage by this user, per server and model.">
-        <Table aria-label="Lifetime totals">
-          <TableHeader>
-            <Column isRowHeader>Server</Column>
-            <Column>Model</Column>
-            <Column align="end">Requests</Column>
-            <Column align="end">Input (uncached)</Column>
-            <Column align="end">Input (cached)</Column>
-            <Column align="end">Output</Column>
-            <Column align="end">Cost</Column>
-            <Column>First use</Column>
-            <Column>Last use</Column>
-          </TableHeader>
-          <TableBody items={view.totals} emptyState="No usage yet.">
-            {(total) => (
-              <Row id={`${total.server}/${total.model}`}>
-                <Cell>{total.serverName}</Cell>
-                <Cell mono>{total.model}</Cell>
-                <Cell numeric>{total.requests.toLocaleString()}</Cell>
-                <Cell numeric>{total.input.toLocaleString()}</Cell>
-                <Cell numeric>{total.cached.toLocaleString()}</Cell>
-                <Cell numeric>{total.output.toLocaleString()}</Cell>
-                <Cell numeric>{money(total.costMicros)}</Cell>
-                <Cell>{when(total.firstAt)}</Cell>
-                <Cell>{when(total.lastAt)}</Cell>
-              </Row>
-            )}
-          </TableBody>
-        </Table>
+        <DataTable
+          aria-label="Lifetime totals"
+          rows={view.totals}
+          rowKey={(total) => `${total.server}/${total.model}`}
+          emptyState="No usage yet."
+          columns={[
+            { id: "server", header: "Server", cell: (total) => total.serverName },
+            { id: "model", header: "Model", mono: true, cell: (total) => total.model },
+            { id: "requests", header: "Requests", numeric: true, cell: (total) => total.requests.toLocaleString() },
+            { id: "input", header: "Input (uncached)", numeric: true, cell: (total) => total.input.toLocaleString() },
+            { id: "cached", header: "Input (cached)", numeric: true, cell: (total) => total.cached.toLocaleString() },
+            { id: "output", header: "Output", numeric: true, cell: (total) => total.output.toLocaleString() },
+            { id: "cost", header: "Cost", numeric: true, cell: (total) => money(total.costMicros) },
+            { id: "first", header: "First use", cell: (total) => when(total.firstAt) },
+            { id: "last", header: "Last use", cell: (total) => when(total.lastAt) },
+          ]}
+        />
       </SettingsGroup>
     </>
   );
@@ -228,7 +212,7 @@ function UserBody({ view, canEdit }: { view: UserDetail; canEdit: boolean }) {
 function WindowRow({ kind, win, canEdit, busy, onReset }: { kind: WindowKind; win: UserUsageWindow; canEdit: boolean; busy: boolean; onReset: () => void }) {
   const clock = win.resetAt === null ? "No window running. It starts at the first spend." : `Resets ${when(win.resetAt)}.`;
   return (
-    <SettingsRow label={WINDOW_LABEL[kind]} help={`${clock} Banked resets: ${win.banked}`}>
+    <SettingsRow label={WINDOW_LABEL[kind]} description={`${clock} Banked resets: ${win.banked}`}>
       <div className="flex w-56 flex-col gap-1 text-ui">
         <span>{usageText(win)}</span>
         {win.limit > 0 && <Bar pct={sharePct(win)} />}
@@ -244,8 +228,8 @@ function GrantGroup({ userId, write }: { userId: string; write: UserWrite }) {
   const valid = Number.isInteger(count) && count >= 1 && count <= 100;
   return (
     <SettingsGroup title="Grant resets" description="A grant adds banked resets the user can use later.">
-      <SettingsRow label="Kind and count" help="From 1 to 100 at a time.">
-        <Select variant="quiet" aria-label="Reset kind" options={KIND_OPTIONS} value={kind} onChange={(id) => setKind(id as WindowKind)} />
+      <SettingsRow label="Kind and count" description="From 1 to 100 at a time.">
+        <Select variant="quiet" aria-label="Reset kind" options={KIND_OPTIONS} value={kind} onChange={(id) => setKind(id)} />
         <NumberField aria-label="Count" value={count} onChange={setCount} minValue={1} maxValue={100} className="w-20" />
         <Button variant="outline" size="sm" isDisabled={!valid || write.isPending}
           onPress={() => write.mutate({ path: "grant", body: { user: userId, kind, count }, done: `Granted ${count} ${KIND_NAME[kind]} ${count === 1 ? "reset" : "resets"}.` })}>
@@ -292,10 +276,10 @@ function OverrideForm({ userId, override, write }: { userId: string; override: U
   };
   return (
     <>
-      <SettingsRow label="5-hour limit in dollars" help={fiveError && <span className="text-danger">{fiveError}</span>}>
+      <SettingsRow label="5-hour limit in dollars" description={fiveError && <span className="text-danger">{fiveError}</span>}>
         <TextField aria-label="5-hour limit in dollars" type="number" value={five} onChange={setFive} placeholder="Global limit" className="w-36" />
       </SettingsRow>
-      <SettingsRow label="Weekly limit in dollars" help={weekError && <span className="text-danger">{weekError}</span>}>
+      <SettingsRow label="Weekly limit in dollars" description={weekError && <span className="text-danger">{weekError}</span>}>
         <TextField aria-label="Weekly limit in dollars" type="number" value={week} onChange={setWeek} placeholder="Global limit" className="w-36" />
       </SettingsRow>
       <div className="flex justify-end gap-2 py-3">

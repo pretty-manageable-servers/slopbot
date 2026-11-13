@@ -1,12 +1,11 @@
 // Usage: the plan and one row per limit window, with its bar, percent and reset time, and a button to use a banked
 // reset. Port of the old console's usage meter (web/conversations.js usageMeter, paintUsage, resetButton).
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { Button, Meter, type ProgressTone, confirm } from "slop-ui-components";
+import { Button, confirm, Meter, type ProgressTone, SettingsGroup, SettingsRow } from "slop-ui-components";
 import { get, post, qs } from "../../api";
 import type { Usage } from "../../api-types";
 import { useServer } from "../../data";
 import { notify, notifyError } from "../../ui/feedback";
-import { SettingsGroup, SettingsRow } from "../../ui/layout";
 import { resetsLabel, usageLevel, windowName, type UsageLevel } from "./usage-format";
 
 export const usageQuery = (server: string) => queryOptions({
@@ -44,7 +43,7 @@ export default function UsageSettings() {
   return (
     <SettingsGroup title="Limits" description={`Plan: ${usage.plan}`}>
       {usage.windows.map((item) => (
-        <SettingsRow key={item.kind} label={windowName(item.kind)} help={item.resetAt ? resetsLabel(item.resetAt) : undefined}>
+        <SettingsRow key={item.kind} label={windowName(item.kind)} description={item.resetAt ? resetsLabel(item.resetAt) : undefined}>
           <div className="flex w-56 flex-col items-end gap-1.5">
             {item.percent === null ? (
               <span className="text-ui text-muted">No limit</span>

@@ -1,13 +1,13 @@
 // Account: your profile in the picked server (name, avatar, the fields you saved, who may edit them), the cloud-model
 // opt-in and log out. Port of the old console's My profile tab (web/app.js renderSettings) and nonZdrUserCard.
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { Button, Switch, TextField, confirm } from "slop-ui-components";
+import { Button, confirm, SettingsGroup, SettingsRow, Switch, TextField } from "slop-ui-components";
 import { useState } from "react";
 import { ApiError, api, get, post } from "../../api";
 import type { NonZdr, ServerSnapshot, SettingArgs, UserProfile } from "../../api-types";
 import { settingsQuery, useSaveSetting, useServer } from "../../data";
 import { notify, notifyError } from "../../ui/feedback";
-import { SectionNote, SettingsGroup, SettingsRow } from "../../ui/layout";
+import { SectionNote } from "../../ui/layout";
 
 // Same limits as the old form.
 const FIELD_MAX = 100;
@@ -58,31 +58,31 @@ function ProfileGroups({ snapshot, profile }: { snapshot: ServerSnapshot; profil
   return (
     <>
       <SettingsGroup title="Profile">
-        <SettingsRow label={<span className="flex items-center gap-3"><Avatar name={snapshot.me.displayName} url={snapshot.me.avatarUrl} /><span>{snapshot.me.displayName}</span></span>} help={`User ID ${snapshot.me.id}`} />
+        <SettingsRow label={<span className="flex items-center gap-3"><Avatar name={snapshot.me.displayName} url={snapshot.me.avatarUrl} /><span>{snapshot.me.displayName}</span></span>} description={`User ID ${snapshot.me.id}`} />
       </SettingsGroup>
 
       <SettingsGroup title={`Profile in ${server}`} description="Your profile is public to this Discord server. You control who can edit it.">
-        <Switch toggleSide="end" className="py-3" isSelected={profile.allowEdits} isDisabled={save.isPending} onChange={(allow_edits) => saveProfile({ action: "lock", allow_edits })}>Allow other members to edit my profile</Switch>
+        <Switch toggleSide="end" isSelected={profile.allowEdits} isDisabled={save.isPending} onChange={(allow_edits) => saveProfile({ action: "lock", allow_edits })}>Allow other members to edit my profile</Switch>
       </SettingsGroup>
 
       <SettingsGroup title="Saved profile fields">
         {profile.fields.map((item) => (
           <SettingsRow key={item.field} label={item.field}
-            help={<><span className="block break-words whitespace-pre-wrap">{typeof item.value === "string" ? item.value : JSON.stringify(item.value)}</span><span className="block">{item.editor === snapshot.user ? "Self-reported" : "Added by another member"}</span></>}>
+            description={<><span className="block break-words whitespace-pre-wrap">{typeof item.value === "string" ? item.value : JSON.stringify(item.value)}</span><span className="block">{item.editor === snapshot.user ? "Self-reported" : "Added by another member"}</span></>}>
             <Button variant="outline" size="sm" isDisabled={save.isPending} onPress={() => void remove(item.field)}>Remove</Button>
           </SettingsRow>
         ))}
         {!profile.fields.length && <p className="m-0 py-3 text-ui text-muted">No custom fields yet.</p>}
       </SettingsGroup>
 
-      <SettingsGroup title="Add or update a field" description={`Your profile in ${server}`}
-        actions={<Button variant="secondary" size="sm" isDisabled={!canSave || save.isPending} onPress={() => saveProfile({ action: "set", field: fieldName, value: fieldValue }, () => { setFieldName(""); setFieldValue(""); })}>Save</Button>}>
-        <SettingsRow label="Field name" stack>
+      <SettingsGroup title="Add or update a field" description={`Your profile in ${server}`}>
+        <SettingsRow label="Field name" className="flex-col items-stretch">
           <TextField aria-label="Field name" value={fieldName} onChange={setFieldName} placeholder="interests" maxLength={FIELD_MAX} />
         </SettingsRow>
-        <SettingsRow label="Value" stack>
+        <SettingsRow label="Value" className="flex-col items-stretch">
           <TextField aria-label="Value" value={fieldValue} onChange={setFieldValue} placeholder="What would you like your team to know?" maxLength={VALUE_MAX} />
         </SettingsRow>
+      <div className="flex justify-end"><Button variant="secondary" size="sm" isDisabled={!canSave || save.isPending} onPress={() => saveProfile({ action: "set", field: fieldName, value: fieldValue }, () => { setFieldName(""); setFieldValue(""); })}>Save</Button></div>
       </SettingsGroup>
     </>
   );
@@ -113,7 +113,7 @@ function DataGroup() {
 
   return (
     <SettingsGroup title="Data">
-      <Switch toggleSide="end" className="py-3" description="When Slopbot's models are down, some of your prompts can go to cloud models. In private chats and DMs, this setting is enough. In a server, the server must also allow cloud models." isSelected={nonZdr.allow} isDisabled={save.isPending} onChange={(allow) => void change(allow)}>Allow cloud models when ours are down (not zero data retention)</Switch>
+      <Switch toggleSide="end" description="When Slopbot's models are down, some of your prompts can go to cloud models. In private chats and DMs, this setting is enough. In a server, the server must also allow cloud models." isSelected={nonZdr.allow} isDisabled={save.isPending} onChange={(allow) => void change(allow)}>Allow cloud models when ours are down (not zero data retention)</Switch>
     </SettingsGroup>
   );
 }

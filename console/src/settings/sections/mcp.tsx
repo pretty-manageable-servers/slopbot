@@ -2,13 +2,13 @@
 // Ported from web/app.js renderMcp. Writes go to POST /api/mcp, which answers { text, mcp }. Connections open in a
 // dialog from their table row; the add form is a dialog from the Add button.
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { Badge, Button, Cell, Column, Disclosure, Modal, NumberField, Row, Select, Switch, Table, TableBody, TableHeader, TextField, type SelectOption, confirm } from "slop-ui-components";
+import { Badge, Button, confirm, DataTable, Disclosure, Modal, NumberField, Select, SettingsGroup, SettingsRow, Switch, TextField } from "slop-ui-components";
 import { useState, type ReactNode } from "react";
 import { post } from "../../api";
 import type { McpBody, McpConnection, McpSnapshot, McpTool, ServerSnapshot } from "../../api-types";
 import { settingsQuery, useServer } from "../../data";
 import { notify, notifyError } from "../../ui/feedback";
-import { SectionNote, SettingsGroup, SettingsRow } from "../../ui/layout";
+import { SectionNote } from "../../ui/layout";
 import {
   CONCURRENCY, TIMEOUT_MS, connectionReady, draftFromConnection, hostOf, inRange, isConnectionId, newConnectionBody, newConnectionReady,
   saveConnectionBody, type Access, type ConnectionDraft, type Effect, type NewConnectionDraft, type ToolChoice, type Transport,
@@ -18,9 +18,9 @@ interface McpAnswer { text: string; mcp: McpSnapshot }
 /** Sends one write. `done` runs when the bot accepted it, to close the dialog. */
 type Send = (body: Omit<McpBody, "server">, done: () => void) => void;
 
-const TRANSPORTS: SelectOption[] = [{ id: "http", label: "Streamable HTTP" }, { id: "sse", label: "Legacy SSE" }];
-const ACCESS: SelectOption[] = [{ id: "admin", label: "Server admins" }, { id: "member", label: "Server members" }];
-const EFFECTS: SelectOption[] = [{ id: "write", label: "Write, requires a task thread" }, { id: "read", label: "Read only, safe to retry" }];
+const TRANSPORTS = [{ id: "http", label: "Streamable HTTP" }, { id: "sse", label: "Legacy SSE" }] as const;
+const ACCESS = [{ id: "admin", label: "Server admins" }, { id: "member", label: "Server members" }] as const;
+const EFFECTS = [{ id: "write", label: "Write, requires a task thread" }, { id: "read", label: "Read only, safe to retry" }] as const;
 const STATUS_LABEL: Record<McpConnection["status"], string> = { connected: "Connected", disabled: "Disabled", error: "Error" };
 
 export default function McpConnections() {
@@ -48,26 +48,21 @@ export default function McpConnections() {
       <SettingsGroup
         title="Connections"
         description="Add remote MCP servers and choose their tools. Changes apply without restarting or redeploying Slopbot."
-        actions={<Button variant="outline" size="sm" onPress={() => setAdding(true)}>Add</Button>}
       >
-        <Table aria-label="MCP connections">
-          <TableHeader>
-            <Column isRowHeader>Connection</Column>
-            <Column>Endpoint</Column>
-            <Column>Transport</Column>
-            <Column>Status</Column>
-          </TableHeader>
-          <TableBody items={mcp.connections} emptyState="No MCP connections yet.">
-            {(c) => (
-              <Row id={c.id} onAction={() => setEditing(c.id)}>
-                <Cell><span className="font-medium">{c.id}</span></Cell>
-                <Cell><span className="text-muted">{hostOf(c.url)}</span></Cell>
-                <Cell>{TRANSPORTS.find((t) => t.id === c.transport)?.label}</Cell>
-                <Cell><Status connection={c} /></Cell>
-              </Row>
-            )}
-          </TableBody>
-        </Table>
+        <DataTable
+          aria-label="MCP connections"
+          rows={mcp.connections}
+          rowKey={(c) => c.id}
+          onRowPress={(c) => setEditing(c.id)}
+          emptyState="No MCP connections yet."
+          columns={[
+            { id: "id", header: "Connection", cell: (c) => <span className="font-medium">{c.id}</span> },
+            { id: "endpoint", header: "Endpoint", cell: (c) => <span className="text-muted">{hostOf(c.url)}</span> },
+            { id: "transport", header: "Transport", cell: (c) => TRANSPORTS.find((t) => t.id === c.transport)?.label },
+            { id: "status", header: "Status", cell: (c) => <Status connection={c} />, cellClassName: "h-auto py-2 whitespace-normal" },
+          ]}
+        />
+      <div className="flex justify-end"><Button variant="outline" size="sm" onPress={() => setAdding(true)}>Add</Button></div>
       </SettingsGroup>
 
       <Modal isOpen={adding} onOpenChange={(open) => { if (!open) setAdding(false); }} title="Add a connection">
@@ -100,7 +95,7 @@ function EndpointFields({ value, onChange }: { value: Endpoint; onChange: (next:
   return (
     <>
       <TextField label="MCP endpoint" type="url" value={value.url} onChange={(url) => onChange({ url })} maxLength={2048} placeholder="https://example.com/mcp" isRequired />
-      <Select label="Transport" options={TRANSPORTS} value={value.transport} onChange={(transport) => onChange({ transport: transport as Transport })} />
+      <Select label="Transport" options={TRANSPORTS} value={value.transport} onChange={(transport) => onChange({ transport: transport })} />
     </>
   );
 }
@@ -203,11 +198,11 @@ function ToolRow({ tool, choice, onChange }: { tool: McpTool; choice: ToolChoice
         <div className="mt-1 flex flex-wrap gap-4">
           <div className="flex flex-col gap-1">
             <span className="text-ui-sm text-muted">Access</span>
-            <Select variant="quiet" aria-label={`Access to ${tool.name}`} options={ACCESS} value={choice.access} onChange={(access) => onChange({ ...choice, access: access as Access })} />
+            <Select variant="quiet" aria-label={`Access to ${tool.name}`} options={ACCESS} value={choice.access} onChange={(access) => onChange({ ...choice, access: access })} />
           </div>
           <div className="flex flex-col gap-1">
             <span className="text-ui-sm text-muted">Operation</span>
-            <Select variant="quiet" aria-label={`Operation of ${tool.name}`} options={EFFECTS} value={choice.effect} onChange={(effect) => onChange({ ...choice, effect: effect as Effect })} />
+            <Select variant="quiet" aria-label={`Operation of ${tool.name}`} options={EFFECTS} value={choice.effect} onChange={(effect) => onChange({ ...choice, effect: effect })} />
           </div>
         </div>
         {tool.inputSchema !== undefined && (

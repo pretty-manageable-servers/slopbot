@@ -1,13 +1,13 @@
 // Servers (Slopbot team only): every server the bot is in. A server opens to its web transcripts per channel, the
 // cloud-model switch and the webhook rotation. Everyone on the team sees it; without canEdit the writes are disabled.
 import { keepPreviousData, queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button, Cell, Column, Row, Switch, Table, TableBody, TableHeader, TextField, confirm } from "slop-ui-components";
+import { Button, confirm, DataTable, SearchField, SettingsGroup, SettingsRow, Switch, TextField } from "slop-ui-components";
 import { useEffect, useState } from "react";
 import { ApiError, get, post, qs } from "../../api";
 import type { AdminServer, NonZdr, TranscriptChannel } from "../../api-types";
 import { adminMeQuery } from "../../data";
 import { notify, notifyError } from "../../ui/feedback";
-import { SectionNote, ServerMark, SettingsGroup, SettingsRow } from "../../ui/layout";
+import { SectionNote, ServerMark } from "../../ui/layout";
 import { SERVER_PAGE, pageLabel } from "./servers-format";
 
 interface ServerPage { servers: AdminServer[]; total: number }
@@ -64,24 +64,20 @@ function ServerList({ search, onSearch, offset, onOffset, onOpen }: {
   const total = data?.total ?? 0;
   return (
     <SettingsGroup title="Servers" description="Web transcripts for each server. Read-only members can view everything.">
-      <TextField aria-label="Find a server" type="search" value={search} onChange={onSearch} placeholder="Server name" maxLength={100} autoComplete="off" className="mb-2" />
+      <SearchField aria-label="Find a server" value={search} onChange={onSearch} placeholder="Server name" maxLength={100} autoComplete="off" className="mb-2" />
       {error ? <SectionNote>{error.message}</SectionNote> : !data ? <SectionNote>Loading…</SectionNote> : (
-        <Table aria-label="Servers">
-          <TableHeader>
-            <Column isRowHeader>Server</Column>
-            <Column align="end">Channels</Column>
-            <Column align="end">Transcripts on</Column>
-          </TableHeader>
-          <TableBody items={data.servers} emptyState="No servers match.">
-            {(s) => (
-              <Row id={s.id} onAction={() => onOpen(s)}>
-                <Cell><span className="flex min-w-0 items-center gap-2.5"><ServerMark server={s} /><span className="truncate">{s.name}</span></span></Cell>
-                <Cell numeric>{s.channelCount}</Cell>
-                <Cell numeric>{s.transcriptsOn}</Cell>
-              </Row>
-            )}
-          </TableBody>
-        </Table>
+        <DataTable
+          aria-label="Servers"
+          rows={data.servers}
+          rowKey={(s) => s.id}
+          onRowPress={onOpen}
+          emptyState="No servers match."
+          columns={[
+            { id: "server", header: "Server", cell: (s) => <span className="flex min-w-0 items-center gap-2.5"><ServerMark server={s} /><span className="truncate">{s.name}</span></span> },
+            { id: "channels", header: "Channels", numeric: true, cell: (s) => s.channelCount },
+            { id: "transcripts", header: "Transcripts on", numeric: true, cell: (s) => s.transcriptsOn },
+          ]}
+        />
       )}
       <div className="flex items-center justify-between gap-3 py-3 text-ui">
         <span className="text-muted tabular-nums">{pageLabel(offset, data?.servers.length ?? 0, total)}</span>
@@ -149,32 +145,27 @@ function ServerDetail({ server, canEdit, onBack }: { server: AdminServer; canEdi
         <h3 className="m-0 min-w-0 truncate text-base font-semibold">{server.name}</h3>
       </div>
       <SettingsGroup title="Cloud models" description="This server only">
-        <Switch toggleSide="end" className="py-3" description={NON_ZDR_HELP} isSelected={nonZdr.data?.allow ?? false} isDisabled={!canEdit || !nonZdr.data || setNonZdr.isPending} onChange={(allow) => setNonZdr.mutate(allow)}>Allow cloud models in channels</Switch>
+        <Switch toggleSide="end" description={NON_ZDR_HELP} isSelected={nonZdr.data?.allow ?? false} isDisabled={!canEdit || !nonZdr.data || setNonZdr.isPending} onChange={(allow) => setNonZdr.mutate(allow)}>Allow cloud models in channels</Switch>
       </SettingsGroup>
       <SettingsGroup title="Web transcripts" description="Per channel. Off by default. Discord permissions still decide who can see a transcript.">
         {channels.error ? <SectionNote>{channels.error.message}</SectionNote> : !channels.data ? <SectionNote>Loading…</SectionNote> : (
-          <Table aria-label="Channels">
-            <TableHeader>
-              <Column isRowHeader>Channel</Column>
-              <Column>Web transcripts</Column>
-              <Column align="end">Webhook</Column>
-            </TableHeader>
-            <TableBody items={channels.data.channels} emptyState="Slopbot serves no channels in this server yet.">
-              {(c) => (
-                <Row id={c.id}>
-                  <Cell>#{c.name}</Cell>
-                  <Cell>
-                    <Switch aria-label={`Web transcripts for #${c.name}`} isSelected={c.enabled} isDisabled={!canEdit || (setTranscripts.isPending && setTranscripts.variables?.channel.id === c.id)} onChange={(enabled) => setTranscripts.mutate({ channel: c, enabled })}>
-                      <span className="text-muted">{c.enabled ? "On" : "Off"}</span>
-                    </Switch>
-                  </Cell>
-                  <Cell align="end">
-                    <Button variant="outline" size="sm" isDisabled={!canEdit || (rotate.isPending && rotate.variables?.id === c.id)} onPress={() => void askRotate(c)}>Rotate webhook</Button>
-                  </Cell>
-                </Row>
-              )}
-            </TableBody>
-          </Table>
+          <DataTable
+            aria-label="Channels"
+            rows={channels.data.channels}
+            rowKey={(c) => c.id}
+            emptyState="Slopbot serves no channels in this server yet."
+            columns={[
+              { id: "channel", header: "Channel", cell: (c) => `#${c.name}` },
+              { id: "transcripts", header: "Web transcripts", cell: (c) => (
+                <Switch aria-label={`Web transcripts for #${c.name}`} isSelected={c.enabled} isDisabled={!canEdit || (setTranscripts.isPending && setTranscripts.variables?.channel.id === c.id)} onChange={(enabled) => setTranscripts.mutate({ channel: c, enabled })}>
+                  <span className="text-muted">{c.enabled ? "On" : "Off"}</span>
+                </Switch>
+              ) },
+              { id: "webhook", header: "Webhook", align: "end", cell: (c) => (
+                <Button variant="outline" size="sm" isDisabled={!canEdit || (rotate.isPending && rotate.variables?.id === c.id)} onPress={() => void askRotate(c)}>Rotate webhook</Button>
+              ) },
+            ]}
+          />
         )}
       </SettingsGroup>
     </>

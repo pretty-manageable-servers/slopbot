@@ -2,30 +2,30 @@
 // on its own: a Switch or Select saves on change, a number group with its Save button. The bot's answer to a save
 // shows as a notice; a failed save shows its error.
 import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { Button, NumberField, Select, Switch, TextField, type SelectOption } from "slop-ui-components";
+import { Button, NumberField, Select, SettingsGroup, SettingsRow, Switch, TextField } from "slop-ui-components";
 import { useState } from "react";
 import { get, post, qs } from "../../api";
 import type { ServerSettings, ToolResult, TranscriptChannel } from "../../api-types";
 import { settingsQuery, useSaveSetting, useServer } from "../../data";
 import { notify, notifyError } from "../../ui/feedback";
-import { SectionNote, SettingsGroup, SettingsRow } from "../../ui/layout";
+import { SectionNote } from "../../ui/layout";
 import {
   badNumbers, calibrationArgs, cutoffsFrom, RANGES, VOICE_MAX_LENGTH, VOICE_RESET, voiceArgs,
   type NumberCheck, type Range,
 } from "./server-form";
 
 const VOICE_DEFAULT = "A clear, warm young adult American woman with a medium pitch, a smooth and even pace, crisp articulation and a calm, friendly, helpful assistant tone.";
-const TOOL_DISPLAY: SelectOption[] = [
+const TOOL_DISPLAY = [
   { id: "none", label: "No tool calls" },
   { id: "summary", label: "Summary" },
   { id: "full", label: "Full expansion" },
-];
-const EFFORT: SelectOption[] = [
+] as const;
+const EFFORT = [
   { id: "default", label: "Default" },
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium" },
   { id: "xhigh", label: "Extra" },
-];
+] as const;
 const CUTOFFS = [
   { key: "addressed", label: "Addressed, %" },
   { key: "respond", label: "Addressed reply, %" },
@@ -64,7 +64,7 @@ function Monitoring({ server, settings }: Props) {
   const save = useSaveSetting(server);
   return (
     <SettingsGroup title="Join the conversation" description={settings.mock ? "Applies to this server. Mock mode disables automatic participation." : "Applies to this server."}>
-      <Switch toggleSide="end" className="py-3" description="Direct mentions and replies still work when monitoring is off." isSelected={settings.monitoring} isDisabled={save.isPending} onChange={(enabled) => save.mutate({ name: "monitoring", args: { enabled } }, showAnswer)}>Monitor unaddressed conversations</Switch>
+      <Switch toggleSide="end" description="Direct mentions and replies still work when monitoring is off." isSelected={settings.monitoring} isDisabled={save.isPending} onChange={(enabled) => save.mutate({ name: "monitoring", args: { enabled } }, showAnswer)}>Monitor unaddressed conversations</Switch>
     </SettingsGroup>
   );
 }
@@ -77,12 +77,12 @@ function Participation({ server, settings }: Props) {
     <SettingsGroup
       title="Participation"
       description="Applies immediately to this server. Lower cutoffs allow more participation. Use Slopbot’s why tool to compare recorded scores with the cutoffs used. Reaction frequency is a separate setting."
-      actions={saveButton(save.isPending || bad.length > 0, () => save.mutate({ name: "calibration", args: calibrationArgs(cutoffs) }, showAnswer))}
     >
       {CUTOFFS.map(({ key, label }) => (
         <NumberRow key={key} label={label} value={cutoffs[key]} range={RANGES.cutoff} onChange={(value) => setCutoffs((c) => ({ ...c, [key]: value }))} />
       ))}
       <NumberProblems bad={bad} />
+    {saveButton(save.isPending || bad.length > 0, () => save.mutate({ name: "calibration", args: calibrationArgs(cutoffs) }, showAnswer))}
     </SettingsGroup>
   );
 }
@@ -109,10 +109,11 @@ function Context({ server, settings }: Props) {
     }
   }
   return (
-    <SettingsGroup title="Context" description="Applies to this server." actions={saveButton(save.isPending || bad.length > 0, submit)}>
+    <SettingsGroup title="Context" description="Applies to this server.">
       <NumberRow label="Participation context, messages" value={context.jev} range={RANGES.jevContext} onChange={(jev) => setContext((c) => ({ ...c, jev }))} />
       <NumberRow label="Reply context, messages" value={context.reply} range={RANGES.replyContext} onChange={(reply) => setContext((c) => ({ ...c, reply }))} />
       <NumberProblems bad={bad} />
+    {saveButton(save.isPending || bad.length > 0, submit)}
     </SettingsGroup>
   );
 }
@@ -125,12 +126,12 @@ function Cooldown({ server, settings }: Props) {
     { label: "Replies per hour", value: cooldown.perHour, range: RANGES.repliesPerHour },
   ]);
   return (
-    <SettingsGroup title="Cooldown" description="Server policy, counted separately for each channel."
-      actions={saveButton(save.isPending || bad.length > 0, () => save.mutate({ name: "cooldown", args: { seconds: cooldown.seconds, per_hour: cooldown.perHour } }, showAnswer))}>
+    <SettingsGroup title="Cooldown" description="Server policy, counted separately for each channel.">
       <NumberRow label="Minimum interval, seconds" value={cooldown.seconds} range={RANGES.cooldownSeconds} onChange={(seconds) => setCooldown((c) => ({ ...c, seconds }))} />
       <NumberRow label="Replies per hour" help="Zero replies per hour disables unsolicited replies. Direct requests bypass these limits."
         value={cooldown.perHour} range={RANGES.repliesPerHour} onChange={(perHour) => setCooldown((c) => ({ ...c, perHour }))} />
       <NumberProblems bad={bad} />
+    {saveButton(save.isPending || bad.length > 0, () => save.mutate({ name: "cooldown", args: { seconds: cooldown.seconds, per_hour: cooldown.perHour } }, showAnswer))}
     </SettingsGroup>
   );
 }
@@ -139,15 +140,15 @@ function Replies({ server, settings }: Props) {
   const save = useSaveSetting(server);
   return (
     <SettingsGroup title="Replies">
-      <SettingsRow label="Tool activity" help="Summary shows one grey line with counts. Full expansion adds failed calls and their reasons.">
+      <SettingsRow label="Tool activity" description="Summary shows one grey line with counts. Full expansion adds failed calls and their reasons.">
         <Select variant="quiet" aria-label="Tool activity" options={TOOL_DISPLAY} value={settings.tool_display} isDisabled={save.isPending}
-          onChange={(mode) => save.mutate({ name: "tool_display", args: { mode: mode as ServerSettings["tool_display"] } }, showAnswer)} />
+          onChange={(mode) => save.mutate({ name: "tool_display", args: { mode: mode } }, showAnswer)} />
       </SettingsRow>
-      <SettingsRow label="Reasoning effort" help="Default for this server. Web chats can pick their own and use medium when nothing is set. Models without effort support ignore this.">
+      <SettingsRow label="Reasoning effort" description="Default for this server. Web chats can pick their own and use medium when nothing is set. Models without effort support ignore this.">
         <Select variant="quiet" aria-label="Reasoning effort" options={EFFORT} value={settings.default_effort} isDisabled={save.isPending}
-          onChange={(level) => save.mutate({ name: "default_effort", args: { level: level as ServerSettings["default_effort"] } }, showAnswer)} />
+          onChange={(level) => save.mutate({ name: "default_effort", args: { level: level } }, showAnswer)} />
       </SettingsRow>
-      <Switch toggleSide="end" className="py-3" isSelected={settings.timing_footer} isDisabled={save.isPending} onChange={(enabled) => save.mutate({ name: "timing", args: { enabled } }, showAnswer)}>Show request timing in reply footers</Switch>
+      <Switch toggleSide="end" isSelected={settings.timing_footer} isDisabled={save.isPending} onChange={(enabled) => save.mutate({ name: "timing", args: { enabled } }, showAnswer)}>Show request timing in reply footers</Switch>
     </SettingsGroup>
   );
 }
@@ -165,15 +166,15 @@ function Voice({ server, channel }: { server: string; channel: string | undefine
   });
   const current = status.isPending ? "Loading current voice…" : status.error ? status.error.message : status.data;
   return (
-    <SettingsGroup title="Voice" description="Applies to voice channels in this server."
-      actions={saveButton(save.isPending, () => save.mutate({ name: "voice", args: voiceArgs(instructions) }, showAnswer))}>
+    <SettingsGroup title="Voice" description="Applies to voice channels in this server.">
       <p className={`m-0 py-3 text-ui ${status.error ? "text-danger" : "text-muted"}`}>{current}</p>
-      <SettingsRow label="Voice instructions" stack help="Describe how Slopbot sounds in voice channels: gender, age, pitch, pace and tone. Leave empty for the default.">
+      <SettingsRow label="Voice instructions" className="flex-col items-stretch" description="Describe how Slopbot sounds in voice channels: gender, age, pitch, pace and tone. Leave empty for the default.">
         <TextField multiline aria-label="Voice instructions" value={instructions} onChange={setInstructions} placeholder={VOICE_DEFAULT} maxLength={VOICE_MAX_LENGTH} rows={3} />
       </SettingsRow>
       <div className="pb-3">
         <Button variant="ghost" size="sm" isDisabled={save.isPending} onPress={() => save.mutate({ name: "voice", args: VOICE_RESET }, showAnswer)}>Reset to default</Button>
       </div>
+    {saveButton(save.isPending, () => save.mutate({ name: "voice", args: voiceArgs(instructions) }, showAnswer))}
     </SettingsGroup>
   );
 }
@@ -211,7 +212,7 @@ function WebTranscripts({ server }: { server: string }) {
 /** A number row: the label and help on the left, a field with the range's limits on the right. */
 function NumberRow({ label, help, value, range, onChange }: { label: string; help?: string; value: number; range: Range; onChange: (value: number) => void }) {
   return (
-    <SettingsRow label={label} help={help}>
+    <SettingsRow label={label} description={help}>
       <NumberField aria-label={label} value={value} minValue={range.min} maxValue={range.max} onChange={onChange} />
     </SettingsRow>
   );
@@ -223,4 +224,4 @@ function NumberProblems({ bad }: { bad: NumberCheck[] }) {
   return <p className="m-0 pt-3 text-ui text-danger">{bad.map(({ label, range }) => `${label} must be a whole number from ${range.min} to ${range.max}.`).join(" ")}</p>;
 }
 
-const saveButton = (disabled: boolean, onPress: () => void) => <Button variant="secondary" size="sm" isDisabled={disabled} onPress={onPress}>Save</Button>;
+const saveButton = (disabled: boolean, onPress: () => void) => <div className="flex justify-end"><Button variant="secondary" size="sm" isDisabled={disabled} onPress={onPress}>Save</Button></div>;

@@ -4,12 +4,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { Component, Suspense, useState, type ReactNode } from "react";
-import { Modal, Tab, TabList, TabPanel, Tabs, TextField } from "slop-ui-components";
+import { Modal, SearchField, Tab, TabList, TabPanel, Tabs, TabSection } from "slop-ui-components";
 import { adminMeQuery, useServer } from "../data";
-import { icons } from "../ui/icons";
 import { SectionNote } from "../ui/layout";
 import { Loader } from "../logo";
-import { DEFAULT_SECTION, SECTIONS, sectionById } from "./sections";
+import { DEFAULT_SECTION, SECTIONS, sectionById, type SectionGroup } from "./sections";
 
 /** Opens Settings on a section. For links, use search={{ settings: id }}. */
 export function useOpenSettings() {
@@ -32,15 +31,20 @@ export function SettingsDialog() {
   const words = fold(query).split(/\s+/).filter(Boolean);
   const shown = words.length ? visible.filter((s) => words.every((w) => fold([s.label, ...s.keywords].join(" ")).includes(w))) : visible;
   const current = sectionById(settings) && visible.some((s) => s.id === settings) ? sectionById(settings)! : sectionById(DEFAULT_SECTION)!;
+  const groups: [SectionGroup, string | undefined][] = [["you", undefined], ["server", server.name], ["admin", "Slopbot team"]];
   const View = current.component;
 
   return (
     <Modal isOpen={open} onOpenChange={(next) => { if (!next) go(undefined); }} title="Settings" size="xl" flush className="md:h-[min(50rem,92dvh)]">
       <Tabs orientation="vertical" selectedKey={current.id} onSelectionChange={(key) => go(String(key))} className="flex-1 md:border-t md:border-divider">
         <div className="flex shrink-0 flex-col md:overflow-y-auto md:border-r md:border-divider">
-          <TextField aria-label="Search settings" type="search" placeholder="Search" prefix={icons.search} value={query} onChange={setQuery} className="p-3 pb-0 max-md:hidden" />
+          <SearchField aria-label="Search settings" placeholder="Search" value={query} onChange={setQuery} className="p-3 pb-0 max-md:hidden" />
           <TabList aria-label="Settings sections">
-            {shown.map((s) => <Tab key={s.id} id={s.id} icon={s.icon}>{s.label}</Tab>)}
+            {groups.map(([group, title]) => (
+              <TabSection key={group} title={title}>
+                {shown.filter((s) => s.group === group).map((s) => <Tab key={s.id} id={s.id} icon={s.icon}>{s.label}</Tab>)}
+              </TabSection>
+            ))}
           </TabList>
           {!shown.length && <p className="m-0 px-5 text-ui-sm text-muted">No settings match.</p>}
         </div>
