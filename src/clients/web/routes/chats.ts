@@ -11,7 +11,8 @@ import { alreadySent, applyOut, failure, json, notFound, userOf, type WebEnv } f
 export type ChatRoutes = Hono<WebEnv>;
 
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
-const JSON_MAX_BYTES = 65536;
+/** Caps the JSON body of a write. A message has no character limit, so this only stops abuse. */
+const JSON_MAX_BYTES = 4 * 1024 * 1024;
 const record = z.record(z.string(), z.unknown());
 const patchBody = z.object({ effort: z.unknown().optional(), title: z.unknown().optional() });
 const createBody = z.object({ server: z.unknown().optional() });

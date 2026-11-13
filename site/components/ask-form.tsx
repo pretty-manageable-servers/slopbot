@@ -3,9 +3,6 @@
 import { useEffect, useState } from 'react'
 import { links } from '@/lib/links'
 
-// Same limit as PRIVATE_CHAT_MAX_CHARS in src/private-chat.ts.
-const MAX_CHARS = 8000
-
 // The Ask box opens the console with the question in the URL hash: /console#ask=<text>.
 // The console signs the user in if needed, starts a private chat and sends the question.
 export function AskForm() {
@@ -14,7 +11,7 @@ export function AskForm() {
   // The docs send ?q=<prompt> here. See SLOPBOT_URL in pmservers-docs.
   useEffect(() => {
     const q = new URLSearchParams(window.location.search).get('q')
-    if (q) setText(Array.from(q).slice(0, MAX_CHARS).join(''))
+    if (q) setText(q)
   }, [])
 
   return (
@@ -23,7 +20,7 @@ export function AskForm() {
         className="ask"
         onSubmit={(event) => {
           event.preventDefault()
-          const question = Array.from(text.trim()).slice(0, MAX_CHARS).join('')
+          const question = text.trim()
           if (!question) return
           window.location.assign(`${links.console}#ask=${encodeURIComponent(question)}`)
         }}
@@ -34,7 +31,6 @@ export function AskForm() {
           onChange={(event) => setText(event.target.value)}
           placeholder="Plant a question…"
           aria-label="Your question"
-          maxLength={MAX_CHARS}
         />
         <button className="btn solid" type="submit" disabled={!text.trim()}>Ask</button>
       </form>
