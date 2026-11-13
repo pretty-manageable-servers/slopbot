@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { Button } from "agentic-ui-kit";
+import { Button } from "slop-ui-components";
 import { expect, screen, userEvent, waitFor, within } from "storybook/test";
 import { confirmAction, notify, notifyError } from "./feedback";
 
@@ -40,8 +40,8 @@ const meta = {
   },
   render: (args) => (
     <div className="flex items-center gap-3">
-      <Button variant="subtle" onPress={() => notify(args.text, args.tone)}>Show toast</Button>
-      <Button variant="subtle" onPress={() => void confirmAction({ title: args.title, body: args.body, confirmLabel: args.confirmLabel, danger: args.danger })}>Ask to confirm</Button>
+      <Button variant="secondary" onPress={() => notify(args.text, args.tone)}>Show toast</Button>
+      <Button variant="secondary" onPress={() => void confirmAction({ title: args.title, body: args.body, confirmLabel: args.confirmLabel, danger: args.danger })}>Ask to confirm</Button>
     </div>
   ),
 } satisfies Meta<Args>;
@@ -55,8 +55,8 @@ export const Playground: Story = {};
 export const Gallery: Story = {
   render: () => (
     <div className="flex items-center gap-3">
-      <Button variant="subtle" onPress={() => notify("Settings saved.")}>Info toast</Button>
-      <Button variant="subtle" onPress={() => notifyError(new Error("The bot could not be reached."))}>Error toast</Button>
+      <Button variant="secondary" onPress={() => notify("Settings saved.")}>Info toast</Button>
+      <Button variant="secondary" onPress={() => notifyError(new Error("The bot could not be reached."))}>Error toast</Button>
     </div>
   ),
 };
@@ -73,13 +73,13 @@ export const ConfirmingADestructiveAction: Story = {
   play: async ({ canvasElement, step }) => {
     const open = async () => {
       await userEvent.click(within(canvasElement).getByRole("button", { name: "Revoke all" }));
-      return await screen.findByRole("dialog", { name: "Revoke all share links?" });
+      return await screen.findByRole("alertdialog", { name: "Revoke all share links?" });
     };
     await step("Cancel closes the dialog and changes nothing", async () => {
       const dialog = await open();
       await expect(within(dialog).getByText("Everyone with a link loses access.")).toBeVisible();
       await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      await waitFor(() => expect(screen.queryByRole("alertdialog", { name: "Revoke all share links?" })).toBeNull());
       await expect(await screen.findByText("Nothing changed.")).toBeVisible();
     });
     await step("Confirm closes it and carries on", async () => {

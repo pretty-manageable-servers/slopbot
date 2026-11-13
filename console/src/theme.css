@@ -92,6 +92,7 @@
   --ui-subtle: var(--chat-subtle);
   --ui-accent: var(--chat-accent);
   --ui-accent-fg: var(--chat-accent-fg);
+  --ui-accent-soft: color-mix(in srgb, var(--chat-accent) 18%, transparent);
   --ui-interactive: var(--chat-accent);
   --ui-interactive-fg: var(--chat-accent-fg);
   --ui-focus: var(--chat-focus);
