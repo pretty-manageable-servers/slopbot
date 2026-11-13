@@ -85,6 +85,7 @@
   --ui-popover: var(--chat-popover);
   --ui-hover: var(--chat-hover);
   --ui-selected: var(--chat-selected);
+  --ui-track: var(--chat-hover);
   --ui-border: var(--chat-border);
   --ui-divider: var(--chat-divider);
   --ui-fg: var(--chat-fg);
