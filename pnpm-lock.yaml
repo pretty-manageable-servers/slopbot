@@ -154,8 +154,8 @@ importers:
         specifier: ^19.3.1
         version: 19.3.1(react@19.3.1)
       slop-ui-components:
-        specifier: github:bushshrub/slop-ui-components#v0.2.0
-        version: https://codeload.github.com/bushshrub/slop-ui-components/tar.gz/5198b2688ec04895343f4c233ffdc40080069dad(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.4)
+        specifier: github:bushshrub/slop-ui-components#v0.2.1
+        version: https://codeload.github.com/bushshrub/slop-ui-components/tar.gz/54fafd1d7eb18c51723547d63375552f5ed33530(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.4)
       zod:
         specifier: 'catalog:'
         version: 4.6.7
@@ -4149,9 +4149,9 @@ packages:
     resolution: {integrity: sha512-2wcC/oGxHis/BoHkkPwldgiPSYcpZK3JU28WoMVv55yHJgcZ8rlXvuG9iZggz+sU1d4bRgIGASwyWqjxu3FM0g==}
     engines: {node: '>=18'}
 
-  slop-ui-components@https://codeload.github.com/bushshrub/slop-ui-components/tar.gz/5198b2688ec04895343f4c233ffdc40080069dad:
-    resolution: {gitHosted: true, integrity: sha512-8MlHQ/w1iBXlviPl02Rf+qWFEFzkCHM1GI/9TELVYHQwP5y8Jar0kZQGmRZfQRH54309BTVlesmrVbtUWS+Z8A==, tarball: https://codeload.github.com/bushshrub/slop-ui-components/tar.gz/5198b2688ec04895343f4c233ffdc40080069dad}
-    version: 0.2.0
+  slop-ui-components@https://codeload.github.com/bushshrub/slop-ui-components/tar.gz/54fafd1d7eb18c51723547d63375552f5ed33530:
+    resolution: {gitHosted: true, integrity: sha512-DB8qp5W3cP+4s6qAXyeKSzXSOSk7S6OyrWvb/2xLlr4bqaiEI+vKf0qhbq0RcGtY+hNnuFsqjONVUUmKFK/t5g==, tarball: https://codeload.github.com/bushshrub/slop-ui-components/tar.gz/54fafd1d7eb18c51723547d63375552f5ed33530}
+    version: 0.2.1
     peerDependencies:
       react: '>=19'
       react-dom: '>=19'
@@ -8951,7 +8951,7 @@ snapshots:
       mrmime: 2.0.1
       totalist: 3.0.1
 
-  slop-ui-components@https://codeload.github.com/bushshrub/slop-ui-components/tar.gz/5198b2688ec04895343f4c233ffdc40080069dad(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.4):
+  slop-ui-components@https://codeload.github.com/bushshrub/slop-ui-components/tar.gz/54fafd1d7eb18c51723547d63375552f5ed33530(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.4):
     dependencies:
       '@fontsource-variable/inter': 5.3.0
       '@fontsource-variable/jetbrains-mono': 5.3.0
