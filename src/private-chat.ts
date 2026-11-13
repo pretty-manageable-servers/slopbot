@@ -2,8 +2,6 @@ import { randomUUID } from "node:crypto";
 
 /** Private conversations use this prefix so storage excludes them from server history. */
 export const PRIVATE_CHANNEL_PREFIX = "web:";
-/** Longest message a user can send to a private chat. */
-export const PRIVATE_CHAT_MAX_CHARS = 8000;
 /** Longest title. A new chat takes its title from its first message. */
 export const PRIVATE_CHAT_TITLE_CHARS = 60;
 

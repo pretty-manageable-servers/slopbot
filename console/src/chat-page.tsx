@@ -10,8 +10,6 @@ import { chatsQuery, useServer } from "./data";
 import { notifyError } from "./ui/feedback";
 
 const ASK_KEY = "slopbot-ask";
-/** Longest question the chat API takes. It matches PRIVATE_CHAT_MAX_CHARS in src/private-chat.ts. */
-const ASK_MAX_CHARS = 8000;
 /** Set by the shared page for a signed-out viewer who presses Continue, before the sign-in. */
 const SHARE_KEY = "slopbot-share";
 
@@ -30,12 +28,12 @@ export function stashAsk() {
 }
 let pendingAsk = "";
 
-/** The stashed question, cut to the bot's limit. */
+/** The stashed question. */
 function takeAsk(): string {
   let text = pendingAsk;
   pendingAsk = "";
   if (!text) try { text = sessionStorage.getItem(ASK_KEY) || ""; } catch { /* no storage */ }
-  return [...text.trim()].slice(0, ASK_MAX_CHARS).join("");
+  return text.trim();
 }
 
 /** A failed call as a notice. A 404 gets the page's own words. */

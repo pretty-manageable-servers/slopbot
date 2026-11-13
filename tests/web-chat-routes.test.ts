@@ -374,8 +374,7 @@ test("bad input gets a status and an {error} body; writes need the session, CSRF
   const messages = `/api/chats/${id}/messages`;
   assert.equal((await f.call(ALICE, "POST", messages, { text: "   " })).status, 400);
   assert.equal((await f.call(ALICE, "POST", messages, { text: 8001 })).status, 400);
-  assert.equal((await f.call(ALICE, "POST", messages, { text: "x".repeat(8001) })).status, 400);
-  assert.equal((await f.call(ALICE, "POST", messages, { text: "x".repeat(8000) })).status, 201, "8000 characters is allowed");
+  assert.equal((await f.call(ALICE, "POST", messages, { text: "x".repeat(100_000) })).status, 201, "a message has no character limit");
   assert.equal(typeof (await f.call(ALICE, "POST", messages, { text: "   " })).json.error, "string");
   assert.equal((await f.call(ALICE, "POST", messages, "{")).status, 400, "invalid JSON");
   assert.equal((await f.call(ALICE, "POST", messages, "{}", { "Content-Type": "text/plain" })).status, 415, "non-JSON body");
