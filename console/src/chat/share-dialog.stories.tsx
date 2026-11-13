@@ -61,7 +61,7 @@ export const LinkIsOnWithNewerMessages: Story = {
 export const SharesDidNotLoad: Story = {
   parameters: { msw: { handlers: { chatShares: http.get("/api/chats/:id/shares", () => failure(500, "Could not read the links")) } } },
   play: async () => {
-    await expect(await screen.findByRole("alert")).toHaveTextContent("Could not read the links");
+    await expect(await within(await screen.findByRole("dialog", { name: "Share chat" })).findByRole("alert")).toHaveTextContent("Could not read the links");
   },
 };
 

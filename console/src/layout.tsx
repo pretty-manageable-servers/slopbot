@@ -3,8 +3,8 @@
 // switches between Chat and Code. The mode follows the page: chat pages are Chats, server pages are Servers.
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { Outlet, useMatchRoute, useNavigate } from "@tanstack/react-router";
-import { AppShell, ChatList, SegmentedControl, SidebarItem, defaultIcons } from "agentic-ui-kit";
-import { LogOut, Pencil, Settings, Share, Trash2 } from "lucide-react";
+import { AppShell, ChatList, Menu, MenuItem, MenuSeparator, SegmentedControl, SidebarItem, defaultIcons } from "agentic-ui-kit";
+import { Pencil, Share, Trash2 } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
 import { ApiError, api } from "./api";
 import { ShareDialog } from "./chat/share-dialog";
@@ -19,7 +19,6 @@ import { FeedbackHost, confirmAction, notifyError } from "./ui/feedback";
 import { AccountMenu } from "./ui/account-menu";
 import { icons } from "./ui/icons";
 import { PageLoading, PageNote } from "./ui/page-state";
-import { MenuList } from "./ui/menu";
 import { Drawer } from "./ui/sidebar";
 
 export function Layout() {
@@ -67,11 +66,8 @@ function Shell() {
         <AccountMenu
           name={session.me?.displayName ?? session.user}
           {...(session.me?.avatarUrl && { avatarUrl: session.me.avatarUrl })}
-          items={[
-            { id: "settings", label: "Settings", icon: <Settings />, onAction: () => openSettings() },
-            "separator",
-            { id: "logout", label: "Log out", icon: <LogOut />, onAction: () => void api.logout().then(() => location.reload(), notifyError) },
-          ]}
+          onSettings={() => openSettings()}
+          onLogout={() => void api.logout().then(() => location.reload(), notifyError)}
         />
       }
     >
@@ -126,12 +122,13 @@ function Chats() {
         sections={[{ id: "chats", title: "Chats", items: chats.map((c) => ({ id: c.id, title: c.title || "New chat", href: `${BASE}/chat/${c.id}` })) }]}
         {...(activeId && { activeId })}
         rowMenu={(chat) => (
-          <MenuList label="Chat actions" items={[
-            { id: "rename", label: "Rename", icon: <Pencil />, onAction: () => void rename(chat) },
-            { id: "share", label: "Share", icon: <Share />, onAction: () => setSharing(chat.id) },
-            "separator",
-            { id: "delete", label: "Delete", icon: <Trash2 />, danger: true, onAction: () => void remove(chat.id) },
-          ]} />
+          // The kit's row supplies the popover, so this is the kit's Menu.
+          <Menu aria-label="Chat actions" className="min-w-56">
+            <MenuItem icon={<Pencil />} onAction={() => void rename(chat)}>Rename</MenuItem>
+            <MenuItem icon={<Share />} onAction={() => setSharing(chat.id)}>Share</MenuItem>
+            <MenuSeparator />
+            <MenuItem icon={<Trash2 />} tone="danger" onAction={() => void remove(chat.id)}>Delete</MenuItem>
+          </Menu>
         )}
       />
       <ShareDialog chatId={sharing} onClose={() => setSharing(null)} />

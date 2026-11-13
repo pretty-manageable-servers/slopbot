@@ -1,6 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { AppShell, SegmentedControl, SidebarItem, SidebarToggle, defaultIcons } from "agentic-ui-kit";
-import { LogOut, Settings } from "lucide-react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { Logo } from "../logo";
 import { AccountMenu } from "./account-menu";
@@ -26,7 +25,7 @@ function Frame({ brand }: { brand: string }) {
         switcher={<SegmentedControl label="View" value="chats" onChange={() => {}}
           options={[{ id: "chats", label: "Chats", icon: icons.chats, iconOnly: true }, { id: "servers", label: "Servers", icon: icons.server, iconOnly: true }]} />}
         nav={<SidebarItem icon={defaultIcons.edit} label="New chat" active />}
-        footer={<AccountMenu name="DerpZ" items={[{ id: "settings", label: "Settings", icon: <Settings /> }, "separator", { id: "logout", label: "Log out", icon: <LogOut /> }]} />}>
+        footer={<AccountMenu name="DerpZ" onSettings={() => {}} onLogout={() => {}} />}>
         <p className="px-2 text-sm text-chat-muted">Chats go here.</p>
       </Drawer>
     }>
