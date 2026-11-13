@@ -44,8 +44,14 @@ export default function Instructions() {
 
   return (
     <SettingsGroup title="Instructions"
-      description="Tell Slopbot how to answer you: tone, format, what to know about you. Used in your web chats and Discord DMs, not in server channels. Markdown works.">
-      <SettingsRow label="Instructions" className="flex-col items-stretch">
+      description="Tell Slopbot how to answer you: tone, format, what to know about you. Used in your web chats and Discord DMs, not in server channels. Markdown works."
+      actions={
+        <>
+          {current.text && <Button variant="outline" size="sm" isDisabled={save.isPending} onPress={() => send("")}>Clear</Button>}
+          <Button variant="secondary" size="sm" isDisabled={!canSave(draft, current.text, current.max, save.isPending)} onPress={() => send(draft)}>Save</Button>
+        </>
+      }>
+      <SettingsRow label="Instructions" layout="stacked" description="Checked for safety when you save.">
         <div className="flex flex-col gap-1">
           <SegmentedControl aria-label="Editor view" options={EDITOR_VIEWS} value={editor} onChange={(next) => setEditor(next)} className="self-start" />
           {editor === "preview"
@@ -53,18 +59,10 @@ export default function Instructions() {
                 <Markdown>{draft.trim() ? draft : "Nothing to preview."}</Markdown>
               </div>
             : <TextField multiline aria-label="Instructions" value={draft} onChange={setDraft} maxLength={current.max} rows={12}
-                placeholder="For example: Answer in British English. Use short paragraphs and code blocks for commands." />}
-          <div className="flex items-start justify-between gap-3 text-ui-sm">
-            <p className="m-0 text-muted">Checked for safety when you save.</p>
-            <p className={`m-0 shrink-0 ${length > current.max ? "text-danger" : "text-muted"}`} aria-live="polite">{length} / {current.max}</p>
-          </div>
-          {rejected && <p role="alert" className="m-0 text-ui text-danger">{rejected}</p>}
+                placeholder="For example: Answer in British English. Use short paragraphs and code blocks for commands."
+                description={`${length} / ${current.max}`} errorMessage={rejected ?? undefined} />}
         </div>
       </SettingsRow>
-      <div className="flex justify-end gap-2">
-        {current.text && <Button variant="outline" size="sm" isDisabled={save.isPending} onPress={() => send("")}>Clear</Button>}
-        <Button variant="secondary" size="sm" isDisabled={!canSave(draft, current.text, current.max, save.isPending)} onPress={() => send(draft)}>Save</Button>
-      </div>
     </SettingsGroup>
   );
 }

@@ -82,11 +82,10 @@ function ChannelRow({ server, channel }: { server: string; channel: SnapshotChan
           </div>
           <form className="flex flex-col gap-1" onSubmit={(event) => { event.preventDefault(); void saveWindow(); }}>
             <div className="flex flex-wrap items-center gap-2">
-              <NumberField aria-label="History window in days" value={days} onChange={setDraft} minValue={1} maxValue={3650} />
+              <NumberField aria-label="History window in days" value={days} onChange={setDraft} minValue={1} maxValue={3650} description="Lowering the window deletes saved messages older than the new window." />
               <span className="text-ui text-muted">days</span>
               <Button type="submit" variant="outline" size="sm" isDisabled={busy || !isWindowDays(days)}>Save</Button>
             </div>
-            <p className="m-0 text-ui-sm text-muted">Lowering the window deletes saved messages older than the new window.</p>
           </form>
         </div>
       )}

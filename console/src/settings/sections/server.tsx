@@ -77,12 +77,11 @@ function Participation({ server, settings }: Props) {
     <SettingsGroup
       title="Participation"
       description="Applies immediately to this server. Lower cutoffs allow more participation. Use Slopbot’s why tool to compare recorded scores with the cutoffs used. Reaction frequency is a separate setting."
+      actions={<Button variant="secondary" size="sm" isDisabled={save.isPending || bad.length > 0} onPress={() => save.mutate({ name: "calibration", args: calibrationArgs(cutoffs) }, showAnswer)}>Save</Button>}
     >
       {CUTOFFS.map(({ key, label }) => (
         <NumberRow key={key} label={label} value={cutoffs[key]} range={RANGES.cutoff} onChange={(value) => setCutoffs((c) => ({ ...c, [key]: value }))} />
       ))}
-      <NumberProblems bad={bad} />
-    {saveButton(save.isPending || bad.length > 0, () => save.mutate({ name: "calibration", args: calibrationArgs(cutoffs) }, showAnswer))}
     </SettingsGroup>
   );
 }
@@ -109,11 +108,9 @@ function Context({ server, settings }: Props) {
     }
   }
   return (
-    <SettingsGroup title="Context" description="Applies to this server.">
+    <SettingsGroup title="Context" description="Applies to this server." actions={<Button variant="secondary" size="sm" isDisabled={save.isPending || bad.length > 0} onPress={submit}>Save</Button>}>
       <NumberRow label="Participation context, messages" value={context.jev} range={RANGES.jevContext} onChange={(jev) => setContext((c) => ({ ...c, jev }))} />
       <NumberRow label="Reply context, messages" value={context.reply} range={RANGES.replyContext} onChange={(reply) => setContext((c) => ({ ...c, reply }))} />
-      <NumberProblems bad={bad} />
-    {saveButton(save.isPending || bad.length > 0, submit)}
     </SettingsGroup>
   );
 }
@@ -126,12 +123,10 @@ function Cooldown({ server, settings }: Props) {
     { label: "Replies per hour", value: cooldown.perHour, range: RANGES.repliesPerHour },
   ]);
   return (
-    <SettingsGroup title="Cooldown" description="Server policy, counted separately for each channel.">
+    <SettingsGroup title="Cooldown" description="Server policy, counted separately for each channel." actions={<Button variant="secondary" size="sm" isDisabled={save.isPending || bad.length > 0} onPress={() => save.mutate({ name: "cooldown", args: { seconds: cooldown.seconds, per_hour: cooldown.perHour } }, showAnswer)}>Save</Button>}>
       <NumberRow label="Minimum interval, seconds" value={cooldown.seconds} range={RANGES.cooldownSeconds} onChange={(seconds) => setCooldown((c) => ({ ...c, seconds }))} />
       <NumberRow label="Replies per hour" help="Zero replies per hour disables unsolicited replies. Direct requests bypass these limits."
         value={cooldown.perHour} range={RANGES.repliesPerHour} onChange={(perHour) => setCooldown((c) => ({ ...c, perHour }))} />
-      <NumberProblems bad={bad} />
-    {saveButton(save.isPending || bad.length > 0, () => save.mutate({ name: "cooldown", args: { seconds: cooldown.seconds, per_hour: cooldown.perHour } }, showAnswer))}
     </SettingsGroup>
   );
 }
@@ -166,15 +161,14 @@ function Voice({ server, channel }: { server: string; channel: string | undefine
   });
   const current = status.isPending ? "Loading current voice…" : status.error ? status.error.message : status.data;
   return (
-    <SettingsGroup title="Voice" description="Applies to voice channels in this server.">
-      <p className={`m-0 py-3 text-ui ${status.error ? "text-danger" : "text-muted"}`}>{current}</p>
-      <SettingsRow label="Voice instructions" className="flex-col items-stretch" description="Describe how Slopbot sounds in voice channels: gender, age, pitch, pace and tone. Leave empty for the default.">
+    <SettingsGroup title="Voice" description="Applies to voice channels in this server." actions={<Button variant="secondary" size="sm" isDisabled={save.isPending} onPress={() => save.mutate({ name: "voice", args: voiceArgs(instructions) }, showAnswer)}>Save</Button>}>
+      <SettingsRow label="Current voice" description={current} />
+      <SettingsRow label="Voice instructions" layout="stacked" description="Describe how Slopbot sounds in voice channels: gender, age, pitch, pace and tone. Leave empty for the default.">
         <TextField multiline aria-label="Voice instructions" value={instructions} onChange={setInstructions} placeholder={VOICE_DEFAULT} maxLength={VOICE_MAX_LENGTH} rows={3} />
       </SettingsRow>
-      <div className="pb-3">
+      <div>
         <Button variant="ghost" size="sm" isDisabled={save.isPending} onPress={() => save.mutate({ name: "voice", args: VOICE_RESET }, showAnswer)}>Reset to default</Button>
       </div>
-    {saveButton(save.isPending, () => save.mutate({ name: "voice", args: voiceArgs(instructions) }, showAnswer))}
     </SettingsGroup>
   );
 }
@@ -213,15 +207,8 @@ function WebTranscripts({ server }: { server: string }) {
 function NumberRow({ label, help, value, range, onChange }: { label: string; help?: string; value: number; range: Range; onChange: (value: number) => void }) {
   return (
     <SettingsRow label={label} description={help}>
-      <NumberField aria-label={label} value={value} minValue={range.min} maxValue={range.max} onChange={onChange} />
+      <NumberField aria-label={label} errorMessage={badNumbers([{ label, value, range }]).length ? `Must be a whole number from ${range.min} to ${range.max}.` : undefined} value={value} minValue={range.min} maxValue={range.max} onChange={onChange} />
     </SettingsRow>
   );
 }
 
-/** Names the number fields that block Save, with their limits. */
-function NumberProblems({ bad }: { bad: NumberCheck[] }) {
-  if (!bad.length) return null;
-  return <p className="m-0 pt-3 text-ui text-danger">{bad.map(({ label, range }) => `${label} must be a whole number from ${range.min} to ${range.max}.`).join(" ")}</p>;
-}
-
-const saveButton = (disabled: boolean, onPress: () => void) => <div className="flex justify-end"><Button variant="secondary" size="sm" isDisabled={disabled} onPress={onPress}>Save</Button></div>;

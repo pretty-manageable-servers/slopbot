@@ -34,7 +34,7 @@ export function Drawer({ brand, logo, switcher, railActions, nav, children, foot
       <div className="flex h-12 shrink-0 items-center gap-1 px-3">
         <SidebarToggle />
         {!collapsed && (
-          <div className="flex min-w-0 flex-1 items-center gap-2 px-1.5 font-chat-serif text-xl text-chat-fg">
+          <div className="flex min-w-0 flex-1 items-center gap-2 px-1.5 font-chat-serif text-xl text-fg">
             {logo}
             <span className="min-w-0 truncate">{brand}</span>
           </div>
@@ -46,7 +46,7 @@ export function Drawer({ brand, logo, switcher, railActions, nav, children, foot
       {nav && <SidebarList className={`shrink-0 px-2 pb-2 ${collapsed ? "items-center" : ""}`}>{nav}</SidebarList>}
       {!collapsed && <div className="min-h-0 flex-1 overflow-y-auto px-2 pt-2 pb-4 [scrollbar-width:thin]">{children}</div>}
       {collapsed && <div className="flex-1" />}
-      {footer && <div className="shrink-0 border-t border-chat-divider p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">{footer}</div>}
+      {footer && <div className="shrink-0 border-t border-divider p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">{footer}</div>}
     </div>
   );
 }

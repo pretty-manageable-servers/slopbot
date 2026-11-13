@@ -1,13 +1,13 @@
 // Servers (Slopbot team only): every server the bot is in. A server opens to its web transcripts per channel, the
 // cloud-model switch and the webhook rotation. Everyone on the team sees it; without canEdit the writes are disabled.
 import { keepPreviousData, queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button, confirm, DataTable, SearchField, SettingsGroup, SettingsRow, Switch, TextField } from "slop-ui-components";
+import { Avatar, Button, confirm, DataTable, SearchField, SettingsGroup, SettingsRow, Switch, TextField } from "slop-ui-components";
 import { useEffect, useState } from "react";
 import { ApiError, get, post, qs } from "../../api";
 import type { AdminServer, NonZdr, TranscriptChannel } from "../../api-types";
 import { adminMeQuery } from "../../data";
 import { notify, notifyError } from "../../ui/feedback";
-import { SectionNote, ServerMark } from "../../ui/layout";
+import { SectionNote } from "../../ui/layout";
 import { SERVER_PAGE, pageLabel } from "./servers-format";
 
 interface ServerPage { servers: AdminServer[]; total: number }
@@ -73,7 +73,7 @@ function ServerList({ search, onSearch, offset, onOffset, onOpen }: {
           onRowPress={onOpen}
           emptyState="No servers match."
           columns={[
-            { id: "server", header: "Server", cell: (s) => <span className="flex min-w-0 items-center gap-2.5"><ServerMark server={s} /><span className="truncate">{s.name}</span></span> },
+            { id: "server", header: "Server", cell: (s) => <span className="flex min-w-0 items-center gap-2.5"><Avatar name={s.name} src={s.icon ?? undefined} className="size-5 rounded-md" /><span className="truncate">{s.name}</span></span> },
             { id: "channels", header: "Channels", numeric: true, cell: (s) => s.channelCount },
             { id: "transcripts", header: "Transcripts on", numeric: true, cell: (s) => s.transcriptsOn },
           ]}
@@ -141,7 +141,7 @@ function ServerDetail({ server, canEdit, onBack }: { server: AdminServer; canEdi
     <>
       <Button variant="ghost" size="sm" className="-ml-2 mb-3" onPress={onBack}>Back to servers</Button>
       <div className="mb-6 flex items-center gap-3">
-        <ServerMark server={server} size={28} />
+        <Avatar name={server.name} src={server.icon ?? undefined} className="size-7 rounded-md" />
         <h3 className="m-0 min-w-0 truncate text-base font-semibold">{server.name}</h3>
       </div>
       <SettingsGroup title="Cloud models" description="This server only">

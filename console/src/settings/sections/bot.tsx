@@ -69,16 +69,15 @@ function SystemPromptGroup({ edit }: { edit: boolean }) {
   };
 
   return (
-    <SettingsGroup title="System prompt" description="For all servers. Empty uses the default.">
-      <SettingsRow label="Instructions" className="flex-col items-stretch">
+    <SettingsGroup title="System prompt" description="For all servers. Empty uses the default." actions={edit && <Button variant="secondary" size="sm" isDisabled={save.isPending} onPress={() => save.mutate(draft.trim())}>Save</Button>}>
+      <SettingsRow label="Instructions" layout="stacked">
         <div className="flex flex-col gap-1">
           <SegmentedControl aria-label="Editor view" options={PROMPT_VIEWS} value={view} onChange={(next) => setView(next)} className="self-start" />
           {view === "preview"
             ? <div className="min-h-60 rounded-sm border border-border bg-surface px-2.5 py-1.5 text-ui">
                 <Markdown>{draft.trim() ? draft : prompt.default}</Markdown>
               </div>
-            : <TextField multiline aria-label="Instructions" value={draft} onChange={setDraft} maxLength={prompt.max} rows={10} isDisabled={!edit} />}
-          <p className="m-0 text-right text-ui-sm text-muted" aria-live="polite">{draft.length} / {prompt.max}</p>
+            : <TextField multiline aria-label="Instructions" value={draft} onChange={setDraft} maxLength={prompt.max} rows={10} isDisabled={!edit} description={`${draft.length} / ${prompt.max}`} />}
         </div>
       </SettingsRow>
       <SettingsRow label="Default prompt" description="Replaces the saved prompt for all servers.">
@@ -94,7 +93,6 @@ function SystemPromptGroup({ edit }: { edit: boolean }) {
             : <Markdown>{full.data}</Markdown>}
         </div>
       </Modal>
-    {edit && <div className="flex justify-end"><Button variant="secondary" size="sm" isDisabled={save.isPending} onPress={() => save.mutate(draft.trim())}>Save</Button></div>}
     </SettingsGroup>
   );
 }
@@ -134,15 +132,10 @@ function WebKeysGroup({ edit }: { edit: boolean }) {
   };
 
   return (
-    <SettingsGroup title="Web search keys" description="Team keys for Tavily and Firecrawl. You can delete your own keys. Editors can delete any key.">
-      <SettingsRow label="Web search" description={`Usage counts per key for ${webKeys.month}.`}>
+    <SettingsGroup title="Web search keys" description="Team keys for Tavily and Firecrawl. You can delete your own keys. Editors can delete any key." actions={<Button variant="secondary" size="sm" isDisabled={!webKeys.enabled} onPress={() => setAdding(true)}>Add key</Button>}>
+      <SettingsRow label="Web search" description={webKeys.enabled ? `Usage counts per key for ${webKeys.month}.` : "Web search keys are off. The operator must set WEB_KEYS_SECRET on the server, then restart Slopbot. Until then no key can be added."}>
         <Badge tone={webKeys.enabled ? "success" : "warning"}>{webKeys.enabled ? "On" : "Off"}</Badge>
       </SettingsRow>
-      {!webKeys.enabled && (
-        <p role="status" className="m-0 py-3 text-ui text-muted">
-          Web search keys are off. The operator must set WEB_KEYS_SECRET on the server, then restart Slopbot. Until then no key can be added.
-        </p>
-      )}
       <DataTable
         aria-label="Web search keys"
         rows={webKeys.keys}
@@ -188,7 +181,6 @@ function WebKeysGroup({ edit }: { edit: boolean }) {
         )}
       </SettingsRow>
       <AddKeyModal open={adding} onClose={() => setAdding(false)} onAdded={keep} enabled={webKeys.enabled} />
-    <div className="flex justify-end"><Button variant="secondary" size="sm" isDisabled={!webKeys.enabled} onPress={() => setAdding(true)}>Add key</Button></div>
     </SettingsGroup>
   );
 }
@@ -211,7 +203,7 @@ function AddKeyModal({ open, onClose, onAdded, enabled }: { open: boolean; onClo
   };
 
   return (
-    <Modal isOpen={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Add a key" size="md"
+    <Modal isOpen={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Add a key" description="Only the last four characters show again. The key is not sent back to the browser." size="md"
       footer={(
         <>
           <Button variant="ghost" onPress={onClose}>Cancel</Button>
@@ -222,7 +214,6 @@ function AddKeyModal({ open, onClose, onAdded, enabled }: { open: boolean; onClo
         <Select label="Service" options={PROVIDERS} value={provider} onChange={(id) => setProvider(id)} isDisabled={!enabled} />
         <TextField label="Label (optional)" value={label} onChange={setLabel} maxLength={60} autoComplete="off" isDisabled={!enabled} />
         <TextField label="API key" type="password" value={secret} onChange={setSecret} maxLength={200} autoComplete="off" isDisabled={!enabled} />
-        <p className="m-0 text-muted">Only the last four characters show again. The key is not sent back to the browser.</p>
       </div>
     </Modal>
   );
@@ -255,14 +246,14 @@ function ModelGroup({ edit }: { edit: boolean }) {
   const { fallback } = llm.settings;
 
   return (
-    <SettingsGroup title="Model" description="Slopbot's own models and the backup model. Applies to all servers.">
-      <p className="m-0 py-3 text-ui">{llmStateText(llm.state)}</p>
-      <SettingsRow label="Mode">
+    <>
+    <SettingsGroup title="Model" description="Slopbot's own models and the backup model. Applies to all servers." actions={edit && <Button variant="secondary" size="sm" isDisabled={save.isPending} onPress={submit}>Save</Button>}>
+      <SettingsRow label="Mode" description={llmStateText(llm.state)}>
         <Select variant="quiet" aria-label="Mode" options={OVERRIDES} value={form.override} onChange={(override) => patch({ override: override })} isDisabled={!edit} />
       </SettingsRow>
+    </SettingsGroup>
 
-      <h4 className="m-0 pt-5 text-ui font-semibold">Circuit breaker</h4>
-      <p className="m-0 pb-1 text-ui text-muted">{BREAKER_HELP}</p>
+    <SettingsGroup title="Circuit breaker" description={BREAKER_HELP}>
       <SettingsRow label="Failures">
         <NumberField aria-label="Failures" value={form.breaker.failures} onChange={(failures) => patchBreaker({ failures })} isDisabled={!edit} />
       </SettingsRow>
@@ -278,8 +269,9 @@ function ModelGroup({ edit }: { edit: boolean }) {
       <SettingsRow label="Status note every, minutes">
         <NumberField aria-label="Status note every, minutes" value={form.statusNoteMinutes} onChange={(statusNoteMinutes) => patch({ statusNoteMinutes })} isDisabled={!edit} />
       </SettingsRow>
+    </SettingsGroup>
 
-      <h4 className="m-0 pt-5 text-ui font-semibold">Backup model</h4>
+    <SettingsGroup title="Backup model">
       <SettingsRow label="Base URL">
         <TextField aria-label="Base URL" type="url" value={form.backup.baseUrl} onChange={(baseUrl) => patchBackup({ baseUrl })} placeholder="https://models.example.com/v1" maxLength={300} isDisabled={!edit} className="w-64" />
       </SettingsRow>
@@ -310,7 +302,7 @@ function ModelGroup({ edit }: { edit: boolean }) {
           <Button variant="outline" size="sm" isDisabled={test.isPending} onPress={() => test.mutate()}>Test</Button>
         </SettingsRow>
       )}
-    {edit && <div className="flex justify-end"><Button variant="secondary" size="sm" isDisabled={save.isPending} onPress={submit}>Save</Button></div>}
     </SettingsGroup>
+    </>
   );
 }

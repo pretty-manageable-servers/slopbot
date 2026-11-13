@@ -137,19 +137,12 @@ function ServerNames({ servers }: { servers: { name: string }[] }) {
   return <span className="block max-w-56 truncate">{names.join(", ")}{more > 0 && ` +${more}`}</span>;
 }
 
-/** The share of a limit used, as a small bar under the text. */
-function Bar({ pct }: { pct: number }) {
-  return (
-    <ProgressBar aria-label="Share of the limit used" value={pct} />
-  );
-}
-
 function WindowCell({ win }: { win: UserUsageWindow }) {
   if (!hasWindow(win)) return <span className="text-muted">—</span>;
   return (
     <div className="flex min-w-40 flex-col gap-1">
       <span>{usageText(win)}</span>
-      {win.limit > 0 && <Bar pct={sharePct(win)} />}
+      {win.limit > 0 && <ProgressBar aria-label="Share of the limit used" value={sharePct(win)} />}
       <span className="text-ui-sm text-muted">Banked {win.banked}</span>
     </div>
   );
@@ -215,7 +208,7 @@ function WindowRow({ kind, win, canEdit, busy, onReset }: { kind: WindowKind; wi
     <SettingsRow label={WINDOW_LABEL[kind]} description={`${clock} Banked resets: ${win.banked}`}>
       <div className="flex w-56 flex-col gap-1 text-ui">
         <span>{usageText(win)}</span>
-        {win.limit > 0 && <Bar pct={sharePct(win)} />}
+        {win.limit > 0 && <ProgressBar aria-label="Share of the limit used" value={sharePct(win)} />}
       </div>
       {canEdit && <Button variant="outline" size="sm" isDisabled={busy} onPress={onReset}>Reset now</Button>}
     </SettingsRow>
@@ -245,22 +238,19 @@ const limitShown = (micros: number | null | undefined) => (micros == null ? "Glo
 function OverrideGroup({ view, canEdit, write }: { view: UserDetail; canEdit: boolean; write: UserWrite }) {
   const override = view.override;
   const status = override ? "This user has an override." : "This user uses the global limit.";
-  return (
-    <SettingsGroup title="Limit override" description={`${status} It replaces the global limit in all servers. Zero means no limit.`}>
-      {canEdit
-        ? <OverrideForm key={JSON.stringify(override)} userId={view.user.id} override={override} write={write} />
-        : (
-          <>
-            <SettingsRow label="5-hour limit"><span className="text-ui">{limitShown(override?.five_hour_cost_micros)}</span></SettingsRow>
-            <SettingsRow label="Weekly limit"><span className="text-ui">{limitShown(override?.week_cost_micros)}</span></SettingsRow>
-          </>
-        )}
-    </SettingsGroup>
-  );
+  const description = `${status} It replaces the global limit in all servers. Zero means no limit.`;
+  return canEdit
+    ? <OverrideForm key={JSON.stringify(override)} description={description} userId={view.user.id} override={override} write={write} />
+    : (
+      <SettingsGroup title="Limit override" description={description}>
+        <SettingsRow label="5-hour limit"><span className="text-ui">{limitShown(override?.five_hour_cost_micros)}</span></SettingsRow>
+        <SettingsRow label="Weekly limit"><span className="text-ui">{limitShown(override?.week_cost_micros)}</span></SettingsRow>
+      </SettingsGroup>
+    );
 }
 
 /** The two limit fields. A blank field is the global limit. Remounted (by key) when the saved override changes. */
-function OverrideForm({ userId, override, write }: { userId: string; override: UserLimitOverride | null; write: UserWrite }) {
+function OverrideForm({ description, userId, override, write }: { description: string; userId: string; override: UserLimitOverride | null; write: UserWrite }) {
   const [five, setFive] = useState(limitText(override?.five_hour_cost_micros ?? null));
   const [week, setWeek] = useState(limitText(override?.week_cost_micros ?? null));
   const fiveError = limitError(five);
@@ -275,17 +265,18 @@ function OverrideForm({ userId, override, write }: { userId: string; override: U
     if (ok) write.mutate({ path: "override", body: overrideBody(userId, "", ""), done: "The override is cleared. The global limit applies." });
   };
   return (
-    <>
-      <SettingsRow label="5-hour limit in dollars" description={fiveError && <span className="text-danger">{fiveError}</span>}>
-        <TextField aria-label="5-hour limit in dollars" type="number" value={five} onChange={setFive} placeholder="Global limit" className="w-36" />
-      </SettingsRow>
-      <SettingsRow label="Weekly limit in dollars" description={weekError && <span className="text-danger">{weekError}</span>}>
-        <TextField aria-label="Weekly limit in dollars" type="number" value={week} onChange={setWeek} placeholder="Global limit" className="w-36" />
-      </SettingsRow>
-      <div className="flex justify-end gap-2 py-3">
+    <SettingsGroup title="Limit override" description={description} actions={
+      <>
         {override && <Button variant="outline" size="sm" isDisabled={write.isPending} onPress={() => void remove()}>Remove override</Button>}
         <Button variant="primary" size="sm" isDisabled={fiveError !== null || weekError !== null || write.isPending} onPress={save}>Save override</Button>
-      </div>
-    </>
+      </>
+    }>
+      <SettingsRow label="5-hour limit in dollars">
+        <TextField aria-label="5-hour limit in dollars" type="number" value={five} onChange={setFive} placeholder="Global limit" errorMessage={fiveError ?? undefined} className="w-36" />
+      </SettingsRow>
+      <SettingsRow label="Weekly limit in dollars">
+        <TextField aria-label="Weekly limit in dollars" type="number" value={week} onChange={setWeek} placeholder="Global limit" errorMessage={weekError ?? undefined} className="w-36" />
+      </SettingsRow>
+    </SettingsGroup>
   );
 }

@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { defaultIcons } from "agentic-ui-kit";
 import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Button, CommandItem, CommandPalette as LibraryPalette, CommandSection, Kbd, useCommandPaletteShortcut } from "slop-ui-components";
+import { Avatar, Button, CommandItem, CommandPalette as LibraryPalette, CommandSection, Highlight, Kbd, useCommandPaletteShortcut } from "slop-ui-components";
 import { get, qs } from "./api";
 import type { Conversation, ConversationSearch } from "./api-types";
 import { adminMeQuery, chatsQuery, pickServer, sessionQuery, useServer } from "./data";
@@ -15,7 +15,6 @@ import { useOpenSettings } from "./settings/dialog";
 import { SECTIONS } from "./settings/sections";
 import { icons } from "./ui/icons";
 import { ago } from "./ui/time";
-import { ServerMark } from "./ui/layout";
 
 /** A row as drawn: the item, its icon and detail, a snippet for a message hit, and what Enter does. */
 type Row = PaletteItem & { icon: ReactNode; detail?: string; snippet?: { text: string; meta: string }; run: () => void };
@@ -69,7 +68,7 @@ function Palette({ onDone }: { onDone: () => void }) {
     })),
     ...servers.map((picked): Row => ({
       key: `server:${picked.id}`, group: "servers", name: picked.name,
-      icon: <ServerMark server={picked} size={18} />, detail: picked.id === server.id ? "Current" : undefined,
+      icon: <Avatar name={picked.name} src={picked.icon ?? undefined} className="size-4.5 rounded-md" />, detail: picked.id === server.id ? "Current" : undefined,
       run: () => { pickServer(picked.id); void navigate({ to: "/server/$serverId", params: { serverId: picked.id } }); },
     })),
     { key: "action:new-chat", group: "actions", name: "New chat", icon: defaultIcons.edit, run: () => void navigate({ to: "/" }) },
@@ -114,7 +113,7 @@ function Palette({ onDone }: { onDone: () => void }) {
   };
 
   return (
-    <LibraryPalette isOpen onOpenChange={open => !open && onDone()} placeholder="Search" emptyMessage="No matches."
+    <LibraryPalette isOpen onOpenChange={open => !open && onDone()} placeholder="Search" showClose emptyMessage="No matches."
       query={query} onQueryChange={setQuery} filter={false} onInputKeyDown={stepFilter}
       toolbar={
         <div className="flex flex-wrap gap-1">
@@ -130,7 +129,7 @@ function Palette({ onDone }: { onDone: () => void }) {
           {section.items.map(item => (
             <CommandItem key={item.key} id={`${section.title}:${item.key}`} textValue={item.name} icon={item.icon} detail={item.detail}
               description={item.snippet?.meta} onAction={() => choose(item)}>
-              {item.snippet ? highlight(item.snippet.text, text) : item.name}
+              {item.snippet ? <Highlight text={item.snippet.text} query={text} className="bg-selected text-fg" /> : item.name}
             </CommandItem>
           ))}
         </CommandSection>
@@ -147,13 +146,6 @@ function useDebounced<T>(value: T, ms: number): T {
     return () => clearTimeout(timer);
   }, [value, ms]);
   return shown;
-}
-
-/** Marks each word of the query in the text. */
-function highlight(text: string, query: string): ReactNode {
-  const words = query.split(/\s+/).filter(Boolean).map(word => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  if (!words.length) return text;
-  return text.split(new RegExp(`(${words.join("|")})`, "gi")).map((part, i) => (i % 2 ? <mark key={i} className="rounded-sm bg-selected text-fg">{part}</mark> : part));
 }
 
 // The recent picks live in this browser. Storage can be unavailable (private mode): then there are no picks.

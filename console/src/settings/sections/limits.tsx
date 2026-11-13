@@ -2,13 +2,12 @@
 // caps, and lifetime usage. Ported from the old console's Bot admin and Users tab (web/app.js 473-660, 966-1024).
 // Money, number and range rules are in limits-format.ts.
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery, type QueryKey } from "@tanstack/react-query";
-import { Badge, Button, confirm, DataTable, NumberField, ProgressBar, SettingsGroup, SettingsRow, TextField } from "slop-ui-components";
+import { Avatar, Badge, Button, confirm, DataTable, NumberField, ProgressBar, SettingsGroup, SettingsRow, TextField } from "slop-ui-components";
 import { useState } from "react";
 import { get, post } from "../../api";
 import type { BotReplies, LimitsView, ModelPrice, Prices, ScheduleLimits, UsageRow, UsageTotals } from "../../api-types";
 import { adminMeQuery } from "../../data";
 import { notify, notifyError } from "../../ui/feedback";
-import { ServerMark } from "../../ui/layout";
 import {
   BOT_REPLY_RULES, LIMITS_RULES, PRICE_RULES, SCHEDULE_RULES, botRepliesBody, botRepliesForm, botRepliesIssues, checkFields,
   costText, count, dollarsOf, iconUrl, limitsBody, modelError, money, priceBody, priceLabel, scheduleBody, sharePercent,
@@ -49,20 +48,6 @@ function useSave<T>(path: string, key: QueryKey) {
   });
 }
 
-/** The help text, then the row's problem in red under it. The problem is passed only after a Save attempt. */
-function Help({ text, error }: { text?: string; error?: string }) {
-  return (
-    <>
-      {text}
-      {error && <span role="alert" className="block text-danger">{error}</span>}
-    </>
-  );
-}
-
-function SaveButton({ pending, onPress }: { pending: boolean; onPress: () => void }) {
-  return <div className="flex justify-end"><Button variant="secondary" size="sm" onPress={onPress} isDisabled={pending}>Save</Button></div>;
-}
-
 export default function Limits() {
   const { data: me } = useSuspenseQuery(adminMeQuery);
   const canEdit = me?.canEdit ?? false;
@@ -91,17 +76,16 @@ function CostLimits({ canEdit }: { canEdit: boolean }) {
   const shown = tried ? issues : {};
   const defaults = data.defaults;
   return (
-    <SettingsGroup title="Usage limits" description="For each user, across all servers. Zero means no limit.">
-      <SettingsRow label="5-hour limit" description={<Help text={`In dollars. Default ${money(defaults.five_hour_cost_micros)}.`} error={shown.five} />}>
-        <NumberField aria-label="5-hour limit" value={form.five} onChange={(five) => setForm({ ...form, five })} isDisabled={!canEdit} />
+    <SettingsGroup title="Usage limits" description="For each user, across all servers. Zero means no limit." actions={canEdit && <Button variant="secondary" size="sm" onPress={submit} isDisabled={save.isPending}>Save</Button>}>
+      <SettingsRow label="5-hour limit" description={`In dollars. Default ${money(defaults.five_hour_cost_micros)}.`}>
+        <NumberField aria-label="5-hour limit" value={form.five} errorMessage={shown.five} onChange={(five) => setForm({ ...form, five })} isDisabled={!canEdit} />
       </SettingsRow>
-      <SettingsRow label="Weekly limit" description={<Help text={`In dollars. Default ${money(defaults.week_cost_micros)}.`} error={shown.week} />}>
-        <NumberField aria-label="Weekly limit" value={form.week} onChange={(week) => setForm({ ...form, week })} isDisabled={!canEdit} />
+      <SettingsRow label="Weekly limit" description={`In dollars. Default ${money(defaults.week_cost_micros)}.`}>
+        <NumberField aria-label="Weekly limit" value={form.week} errorMessage={shown.week} onChange={(week) => setForm({ ...form, week })} isDisabled={!canEdit} />
       </SettingsRow>
-      <SettingsRow label="Grace percent" description={<Help text={`Default ${defaults.grace_percent}%.`} error={shown.grace} />}>
-        <NumberField aria-label="Grace percent" value={form.grace} onChange={(grace) => setForm({ ...form, grace })} isDisabled={!canEdit} />
+      <SettingsRow label="Grace percent" description={`Default ${defaults.grace_percent}%.`}>
+        <NumberField aria-label="Grace percent" value={form.grace} errorMessage={shown.grace} onChange={(grace) => setForm({ ...form, grace })} isDisabled={!canEdit} />
       </SettingsRow>
-    {canEdit && <SaveButton pending={save.isPending} onPress={submit} />}
     </SettingsGroup>
   );
 }
@@ -177,9 +161,9 @@ function ModelPrices({ canEdit }: { canEdit: boolean }) {
         ]}
       />
       {canEdit && (
-        <SettingsRow label="Add a model" className="flex-col items-stretch" description={<Help text="Sets an override for a model that is not in the list." error={addError} />}>
+        <SettingsRow label="Add a model" layout="stacked" description="Sets an override for a model that is not in the list.">
           <div className="flex flex-wrap items-end gap-2">
-            <TextField aria-label="Model ID" value={added.model} onChange={(model) => setAdded({ ...added, model })} placeholder="Model ID" className="w-52" />
+            <TextField aria-label="Model ID" value={added.model} onChange={(model) => setAdded({ ...added, model })} placeholder="Model ID" errorMessage={addError} className="w-52" />
             {PRICE_FIELDS.map(([key, label]) => (
               <NumberField key={key} aria-label={`${label} price for the new model`} value={added.form[key]} onChange={(value) => setAdded({ ...added, form: { ...added.form, [key]: value } })} className="w-24" />
             ))}
@@ -231,26 +215,26 @@ function BotReplyLimits({ canEdit }: { canEdit: boolean }) {
     <SettingsGroup
       title="Bot replies"
       description={`For all servers, counted for each channel. Default: ${defaults.replies} in ${defaults.minutes} minutes. Zero replies stops all replies to bots.`}
+      actions={canEdit && <Button variant="secondary" size="sm" onPress={submit} isDisabled={save.isPending}>Save</Button>}
     >
-      <SettingsRow label="Replies" description={<Help text="Replies allowed in the window below." error={shown.replies} />}>
-        <NumberField aria-label="Replies" value={form.replies} onChange={(replies) => setForm({ ...form, replies })} isDisabled={!canEdit} />
+      <SettingsRow label="Replies" description="Replies allowed in the window below.">
+        <NumberField aria-label="Replies" value={form.replies} errorMessage={shown.replies} onChange={(replies) => setForm({ ...form, replies })} isDisabled={!canEdit} />
       </SettingsRow>
-      <SettingsRow label="Minutes" description={<Help text="The window the replies count in." error={shown.minutes} />}>
-        <NumberField aria-label="Minutes" value={form.minutes} onChange={(minutes) => setForm({ ...form, minutes })} isDisabled={!canEdit} />
+      <SettingsRow label="Minutes" description="The window the replies count in.">
+        <NumberField aria-label="Minutes" value={form.minutes} errorMessage={shown.minutes} onChange={(minutes) => setForm({ ...form, minutes })} isDisabled={!canEdit} />
       </SettingsRow>
       <SettingsRow label="Temporary limit" description={temporaryText}>
         {canEdit && temporary && <Button variant="outline" size="sm" onPress={endTemporary} isDisabled={save.isPending}>End temporary limit</Button>}
       </SettingsRow>
-      <SettingsRow label="Temporary replies" description={<Help error={shown.tempReplies} />}>
-        <NumberField aria-label="Temporary replies" value={form.tempReplies} onChange={(tempReplies) => setForm({ ...form, tempReplies })} isDisabled={!canEdit} />
+      <SettingsRow label="Temporary replies">
+        <NumberField aria-label="Temporary replies" value={form.tempReplies} errorMessage={shown.tempReplies} onChange={(tempReplies) => setForm({ ...form, tempReplies })} isDisabled={!canEdit} />
       </SettingsRow>
-      <SettingsRow label="Temporary minutes" description={<Help error={shown.tempMinutes} />}>
-        <NumberField aria-label="Temporary minutes" value={form.tempMinutes} onChange={(tempMinutes) => setForm({ ...form, tempMinutes })} isDisabled={!canEdit} />
+      <SettingsRow label="Temporary minutes">
+        <NumberField aria-label="Temporary minutes" value={form.tempMinutes} errorMessage={shown.tempMinutes} onChange={(tempMinutes) => setForm({ ...form, tempMinutes })} isDisabled={!canEdit} />
       </SettingsRow>
-      <SettingsRow label="Lasts (minutes)" description={<Help text="How long the temporary limit lasts. Empty leaves the temporary limit as it is." error={shown.tempFor} />}>
-        <NumberField aria-label="Lasts (minutes)" value={form.tempFor} onChange={(tempFor) => setForm({ ...form, tempFor })} isDisabled={!canEdit} />
+      <SettingsRow label="Lasts (minutes)" description="How long the temporary limit lasts. Empty leaves the temporary limit as it is.">
+        <NumberField aria-label="Lasts (minutes)" value={form.tempFor} errorMessage={shown.tempFor} onChange={(tempFor) => setForm({ ...form, tempFor })} isDisabled={!canEdit} />
       </SettingsRow>
-    {canEdit && <SaveButton pending={save.isPending} onPress={submit} />}
     </SettingsGroup>
   );
 }
@@ -277,13 +261,12 @@ function ScheduleCaps({ canEdit }: { canEdit: boolean }) {
     { key: "minTool", label: "Minimum minutes: tool", help: `Default ${defaults.minMinutes.tool}.` },
   ];
   return (
-    <SettingsGroup title="Schedules" description="For all servers. Caps the scheduled tasks each server and user may have, and how often each kind may run.">
+    <SettingsGroup title="Schedules" description="For all servers. Caps the scheduled tasks each server and user may have, and how often each kind may run." actions={canEdit && <Button variant="secondary" size="sm" onPress={submit} isDisabled={save.isPending}>Save</Button>}>
       {rows.map(({ key, label, help }) => (
-        <SettingsRow key={key} label={label} description={<Help text={help} error={shown[key]} />}>
-          <NumberField aria-label={label} value={form[key]} onChange={(value) => setForm({ ...form, [key]: value })} isDisabled={!canEdit} />
+        <SettingsRow key={key} label={label} description={help}>
+          <NumberField aria-label={label} errorMessage={shown[key]} value={form[key]} onChange={(value) => setForm({ ...form, [key]: value })} isDisabled={!canEdit} />
         </SettingsRow>
       ))}
-    {canEdit && <SaveButton pending={save.isPending} onPress={submit} />}
     </SettingsGroup>
   );
 }
@@ -297,7 +280,7 @@ function TotalUsage() {
     { id: "requests", header: "Requests", numeric: true, cell: (row: UsageRow) => count(row.requests) },
     { id: "tokens", header: "Total tokens", numeric: true, cell: (row: UsageRow) => count(row.total_tokens) },
     { id: "cost", header: "Cost ($)", numeric: true, cell: (row: UsageRow) => costText(row.cost_micros) },
-    { id: "share", header: "Share of cost", align: "end" as const, cell: (row: UsageRow) => <ShareBar percent={share(row)} /> },
+    { id: "share", header: "Share of cost", align: "end" as const, cell: (row: UsageRow) => <ProgressBar aria-label="Share of cost" value={share(row)} showValue className="w-32" /> },
   ];
   return (
     <SettingsGroup title="Total usage" description="Lifetime totals for every server. Total tokens is input (uncached) plus input (cached) plus output. The server and model tables show the top 10 by cost.">
@@ -307,7 +290,7 @@ function TotalUsage() {
         rows={data.servers}
         rowKey={(row) => row.server}
         emptyState="No usage yet."
-        columns={[{ id: "server", header: "Server", cell: (row) => <span className="flex items-center gap-2"><ServerMark server={{ name: row.name, icon: iconUrl(row.icon) }} />{row.name}</span> }, ...numbers]}
+        columns={[{ id: "server", header: "Server", cell: (row) => <span className="flex items-center gap-2"><Avatar name={row.name} src={iconUrl(row.icon) ?? undefined} className="size-5 rounded-md" />{row.name}</span> }, ...numbers]}
       />
       <DataTable
         aria-label="Usage by model"
@@ -317,15 +300,5 @@ function TotalUsage() {
         columns={[{ id: "model", header: "Model", cell: (row) => <code>{row.model}</code> }, ...numbers]}
       />
     </SettingsGroup>
-  );
-}
-
-/** A share of the total cost: the percent, then a bar. */
-function ShareBar({ percent }: { percent: number }) {
-  return (
-    <span className="inline-flex items-center justify-end gap-2">
-      <span className="w-9 text-right">{percent}%</span>
-      <ProgressBar aria-label="Share of cost" value={percent} className="w-24" />
-    </span>
   );
 }

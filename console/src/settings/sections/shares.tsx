@@ -54,6 +54,7 @@ export default function Section() {
   return (
     <SettingsGroup
       title="Share links"
+      actions={activeShares(shares).length > 0 && <Button size="sm" variant="danger" isDisabled={revokeAll.isPending} onPress={askRevokeAll}>Revoke all</Button>}
     >
       <DataTable
         aria-label="Share links"
@@ -68,7 +69,6 @@ export default function Section() {
           { id: "actions", header: <span className="sr-only">Actions</span>, align: "end", className: "w-24", cell: (share) => !share.revoked && <Button size="sm" variant="ghost" isDisabled={revoke.isPending} onPress={() => askRevoke(share)}>Revoke</Button> },
         ]}
       />
-    {activeShares(shares).length > 0 && <div className="flex justify-end"><Button size="sm" variant="danger" isDisabled={revokeAll.isPending} onPress={askRevokeAll}>Revoke all</Button></div>}
     </SettingsGroup>
   );
 }

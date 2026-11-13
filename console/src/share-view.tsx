@@ -43,7 +43,7 @@ export function SharePage({ data }: { data: ShareData }) {
         className="h-dvh"
         messages={messages}
         renderPart={(part) => {
-          if (part.type === "custom" && part.kind === AUTHOR) return <p className="text-sm font-medium text-chat-fg">{String(part.data)}</p>;
+          if (part.type === "custom" && part.kind === AUTHOR) return <p className="text-sm font-medium text-fg">{String(part.data)}</p>;
           // The kit draws only the viewer's own attachments; the shared bot messages need their cards drawn here.
           return part.type === "attachment" ? <AttachmentCard attachment={part} size="sm" /> : undefined;
         }}
@@ -55,8 +55,8 @@ export function SharePage({ data }: { data: ShareData }) {
           />
         }
         notice={
-          <p role="status" className="text-sm text-chat-muted">
-            {problem || <><strong className="font-medium text-chat-fg">Shared from Slopbot.</strong> This is a frozen copy. Later messages are not included.{copiesFiles && " Images and files are not copied when you continue."}</>}
+          <p role="status" className="text-sm text-muted">
+            {problem || <><strong className="font-medium text-fg">Shared from Slopbot.</strong> This is a frozen copy. Later messages are not included.{copiesFiles && " Images and files are not copied when you continue."}</>}
           </p>
         }
       />

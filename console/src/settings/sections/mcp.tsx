@@ -3,7 +3,7 @@
 // dialog from their table row; the add form is a dialog from the Add button.
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { Badge, Button, confirm, DataTable, Disclosure, Modal, NumberField, Select, SettingsGroup, SettingsRow, Switch, TextField } from "slop-ui-components";
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { post } from "../../api";
 import type { McpBody, McpConnection, McpSnapshot, McpTool, ServerSnapshot } from "../../api-types";
 import { settingsQuery, useServer } from "../../data";
@@ -48,6 +48,7 @@ export default function McpConnections() {
       <SettingsGroup
         title="Connections"
         description="Add remote MCP servers and choose their tools. Changes apply without restarting or redeploying Slopbot."
+        actions={<Button variant="outline" size="sm" onPress={() => setAdding(true)}>Add</Button>}
       >
         <DataTable
           aria-label="MCP connections"
@@ -62,10 +63,9 @@ export default function McpConnections() {
             { id: "status", header: "Status", cell: (c) => <Status connection={c} />, cellClassName: "h-auto py-2 whitespace-normal" },
           ]}
         />
-      <div className="flex justify-end"><Button variant="outline" size="sm" onPress={() => setAdding(true)}>Add</Button></div>
       </SettingsGroup>
 
-      <Modal isOpen={adding} onOpenChange={(open) => { if (!open) setAdding(false); }} title="Add a connection">
+      <Modal isOpen={adding} onOpenChange={(open) => { if (!open) setAdding(false); }} title="Add a connection" description="Applies to this server.">
         {adding && <AddForm credentialsEnabled={mcp.credentialsEnabled} pending={write.isPending} send={send} close={() => setAdding(false)} />}
       </Modal>
       <Modal isOpen={connection !== undefined} onOpenChange={(open) => { if (!open) setEditing(null); }} title={connection?.id} size="lg">
@@ -85,10 +85,6 @@ function Status({ connection }: { connection: McpConnection }) {
   );
 }
 
-function Hint({ children }: { children: ReactNode }) {
-  return <p className="m-0 text-ui text-muted">{children}</p>;
-}
-
 interface Endpoint { url: string; transport: Transport }
 
 function EndpointFields({ value, onChange }: { value: Endpoint; onChange: (next: Partial<Endpoint>) => void }) {
@@ -105,11 +101,9 @@ function TokenField({ value, onChange, credentialsEnabled, hasToken, disabled }:
   value: string; onChange: (token: string) => void; credentialsEnabled: boolean; hasToken: boolean; disabled?: boolean;
 }) {
   return (
-    <div className="flex flex-col gap-1">
-      <TextField label="Bearer token" type="password" autoComplete="new-password" maxLength={8192} value={value} onChange={onChange}
-        isDisabled={!credentialsEnabled || disabled} placeholder={hasToken ? "Saved securely. Leave blank to keep." : "Optional"} />
-      {!credentialsEnabled && <Hint>The operator must configure MCP_SECRET_KEY once before tokens can be saved. Public servers can be connected without a token.</Hint>}
-    </div>
+    <TextField label="Bearer token" type="password" autoComplete="new-password" maxLength={8192} value={value} onChange={onChange}
+      isDisabled={!credentialsEnabled || disabled} placeholder={hasToken ? "Saved securely. Leave blank to keep." : "Optional"}
+      description={credentialsEnabled ? undefined : "The operator must configure MCP_SECRET_KEY once before tokens can be saved. Public servers can be connected without a token."} />
   );
 }
 
@@ -119,11 +113,8 @@ function AddForm({ credentialsEnabled, pending, send, close }: { credentialsEnab
   const ready = newConnectionReady(draft);
   return (
     <form className="flex flex-col gap-4" onSubmit={(event) => { event.preventDefault(); if (ready) send(newConnectionBody(draft), close); }}>
-      <Hint>Applies to this server.</Hint>
-      <div className="flex flex-col gap-1">
-        <TextField label="Connection ID" value={draft.id} onChange={(id) => patch({ id })} maxLength={12} placeholder="github" isRequired />
-        {draft.id !== "" && !isConnectionId(draft.id) && <Hint>1–12 lowercase letters, numbers, or underscores, starting with a letter.</Hint>}
-      </div>
+      <TextField label="Connection ID" value={draft.id} onChange={(id) => patch({ id })} maxLength={12} placeholder="github" isRequired
+        errorMessage={draft.id !== "" && !isConnectionId(draft.id) ? "1–12 lowercase letters, numbers, or underscores, starting with a letter." : undefined} />
       <EndpointFields value={draft} onChange={patch} />
       <TokenField value={draft.token} onChange={(token) => patch({ token })} credentialsEnabled={credentialsEnabled} hasToken={false} />
       <div className="flex justify-end gap-2">
@@ -157,21 +148,12 @@ function EditForm({ connection, credentialsEnabled, pending, send, close }: {
       )}
       <Switch toggleSide="end" isSelected={draft.enabled} onChange={(enabled) => patch({ enabled })}>Enable connection</Switch>
       <div className="flex flex-wrap gap-4">
-        <NumberField label="Call timeout, milliseconds" value={draft.timeoutMs} onChange={(timeoutMs) => patch({ timeoutMs })} />
-        <NumberField label="Concurrent calls" value={draft.concurrency} onChange={(concurrency) => patch({ concurrency })} />
+        <NumberField label="Call timeout, milliseconds" errorMessage={inRange(draft.timeoutMs, TIMEOUT_MS) ? undefined : "Timeout must be 1000 to 60000 milliseconds."} value={draft.timeoutMs} onChange={(timeoutMs) => patch({ timeoutMs })} />
+        <NumberField label="Concurrent calls" errorMessage={inRange(draft.concurrency, CONCURRENCY) ? undefined : "Concurrent calls must be 1 to 16."} value={draft.concurrency} onChange={(concurrency) => patch({ concurrency })} />
       </div>
-      {(!inRange(draft.timeoutMs, TIMEOUT_MS) || !inRange(draft.concurrency, CONCURRENCY)) && (
-        <Hint>Timeout must be 1000 to 60000 milliseconds, and concurrent calls 1 to 16.</Hint>
-      )}
-      <section className="flex flex-col gap-1">
-        <h4 className="m-0 text-ui font-semibold">Tools</h4>
-        <Hint>Enabled tools use the connection account. Member access allows server members to use that account through Slopbot. Mark an operation read-only only when it cannot change remote state.</Hint>
-        {tools.length ? (
-          <div className="flex flex-col divide-y divide-divider">
-            {tools.map((tool) => <ToolRow key={tool.name} tool={tool} choice={draft.tools[tool.name]!} onChange={(choice) => setTool(tool.name, choice)} />)}
-          </div>
-        ) : <Hint>No tools discovered yet. Refresh this connection to discover tools. Newly discovered tools are disabled until selected.</Hint>}
-      </section>
+      <SettingsGroup title="Tools" description={`Enabled tools use the connection account. Member access allows server members to use that account through Slopbot. Mark an operation read-only only when it cannot change remote state.${tools.length ? "" : " No tools discovered yet. Refresh this connection to discover tools. Newly discovered tools are disabled until selected."}`}>
+        {tools.map((tool) => <ToolRow key={tool.name} tool={tool} choice={draft.tools[tool.name]!} onChange={(choice) => setTool(tool.name, choice)} />)}
+      </SettingsGroup>
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-divider pt-4">
         <div className="flex flex-wrap gap-1">
           <Button variant="ghost" size="sm" isDisabled={pending} onPress={() => send({ action: "refresh", id: connection.id }, close)}>Refresh tools / reconnect</Button>
@@ -189,7 +171,7 @@ function EditForm({ connection, credentialsEnabled, pending, send, close }: {
 
 function ToolRow({ tool, choice, onChange }: { tool: McpTool; choice: ToolChoice; onChange: (choice: ToolChoice) => void }) {
   return (
-    <div className="flex items-start gap-4 py-3">
+    <div className="flex items-start gap-4">
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <span className="text-ui font-medium">{tool.name}</span>
         <code className="text-ui-sm text-muted">{tool.registeredName}</code>

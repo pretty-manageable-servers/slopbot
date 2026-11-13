@@ -17,7 +17,7 @@ const data = readData();
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ChatTheme className="contents" icons={{ activity: <Loader size={18} />, activityDone: <Logo size={18} /> }}>
-      {data ? <SharePage data={data} /> : <p className="p-6 text-chat-muted">This shared conversation could not be read.</p>}
+      {data ? <SharePage data={data} /> : <p className="p-6 text-muted">This shared conversation could not be read.</p>}
     </ChatTheme>
   </StrictMode>,
 );

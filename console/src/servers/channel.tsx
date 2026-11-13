@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tansta
 import { useNavigate } from "@tanstack/react-router";
 import { AttachmentCard, ChatHeader, ChatTranscript, Drawer, DRAWER_QUERY, SidebarToggle, useMediaQuery } from "agentic-ui-kit";
 import type { Part } from "agentic-ui-kit/core";
-import { Button, EmptyState } from "slop-ui-components";
+import { Avatar, Button, EmptyState } from "slop-ui-components";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { get, post, qs } from "../api";
 import type { ChannelHeader, ConversationSummary, TranscriptMessage, TranscriptPage } from "../api-types";
@@ -67,7 +67,7 @@ function OffNote({ server, channel, title, admin }: { server: string; channel: s
     onError: (error) => notifyError(error),
   });
   return (
-    <div className="flex h-full min-h-0 flex-col bg-chat-bg text-chat-fg">
+    <div className="flex h-full min-h-0 flex-col bg-bg text-fg">
       <ChatHeader leading={<SidebarToggle drawerOnly />} title={title} />
       <EmptyState
         className="flex-1 justify-center"
@@ -195,7 +195,7 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
   const name = `${channel.parent ? "" : "#"}${channel.name}`;
   const runTitle = run !== undefined ? conversation.data?.conversation.title : undefined;
   const notice = (
-    <div className="flex flex-col items-center gap-2 text-chat-muted">
+    <div className="flex flex-col items-center gap-2 text-muted">
       {run === undefined && hasMore && <Button variant="ghost" size="sm" isDisabled={olderBusy} onPress={() => void loadOlder()}>Load older messages</Button>}
       {run === undefined && messages.length === 0 && <p>No messages yet.</p>}
       {run !== undefined && (
@@ -209,7 +209,7 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
   // Sharing stays on the whole channel, so it is not offered in a conversation (the old console's rule).
   const actions = (
     <div className="flex items-center gap-2">
-      {status && <span role="status" className="text-(length:--chat-ui-font-size-sm) text-chat-muted">{status}</span>}
+      {status && <span role="status" className="text-(length:--chat-ui-font-size-sm) text-muted">{status}</span>}
       {run === undefined && newest.data?.canShare === true && <Button variant="ghost" size="sm" onPress={() => setSharing(true)}>Share</Button>}
       <Button variant="ghost" size="sm" aria-expanded={panel} onPress={() => setPanel((open) => !open)}>Conversations</Button>
     </div>
@@ -226,7 +226,7 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
         renderPart={renderRow}
         footer={canSend ? <ReplyBox server={serverId} channel={channelId} /> : undefined}
       />
-      {panel && !phone && runs("w-80 shrink-0 border-l border-chat-border")}
+      {panel && !phone && runs("w-80 shrink-0 border-l border-border")}
       <Drawer side="right" isOpen={panel && phone} onOpenChange={setPanel}>{runs("h-full w-80 max-w-full")}</Drawer>
       <ShareChannelDialog server={serverId} channel={channelId} open={sharing} onClose={() => setSharing(false)} />
     </div>
@@ -255,19 +255,19 @@ function FoldButton({ fold, onToggle }: { fold: FoldRow; onToggle: (key: string)
 function AuthorLine({ meta }: { meta: Meta }) {
   if (meta.continued) return null;
   return (
-    <div className="mb-1 flex items-center gap-2 font-chat-sans text-(length:--chat-ui-font-size-sm) text-chat-muted">
-      {meta.slopbot ? <Logo size={20} /> : <Avatar name={meta.name} src={meta.avatarUrl} />}
-      <strong className="font-medium text-chat-fg" title={meta.username ? `@${meta.username}` : undefined}>{meta.name}</strong>
-      {meta.edited && <span className="text-chat-subtle">edited</span>}
+    <div className="mb-1 flex items-center gap-2 font-chat-sans text-(length:--chat-ui-font-size-sm) text-muted">
+      {meta.slopbot ? <Logo size={20} /> : <PersonAvatar name={meta.name} src={meta.avatarUrl} />}
+      <strong className="font-medium text-fg" title={meta.username ? `@${meta.username}` : undefined}>{meta.name}</strong>
+      {meta.edited && <span className="text-subtle">edited</span>}
     </div>
   );
 }
 
 /** A person's avatar, or their initial when there is none or it does not load. */
-function Avatar({ name, src }: { name: string; src: string | null }) {
+function PersonAvatar({ name, src }: { name: string; src: string | null }) {
   const [failed, setFailed] = useState(false);
   if (src && !failed) {
-    return <img src={src} alt="" width={24} height={24} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} className="size-6 rounded-full" />;
+    return <img src={src} alt="" width={24} height={24} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} className="size-6 shrink-0 rounded-full object-cover" />;
   }
-  return <span aria-hidden="true" className="grid size-6 place-items-center rounded-full bg-chat-surface">{Array.from(name)[0]?.toUpperCase() ?? "?"}</span>;
+  return <Avatar name={name} />;
 }

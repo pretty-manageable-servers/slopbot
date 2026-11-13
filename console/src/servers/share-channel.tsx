@@ -20,7 +20,7 @@ export function ShareChannelDialog({ server, channel, open, onClose }: { server:
   });
 
   return (
-    <Modal isOpen={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Share this conversation" size="md"
+    <Modal isOpen={open} onOpenChange={(next) => { if (!next) onClose(); }} title="Share this conversation" description="Shares the newest messages in this channel (up to 200). The copy is frozen; later messages are not added. Search engines do not list the link." size="md"
       footer={
         <>
           <Button variant="outline" onPress={onClose}>Close</Button>
@@ -28,7 +28,6 @@ export function ShareChannelDialog({ server, channel, open, onClose }: { server:
         </>
       }>
       <div className="flex flex-col gap-4">
-        <p className="m-0 text-muted">Shares the newest messages in this channel (up to 200). The copy is frozen; later messages are not added. Search engines do not list the link.</p>
         <Checkbox isSelected={thinking} onChange={setThinking}>Include Slopbot reasoning and tool activity</Checkbox>
       </div>
     </Modal>

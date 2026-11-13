@@ -48,10 +48,7 @@ export default function UsageSettings() {
             {item.percent === null ? (
               <span className="text-ui text-muted">No limit</span>
             ) : (
-              <div className="flex w-full items-center gap-3">
-                <Meter aria-label={`${windowName(item.kind)} usage`} value={item.percent} tone={BAR_TONE[usageLevel(item.percent)]} className="flex-1" />
-                <span className="w-20 text-right text-ui tabular-nums">{item.percent}% used</span>
-              </div>
+              <Meter aria-label={`${windowName(item.kind)} usage`} value={item.percent} tone={BAR_TONE[usageLevel(item.percent)]} showValue className="w-full" />
             )}
             {item.banked > 0 && (
               <Button variant="outline" size="sm" isDisabled={reset.isPending} onPress={() => void askAndReset(item)}>
