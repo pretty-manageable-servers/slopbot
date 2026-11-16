@@ -1,7 +1,7 @@
 // One private chat on screen: the saved messages, then the bot's live stream folded into kit messages.
 import { AttachButton, AttachmentRow, Button, ChatHeader, ChatView, DictationButton, EmptyState, ModelPicker, SidebarToggle, useAttachments } from "agentic-ui-kit";
 import { MenuItem, MenuList } from "slop-ui-components";
-import { Paperclip, Share, Square } from "lucide-react";
+import { Info, Paperclip, Share, Square } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { useServer } from "./data";
@@ -262,8 +262,8 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
           </>
         ),
       }}
-      emptyState={(composer) => <EmptyState icon={<Logo size={40} />} greeting="What can Slopbot do for you?">{composer}</EmptyState>}
-      disclaimer="Slopbot can make mistakes. Check important answers."
+      emptyState={(composer) => <EmptyState icon={<Logo size={40} />} greeting="What can Slopbot do for you?">{composer}<Disclaimer /></EmptyState>}
+      disclaimer={<Disclaimer />}
     />
     <input
       ref={fileInput}
@@ -283,6 +283,16 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
 }
 
 /** The end of a reply the user stopped. */
+/** Under the composer and on the first screen. Darker than the kit's small print, with an icon, so users see it. */
+function Disclaimer() {
+  return (
+    <span className="mt-2 inline-flex items-center justify-center gap-1.5 text-sm font-medium text-muted">
+      <Info aria-hidden className="size-3.5 shrink-0" />
+      AI can be wrong. Check facts that matter.
+    </span>
+  );
+}
+
 function StoppedNote() {
   return (
     <p className="mt-1 flex items-center gap-1.5 text-sm text-muted">

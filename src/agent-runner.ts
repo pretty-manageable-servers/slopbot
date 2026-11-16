@@ -33,8 +33,13 @@ class RequestGone extends Error {}
 
 /** The system prompt used when no team prompt is saved and the policy gives none. */
 /** The base text plus the presentation rules. Runs and the admin view both build the system text here. */
+/**
+ * Rules for every answer. They follow the base prompt, so a saved team prompt keeps them: users act on wrong
+ * answers, and long replies bury the answer.
+ */
+export const ANSWER_RULES = "State as fact only what you know well or what a tool result, file or message in this chat shows. When you are not sure, say so in plain words. Never make up names, numbers, dates, quotes, links, sources, file contents or tool results; say you do not know instead. For recent or changing facts, check with a tool when one fits, else say the answer can be out of date. Answer what was asked, then stop: no extra background, tips or sections nobody asked for. When more detail would help, end with one short question that offers it, for example \"Want the steps for X?\", instead of writing it.";
 export function systemText(base: string, presentation?: PresentationPolicy): string {
-  return base + (presentation ? `\n${presentationInstructions(presentation)}` : "");
+  return `${base}\n${ANSWER_RULES}` + (presentation ? `\n${presentationInstructions(presentation)}` : "");
 }
 /** The system text of a run with function tools, without the tool schemas (those are sent apart). Shown by the admin view. */
 export function fullSystemText(base: string, presentation?: PresentationPolicy): string {
