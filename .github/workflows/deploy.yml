@@ -33,9 +33,9 @@ jobs:
           TEST_DATABASE_URL: postgres://postgres:test@localhost:5432/slopbot_test
       - run: pnpm -F slopbot-console test
       - run: pnpm -F slopbot-console build
-  deploy:
+  # Builds and pushes the image while the tests run. The image is only tagged with the commit; deploy waits for both.
+  image:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -64,6 +64,14 @@ jobs:
           labels: org.opencontainers.image.source=https://github.com/pretty-manageable-servers/slopbot
           cache-from: type=gha
           cache-to: type=gha,mode=max
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [test, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
       - name: Deploy to PMServers
         env:
           GH_TOKEN: ${{ github.token }}

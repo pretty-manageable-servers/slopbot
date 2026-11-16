@@ -44,6 +44,8 @@ jobs:
       group: opencode-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
+    # A good review takes about 4 minutes. Without a cap, a stuck model holds the check open for the 6-hour default.
+    timeout-minutes: 10
     permissions:
       contents: write
       pull-requests: write
