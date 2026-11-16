@@ -1,5 +1,6 @@
 // Money, number and range helpers for Usage & limits. The bot keeps money in micro-dollars (a millionth of a
 // dollar) and prices per million tokens; the form shows dollars. The ranges are the bot's (src/admin-panel.ts).
+import type { ProjectLimits } from "../../api-types";
 
 export const MICROS_PER_DOLLAR = 1_000_000;
 
@@ -137,4 +138,32 @@ export const scheduleBody = (form: ScheduleForm) => ({
   perServer: form.perServer,
   perUser: form.perUser,
   minMinutes: { message: form.minMessage, prompt: form.minPrompt, tool: form.minTool },
+});
+
+// ----- Projects: counts, and file and project sizes in megabytes. The bot keeps sizes in bytes. -----
+
+const BYTES_PER_MEGABYTE = 1024 * 1024;
+
+/** Bytes as megabytes for a number field. Rounded to six decimals, so 1 KiB shows 0.000977 and comes back as 1024 bytes. */
+export const megabytesOf = (bytes: number) => Number((bytes / BYTES_PER_MEGABYTE).toFixed(6));
+
+/** Megabytes from a number field to bytes. */
+export const toBytes = (megabytes: number) => Math.round(megabytes * BYTES_PER_MEGABYTE);
+
+export interface ProjectsForm { projects: number; files: number; fileMb: number; projectMb: number }
+export const PROJECT_RULES: Record<keyof ProjectsForm, Rule> = {
+  projects: { min: 1, max: 200, whole: true },
+  files: { min: 1, max: 500, whole: true },
+  // The bot's range: 1 KiB to 10 MiB per file, 1 MiB to 2 GiB per project.
+  fileMb: { min: 1 / 1024, max: 10 },
+  projectMb: { min: 1, max: 2048 },
+};
+export const projectsForm = (view: ProjectLimits): ProjectsForm => ({
+  projects: view.maxProjects, files: view.maxFiles, fileMb: megabytesOf(view.maxFileBytes), projectMb: megabytesOf(view.maxProjectBytes),
+});
+export const projectsBody = (form: ProjectsForm) => ({
+  maxProjects: form.projects,
+  maxFiles: form.files,
+  maxFileBytes: toBytes(form.fileMb),
+  maxProjectBytes: toBytes(form.projectMb),
 });

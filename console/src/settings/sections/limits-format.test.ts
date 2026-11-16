@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
-  LIMITS_RULES, PRICE_RULES, SCHEDULE_RULES, botRepliesBody, botRepliesForm, botRepliesIssues, checkFields,
-  dollarsOf, iconUrl, limitsBody, modelError, priceBody, rangeError, scheduleBody, toMicros,
+  LIMITS_RULES, PRICE_RULES, PROJECT_RULES, SCHEDULE_RULES, botRepliesBody, botRepliesForm, botRepliesIssues, checkFields,
+  dollarsOf, iconUrl, limitsBody, megabytesOf, modelError, priceBody, projectsBody, projectsForm, rangeError, scheduleBody, toBytes, toMicros,
 } from "./limits-format";
 
 describe("money conversions", () => {
@@ -78,5 +78,26 @@ describe("scheduled tasks", () => {
 
   test("zero is not allowed for any cap or minimum", () => {
     expect(Object.keys(checkFields({ perServer: 0, perUser: 1, minMessage: 1, minPrompt: 1, minTool: 0 }, SCHEDULE_RULES)).sort()).toEqual(["minTool", "perServer"]);
+  });
+});
+
+describe("projects", () => {
+  test("megabytes from a field become bytes, and back, for every size the bot allows", () => {
+    for (const bytes of [1024, 2 * 1024 * 1024, 10 * 1024 * 1024, 200 * 1024 * 1024, 2 * 1024 ** 3]) {
+      expect(toBytes(megabytesOf(bytes))).toBe(bytes);
+    }
+    expect(megabytesOf(10 * 1024 * 1024)).toBe(10);
+    expect(toBytes(2.5)).toBe(2_621_440);
+  });
+
+  test("the form shows megabytes and the body sends bytes", () => {
+    const form = projectsForm({ maxProjects: 20, maxFiles: 50, maxFileBytes: 10 * 1024 * 1024, maxProjectBytes: 200 * 1024 * 1024 });
+    expect(form).toEqual({ projects: 20, files: 50, fileMb: 10, projectMb: 200 });
+    expect(projectsBody({ ...form, fileMb: 2.5 })).toEqual({ maxProjects: 20, maxFiles: 50, maxFileBytes: 2_621_440, maxProjectBytes: 200 * 1024 * 1024 });
+  });
+
+  test("the smallest file (1 KiB) is allowed, and zero projects, a file over 10 MB or a project over 2048 MB are not", () => {
+    expect(checkFields({ projects: 1, files: 1, fileMb: 1 / 1024, projectMb: 1 }, PROJECT_RULES)).toEqual({});
+    expect(Object.keys(checkFields({ projects: 0, files: 50, fileMb: 10.5, projectMb: 2049 }, PROJECT_RULES)).sort()).toEqual(["fileMb", "projectMb", "projects"]);
   });
 });
