@@ -11,9 +11,9 @@ const CONTROL = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g;
 // A candidate runs from a tag opener to the next opener or closer, on one line. Entities and full-width brackets count.
 const TAG_CANDIDATE = /(?:<|＜|&lt;)(?:(?!<|＜|>|＞|&lt;|&gt;)[^\n])*(?:>|＞|&gt;)?/gi;
 // The tag itself, tested on the NFKC form of a candidate with its entities decoded.
-const TAG = /^<\s*\/?\s*(?:user-instructions|slopbot-system)(?![\w-])[^<>]*>?$/i;
+const TAG = /^<\s*\/?\s*(?:user-instructions|project-instructions|slopbot-system)(?![\w-])[^<>]*>?$/i;
 
-/** Normalizes line ends, removes control and zero-width characters and any user-instructions or slopbot-system tag, trims.
+/** Normalizes line ends, removes control and zero-width characters and any user-instructions, project-instructions or slopbot-system tag, trims.
  *  NFKC is applied to each candidate span only to decide whether it is a tag; kept text is returned as written. */
 export function cleanInstructions(text: string): string {
   const plain = text.replace(/\r\n?/g, "\n").replace(INVISIBLE, "").replace(CONTROL, "");
