@@ -31,3 +31,11 @@ test('projectBlock with instructions and files, and with neither', () => {
   assert.doesNotMatch(empty, /project-instructions/);
   assert.equal(empty, 'Project "Thesis" has no files.\n');
 });
+
+test('parseMessage keeps a valid project and rejects a bad one', async () => {
+  const { parseMessage } = await import('../src/domain.js');
+  const base = { id: 'm1', server: 's1', channel: 'web:c1', author: 'ana', text: 'hi' };
+  assert.equal(parseMessage({ ...base, project: project.id }).project, project.id);
+  assert.equal('project' in parseMessage(base), false);
+  assert.throws(() => parseMessage({ ...base, project: '../x' }), /Invalid project/);
+});
