@@ -18,6 +18,7 @@ import { CHAT_IMAGE_ID, CHAT_IMAGE_MAX_BYTES, CHAT_IMAGE_MAX_COUNT, CHAT_IMAGE_S
 import { CHAT_FILE_ID, CHAT_FILE_MAX_BYTES, CHAT_ATTACHMENT_MAX_COUNT, chatFileKey, fileAttachments, fileContentType, fileName, fileUrl, newChatFileId, type ChatFileView } from "../../web-chat-files.js";
 import type { ObjectStorageProvider } from "../../object-storage.js";
 import { ChatShareService, type ShareService, type ShareStore } from "../../shares.js";
+import type { ProjectChats, ProjectStore } from "../../projects.js";
 
 /** Store calls for private chats. SQLite and Postgres implement them. */
 export interface ChatStore extends TranscriptStore, ShareStore {
@@ -25,8 +26,10 @@ export interface ChatStore extends TranscriptStore, ShareStore {
   insertWebChat(row: WebChatRow): Promise<void>;
   webChat(id: string): Promise<WebChatRow | undefined>;
   webChats(owner: string): Promise<WebChatRow[]>;
+  webChatsInProject(owner: string, project: string): Promise<WebChatRow[]>;
   renameWebChat(id: string, title: string, updated: number): Promise<void>;
   setWebChatEffort(id: string, effort: Effort | null): Promise<void>;
+  setChatProject(id: string, project: string | null, at: number): Promise<void>;
   touchWebChat(id: string, updated: number): Promise<void>;
   deleteWebChat(id: string, server: string, channel: string, at: number): Promise<void>;
   setting(server: string, key: string): unknown;
@@ -40,7 +43,12 @@ export interface ChatDeps {
   access: ChannelAccess;
   /** Private storage for chat images. Without it, a local disk folder is used (development only). */
   images?: ObjectStorageProvider;
+  /** Projects a chat can be put in. Without it, no project is found, so a chat cannot join one. */
+  projects?: Pick<ProjectStore, "project">;
 }
+
+/** A chat as the console lists it. project is null for a chat in no project. */
+export interface ChatSummary { id: string; title: string; updated: number; effort: Effort; project: string | null }
 
 /** An error with the HTTP status the route sends. resetAt is set for a usage limit. */
 export class ChatError extends Error {
@@ -57,7 +65,7 @@ const PENDING_FILE_MS = 60 * 60 * 1000;
 const MESSAGE_ID = /^[\w:.-]{1,64}$/;
 
 /** The private chat API: list, create, rename, delete, messages, live stream and send. Every call checks the owner and the server membership. */
-export class WebChatService {
+export class WebChatService implements ProjectChats {
   private readonly shares: ChatShareService;
   private readonly storage: ObjectStorageProvider;
   /** Images that are uploaded but not sent yet. A restart forgets them; their objects stay until the chat is deleted. */
@@ -73,20 +81,55 @@ export class WebChatService {
    * All live chats of the user, from every server, newest first. The server of a chat only hosts its runs, so the list
    * is the same on every device. Chats in a server that the user or Slopbot left are not shown (they cannot be opened).
    */
-  async list(user: string): Promise<{ id: string; title: string; updated: number; effort: Effort }[]> {
-    const chats = await this.store.webChats(user);
+  async list(user: string): Promise<ChatSummary[]> {
+    return (await this.openChats(user, await this.store.webChats(user))).map(chat => this.summary(chat));
+  }
+
+  /** The chats the user can still open, in the same order. A chat in a server the user or Slopbot left is dropped. */
+  private async openChats(user: string, chats: WebChatRow[]): Promise<WebChatRow[]> {
     const member = new Map<string, Promise<boolean>>();
     const open = (server: string) => {
       if (!member.has(server)) member.set(server, SNOWFLAKE.test(server) ? this.host.directory.isMember(user, server).catch(() => false) : Promise.resolve(false));
       return member.get(server)!;
     };
     const kept = await Promise.all(chats.map(chat => open(chat.server)));
-    return chats.filter((_, index) => kept[index]).map(chat => ({ id: chat.id, title: chat.title, updated: chat.updated, effort: this.effortOf(chat) }));
+    return chats.filter((_, index) => kept[index]);
+  }
+
+  private summary(chat: WebChatRow, project: string | null = chat.project ?? null): ChatSummary {
+    return { id: chat.id, title: chat.title, updated: chat.updated, effort: this.effortOf(chat), project };
   }
 
   /** The chat's own effort, else the server default, else medium. */
   private effortOf(chat: WebChatRow): Effort {
     return chat.effort ?? parseEffort(this.store.setting(chat.server, "default_effort")) ?? "medium";
+  }
+
+  /** The owner's live chats in the project, from every server, newest first. No membership check: deleting a project deletes all of them. */
+  async chatsInProject(owner: string, project: string): Promise<{ id: string; title: string; updated: number; effort: Effort; project: string }[]> {
+    const chats = await this.store.webChatsInProject(owner, project);
+    return chats.map(chat => ({ ...this.summary(chat, project), project }));
+  }
+
+  /** Deletes a chat of the owner the same way as DELETE /api/chats/:id, also when the owner has left its server. */
+  async deleteChat(owner: string, id: string): Promise<void> {
+    const chat = await this.ownedChat(owner, id);
+    await this.destroy(chat, await this.host.engine.workspace(chat.server));
+  }
+
+  /** Puts the chat in a project, or out of its project with null. The project must be the owner's. Anyone else gets 404. */
+  async moveToProject(user: string, id: string, project: string | null): Promise<ChatSummary> {
+    const chat = await this.owned(user, id);
+    if (project !== null) await this.ownedProject(user, project);
+    const at = this.now();
+    await this.store.setChatProject(chat.id, project, at);
+    return this.summary({ ...chat, updated: at }, project);
+  }
+
+  /** A project of another owner, a deleted one or an unknown one is 404, the same as a missing chat. */
+  private async ownedProject(user: string, project: string): Promise<void> {
+    const found = await this.host.projects?.project(project);
+    if (!found || found.owner !== user) throw new ChatError(404, "Not found.");
   }
 
   /** Saves the chat's effort. null returns the chat to the server default. */
@@ -97,11 +140,13 @@ export class WebChatService {
     await this.store.setWebChatEffort(chat.id, effort);
   }
 
-  async create(user: string, server: string): Promise<{ id: string }> {
+  /** A new empty chat in a server, in the project if one is given. The project must be the user's. */
+  async create(user: string, server: string, project?: string): Promise<{ id: string }> {
     await this.requireMember(user, server);
+    if (project !== undefined) await this.ownedProject(user, project);
     const workspace = await this.handle(server);
     const id = newPrivateChatId(), at = this.now();
-    await this.store.insertWebChat({ id, server, owner: user, title: "", created: at, updated: at, deleted: false });
+    await this.store.insertWebChat({ id, server, owner: user, title: "", created: at, updated: at, deleted: false, ...(project !== undefined ? { project } : {}) });
     workspace.openChat(privateChannel(id));
     return { id };
   }
@@ -115,11 +160,14 @@ export class WebChatService {
 
   async remove(user: string, id: string): Promise<void> {
     const chat = await this.owned(user, id);
+    await this.destroy(chat, await this.handle(chat.server));
+  }
+
+  private async destroy(chat: WebChatRow, workspace: Workspace | undefined): Promise<void> {
     const channel = privateChannel(chat.id);
-    const workspace = await this.handle(chat.server);
     // The chat's images go first. If this fails, the chat stays and the user can try again.
     await this.removeImages(chat);
-    workspace.closeChat(channel);
+    workspace?.closeChat(channel);
     // The chat's share links stop working and their frozen copies go with the chat.
     await this.shares.removeChat(chat);
     await this.store.deleteWebChat(chat.id, chat.server, channel, this.now());
@@ -250,7 +298,7 @@ export class WebChatService {
     ];
     // Each file gets one label line in the saved text, so the model knows the file exists. Images go by modelImages instead.
     const labels = files.map(item => fileLabel(item.name, item.contentType, item.url));
-    const message: Message = { id: `chat-${randomUUID()}`, server: chat.server, channel, author: user, authorName: name, text: [body, ...labels].join("\n"), timestamp: at, addressed: true, source: "web", surface: "web", effort: this.effortOf(chat), ...(attachments.length ? { attachments } : {}) };
+    const message: Message = { id: `chat-${randomUUID()}`, server: chat.server, channel, author: user, authorName: name, text: [body, ...labels].join("\n"), timestamp: at, addressed: true, source: "web", surface: "web", effort: this.effortOf(chat), ...(attachments.length ? { attachments } : {}), ...(chat.project ? { project: chat.project } : {}) };
     // The model gets short-lived signed links, only in memory.
     const modelImages = await Promise.all(images.map(async item => ({ url: await this.storage.link(chatImageKey(chat.server, chat.id, item.imageId), item.name, MODEL_LINK_SECONDS), label: item.name })));
     await this.store.ingest(message);
@@ -422,9 +470,14 @@ export class WebChatService {
   }
 
   private async owned(user: string, id: string): Promise<WebChatRow> {
+    const chat = await this.ownedChat(user, id);
+    await this.requireMember(user, chat.server);
+    return chat;
+  }
+  /** The owner's live chat in any server. Anyone else gets 404. */
+  private async ownedChat(user: string, id: string): Promise<WebChatRow> {
     const chat = CHAT_ID.test(id) ? await this.store.webChat(id) : undefined;
     if (!chat || chat.deleted || chat.owner !== user) throw new ChatError(404, "Not found.");
-    await this.requireMember(user, chat.server);
     return chat;
   }
   private async requireMember(user: string, server: string): Promise<void> {

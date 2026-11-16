@@ -7,17 +7,17 @@ export interface ChatDb {
 import { parseEffort, type Effort } from "../../domain.js";
 
 /** One private chat. `channel` is `web:<id>`. */
-export interface WebChatRow { id: string; server: string; owner: string; title: string; created: number; updated: number; deleted: boolean; effort?: Effort }
+export interface WebChatRow { id: string; server: string; owner: string; title: string; created: number; updated: number; deleted: boolean; effort?: Effort; project?: string }
 
-const COLUMNS = "id,server,owner,title,created,updated,deleted,effort";
+const COLUMNS = "id,server,owner,title,created,updated,deleted,effort,project";
 
 function chatOf(row: Record<string, unknown>): WebChatRow {
-  return { id: String(row.id), server: String(row.server), owner: String(row.owner), title: String(row.title), created: Number(row.created), updated: Number(row.updated), deleted: Number(row.deleted) === 1, ...(parseEffort(row.effort) ? { effort: parseEffort(row.effort)! } : {}) };
+  return { id: String(row.id), server: String(row.server), owner: String(row.owner), title: String(row.title), created: Number(row.created), updated: Number(row.updated), deleted: Number(row.deleted) === 1, ...(parseEffort(row.effort) ? { effort: parseEffort(row.effort)! } : {}), ...(row.project ? { project: String(row.project) } : {}) };
 }
 
 export async function insertWebChat(db: ChatDb, row: WebChatRow): Promise<void> {
-  await db.prepare("INSERT INTO web_chats(id,server,owner,title,created,updated,deleted) VALUES(?,?,?,?,?,?,?)")
-    .run(row.id, row.server, row.owner, row.title, row.created, row.updated, row.deleted ? 1 : 0);
+  await db.prepare("INSERT INTO web_chats(id,server,owner,title,created,updated,deleted,project) VALUES(?,?,?,?,?,?,?,?)")
+    .run(row.id, row.server, row.owner, row.title, row.created, row.updated, row.deleted ? 1 : 0, row.project ?? null);
 }
 
 /** A chat that was deleted is still returned here, with deleted set, so callers can refuse it. */
@@ -29,6 +29,12 @@ export async function getWebChat(db: ChatDb, id: string): Promise<WebChatRow | u
 /** Live chats of one owner in all servers, newest first. A private chat belongs to its owner, not to a server. */
 export async function listWebChats(db: ChatDb, owner: string): Promise<WebChatRow[]> {
   const rows = await db.prepare(`SELECT ${COLUMNS} FROM web_chats WHERE owner=? AND deleted=0 ORDER BY updated DESC, id`).all(owner);
+  return rows.map(chatOf);
+}
+
+/** Live chats of one owner in one project, newest first. The chats may be in different servers. */
+export async function webChatsInProject(db: ChatDb, owner: string, project: string): Promise<WebChatRow[]> {
+  const rows = await db.prepare(`SELECT ${COLUMNS} FROM web_chats WHERE owner=? AND project=? AND deleted=0 ORDER BY updated DESC, id`).all(owner, project);
   return rows.map(chatOf);
 }
 
@@ -48,6 +54,11 @@ export async function touchWebChat(db: ChatDb, id: string, updated: number): Pro
 
 export async function setWebChatEffort(db: ChatDb, id: string, effort: Effort | null): Promise<void> {
   await db.prepare("UPDATE web_chats SET effort=? WHERE id=? AND deleted=0").run(effort, id);
+}
+
+/** Puts a chat in a project, or takes it out with null. Also sets updated, so a moved chat is first in its new list. */
+export async function setChatProject(db: ChatDb, id: string, project: string | null, at: number): Promise<void> {
+  await db.prepare("UPDATE web_chats SET project=?, updated=? WHERE id=? AND deleted=0").run(project, at, id);
 }
 
 /** Marks a chat deleted. The caller removes its messages, runs and events (see deleteChatRows). */

@@ -13,13 +13,15 @@ import { createTranscripts } from "../src/clients/web/web-transcripts.js";
 import { ShareService } from "../src/shares.js";
 import type { UserLimit } from "../src/user-limiter.js";
 import type { Message } from "../src/domain.js";
+import type { Project } from "../src/projects.js";
 import type { ObjectStorageProvider } from "../src/object-storage.js";
 import { chatFileKey } from "../src/web-chat-files.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const SERVER = "1528063444874432734";
+const SERVER = "1528063444874432734", OTHER_SERVER = "1528063444874432735";
+const SERVERS = [SERVER, OTHER_SERVER];
 const ALICE = "1514413259522838529", BOB = "1514413259522838530", CAROL = "1514413259522838531";
 const ORIGIN = "http://localhost:3000";
 const MISSING = "0".repeat(32);
@@ -50,6 +52,9 @@ interface Fixture {
   ingested: boolean[];
   stops: { channel: string; user: string; manager: boolean }[];
   base: string;
+  /** The projects the chat service can find, by ID. */
+  projects: Map<string, Project>;
+  service: WebChatService;
   cookie(user: string): string;
   call(user: string | null, method: string, path: string, body?: unknown, headers?: Record<string, string>): Promise<{ status: number; json: any }>;
 }
@@ -67,13 +72,17 @@ async function setup(t: TestContext): Promise<Fixture> {
   const received: Message[] = [], ingested: boolean[] = [], stops: { channel: string; user: string; manager: boolean }[] = [];
   const storage = new MemoryStorage();
   let clock = 1_000;
-  const host = chatDeps({
-    member: (user, server) => server === SERVER && members.has(user),
-    workspace: server => server === SERVER ? { async stop(channel, user, manager) { stops.push({ channel, user, manager }); return ["job"]; }, async submit(message, options) { received.push(message); ingested.push(options?.ingested === true); } } : undefined,
-    limiter: { async check() { return limit.current; } },
-    access: new ChannelAccess({ async facts() { return undefined; } }),
-    images: storage,
-  });
+  const projects = new Map<string, Project>();
+  const host = {
+    ...chatDeps({
+      member: (user, server) => SERVERS.includes(server) && members.has(user),
+      workspace: server => SERVERS.includes(server) ? { async stop(channel, user, manager) { stops.push({ channel, user, manager }); return ["job"]; }, async submit(message, options) { received.push(message); ingested.push(options?.ingested === true); } } : undefined,
+      limiter: { async check() { return limit.current; } },
+      access: new ChannelAccess({ async facts() { return undefined; } }),
+      images: storage,
+    }),
+    projects: { async project(id: string) { return projects.get(id); } },
+  };
   const service = new WebChatService(store, host, () => ++clock);
   const logins: Record<string, { cookie: string; csrf: string }> = {};
   for (const user of [ALICE, BOB, CAROL]) {
@@ -116,7 +125,7 @@ const shareService = new ShareService({
     const text = await response.text();
     return { status: response.status, json: text ? JSON.parse(text) : undefined };
   }
-  return { store, storage, members, limit, membership, shareNow, received, ingested, stops, base, cookie: user => logins[user]!.cookie, call };
+  return { store, storage, members, limit, membership, shareNow, received, ingested, stops, base, projects, service, cookie: user => logins[user]!.cookie, call };
 }
 
 async function newChat(f: Fixture, user = ALICE): Promise<string> {
@@ -151,8 +160,9 @@ test("the list, create, rename and delete routes keep the shapes the UI reads", 
   assert.equal(list.status, 200);
   assert.ok(Array.isArray(list.json), "the list is a bare array");
   assert.equal(list.json.length, 1);
-  assert.deepEqual(Object.keys(list.json[0]).sort(), ["effort", "id", "title", "updated"]);
+  assert.deepEqual(Object.keys(list.json[0]).sort(), ["effort", "id", "project", "title", "updated"]);
   assert.equal(list.json[0].id, id);
+  assert.equal(list.json[0].project, null);
   assert.equal(list.json[0].title, "");
   assert.equal(typeof list.json[0].updated, "number");
 
@@ -659,4 +669,93 @@ test("refreshing a chat link keeps its URL, adds newer messages, and only works 
   assert.equal((await f.call(ALICE, "POST", `/api/chats/${one}/shares/${shareId}/revoke`, {})).status, 200);
   assert.equal((await f.call(ALICE, "POST", `/api/chats/${one}/shares/${shareId}/refresh`, {})).status, 404, "a revoked link is not refreshed");
   assert.equal((await listed()).newer, false);
+});
+
+const PROJECT_ONE = "1".repeat(32), PROJECT_TWO = "2".repeat(32);
+/** A project as the project store returns it. Only the owner and the ID matter to the chat service. */
+function project(id: string, owner: string): Project {
+  return { id, owner, name: "Trip", description: "", instructions: "", instructionsUpdated: null, created: 1, updated: 1 };
+}
+
+test("a chat is created in a project of its owner; another owner's, an unknown or a malformed project is refused", async t => {
+  const f = await setup(t);
+  f.projects.set(PROJECT_ONE, project(PROJECT_ONE, ALICE));
+  f.projects.set(PROJECT_TWO, project(PROJECT_TWO, BOB));
+
+  const created = await f.call(ALICE, "POST", "/api/chats", { server: SERVER, project: PROJECT_ONE });
+  assert.equal(created.status, 201);
+  assert.deepEqual(Object.keys(created.json), ["id"]);
+  assert.equal((await f.call(ALICE, "GET", "/api/chats")).json[0].project, PROJECT_ONE);
+
+  assert.equal((await f.call(ALICE, "POST", "/api/chats", { server: SERVER, project: PROJECT_TWO })).status, 404);
+  assert.equal((await f.call(ALICE, "POST", "/api/chats", { server: SERVER, project: MISSING })).status, 404);
+  assert.equal((await f.call(ALICE, "POST", "/api/chats", { server: SERVER, project: "not-an-id" })).status, 400);
+  assert.equal((await f.call(ALICE, "GET", "/api/chats")).json.length, 1, "the refused creates made no chat");
+});
+
+test("a chat moves into and out of a project; another owner's project is 404 and a malformed ID is 400", async t => {
+  const f = await setup(t);
+  f.projects.set(PROJECT_ONE, project(PROJECT_ONE, ALICE));
+  f.projects.set(PROJECT_TWO, project(PROJECT_TWO, BOB));
+  const id = await newChat(f);
+
+  const moved = await f.call(ALICE, "PATCH", `/api/chats/${id}/project`, { project: PROJECT_ONE });
+  assert.equal(moved.status, 200);
+  assert.deepEqual(Object.keys(moved.json).sort(), ["effort", "id", "project", "title", "updated"]);
+  assert.equal(moved.json.id, id);
+  assert.equal(moved.json.project, PROJECT_ONE);
+
+  const out = await f.call(ALICE, "PATCH", `/api/chats/${id}/project`, { project: null });
+  assert.equal(out.status, 200);
+  assert.equal(out.json.project, null);
+  assert.equal((await f.call(ALICE, "GET", "/api/chats")).json[0].project, null);
+
+  assert.equal((await f.call(ALICE, "PATCH", `/api/chats/${id}/project`, { project: PROJECT_TWO })).status, 404);
+  assert.equal((await f.call(BOB, "PATCH", `/api/chats/${id}/project`, { project: null })).status, 404, "another user's chat is 404");
+  assert.equal((await f.call(ALICE, "PATCH", `/api/chats/${id}/project`, { project: "nope" })).status, 400);
+  assert.equal((await f.call(ALICE, "PATCH", `/api/chats/${id}/project`, {})).status, 400);
+});
+
+test("a project lists its chats from every server, newest first, and deleting one chat removes it", async t => {
+  const f = await setup(t);
+  f.projects.set(PROJECT_ONE, project(PROJECT_ONE, ALICE));
+  const here = await f.call(ALICE, "POST", "/api/chats", { server: SERVER, project: PROJECT_ONE });
+  const there = await f.call(ALICE, "POST", "/api/chats", { server: OTHER_SERVER, project: PROJECT_ONE });
+  const loose = await newChat(f);
+
+  const listed = await f.service.chatsInProject(ALICE, PROJECT_ONE);
+  assert.deepEqual(listed.map(chat => chat.id), [there.json.id, here.json.id]);
+  assert.ok(listed.every(chat => chat.project === PROJECT_ONE));
+  assert.ok(!listed.some(chat => chat.id === loose));
+
+  await f.service.deleteChat(ALICE, here.json.id);
+  assert.deepEqual((await f.service.chatsInProject(ALICE, PROJECT_ONE)).map(chat => chat.id), [there.json.id]);
+  assert.equal((await f.call(ALICE, "GET", `/api/chats/${here.json.id}/messages`)).status, 404);
+  await assert.rejects(f.service.deleteChat(BOB, there.json.id), { status: 404 });
+});
+
+test("the run message carries the project of the chat, and a chat in no project has no project key", async t => {
+  const f = await setup(t);
+  f.projects.set(PROJECT_ONE, project(PROJECT_ONE, ALICE));
+  const id = await newChat(f);
+
+  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "Before" })).status, 201);
+  assert.equal("project" in f.received[f.received.length - 1]!, false);
+
+  assert.equal((await f.call(ALICE, "PATCH", `/api/chats/${id}/project`, { project: PROJECT_ONE })).status, 200);
+  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "After" })).status, 201);
+  assert.equal(f.received[f.received.length - 1]!.project, PROJECT_ONE);
+});
+
+test("a project's chats are listed and deleted even after the owner left their servers", async t => {
+  const f = await setup(t);
+  f.projects.set(PROJECT_ONE, project(PROJECT_ONE, ALICE));
+  const here = await f.call(ALICE, "POST", "/api/chats", { server: SERVER, project: PROJECT_ONE });
+  const there = await f.call(ALICE, "POST", "/api/chats", { server: OTHER_SERVER, project: PROJECT_ONE });
+  f.members.delete(ALICE);
+
+  assert.deepEqual((await f.service.chatsInProject(ALICE, PROJECT_ONE)).map(chat => chat.id), [there.json.id, here.json.id]);
+  await f.service.deleteChat(ALICE, there.json.id);
+  await f.service.deleteChat(ALICE, here.json.id);
+  assert.deepEqual(await f.service.chatsInProject(ALICE, PROJECT_ONE), []);
 });

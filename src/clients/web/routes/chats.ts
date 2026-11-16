@@ -4,7 +4,8 @@ import { logError } from '../../../errors.js';
 import { ShareError } from '../../../shares.js';
 import { ChatError, type WebChatService } from '../web-chats.js';
 import { CHAT_FILE_MAX_BYTES } from '../../../web-chat-files.js';
-import { declaredTooLarge, looseBody, readBytes, readJson } from '../body.js';
+import { PROJECT_ID } from '../../../projects.js';
+import { check, declaredTooLarge, looseBody, readBytes, readJson } from '../body.js';
 import { alreadySent, applyOut, failure, json, notFound, userOf, type WebEnv } from '../env.js';
 
 /** The private chat routes, mounted at /api/chats. The console checks the session, the Origin and the CSRF token before them. */
@@ -15,7 +16,8 @@ const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const JSON_MAX_BYTES = 4 * 1024 * 1024;
 const record = z.record(z.string(), z.unknown());
 const patchBody = z.object({ effort: z.unknown().optional(), title: z.unknown().optional() });
-const createBody = z.object({ server: z.unknown().optional() });
+const createBody = z.object({ server: z.unknown().optional(), project: z.string().regex(PROJECT_ID, 'Invalid project.').optional() });
+const projectBody = z.object({ project: z.string().regex(PROJECT_ID, 'Invalid project.').nullable() });
 const sendBody = z.object({ text: z.unknown().optional(), images: z.unknown().optional(), files: z.unknown().optional() });
 
 export function chatRoutes(service: WebChatService): ChatRoutes {
@@ -50,7 +52,11 @@ export function chatRoutes(service: WebChatService): ChatRoutes {
   });
 
   app.get('/', async c => json(200, await service.list(userOf(c))));
-  app.post('/', async c => json(201, await service.create(userOf(c), String(createBody.parse(looseBody(c.get('body'))).server ?? ''))));
+  app.post('/', async c => {
+    const input = check(createBody, looseBody(c.get('body')));
+    if ('error' in input) return input.error;
+    return json(201, await service.create(userOf(c), String(input.value.server ?? ''), input.value.project));
+  });
 
   app.post('/:id/images', async c => json(201, await service.uploadImage(userOf(c), c.req.param('id'), c.get('body') as Buffer, c.req.query('name') ?? null)));
   app.delete('/:id/images/:image', async c => { await service.discardImage(userOf(c), c.req.param('id'), c.req.param('image')); return json(200, { ok: true }); });
@@ -73,6 +79,12 @@ export function chatRoutes(service: WebChatService): ChatRoutes {
     if ('effort' in input) await service.setEffort(userOf(c), id, input.effort);
     if ('title' in input || !('effort' in input)) await service.rename(userOf(c), id, input.title);
     return json(200, { ok: true });
+  });
+  // Puts the chat in a project, or out of it with null. A malformed ID is 400; an unknown or another owner's project is 404.
+  app.patch('/:id/project', async c => {
+    const input = check(projectBody, looseBody(c.get('body')));
+    if ('error' in input) return input.error;
+    return json(200, await service.moveToProject(userOf(c), c.req.param('id'), input.value.project));
   });
   app.delete('/:id', async c => { await service.remove(userOf(c), c.req.param('id')); return json(200, { ok: true }); });
 
