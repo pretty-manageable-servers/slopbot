@@ -62,7 +62,7 @@ function Shell() {
           options={[{ id: "chats", label: "Chats", icon: icons.chats }, { id: "servers", label: "Servers", icon: icons.server }]}
           onChange={(next) => void (next === "servers" ? navigate({ to: "/server/$serverId", params: { serverId: server.id } }) : navigate({ to: "/" }))} />
       }
-      nav={mode === "chats" ? <NewChat /> : undefined}
+      nav={mode === "chats" ? <><NewChat /><Projects /></> : undefined}
       footer={
         <AccountMenu
           name={session.me?.displayName ?? session.user}
@@ -92,6 +92,14 @@ function NewChat() {
   const navigate = useNavigate();
   const onNew = !!useMatchRoute()({ to: "/" });
   return <SidebarItem icon={defaultIcons.edit} label="New chat" active={onNew} onPress={() => void navigate({ to: "/" })} />;
+}
+
+/** The projects page. Active on the list and on each project. */
+function Projects() {
+  const navigate = useNavigate();
+  const match = useMatchRoute();
+  const active = !!match({ to: "/projects" }) || !!match({ to: "/project/$projectId" });
+  return <SidebarItem icon={defaultIcons.folder} label="Projects" active={active} onPress={() => void navigate({ to: "/projects" })} />;
 }
 
 /** All private chats of the user, from every server, newest first, with rename and delete. */

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Json, Message } from "./domain.js";
 import { ToolError } from './errors.js';
+import { memoryScope } from "./projects.js";
 import type { Attribution } from "./usage-meter.js";
 
 export interface MemoryRecord {
@@ -61,7 +62,8 @@ export function newMemory(message: Message, content: string, options: MemoryOpti
   if (!Array.isArray(sourceIds) || sourceIds.length > 20 || sourceIds.some(id => typeof id !== 'string' || !id.trim() || id.length > 160)) throw new ToolError('Use up to 20 valid source message IDs.');
   if (sourcePolicy === 'source_bound' && !sourceIds.length) throw new ToolError('Source-bound memory requires a source.');
   if (sourcePolicy === 'independent' && sourceIds.length) throw new ToolError('Independent memory does not retain source message IDs.');
-  return { id: options.operationId ? memoryIdForOperation(options.operationId) : randomUUID(), server: message.server, channel: message.channel, author: message.author, content: content.trim(), category, tags: [...new Set(tags.map(tag => tag.trim()))], details, sourcePolicy, sourceIds: [...new Set(sourceIds)], status: 'active', revision: 1, updatedAt: Date.now(), ...(options.operationId ? { lastOperationId: options.operationId } : {}) };
+  const scope = memoryScope(message);
+  return { id: options.operationId ? memoryIdForOperation(options.operationId) : randomUUID(), server: scope.server, channel: scope.channel, author: message.author, content: content.trim(), category, tags: [...new Set(tags.map(tag => tag.trim()))], details, sourcePolicy, sourceIds: [...new Set(sourceIds)], status: 'active', revision: 1, updatedAt: Date.now(), ...(options.operationId ? { lastOperationId: options.operationId } : {}) };
 }
 export function patchMemory(memory: MemoryRecord, patch: MemoryPatch, operationId?: string): MemoryRecord {
   const next = { ...memory, ...patch, revision: memory.revision + 1, updatedAt: Date.now(), ...(operationId ? { lastOperationId: operationId } : {}) };

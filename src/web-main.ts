@@ -34,6 +34,10 @@ import { localConsoleAdmin, localConsoleBackend } from "./local/local-console.js
 import { VaneSafetyClassifier } from "./adapters/safety-classifier.js";
 import { UserInstructionsService } from "./user-instructions-service.js";
 import { hasUserInstructions } from "./user-instructions.js";
+import { ProjectService } from "./project-service.js";
+import { projectRoutes } from "./clients/web/routes/projects.js";
+import { GLOBAL_SETTINGS_SCOPE } from "./usage-cost.js";
+import { hasProjectStore, projectLimits, PROJECT_LIMITS_KEY } from "./projects.js";
 
 export interface LocalConsole {
   web: Server;
@@ -88,17 +92,20 @@ export async function startLocalConsole(env: NodeJS.ProcessEnv = process.env): P
 
   const shareRule: ShareRule = { manager: (user, server) => directory.canManage(user, server), teamAdmin: user => team.canEdit(user) };
   const shares = new ShareService({ store, access, rule: shareRule, member: (user, server) => directory.isMember(user, server), images: images ?? new LocalDiskStorage() });
-  const chats = new WebChatService(store, { engine, directory, limiter: usage.limiter, access, ...(images ? { images } : {}) });
+  // Saved user instructions: the store keeps the table; the vane check fails closed without a key, so saves are refused.
+  const classifier = config.baseUrl && config.apiKey && !config.mock ? new VaneSafetyClassifier({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.jevModel, usage }) : undefined;
+  const instructions = hasUserInstructions(store) ? new UserInstructionsService(store, classifier) : undefined;
+  // Projects share the storage the project_files tool reads from (workspace.ts: object storage, else LocalDiskStorage).
+  const projectStore = hasProjectStore(store) ? store : undefined;
+  const chats = new WebChatService(store, { engine, directory, limiter: usage.limiter, access, ...(images ? { images } : {}), ...(projectStore ? { projects: projectStore } : {}) });
+  const projects = projectStore ? projectRoutes(new ProjectService(projectStore, chats, images ?? new LocalDiskStorage(), store, classifier, () => projectLimits(store.setting(GLOBAL_SETTINGS_SCOPE, PROJECT_LIMITS_KEY)))) : undefined;
   const panel = new AdminPanel(config, store, usage.limiter, members);
   if (degraded) panel.setLlmState(() => degraded.health.state());
   const admin = localConsoleAdmin({ world, team, panel });
   const localBackend = localConsoleBackend({ world, config, store, members, usage });
-  // Saved user instructions: the store keeps the table; the vane check fails closed without a key, so saves are refused.
-  const classifier = config.baseUrl && config.apiKey && !config.mock ? new VaneSafetyClassifier({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.jevModel, usage }) : undefined;
-  const instructions = hasUserInstructions(store) ? new UserInstructionsService(store, classifier) : undefined;
   const consoleOptionsLive = { ...webOptions, ...(degraded ? { llmStatus: () => ({ mode: degraded.health.state().mode, canChat: degraded.router.select(undefined) !== undefined }), settings: store } : {}), ...(instructions ? { instructions } : {}) };
   const web = createConsole(consoleOptionsLive, {
-    ...localBackend, access, admin, chats: createChatRoutes(chats),
+    ...localBackend, access, admin, chats: createChatRoutes(chats), ...(projects ? { projects } : {}),
     continueShare: (user, id) => chats.continueShare(user, id, shares), shares, sessions: store,
   });
   const stop = async () => {

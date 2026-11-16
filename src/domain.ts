@@ -33,6 +33,8 @@ export interface Message {
   readonly surface?: Surface;
   readonly transient?: boolean;
   /** Web chat only: short-lived links of the images in this message, for the model. In memory; the saved row keeps attachments only. */
+  /** Web chat only: the project of the chat. */
+  readonly project?: string;
   readonly modelImages?: readonly { url: string; label: string }[];
   readonly revisionTimestamp?: number;
   /** Set on a request the bot answers. Its non-image files are copied to the sandbox before the run. */
@@ -120,10 +122,12 @@ export function parseMessage(input: unknown): Message {
   if (value.authorIdentity !== undefined && (!value.authorIdentity || typeof value.authorIdentity !== "object" || Array.isArray(value.authorIdentity) || Object.values(value.authorIdentity).some(item => typeof item !== "string"))) throw new TypeError("Invalid Discord identity");
   if (value.attachments !== undefined && (!Array.isArray(value.attachments) || value.attachments.some(item => !item || typeof item.name !== "string" || typeof item.url !== "string" || (item.contentType !== undefined && typeof item.contentType !== "string") || (item.preview !== undefined && typeof item.preview !== "boolean") || (item.size !== undefined && (!Number.isSafeInteger(item.size) || item.size < 0))))) throw new TypeError("Invalid attachments");
   if (value.effort !== undefined && parseEffort(value.effort) === undefined) throw new TypeError("Invalid effort");
+  if (value.project !== undefined && (typeof value.project !== "string" || !/^[0-9a-f]{32}$/.test(value.project))) throw new TypeError("Invalid project");
   if (value.modelImages !== undefined && (!Array.isArray(value.modelImages) || value.modelImages.some(item => !item || typeof item.url !== "string" || typeof item.label !== "string"))) throw new TypeError("Invalid model images");
   return {
     ...(value.modelImages ? { modelImages: value.modelImages as { url: string; label: string }[] } : {}),
     ...(value.effort ? { effort: value.effort as Effort } : {}),
+    ...(value.project !== undefined ? { project: value.project as string } : {}),
     ...(value.attachments ? { attachments: value.attachments as Attachment[] } : {}),
     ...(value.authorIdentity ? { authorIdentity: value.authorIdentity as Record<string,string> } : {}),
     ...(value.authorName ? { authorName: value.authorName as string } : {}),

@@ -44,6 +44,12 @@ async function connectWithRetry(provider: SandboxProvider, id: string): Promise<
   catch { return undefined; }
 }
 
+/** Runs each time a run opens its sandbox, after the session is recorded. Its errors are the hook's to handle: sandboxSession does not catch them. */
+export type SandboxOpenHook = (message: Message, session: SandboxSession, home: string) => Promise<void>;
+const openHooks = new WeakMap<RecordStore, SandboxOpenHook>();
+/** Registers the hook for the sandboxes of one store. Every sandboxSession call with that store runs it, so the sandbox tools, run_tools_code and uploads all reach it. */
+export function onSandboxOpen(store: RecordStore, hook: SandboxOpenHook): void { openHooks.set(store, hook); }
+
 /** Returns the session of this channel or thread. Creates one when none is active, and renews the lease. A recorded sandbox that cannot be connected is replaced: the result then has created true. Never fails on a lost record race: it reads the record again. home is the home directory of the sandbox user; it is read once per sandbox and falls back to SANDBOX_HOME. */
 export async function sandboxSession(store: RecordStore, provider: SandboxProvider, message: Message, operationId: string): Promise<{ session: SandboxSession; created: boolean; template?: string; home: string }> {
   for (let attempt = 0; ; attempt++) {
@@ -58,7 +64,11 @@ export async function sandboxSession(store: RecordStore, provider: SandboxProvid
     // A reconnected sandbox keeps its recorded home. A new sandbox, or a record without one, reads $HOME. A failed read is not saved, so the next call tries again.
     const found = !created && value?.home ? value.home : await readHome(session);
     const saved = await store.putRecord(message.server, 'sandbox', message.channel, { id: session.id, expiresAt: Date.now() + SANDBOX_LIFETIME_MS, ...(template ? { template } : {}), ...(found ? { home: found } : {}) }, record?.revision ?? 0);
-    if (saved) return { session, created, ...(template ? { template } : {}), home: found ?? SANDBOX_HOME };
+    if (saved) {
+      const home = found ?? SANDBOX_HOME;
+      await openHooks.get(store)?.(message, session, home);
+      return { session, created, ...(template ? { template } : {}), home };
+    }
     if (created) await session.close().catch(error => logError('sandbox_create_cleanup_failed', error, { stage: 'sandbox cleanup', operationId }, true));
     if (attempt >= 2) throw new Error('Sandbox record kept changing.');
   }

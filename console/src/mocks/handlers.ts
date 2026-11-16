@@ -57,6 +57,36 @@ export const handlers = {
   search: http.get("/api/conversations/search", () => HttpResponse.json({ query: "backup", channels: [{ id: data.conversations[0]!.id, name: "general" }], messages: data.transcript(data.conversations[0]!.id).messages.slice(0, 2) })),
   usage: http.get("/api/usage", () => HttpResponse.json(data.usage)),
   createShare: http.post("/api/shares", () => HttpResponse.json({ id: data.shareData.id })),
+
+  // Projects: the list, one project with its files and chats, its instructions, memory and deletes.
+  projects: http.get("/api/projects", () => HttpResponse.json(data.projectList)),
+  createProject: http.post("/api/projects", async ({ request }) => {
+    const body = (await request.json()) as { name: string; description?: string };
+    return HttpResponse.json({ ...data.projectDetail.project, id: "p-new", name: body.name, description: body.description ?? "" }, { status: 201 });
+  }),
+  project: http.get("/api/projects/:id", () => HttpResponse.json(data.projectDetail)),
+  updateProject: http.patch("/api/projects/:id", async ({ request }) => {
+    const body = (await request.json()) as { name?: string; description?: string };
+    return HttpResponse.json({ ...data.projectDetail.project, ...body });
+  }),
+  saveProjectInstructions: http.post("/api/projects/:id/instructions", async ({ request }) => {
+    const { text } = (await request.json()) as { text: string };
+    return HttpResponse.json({ ok: true, project: { ...data.projectDetail.project, instructions: text } });
+  }),
+  deleteProject: http.delete("/api/projects/:id", () => new HttpResponse(null, { status: 204 })),
+  uploadProjectFile: http.post("/api/projects/:id/files", () => HttpResponse.json({ ...data.projectFiles[0]!, id: "f-new", name: "upload.txt", size: 1024 }, { status: 201 })),
+  removeProjectFile: http.delete("/api/projects/:id/files/:file", () => new HttpResponse(null, { status: 204 })),
+  projectMemories: http.get("/api/projects/:id/memories", () => HttpResponse.json({ memories: data.projectMemories })),
+  updateProjectMemory: http.patch("/api/projects/:id/memories/:memory", async ({ request, params }) => {
+    const { content } = (await request.json()) as { content: string };
+    const memory = data.projectMemories.find((m) => m.id === params.memory) ?? data.projectMemories[0]!;
+    return HttpResponse.json({ ...memory, content });
+  }),
+  removeProjectMemory: http.delete("/api/projects/:id/memories/:memory", () => new HttpResponse(null, { status: 204 })),
+  moveChat: http.patch("/api/chats/:id/project", async ({ request, params }) => {
+    const { project } = (await request.json()) as { project: string | null };
+    return HttpResponse.json({ ...data.chats.find((c) => c.id === params.id)!, project });
+  }),
 } satisfies Record<string, HttpHandler>;
 
 /** A stream at `url` that sends these engine events, as the bot's `engine` events, then stays open. */

@@ -59,6 +59,11 @@ export function createApp(options: ConsoleOptions, backend: ConsoleBackend, widg
     app.use('/api/chats/*', (c, next) => c.req.method === 'GET' ? next() : writes(c, next));
     app.route('/api/chats', backend.chats);
   }
+  if (backend.projects) {
+    const writes = guard(['POST', 'PATCH', 'DELETE']);
+    app.use('/api/projects/*', (c, next) => c.req.method === 'GET' ? next() : writes(c, next));
+    app.route('/api/projects', backend.projects);
+  }
   shareRoutes(app, deps);
   adminRoutes(app, deps);
   app.all('/api/*', guard(), () => json(404, { error: 'Not found.' }));

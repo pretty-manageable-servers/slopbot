@@ -1,22 +1,24 @@
 // Usage & limits (Slopbot team only): what each user may spend, model prices, replies to other bots, scheduled task
-// caps, and lifetime usage. Ported from the old console's Bot admin and Users tab (web/app.js 473-660, 966-1024).
+// caps, project caps, and lifetime usage. Ported from the old console's Bot admin and Users tab (web/app.js 473-660, 966-1024).
 // Money, number and range rules are in limits-format.ts.
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery, type QueryKey } from "@tanstack/react-query";
 import { Avatar, Badge, Button, confirm, DataTable, NumberField, ProgressBar, SettingsGroup, SettingsRow, TextField } from "slop-ui-components";
 import { useState } from "react";
 import { get, post } from "../../api";
-import type { BotReplies, LimitsView, ModelPrice, Prices, ScheduleLimits, UsageRow, UsageTotals } from "../../api-types";
+import type { BotReplies, LimitsView, ModelPrice, Prices, ProjectLimits, ScheduleLimits, UsageRow, UsageTotals } from "../../api-types";
 import { adminMeQuery } from "../../data";
 import { notify, notifyError } from "../../ui/feedback";
 import {
-  BOT_REPLY_RULES, LIMITS_RULES, PRICE_RULES, SCHEDULE_RULES, botRepliesBody, botRepliesForm, botRepliesIssues, checkFields,
-  costText, count, dollarsOf, iconUrl, limitsBody, modelError, money, priceBody, priceLabel, scheduleBody, sharePercent,
-  type BotRepliesForm, type Issues, type LimitsForm, type PriceForm, type ScheduleForm,
+  BOT_REPLY_RULES, LIMITS_RULES, PRICE_RULES, PROJECT_RULES, SCHEDULE_RULES, botRepliesBody, botRepliesForm, botRepliesIssues, checkFields,
+  costText, count, dollarsOf, iconUrl, limitsBody, megabytesOf, modelError, money, priceBody, priceLabel, projectsBody, projectsForm, scheduleBody, sharePercent,
+  type BotRepliesForm, type Issues, type LimitsForm, type PriceForm, type ProjectsForm, type ScheduleForm,
 } from "./limits-format";
 
 // The bot's admin routes (src/admin-panel.ts). Each POST answers the view its GET gives, and the answer goes into the cache.
 // api-types' ScheduleLimits leaves out `default`, which the bot sends with it (admin-panel.ts scheduleLimits()).
 type ScheduleView = ScheduleLimits & { default: ScheduleLimits };
+// The bot sends the defaults as `defaults` with the project limits (admin-panel.ts projectLimits()).
+type ProjectsView = ProjectLimits & { defaults: ProjectLimits };
 type PriceRow = Prices["models"][number];
 type ServerUsage = UsageTotals["servers"][number];
 type ModelUsage = UsageTotals["models"][number];
@@ -26,6 +28,7 @@ const limitsQuery = queryOptions({ queryKey: ["admin", "limits"], queryFn: () =>
 const pricesQuery = queryOptions({ queryKey: ["admin", "prices"], queryFn: () => get<Prices>("/api/admin/prices") });
 const botRepliesQuery = queryOptions({ queryKey: ["admin", "bot-replies"], queryFn: () => get<BotReplies>("/api/admin/bot-replies") });
 const schedulesQuery = queryOptions({ queryKey: ["admin", "schedule-limits"], queryFn: () => get<ScheduleView>("/api/admin/schedule-limits") });
+const projectsQuery = queryOptions({ queryKey: ["admin", "project-limits"], queryFn: () => get<ProjectsView>("/api/admin/project-limits") });
 const totalsQuery = queryOptions({ queryKey: ["admin", "usage-total"], queryFn: () => get<UsageTotals>("/api/admin/usage/total") });
 
 const PRICE_FIELDS: [PriceKey, string][] = [["input", "Input"], ["cached_input", "Cached input"], ["output", "Output"]];
@@ -57,6 +60,7 @@ export default function Limits() {
       <ModelPrices canEdit={canEdit} />
       <BotReplyLimits canEdit={canEdit} />
       <ScheduleCaps canEdit={canEdit} />
+      <ProjectCaps canEdit={canEdit} />
       <TotalUsage />
     </>
   );
@@ -262,6 +266,37 @@ function ScheduleCaps({ canEdit }: { canEdit: boolean }) {
   ];
   return (
     <SettingsGroup title="Schedules" description="For all servers. Caps the scheduled tasks each server and user may have, and how often each kind may run." actions={canEdit && <Button variant="secondary" size="sm" onPress={submit} isDisabled={save.isPending}>Save</Button>}>
+      {rows.map(({ key, label, help }) => (
+        <SettingsRow key={key} label={label} description={help}>
+          <NumberField aria-label={label} errorMessage={shown[key]} value={form[key]} onChange={(value) => setForm({ ...form, [key]: value })} isDisabled={!canEdit} />
+        </SettingsRow>
+      ))}
+    </SettingsGroup>
+  );
+}
+
+/** Projects: how many each user may have, and how many files and megabytes each project may hold, for all servers. */
+function ProjectCaps({ canEdit }: { canEdit: boolean }) {
+  const { data } = useSuspenseQuery(projectsQuery);
+  const save = useSave<ProjectsView>("/api/admin/project-limits", projectsQuery.queryKey);
+  const [form, setForm] = useState(() => projectsForm(data));
+  const [tried, setTried] = useState(false);
+  const issues = checkFields(form, PROJECT_RULES);
+  const submit = () => {
+    setTried(true);
+    if (Object.keys(issues).length) return;
+    save.mutate(projectsBody(form), { onSuccess: (view) => setForm(projectsForm(view)) });
+  };
+  const shown = tried ? issues : {};
+  const defaults = data.defaults;
+  const rows: { key: keyof ProjectsForm; label: string; help: string }[] = [
+    { key: "projects", label: "Projects per user", help: `Default ${defaults.maxProjects}.` },
+    { key: "files", label: "Files per project", help: `Default ${defaults.maxFiles}.` },
+    { key: "fileMb", label: "MB per file", help: `In megabytes. Default ${megabytesOf(defaults.maxFileBytes)}.` },
+    { key: "projectMb", label: "MB per project", help: `In megabytes. Default ${megabytesOf(defaults.maxProjectBytes)}.` },
+  ];
+  return (
+    <SettingsGroup title="Projects" description="For all servers. Caps the projects each user may have, and the files and size of each project." actions={<Button variant="secondary" size="sm" onPress={submit} isDisabled={!canEdit || save.isPending}>Save</Button>}>
       {rows.map(({ key, label, help }) => (
         <SettingsRow key={key} label={label} description={help}>
           <NumberField aria-label={label} errorMessage={shown[key]} value={form[key]} onChange={(value) => setForm({ ...form, [key]: value })} isDisabled={!canEdit} />

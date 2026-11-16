@@ -10,10 +10,12 @@ import { parseMessage, type Effort, type Json, type Message, type ModelEvent, ty
 import type { Store, AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow, TokenTotals, UserTokenTotalRow, TokenTotalsSummary, KnownUserPage } from "../ports.js";
 import type { KeyedProvider, ProviderKeyRow, ProviderKeyUsage } from "../web-providers.js";
 import type { UserInstructions, UserInstructionsStore } from "../user-instructions.js";
+import type { Project, ProjectFile, ProjectStore } from "../projects.js";
 import { cosine, searchTerms, newMemory, patchMemory, memoryMetadata, memoryFromRow, memorySearchText, rankMemories, type MemoryOptions, type MemoryPatch, type MemoryQuery, type Embeddings, type Evidence, type MemoryRecord, type Knowledge, type Recall } from "../memory.js";
 import { attribution, type Attribution } from "../usage-meter.js";
 
 import { ToolError } from "../tools.js";
+import { memoryScope } from "../projects.js";
 import type { ProfileField, ProfileStore, UserProfile } from "../profiles.js";
 import type { TaskContext } from "../context.js";
 import type { Job, QueueStore } from "../queue.js";
@@ -32,7 +34,7 @@ import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
 import type { InboxItem } from '../inbox.js';
 import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, listChatShares, revokeShare, updateShareBody, revokeAllShares, deleteChatShares } from '../share-store.js';
 import { getWebSession, saveWebSession, deleteWebSession, deleteExpiredWebSessions } from '../clients/web/web-session-store.js';
-import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatEffort, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../clients/web/web-chat-store.js';
+import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatEffort, setChatProject, webChatsInProject, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../clients/web/web-chat-store.js';
 import { isPrivateChannel } from '../private-chat.js';
 import type { WebSessionRow } from '../clients/web/web-session-store.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
@@ -43,7 +45,13 @@ function inboxItemFromRow(row: Record<string, any>): InboxItem {
 function providerKeyRow(row: Record<string, unknown>): ProviderKeyRow {
   return { id: String(row.id), provider: String(row.provider) as KeyedProvider, owner: String(row.owner), label: String(row.label), last4: String(row.last4), secretEncrypted: String(row.secret_encrypted), createdAt: Number(row.created_at) };
 }
-export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore, UserInstructionsStore {
+function projectFromRow(row: Record<string, unknown>): Project {
+  return { id: String(row.id), owner: String(row.owner), name: String(row.name), description: String(row.description), instructions: String(row.instructions), instructionsUpdated: row.instructions_updated === null ? null : Number(row.instructions_updated), created: Number(row.created), updated: Number(row.updated) };
+}
+function projectFileFromRow(row: Record<string, unknown>): ProjectFile {
+  return { id: String(row.id), project: String(row.project), name: String(row.name), contentType: String(row.content_type), size: Number(row.size), created: Number(row.created) };
+}
+export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, QueueStore, ToolJournal, ProfileStore, UserInstructionsStore, ProjectStore {
   async participationHistory(server: string, channel: string, query: ParticipationHistoryQuery) {
     return readParticipationHistory(async (sql, values) => this.db.prepare(sql).all(...values), server, channel, query);
   }
@@ -400,6 +408,9 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       CREATE TABLE IF NOT EXISTS web_provider_keys (id TEXT PRIMARY KEY, provider TEXT NOT NULL, owner TEXT NOT NULL, label TEXT NOT NULL, last4 TEXT NOT NULL, secret_encrypted TEXT NOT NULL, created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS web_provider_usage (key_id TEXT NOT NULL, month TEXT NOT NULL, used INTEGER NOT NULL, exhausted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(key_id, month));
       CREATE TABLE IF NOT EXISTS user_instructions (user_id TEXT PRIMARY KEY, text TEXT NOT NULL, updated INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', instructions TEXT NOT NULL DEFAULT '', instructions_updated INTEGER, created INTEGER NOT NULL, updated INTEGER NOT NULL, deleted INTEGER NOT NULL DEFAULT 0);
+      CREATE INDEX IF NOT EXISTS projects_owner ON projects(owner,deleted,updated);
+      CREATE TABLE IF NOT EXISTS project_files (project TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, content_type TEXT NOT NULL, size INTEGER NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(project,id));
       CREATE TABLE IF NOT EXISTS inbox_items (id TEXT PRIMARY KEY, server TEXT NOT NULL, target TEXT NOT NULL, sender TEXT NOT NULL, channel TEXT NOT NULL, source_ids TEXT NOT NULL, summary TEXT NOT NULL, created_at INTEGER NOT NULL, done_at INTEGER);
       CREATE INDEX IF NOT EXISTS inbox_items_target ON inbox_items(server,target,done_at,created_at);
       CREATE INDEX IF NOT EXISTS inbox_items_sender ON inbox_items(server,sender,created_at);
@@ -407,6 +418,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     if (!this.db.prepare("PRAGMA table_info(memories)").all().some(column => column.name === "metadata")) this.db.exec("ALTER TABLE memories ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'");
     if (!this.db.prepare("PRAGMA table_info(web_replies)").all().some(column => column.name === "via")) this.db.exec("ALTER TABLE web_replies ADD COLUMN via TEXT NOT NULL DEFAULT 'webhook'");
     if (!this.db.prepare("PRAGMA table_info(web_chats)").all().some(column => column.name === "effort")) this.db.exec("ALTER TABLE web_chats ADD COLUMN effort TEXT");
+    if (!this.db.prepare("PRAGMA table_info(web_chats)").all().some(column => column.name === "project")) this.db.exec("ALTER TABLE web_chats ADD COLUMN project TEXT");
     const operationColumns = this.db.prepare("PRAGMA table_info(tool_operations)").all();
     if (!this.db.prepare('PRAGMA table_info(agent_turns)').all().some(column => column.name === 'diagnostic_args')) this.db.exec('ALTER TABLE agent_turns ADD COLUMN diagnostic_args TEXT');
     if (!operationColumns.some(column => column.name === "resource")) this.db.exec("ALTER TABLE tool_operations ADD COLUMN resource TEXT");
@@ -625,9 +637,11 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   async insertWebChat(row: WebChatRow): Promise<void> { return insertWebChat(this.db, row); }
   async webChat(id: string): Promise<WebChatRow | undefined> { return getWebChat(this.db, id); }
   async webChats(owner: string): Promise<WebChatRow[]> { return listWebChats(this.db, owner); }
+  async webChatsInProject(owner: string, project: string): Promise<WebChatRow[]> { return webChatsInProject(this.db, owner, project); }
   async liveWebChatChannels(server: string): Promise<string[]> { return liveWebChatChannels(this.db, server); }
   async renameWebChat(id: string, title: string, updated: number): Promise<void> { return renameWebChat(this.db, id, title, updated); }
   async setWebChatEffort(id: string, effort: Effort | null): Promise<void> { return setWebChatEffort(this.db, id, effort); }
+  async setChatProject(id: string, project: string | null, at: number): Promise<void> { return setChatProject(this.db, id, project, at); }
   async touchWebChat(id: string, updated: number): Promise<void> { return touchWebChat(this.db, id, updated); }
   /** Deletes a private chat: its runs, events and queue rows, then its messages. The row stays, marked deleted. */
   async deleteWebChat(id: string, server: string, channel: string, at: number): Promise<void> {
@@ -1182,10 +1196,11 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     try {
       this.db.prepare("INSERT INTO memories(id,server,channel,author,content,status,created_at,metadata) VALUES(?,?,?,?,?,?,?,?)")
         .run(memory.id, memory.server, memory.channel, memory.author, memory.content, memory.status, memory.updatedAt, memoryMetadata(memory));
-      for (const id of memory.sourceIds) this.db.prepare("INSERT INTO memory_sources VALUES(?,?,?)").run(memory.id, memory.server, id);
+      // Sources stay on the chat's server; a project memory's server is the project scope.
+      for (const id of memory.sourceIds) this.db.prepare("INSERT INTO memory_sources VALUES(?,?,?)").run(memory.id, message.server, id);
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
-    this.queueIndex({ ...message, id: memory.id, text: memorySearchText(memory) });
+    this.queueIndex({ ...message, server: memory.server, channel: memory.channel, id: memory.id, text: memorySearchText(memory) });
     return memory;
   }
 
@@ -1203,11 +1218,12 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   }
 
   async searchMemories(message: Message, query: MemoryQuery = {}): Promise<readonly MemoryRecord[]> {
-    const notes = (await this.memories(message.server, message.channel)).filter(note => (!query.category || note.category === query.category) && (!query.tags?.length || query.tags.every(tag => note.tags.includes(tag))));
+    const scope = memoryScope(message);
+    const notes = (await this.memories(scope.server, scope.channel)).filter(note => (!query.category || note.category === query.category) && (!query.tags?.length || query.tags.every(tag => note.tags.includes(tag))));
     const scores = new Map<string, number>();
     if (this.embeddings && notes.length && query.query?.trim()) {
       try {
-        const rows = this.db.prepare(`SELECT e.memory_id,e.vector FROM memory_embeddings e JOIN memories m ON m.server=e.server AND m.id=e.memory_id WHERE m.server=? AND m.channel=? AND m.status='active' AND e.model=?`).all(message.server, message.channel, this.embeddings.model);
+        const rows = this.db.prepare(`SELECT e.memory_id,e.vector FROM memory_embeddings e JOIN memories m ON m.server=e.server AND m.id=e.memory_id WHERE m.server=? AND m.channel=? AND m.status='active' AND e.model=?`).all(scope.server, scope.channel, this.embeddings.model);
         const candidates = new Set(notes.map(note => note.id));
         if (rows.some(row => candidates.has(String(row.memory_id)))) {
           const vector = await this.embed({ ...message, text: query.query }, "memory_query", attribution(message));
@@ -1219,22 +1235,23 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   }
 
   async updateMemory(message: Message, id: string, patch: MemoryPatch, expectedRevision: number, operationId?: string): Promise<MemoryRecord | undefined> {
-    const row = this.db.prepare("SELECT * FROM memories WHERE id=? AND server=? AND channel=? AND author=? AND status='active'").get(id, message.server, message.channel, message.author);
+    const scope = memoryScope(message);
+    const row = this.db.prepare("SELECT * FROM memories WHERE id=? AND server=? AND channel=? AND author=? AND status='active'").get(id, scope.server, scope.channel, message.author);
     if (!row) return undefined;
-    const current = (await this.memories(message.server, message.channel)).find(note => note.id === id);
+    const current = (await this.memories(scope.server, scope.channel)).find(note => note.id === id);
     if (!current) return undefined;
     if (current.revision !== expectedRevision) throw new ToolError('Memory changed. Read it again and use its current revision.');
     const memory = patchMemory(current, patch, operationId);
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const result = this.db.prepare("UPDATE memories SET content=?,metadata=? WHERE id=? AND server=? AND channel=? AND author=? AND status='active' AND metadata=?")
-        .run(memory.content, memoryMetadata(memory), id, message.server, message.channel, message.author, String(row.metadata));
+        .run(memory.content, memoryMetadata(memory), id, scope.server, scope.channel, message.author, String(row.metadata));
       if (!result.changes) throw new ToolError('Memory changed. Read it again before retrying.');
-      this.db.prepare("DELETE FROM memory_embeddings WHERE server=? AND memory_id=?").run(message.server, id);
+      this.db.prepare("DELETE FROM memory_embeddings WHERE server=? AND memory_id=?").run(scope.server, id);
       this.invalidate(message.server, message.channel, { reason: 'memory_updated', sourceId: id });
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
-    this.queueIndex({ ...message, id, text: memorySearchText(memory) });
+    this.queueIndex({ ...message, server: memory.server, channel: memory.channel, id, text: memorySearchText(memory) });
     return memory;
   }
 
@@ -1406,5 +1423,54 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     for (const task of this.taskThreads(server)) {
       if (task.parent === channel) this.invalidate(server, task.thread, { ...change, originChannel: change.originChannel ?? channel });
     }
+  }
+  async createProject(project: Project): Promise<void> {
+    this.db.prepare("INSERT INTO projects (id,owner,name,description,instructions,instructions_updated,created,updated,deleted) VALUES(?,?,?,?,?,?,?,?,0)")
+      .run(project.id, project.owner, project.name, project.description, project.instructions, project.instructionsUpdated, project.created, project.updated);
+  }
+  async project(id: string): Promise<Project | undefined> {
+    const row = this.db.prepare("SELECT id,owner,name,description,instructions,instructions_updated,created,updated FROM projects WHERE id=? AND deleted=0").get(id);
+    return row ? projectFromRow(row) : undefined;
+  }
+  async projectsOf(owner: string): Promise<Project[]> {
+    return this.db.prepare("SELECT id,owner,name,description,instructions,instructions_updated,created,updated FROM projects WHERE owner=? AND deleted=0 ORDER BY updated DESC,id").all(owner)
+      .map(projectFromRow);
+  }
+  async updateProject(id: string, patch: Partial<Pick<Project, "name" | "description" | "instructions" | "instructionsUpdated">>, at: number): Promise<void> {
+    const sets = ["updated=?"], values: (string | number | null)[] = [at];
+    if (patch.name !== undefined) { sets.push("name=?"); values.push(patch.name); }
+    if (patch.description !== undefined) { sets.push("description=?"); values.push(patch.description); }
+    if (patch.instructions !== undefined) { sets.push("instructions=?"); values.push(patch.instructions); }
+    if (patch.instructionsUpdated !== undefined) { sets.push("instructions_updated=?"); values.push(patch.instructionsUpdated); }
+    this.db.prepare(`UPDATE projects SET ${sets.join(",")} WHERE id=? AND deleted=0`).run(...values, id);
+  }
+  async deleteProject(id: string, at: number): Promise<void> {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare("UPDATE projects SET deleted=1,updated=? WHERE id=?").run(at, id);
+      this.db.prepare("DELETE FROM project_files WHERE project=?").run(id);
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+  async addProjectFile(file: ProjectFile): Promise<void> {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare("INSERT INTO project_files (project,id,name,content_type,size,created) VALUES(?,?,?,?,?,?)").run(file.project, file.id, file.name, file.contentType, file.size, file.created);
+      this.db.prepare("UPDATE projects SET updated=? WHERE id=? AND deleted=0").run(file.created, file.project);
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+  async projectFiles(project: string): Promise<ProjectFile[]> {
+    return this.db.prepare("SELECT project,id,name,content_type,size,created FROM project_files WHERE project=? ORDER BY name,id").all(project)
+      .map(projectFileFromRow);
+  }
+  async deleteProjectFile(project: string, id: string, at: number): Promise<boolean> {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.db.prepare("DELETE FROM project_files WHERE project=? AND id=?").run(project, id);
+      if (result.changes) this.db.prepare("UPDATE projects SET updated=? WHERE id=? AND deleted=0").run(at, project);
+      this.db.exec("COMMIT");
+      return result.changes > 0;
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
 }
