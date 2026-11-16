@@ -1314,7 +1314,7 @@ export class PostgresStore implements UserInstructionsStore, ProjectStore {
         if (patch.description !== undefined) { sets.push("description=?"); values.push(patch.description); }
         if (patch.instructions !== undefined) { sets.push("instructions=?"); values.push(patch.instructions); }
         if (patch.instructionsUpdated !== undefined) { sets.push("instructions_updated=?"); values.push(patch.instructionsUpdated); }
-        (await this.db.prepare(`UPDATE projects SET ${sets.join(",")} WHERE id=?`).run(...values, id));
+        (await this.db.prepare(`UPDATE projects SET ${sets.join(",")} WHERE id=? AND deleted=0`).run(...values, id));
     }
     async deleteProject(id: string, at: number): Promise<void> {
         (await this.db.exec("BEGIN IMMEDIATE"));
@@ -1328,7 +1328,7 @@ export class PostgresStore implements UserInstructionsStore, ProjectStore {
         (await this.db.exec("BEGIN IMMEDIATE"));
         try {
             (await this.db.prepare("INSERT INTO project_files (project,id,name,content_type,size,created) VALUES(?,?,?,?,?,?)").run(file.project, file.id, file.name, file.contentType, file.size, file.created));
-            (await this.db.prepare("UPDATE projects SET updated=? WHERE id=?").run(file.created, file.project));
+            (await this.db.prepare("UPDATE projects SET updated=? WHERE id=? AND deleted=0").run(file.created, file.project));
             (await this.db.exec("COMMIT"));
         } catch (error) { (await this.db.exec("ROLLBACK")); throw error; }
     }
@@ -1340,7 +1340,7 @@ export class PostgresStore implements UserInstructionsStore, ProjectStore {
         (await this.db.exec("BEGIN IMMEDIATE"));
         try {
             const result = (await this.db.prepare("DELETE FROM project_files WHERE project=? AND id=?").run(project, id));
-            if (result.changes) (await this.db.prepare("UPDATE projects SET updated=? WHERE id=?").run(at, project));
+            if (result.changes) (await this.db.prepare("UPDATE projects SET updated=? WHERE id=? AND deleted=0").run(at, project));
             (await this.db.exec("COMMIT"));
             return result.changes > 0;
         } catch (error) { (await this.db.exec("ROLLBACK")); throw error; }

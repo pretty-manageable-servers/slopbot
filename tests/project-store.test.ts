@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { Client } from 'pg';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
@@ -13,13 +17,23 @@ const file = (project: string, n: number, name: string, created: number): Projec
 
 for (const backend of ['sqlite', 'postgres'] as const) {
   const skip = backend === 'postgres' && !url;
-  const inStore = (name: string, body: (store: ProjectStore) => Promise<void>) => test(`${backend}: ${name}`, { skip }, async t => {
-    const store = backend === 'sqlite' ? new SQLiteStore() : await PostgresStore.connect(url!, undefined, schema);
+  // The sqlite store is a file so the test can read the raw projects row through a second connection; project() hides deleted rows.
+  const inStore = (name: string, body: (store: ProjectStore, rawRow: (id: string) => Promise<Record<string, unknown> | undefined>) => Promise<void>) => test(`${backend}: ${name}`, { skip }, async t => {
+    const dir = mkdtempSync(join(tmpdir(), 'slopbot-project-store-')), path = join(dir, 'store.sqlite3');
+    const store = backend === 'sqlite' ? new SQLiteStore(path) : await PostgresStore.connect(url!, undefined, schema);
+    const sqlite = backend === 'sqlite' ? new DatabaseSync(path) : undefined;
+    const pg = new Client({ connectionString: url });
+    if (backend === 'postgres') { await pg.connect(); await pg.query(`SET search_path TO ${schema}`); }
     t.after(async () => {
+      sqlite?.close();
       await store.close();
-      if (backend === 'postgres') { const cleanup = new Client({ connectionString: url }); await cleanup.connect(); await cleanup.query(`DROP SCHEMA ${schema} CASCADE`); await cleanup.end(); }
+      if (backend === 'postgres') { await pg.query(`DROP SCHEMA ${schema} CASCADE`); await pg.end(); }
+      rmSync(dir, { recursive: true, force: true });
     });
-    await body(store);
+    const rawRow = async (id: string): Promise<Record<string, unknown> | undefined> => sqlite
+      ? sqlite.prepare('SELECT name,instructions,updated,deleted FROM projects WHERE id=?').get(id)
+      : (await pg.query('SELECT name,instructions,updated,deleted FROM projects WHERE id=$1', [id])).rows[0];
+    await body(store, rawRow);
   });
 
   inStore('creates a project and reads it back', async store => {
@@ -72,5 +86,14 @@ for (const backend of ['sqlite', 'postgres'] as const) {
     await store.createProject(project(1));
     assert.equal(await store.deleteProjectFile(hex(1), hex(9), 2000), false);
     assert.equal((await store.project(hex(1)))?.updated, 1000);
+  });
+
+  inStore('updateProject leaves a deleted project unchanged', async (store, rawRow) => {
+    await store.createProject(project(1));
+    await store.deleteProject(hex(1), 3000);
+    await store.updateProject(hex(1), { name: 'Changed', instructions: 'Changed', instructionsUpdated: 4000 }, 4000);
+    const row = await rawRow(hex(1));
+    assert.deepEqual({ name: row?.name, instructions: row?.instructions, updated: Number(row?.updated), deleted: Number(row?.deleted) },
+      { name: 'Notes 1', instructions: 'Be terse', updated: 3000, deleted: 1 });
   });
 }

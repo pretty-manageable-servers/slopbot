@@ -1436,7 +1436,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     if (patch.description !== undefined) { sets.push("description=?"); values.push(patch.description); }
     if (patch.instructions !== undefined) { sets.push("instructions=?"); values.push(patch.instructions); }
     if (patch.instructionsUpdated !== undefined) { sets.push("instructions_updated=?"); values.push(patch.instructionsUpdated); }
-    this.db.prepare(`UPDATE projects SET ${sets.join(",")} WHERE id=?`).run(...values, id);
+    this.db.prepare(`UPDATE projects SET ${sets.join(",")} WHERE id=? AND deleted=0`).run(...values, id);
   }
   async deleteProject(id: string, at: number): Promise<void> {
     this.db.exec("BEGIN IMMEDIATE");
@@ -1450,7 +1450,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.prepare("INSERT INTO project_files (project,id,name,content_type,size,created) VALUES(?,?,?,?,?,?)").run(file.project, file.id, file.name, file.contentType, file.size, file.created);
-      this.db.prepare("UPDATE projects SET updated=? WHERE id=?").run(file.created, file.project);
+      this.db.prepare("UPDATE projects SET updated=? WHERE id=? AND deleted=0").run(file.created, file.project);
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
@@ -1462,7 +1462,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const result = this.db.prepare("DELETE FROM project_files WHERE project=? AND id=?").run(project, id);
-      if (result.changes) this.db.prepare("UPDATE projects SET updated=? WHERE id=?").run(at, project);
+      if (result.changes) this.db.prepare("UPDATE projects SET updated=? WHERE id=? AND deleted=0").run(at, project);
       this.db.exec("COMMIT");
       return result.changes > 0;
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
