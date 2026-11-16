@@ -6,6 +6,10 @@ import { errorReply, logError } from "../errors.js";
 import { sandboxManageTool, readSandboxFile } from "../sandbox.js";
 import { sandboxFileTools } from "../sandbox-tools.js";
 import { uploadRequestFiles } from "../sandbox-uploads.js";
+import { projectFilesTool } from "../project-files-tool.js";
+import { projectSandboxOpenHook } from "../project-sandbox.js";
+import { onSandboxOpen } from "../sandbox-session.js";
+import { hasProjectStore } from "../projects.js";
 import { sandboxPromptLine, type SandboxProfile } from "../sandbox-profile.js";
 import { objectStorageTools, UserFileStorage, MAX_STORED_FILE_BYTES, fileStorageScope } from '../object-storage.js';
 import { S3StorageProvider } from '../adapters/s3-storage.js';
@@ -246,6 +250,13 @@ export class EngineWorkspace implements Workspace {
         read: (context, path) => readSandboxFile(store, sandboxProvider, context, path, MAX_STORED_FILE_BYTES, this.sandboxProfile?.home),
       } } : {}),
     })) this.tools.register(tool);
+    // Projects need a store with projects. Without one there is no project_files tool and no sandbox copy.
+    const projectStore = hasProjectStore(store) ? store : undefined, projectStorage = objectStorageProvider ?? new LocalDiskStorage();
+    if (projectStore) {
+      this.tools.register(projectFilesTool({ projects: projectStore, storage: projectStorage, inspect: (context, file, bytes, question) => inspectFile({ store, llm, usage }, context, file.name, file.contentType, bytes, question) }));
+      // The project copy runs when a run opens its sandbox, so a run without a sandbox never creates one.
+      onSandboxOpen(store, projectSandboxOpenHook({ projects: projectStore, storage: projectStorage, ...(this.sandboxProfile ? { profile: this.sandboxProfile } : {}) }));
+    }
     this.limiter = usage.limiter;
     ports.registerTools(this.tools);
     registerUsageTool(this.tools, this.limiter);
