@@ -89,7 +89,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
       // Live engine events from the newest on. The steps of earlier replies are loaded by useTurns.
       close = openEngineStream(api.eventsUrl(id), {
         onEvent: (envelope) => setState((s) => (s ? applyEngineEvent(s, envelope, id) : s)),
-        onClosed: () => setStatus("Live updates stopped. Reload to check again."),
+        onClosed: () => setStatus("Access ended. Reload to check again."),
         onStatus: setStatus,
       });
     };

@@ -141,7 +141,7 @@ function Transcript({ serverId, channelId, run, user }: { serverId: string; chan
           void client.invalidateQueries({ queryKey: [...scope, "run"] });
         }
       },
-      onClosed: (reason = "access") => setStatus(reason === "access" ? "Access ended. Reload to check again." : "Live updates stopped."),
+      onClosed: () => setStatus("Access ended. Reload to check again."),
       onStatus: setStatus,
     });
   }, [serverId, channelId, ready, loaded, user]);
