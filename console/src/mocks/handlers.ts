@@ -83,6 +83,10 @@ export const handlers = {
     return HttpResponse.json({ ...memory, content });
   }),
   removeProjectMemory: http.delete("/api/projects/:id/memories/:memory", () => new HttpResponse(null, { status: 204 })),
+  moveChat: http.patch("/api/chats/:id/project", async ({ request, params }) => {
+    const { project } = (await request.json()) as { project: string | null };
+    return HttpResponse.json({ ...data.chats.find((c) => c.id === params.id)!, project });
+  }),
 } satisfies Record<string, HttpHandler>;
 
 /** A stream at `url` that sends these engine events, as the bot's `engine` events, then stays open. */

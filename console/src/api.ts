@@ -14,14 +14,13 @@ export class ApiError extends Error {
 
 let csrf = "";
 
-/** One JSON call (a FormData body goes as it is, as a multipart form). Writes get the CSRF token. A failed call throws ApiError with the bot's error text. */
+/** One JSON call. Writes get the CSRF token. A failed call throws ApiError with the bot's error text. */
 export async function call<T>(method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
   const write = method !== "GET";
-  const form = body instanceof FormData;
   const response = await fetch(path, {
     method,
-    headers: { ...(body !== undefined && !form && { "Content-Type": "application/json" }), ...(write && { "X-CSRF-Token": csrf }) },
-    body: body === undefined ? undefined : form ? body : JSON.stringify(body),
+    headers: { ...(body !== undefined && { "Content-Type": "application/json" }), ...(write && { "X-CSRF-Token": csrf }) },
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new ApiError(typeof data.error === "string" ? data.error : `Request failed (${response.status}).`, response.status, data);
@@ -83,12 +82,8 @@ const projectCalls = {
       throw error;
     }),
   deleteProject: (id: string) => call<unknown>("DELETE", projectPath(id)),
-  /** The file as the multipart field "file". Resolves to the saved file. */
-  uploadProjectFile: (id: string, file: File) => {
-    const form = new FormData();
-    form.append("file", file);
-    return call<ProjectFile>("POST", `${projectPath(id)}/files`, form);
-  },
+  /** The file as its raw bytes, as a chat file is sent. Resolves to the saved file. */
+  uploadProjectFile: (id: string, file: File) => upload<ProjectFile>(`${projectPath(id)}/files`, file),
   /** The download route answers 302 to the file. Used as a link's href. */
   projectFileUrl: (id: string, fileId: string) => projectFilePath(id, fileId),
   removeProjectFile: (id: string, fileId: string) => call<unknown>("DELETE", projectFilePath(id, fileId)),
@@ -101,6 +96,8 @@ export const api = {
   transcribe,
   chats: () => call<ChatSummary[]>("GET", "/api/chats"),
   createChat: (server: string, project?: string) => call<{ id: string }>("POST", "/api/chats", { server, project }),
+  /** Moves a chat into a project, or out of its project with null. */
+  moveChat: (id: string, project: string | null) => call<ChatSummary>("PATCH", `${chat(id)}/project`, { project }),
   messages: (id: string, limit = 50) => call<{ messages: unknown[]; hasMore: boolean; streamId: number }>("GET", `${chat(id)}/messages?limit=${limit}`),
   send: (id: string, text: string, images: string[] = [], files: string[] = []) => call<{ id: string }>("POST", `${chat(id)}/messages`, { text, images, files }),
   update: (id: string, change: { title?: string; effort?: string }) => call<unknown>("PATCH", chat(id), change),

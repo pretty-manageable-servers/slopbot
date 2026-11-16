@@ -49,13 +49,15 @@ export function fileProblem(file: { size: number }, usage: { files: number; byte
   return null;
 }
 
-/** The words for a bot error code (project_limit, file_too_large, file_limit, project_full), or null for any other code. */
+/** The words for a bot error code, or null for any other code (those are shown as the notice). */
 export function projectErrorText(code: string, limits: ProjectLimits): string | null {
   switch (code) {
     case "project_limit": return `You have reached the limit of ${plural(limits.maxProjects, "project")}. Delete one to make another.`;
     case "file_too_large": return `That file is larger than ${sizeText(limits.maxFileBytes)}.`;
     case "file_limit": return `A project holds ${plural(limits.maxFiles, "file")}. Remove one to add another.`;
     case "project_full": return `This project is full: it holds ${sizeText(limits.maxProjectBytes)} of files. Remove some to add more.`;
+    case "storage_unavailable": return "Files are not available right now. Try again in a moment.";
+    case "project_failed": return "The project could not be saved. Try again.";
     default: return null;
   }
 }

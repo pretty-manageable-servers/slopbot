@@ -58,7 +58,7 @@ describe("file checks before upload", () => {
 
 describe("error codes from the bot", () => {
   test("each limit code has a message, and other codes have none", () => {
-    for (const code of ["project_limit", "file_too_large", "file_limit", "project_full"]) {
+    for (const code of ["project_limit", "file_too_large", "file_limit", "project_full", "storage_unavailable", "project_failed"]) {
       expect(projectErrorText(code, limits)).not.toBeNull();
     }
     expect(projectErrorText("something_else", limits)).toBeNull();
