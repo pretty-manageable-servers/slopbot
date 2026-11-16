@@ -7,7 +7,8 @@ import { sandboxManageTool, readSandboxFile } from "../sandbox.js";
 import { sandboxFileTools } from "../sandbox-tools.js";
 import { uploadRequestFiles } from "../sandbox-uploads.js";
 import { projectFilesTool } from "../project-files-tool.js";
-import { syncProjectToSandbox } from "../project-sandbox.js";
+import { projectSandboxOpenHook } from "../project-sandbox.js";
+import { onSandboxOpen } from "../sandbox-session.js";
 import { hasProjectStore } from "../projects.js";
 import { sandboxPromptLine, type SandboxProfile } from "../sandbox-profile.js";
 import { objectStorageTools, UserFileStorage, MAX_STORED_FILE_BYTES, fileStorageScope } from '../object-storage.js';
@@ -251,7 +252,11 @@ export class EngineWorkspace implements Workspace {
     })) this.tools.register(tool);
     // Projects need a store with projects. Without one there is no project_files tool and no sandbox copy.
     const projectStore = hasProjectStore(store) ? store : undefined, projectStorage = objectStorageProvider ?? new LocalDiskStorage();
-    if (projectStore) this.tools.register(projectFilesTool({ projects: projectStore, storage: projectStorage, inspect: (context, file, bytes, question) => inspectFile({ store, llm, usage }, context, file.name, file.contentType, bytes, question) }));
+    if (projectStore) {
+      this.tools.register(projectFilesTool({ projects: projectStore, storage: projectStorage, inspect: (context, file, bytes, question) => inspectFile({ store, llm, usage }, context, file.name, file.contentType, bytes, question) }));
+      // The project copy runs when a run opens its sandbox, so a run without a sandbox never creates one.
+      onSandboxOpen(store, projectSandboxOpenHook({ projects: projectStore, storage: projectStorage, ...(this.sandboxProfile ? { profile: this.sandboxProfile } : {}) }));
+    }
     this.limiter = usage.limiter;
     ports.registerTools(this.tools);
     registerUsageTool(this.tools, this.limiter);
@@ -289,8 +294,6 @@ export class EngineWorkspace implements Workspace {
       }
       const stop = ports.typing(message.channel);
       try {
-        // A project chat copies its files to ~/project before the run. A failure does not stop the run.
-        await syncProjectToSandbox(projectStore && sandboxProvider ? { store, provider: sandboxProvider, projects: projectStore, storage: projectStorage, ...(this.sandboxProfile ? { profile: this.sandboxProfile } : {}) } : undefined, message);
         // A request copies its non-image files to the sandbox before the run. A failure does not stop the run.
         const uploads = message.uploadFiles && sandboxProvider ? await uploadRequestFiles({ store, provider: sandboxProvider, fetcher: chatFiles, ...(this.sandboxProfile ? { profile: this.sandboxProfile } : {}) }, message).catch(error => {
           logError("sandbox_upload_failed", error, { stage: "sandbox upload", server: message.server, channel: message.channel, messageId: message.id }, true);
