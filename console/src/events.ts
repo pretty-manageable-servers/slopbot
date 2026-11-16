@@ -95,13 +95,20 @@ const VIEW_STATUS = { streaming: "streaming", done: "done", failed: "error", int
 
 /** The live reply of a turn: every part of the view. */
 export function liveMessage(view: TurnView): Message {
-  return { id: `live:${view.turn}`, parentId: view.turn, role: "assistant", status: VIEW_STATUS[view.status], parts: turnParts(view), createdAt: new Date().toISOString() };
+  const parts = turnParts(view);
+  if (view.status === "interrupted") parts.push(stoppedPart(view.turn));
+  return { id: `live:${view.turn}`, parentId: view.turn, role: "assistant", status: VIEW_STATUS[view.status], parts, createdAt: new Date().toISOString() };
 }
+
+/** The custom part kind of the "Stopped" note at the end of a reply the user stopped. */
+export const STOPPED_KIND = "stopped";
+const stoppedPart = (id: string): Part => ({ type: "custom", id: `${id}:stopped`, status: "done", kind: STOPPED_KIND, data: null, text: "Stopped" });
 
 /** A saved reply with the thinking and tool parts of its turn before its own parts. Its text is the reply, so the view's text is not added. */
 export function withSteps(message: Message, view: TurnView | undefined): Message {
   const steps = view ? turnParts(view).filter((part) => part.type !== "text") : [];
-  return steps.length ? { ...message, parts: [...steps, ...message.parts] } : message;
+  const stopped = view?.status === "interrupted" ? [stoppedPart(message.id)] : [];
+  return steps.length || stopped.length ? { ...message, parts: [...steps, ...message.parts, ...stopped] } : message;
 }
 
 /** The view of the turn a saved reply came from, when its events are known. */
@@ -119,11 +126,12 @@ const completeView = (state: ChatState, turn: string): TurnView | undefined => (
 
 /** All messages to show: the saved ones with their steps, then the live replies whose reply is not saved yet. */
 export function chatMessages(state: ChatState): Message[] {
-  // A turn with a saved reply shows as that reply, even before its events are loaded.
+  // A turn with a saved reply shows as that reply, even before its events are loaded. A turn stopped or failed
+  // before any output still shows, so the user sees that it ended.
   const claimed = new Set(state.saved.flatMap((message) => (state.replies[message.id] ?? []).flatMap((run) => state.runs[run] ?? [])));
   const saved = state.saved.map((message) => withSteps(message, viewOfReply(state, message.id)));
   const started = new Set(Object.values(state.runs));
-  const live = Object.values(state.live).filter((view) => started.has(view.turn) && !claimed.has(view.turn) && (view.status === "streaming" || view.parts.length > 0));
+  const live = Object.values(state.live).filter((view) => started.has(view.turn) && !claimed.has(view.turn) && (view.status !== "done" || view.parts.length > 0));
   return [...saved, ...live.map(liveMessage)];
 }
 
@@ -191,7 +199,7 @@ export const withLoadedTurns = (state: ChatState, found: Pick<ChatState, "runs" 
   ({ ...state, runs: { ...found.runs, ...state.runs }, loaded: { ...found.loaded, ...state.loaded } });
 
 /** A sent message before the bot's events show it. `from` is the message count when it was sent. */
-export interface PendingSend { user: Message; from: number }
+export interface PendingSend { user: Message; from: number; stopped?: boolean }
 
 /** A sent message as a pending user message. Image drafts show their local preview. */
 export function pendingSend(text: string, drafts: { id: string; name: string; mime: string; size: number; fileId?: string; previewUrl?: string }[], from: number): PendingSend {
@@ -202,7 +210,8 @@ export function pendingSend(text: string, drafts: { id: string; name: string; mi
 
 /**
  * The messages with a pending send at the end: its user message until the bot's copy shows,
- * and an empty streaming reply (the thinking row) until the bot's reply starts. done: the reply started.
+ * and an empty streaming reply (the thinking row) until the bot's reply starts, or a "Stopped" reply when the user
+ * stopped it before then. done: the reply started.
  */
 export function withPending(messages: Message[], pending: PendingSend | undefined): { messages: Message[]; done: boolean } {
   if (!pending) return { messages, done: false };
@@ -210,6 +219,8 @@ export function withPending(messages: Message[], pending: PendingSend | undefine
   if (after.some((m) => m.role === "assistant")) return { messages, done: true };
   const shown = [...messages];
   if (!after.some((m) => m.role === "user")) shown.push(pending.user);
-  shown.push({ id: "pending:reply", parentId: pending.user.id, role: "assistant", status: "streaming", parts: [], createdAt: pending.user.createdAt });
+  shown.push(pending.stopped
+    ? { id: "pending:reply", parentId: pending.user.id, role: "assistant", status: "stopped", parts: [stoppedPart("pending")], createdAt: pending.user.createdAt }
+    : { id: "pending:reply", parentId: pending.user.id, role: "assistant", status: "streaming", parts: [], createdAt: pending.user.createdAt });
   return { messages: shown, done: false };
 }

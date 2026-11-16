@@ -1,7 +1,7 @@
 // One private chat on screen: the saved messages, then the bot's live stream folded into kit messages.
 import { AttachButton, AttachmentRow, Button, ChatHeader, ChatView, DictationButton, EmptyState, ModelPicker, SidebarToggle, useAttachments } from "agentic-ui-kit";
 import { MenuItem, MenuList } from "slop-ui-components";
-import { Paperclip, Share } from "lucide-react";
+import { Paperclip, Share, Square } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { useServer } from "./data";
@@ -9,7 +9,7 @@ import { attachmentIds, attachmentKind, attachmentProblem } from "./chat/attachm
 import { ImageViewer, imageClicked, type ViewedImage } from "./chat/image-viewer";
 import { ShareDialog } from "./chat/share-dialog";
 import { UsageMeter } from "./chat/usage-meter";
-import { applyEngineEvent, chatMessages, emptyChat, pendingSend, repliesOf, runTurnsOf, timedEvents, toKitMessage, withPending, type PendingSend, type BotMessage, type ChatState, type TurnSource } from "./events";
+import { STOPPED_KIND, applyEngineEvent, chatMessages, emptyChat, pendingSend, repliesOf, runTurnsOf, timedEvents, toKitMessage, withPending, type PendingSend, type BotMessage, type ChatState, type TurnSource } from "./events";
 import { useTurns } from "./use-turns";
 import { Logo } from "./logo";
 import { useConsoleDictation } from "./ui/dictation";
@@ -106,6 +106,9 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
   const shown = useMemo(() => withPending(saved, pending), [saved, pending]);
   const messages = shown.messages;
   const busy = messages.some((m) => m.status === "streaming");
+  // Stop was pressed and the reply has not ended yet. The reply shows "Stopped" when it ends.
+  const [stopping, setStopping] = useState(false);
+  useEffect(() => { if (!busy) setStopping(false); }, [busy]);
   useEffect(() => {
     if (!shown.done) return;
     if (id) pendingSends.delete(id);
@@ -172,6 +175,27 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
     }).finally(() => setSending(false));
   };
 
+  const stop = () => {
+    if (!id || stopping) return;
+    setStopping(true);
+    api.stop(id).then(({ stopped }) => {
+      // A reply still waiting to start sends no events, so its thinking row turns into "Stopped" here.
+      setPending((current) => {
+        if (!current || !stopped) return current;
+        const next = { ...current, stopped: true };
+        pendingSends.set(id, next);
+        return next;
+      });
+      if (!stopped) {
+        setStopping(false);
+        notify("Nothing to stop. The reply already ended.");
+      }
+    }).catch((e: unknown) => {
+      setStopping(false);
+      notifyError(e);
+    });
+  };
+
   if (error) return <PageNote>{error}</PageNote>;
   if (!state) return <PageLoading />;
   return (
@@ -184,7 +208,8 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
       messages={messages}
       busy={busy}
       onSend={send}
-      onStop={id ? () => void api.stop(id).catch((e: Error) => setError(e.message)) : undefined}
+      onStop={id ? stop : undefined}
+      renderPart={(part) => part.type === "custom" && part.kind === STOPPED_KIND ? <StoppedNote /> : undefined}
       header={
         <ChatHeader
           leading={<SidebarToggle drawerOnly />}
@@ -219,6 +244,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
         ),
         above: (
           <>
+            {stopping && <p role="status" className="mb-2 px-1 text-sm text-muted">Stopping…</p>}
             {paused.above}
             {ask !== undefined && (
               <div role="alert" className="mb-2 rounded-chat-sm bg-chat-warning-bg px-3 py-2 text-sm text-chat-fg">
@@ -253,5 +279,15 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
     <ImageViewer image={viewing} onClose={() => setViewing(null)} />
     <ShareDialog chatId={sharing} triggerRef={shareButton} onClose={() => setSharing(null)} />
     </ChatVisuals>
+  );
+}
+
+/** The end of a reply the user stopped. */
+function StoppedNote() {
+  return (
+    <p className="mt-1 flex items-center gap-1.5 text-sm text-muted">
+      <Square aria-hidden className="size-3 fill-current" />
+      You stopped this reply.
+    </p>
   );
 }
