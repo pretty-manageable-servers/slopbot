@@ -28,8 +28,8 @@ class FakeProjects {
   }
 }
 
-const project = (owner: string, instructions = ""): Project => ({ id: "p1", owner, name: "Thesis", description: "", instructions, instructionsUpdated: null, created: 1, updated: 1 });
-const file = (name: string): ProjectFile => ({ id: `f-${name}`, project: "p1", name, contentType: "text/markdown", size: 2048, created: 1 });
+const project = (owner: string, instructions = ""): Project => ({ id: "cccccccccccccccccccccccccccccccc", owner, name: "Thesis", description: "", instructions, instructionsUpdated: null, created: 1, updated: 1 });
+const file = (name: string): ProjectFile => ({ id: `f-${name}`, project: "cccccccccccccccccccccccccccccccc", name, contentType: "text/markdown", size: 2048, created: 1 });
 
 function setup(t: { after(fn: () => void): void }, options: { saved?: Record<string, string>; projects?: FakeProjects } = {}) {
   const llm = new FakeLLM(); const store = new SQLiteStore(); t.after(() => store.close());
@@ -44,7 +44,7 @@ function setup(t: { after(fn: () => void): void }, options: { saved?: Record<str
 test("a project chat run adds the project item after the rules and the user instructions", async t => {
   const projects = new FakeProjects({ p1: project("alice", "Write in British English.") }, [file("notes.md")]);
   const { message, run, lastPrefix } = setup(t, { saved: { alice: "Answer in short bullets." }, projects });
-  await run(message("1", "alice", { project: "p1" }));
+  await run(message("1", "alice", { project: "cccccccccccccccccccccccccccccccc" }));
   const prefix = lastPrefix();
   assert.equal(prefix.length, 3);
   assert.equal(prefix[0]!.role, "system");
@@ -56,7 +56,7 @@ test("a project chat run adds the project item after the rules and the user inst
 test("the project item lists the project's file names", async t => {
   const projects = new FakeProjects({ p1: project("alice") }, [file("notes.md"), file("data.csv")]);
   const { message, run, lastPrefix } = setup(t, { projects });
-  await run(message("1", "alice", { project: "p1" }));
+  await run(message("1", "alice", { project: "cccccccccccccccccccccccccccccccc" }));
   const item = lastPrefix().at(-1)!.content;
   assert.ok(item.includes("notes.md"));
   assert.ok(item.includes("data.csv"));
@@ -72,7 +72,7 @@ test("a message without a project gets no project item", async t => {
 test("another owner's project gives no project item", async t => {
   const projects = new FakeProjects({ p1: project("bob", "Write in British English.") }, [file("notes.md")]);
   const { message, run, lastPrefix } = setup(t, { projects });
-  await run(message("1", "alice", { project: "p1" }));
+  await run(message("1", "alice", { project: "cccccccccccccccccccccccccccccccc" }));
   assert.equal(lastPrefix().length, 1);
   assert.ok(!lastPrefix()[0]!.content.includes("Write in British English."));
 });
@@ -80,14 +80,14 @@ test("another owner's project gives no project item", async t => {
 test("a deleted project gives no project item", async t => {
   const projects = new FakeProjects({});
   const { message, run, lastPrefix } = setup(t, { projects });
-  await run(message("1", "alice", { project: "p1" }));
+  await run(message("1", "alice", { project: "cccccccccccccccccccccccccccccccc" }));
   assert.equal(lastPrefix().length, 1);
 });
 
 test("a project message in a server channel gets no project item", async t => {
   const projects = new FakeProjects({ p1: project("alice", "Write in British English.") }, [file("notes.md")]);
   const { message, run, lastPrefix } = setup(t, { projects });
-  await run(message("1", "alice", { channel: "c", project: "p1" }));
+  await run(message("1", "alice", { channel: "c", project: "cccccccccccccccccccccccccccccccc" }));
   assert.equal(lastPrefix().length, 1);
 });
 
@@ -95,7 +95,7 @@ test("a failing project store still gets an answer, without the project item", a
   t.mock.method(console, "warn", () => {});
   const projects = new FakeProjects({ p1: project("alice") }, [], true);
   const { llm, message, run, lastPrefix } = setup(t, { projects });
-  const reply = await run(message("1", "alice", { project: "p1" }));
+  const reply = await run(message("1", "alice", { project: "cccccccccccccccccccccccccccccccc" }));
   assert.ok(reply, "the run answers");
   assert.equal(llm.prompts.length, 1);
   assert.equal(lastPrefix().length, 1);
