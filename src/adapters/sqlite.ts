@@ -34,7 +34,7 @@ import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
 import type { InboxItem } from '../inbox.js';
 import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, listChatShares, revokeShare, updateShareBody, revokeAllShares, deleteChatShares } from '../share-store.js';
 import { getWebSession, saveWebSession, deleteWebSession, deleteExpiredWebSessions } from '../clients/web/web-session-store.js';
-import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatEffort, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../clients/web/web-chat-store.js';
+import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatEffort, setChatProject, webChatsInProject, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../clients/web/web-chat-store.js';
 import { isPrivateChannel } from '../private-chat.js';
 import type { WebSessionRow } from '../clients/web/web-session-store.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
@@ -637,9 +637,11 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   async insertWebChat(row: WebChatRow): Promise<void> { return insertWebChat(this.db, row); }
   async webChat(id: string): Promise<WebChatRow | undefined> { return getWebChat(this.db, id); }
   async webChats(owner: string): Promise<WebChatRow[]> { return listWebChats(this.db, owner); }
+  async webChatsInProject(owner: string, project: string): Promise<WebChatRow[]> { return webChatsInProject(this.db, owner, project); }
   async liveWebChatChannels(server: string): Promise<string[]> { return liveWebChatChannels(this.db, server); }
   async renameWebChat(id: string, title: string, updated: number): Promise<void> { return renameWebChat(this.db, id, title, updated); }
   async setWebChatEffort(id: string, effort: Effort | null): Promise<void> { return setWebChatEffort(this.db, id, effort); }
+  async setChatProject(id: string, project: string | null, at: number): Promise<void> { return setChatProject(this.db, id, project, at); }
   async touchWebChat(id: string, updated: number): Promise<void> { return touchWebChat(this.db, id, updated); }
   /** Deletes a private chat: its runs, events and queue rows, then its messages. The row stays, marked deleted. */
   async deleteWebChat(id: string, server: string, channel: string, at: number): Promise<void> {
