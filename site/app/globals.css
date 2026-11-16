@@ -30,6 +30,8 @@
 
 * { box-sizing: border-box; margin: 0; }
 html { scroll-behavior: smooth; }
+/* No sideways page scroll on phones. clip, not hidden, so the sticky header still sticks. */
+html, body { overflow-x: clip; }
 body { background: var(--bg); color: var(--body); font: 16px/1.6 var(--sans); }
 a { color: var(--accent); text-decoration: none; }
 code { font-family: var(--mono); color: var(--code); font-size: 13px; }
