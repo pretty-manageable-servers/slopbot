@@ -1,9 +1,10 @@
 // One private chat on screen: the saved messages, then the bot's live stream folded into kit messages.
 import { AttachButton, AttachmentRow, Button, ChatHeader, ChatView, DictationButton, EmptyState, ModelPicker, SidebarToggle, useAttachments } from "agentic-ui-kit";
-import { MenuItem, MenuList } from "slop-ui-components";
-import { Info, Paperclip, Share, Square } from "lucide-react";
+import { Button as LibraryButton, Menu, MenuItem, MenuList, MenuSeparator, MenuTrigger } from "slop-ui-components";
+import { ChevronsUpDown, Folder, Info, Paperclip, Share, Square } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
+import type { ProjectSummary } from "./api-types";
 import { useServer } from "./data";
 import { attachmentIds, attachmentKind, attachmentProblem } from "./chat/attachments";
 import { ImageViewer, imageClicked, type ViewedImage } from "./chat/image-viewer";
@@ -56,10 +57,15 @@ interface ChatProps {
   onCreate: () => Promise<string>;
   /** After a message is sent. A new chat's page opens on `chatId` then. */
   onSent: (chatId: string) => void;
+  /** The project the chat is in, and the projects it can move to. */
+  project: ProjectSummary | null;
+  projects: ProjectSummary[];
+  /** Moves the chat to a project, or out of its project with null. */
+  onMove: (project: string | null) => void;
 }
 
 /** One private chat: the saved messages and the live stream, with the composer. A chat without an `id` is new. */
-export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProps) {
+export function Chat({ id, title, effort, onEffort, onCreate, onSent, project, projects, onMove }: ChatProps) {
   const server = useServer();
   const [pending, setPending] = useState(() => (id ? pendingSends.get(id) : undefined));
   // A new chat's first send shows at once, not after a loader.
@@ -212,7 +218,7 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
       renderPart={(part) => part.type === "custom" && part.kind === STOPPED_KIND ? <StoppedNote /> : undefined}
       header={
         <ChatHeader
-          leading={<SidebarToggle drawerOnly />}
+          leading={<><SidebarToggle drawerOnly /><ProjectChip project={project} projects={projects} onMove={onMove} /></>}
           title={messages.length ? title || "New chat" : ""}
           menu={id && messages.length ? <MenuList aria-label="Chat actions" className="min-w-56"><MenuItem icon={<Share />} onAction={() => setSharing(id)}>Share</MenuItem></MenuList> : undefined}
           actions={(status || (id && messages.length)) ? (
@@ -279,6 +285,27 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent }: ChatProp
     <ImageViewer image={viewing} onClose={() => setViewing(null)} />
     <ShareDialog chatId={sharing} triggerRef={shareButton} onClose={() => setSharing(null)} />
     </ChatVisuals>
+  );
+}
+
+const NO_PROJECT = "none";
+
+/** The chat's project as a chip. Its menu moves the chat to another project, or out of its project. */
+function ProjectChip({ project, projects, onMove }: Pick<ChatProps, "project" | "projects" | "onMove">) {
+  return (
+    <MenuTrigger>
+      <LibraryButton variant="ghost" size="sm" aria-label={project ? `Project: ${project.name}` : "Add to a project"}>
+        <Folder aria-hidden className="size-3.5 shrink-0" />
+        <span className="max-w-40 truncate">{project ? project.name : "Add to project"}</span>
+        <ChevronsUpDown aria-hidden className="size-3.5 shrink-0" />
+      </LibraryButton>
+      <Menu aria-label="Move to project" selectionMode="single" selectedKeys={[project?.id ?? NO_PROJECT]} disallowEmptySelection
+        onAction={(key) => onMove(key === NO_PROJECT ? null : String(key))}>
+        <MenuItem key={NO_PROJECT} id={NO_PROJECT}>No project</MenuItem>
+        <MenuSeparator />
+        {projects.map((p) => <MenuItem key={p.id} id={p.id}>{p.name}</MenuItem>)}
+      </Menu>
+    </MenuTrigger>
   );
 }
 

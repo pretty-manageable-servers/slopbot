@@ -1,12 +1,13 @@
 // A private chat page: the chat with its effort. A new chat (no id) is made on the first attachment or send, in the
-// picked server, and the page opens on it after the first send. The old console's links open here too: a question
-// in the hash (#ask=<text>) and a shared chat to continue.
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+// picked server, and the page opens on it after the first send. A new chat with ?project=<id> starts in that project.
+// The old console's links open here too: a question in the hash (#ask=<text>) and a shared chat to continue.
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "./api";
 import { Chat, linkedAsks } from "./chat";
 import { chatsQuery, useServer } from "./data";
+import { projectsKey, projectsQuery } from "./projects/queries";
 import { notifyError } from "./ui/feedback";
 
 const ASK_KEY = "slopbot-ask";
@@ -45,6 +46,13 @@ export function ChatPage({ id }: { id?: string }) {
   const navigate = useNavigate();
   const server = useServer();
   const { data: chats } = useSuspenseQuery(chatsQuery);
+  // The project a new chat starts in (the ?project= of the new chat route). A chat that exists keeps its own project.
+  const { project: newProject } = useSearch({ strict: false });
+  const { data: projectList } = useQuery(projectsQuery);
+  const projects = projectList?.projects ?? [];
+  // Where the chat that is not made yet goes: the new chat's project, or a pick in the chip before the chat is made.
+  const [draftProject, setDraftProject] = useState<string | null>(newProject ?? null);
+  const draftProjectRef = useRef(draftProject);
   // The effort for a chat that does not exist yet. It is saved on the chat when the chat is made.
   const [draftEffort, setDraftEffort] = useState("medium");
   // The chat this composer made, once the first file or message made it. The page still has no id until the send
@@ -55,7 +63,14 @@ export function ChatPage({ id }: { id?: string }) {
   useEffect(() => {
     if (!id) madeId.current = null;
   }, [id]);
+  // A new chat starts in the project its link names, and a chat not made yet keeps the pick made for it.
+  useEffect(() => {
+    if (id) return;
+    draftProjectRef.current = newProject ?? null;
+    setDraftProject(newProject ?? null);
+  }, [id, newProject]);
   const current = chats.find((c) => c.id === id);
+  const project = id ? current?.project ?? null : draftProject;
   const refresh = () => void client.invalidateQueries({ queryKey: chatsQuery.queryKey });
   const open = (chatId: string) => void navigate({ to: "/chat/$chatId", params: { chatId }, replace: true });
 
@@ -95,7 +110,7 @@ export function ChatPage({ id }: { id?: string }) {
   }, []);
 
   const create = async () => {
-    const { id: made } = await api.createChat(server.id);
+    const { id: made } = await api.createChat(server.id, draftProjectRef.current ?? undefined);
     madeId.current = made;
     // The ref, not the state: the pick can change while the chat is made.
     if (draftRef.current !== "medium") await api.update(made, { effort: draftRef.current }).catch(() => {});
@@ -117,5 +132,23 @@ export function ChatPage({ id }: { id?: string }) {
     api.update(chatId, { effort }).catch(refresh);
   };
 
-  return <Chat key={id ?? "new"} id={id} title={current?.title ?? ""} effort={id ? current?.effort ?? "medium" : draftEffort} onEffort={setEffort} onCreate={create} onSent={sent} />;
+  // A pick in the chip moves the chat. A chat not made yet takes the pick as its project, when it is made.
+  const moveTo = (next: string | null) => {
+    if (!id) {
+      draftProjectRef.current = next;
+      setDraftProject(next);
+    }
+    const chatId = id ?? madeId.current;
+    if (!chatId) return;
+    client.setQueryData(chatsQuery.queryKey, (list) => list?.map((c) => (c.id === chatId ? { ...c, project: next } : c)));
+    api.moveChat(chatId, next).catch(notifyError).finally(() => {
+      refresh();
+      void client.invalidateQueries({ queryKey: projectsKey });
+    });
+  };
+
+  return (
+    <Chat key={id ?? "new"} id={id} title={current?.title ?? ""} effort={id ? current?.effort ?? "medium" : draftEffort} onEffort={setEffort} onCreate={create} onSent={sent}
+      project={projects.find((p) => p.id === project) ?? null} projects={projects} onMove={moveTo} />
+  );
 }

@@ -2,7 +2,10 @@
 // (handlers.ts) serve it; stories that need other data override one handler with `parameters.msw.handlers`.
 import type { EngineEnvelope, EngineEvent, ShareData } from "@slopbot/contracts";
 import type { BotMessage } from "../events";
-import type { AdminMe, ChatShare, ChatSummary, Conversation, ConversationSummary, InboxItem, ServerShare, ServerSnapshot, ServerSummary, Session, Status, TranscriptPage, Usage } from "../api-types";
+import type {
+  AdminMe, ChatShare, ChatSummary, Conversation, ConversationSummary, InboxItem, Project, ProjectDetail, ProjectFile, ProjectLimits, ProjectList,
+  ProjectMemoryView, ProjectSummary, ServerShare, ServerSnapshot, ServerSummary, Session, Status, TranscriptPage, Usage,
+} from "../api-types";
 
 const HOUR = 3_600_000;
 /** A fixed "now", so dates in stories do not change from day to day. */
@@ -25,6 +28,34 @@ export const chats: ChatSummary[] = [
   { id: "c1", title: "Why is my Postgres slow", updated: NOW - HOUR, effort: "medium" },
   { id: "c2", title: "Birthday message for Sam", updated: NOW - 26 * HOUR, effort: "low" },
   { id: "c3", title: "A very long chat title that does not fit in the drawer at all, not even close", updated: NOW - 80 * HOUR, effort: "xhigh" },
+];
+
+// Projects. The limits are the bot's defaults; `projectLimits` is what the list and the upload checks read.
+const MB_BYTES = 1024 * 1024;
+export const projectLimits: ProjectLimits = { maxProjects: 5, maxFiles: 20, maxFileBytes: 10 * MB_BYTES, maxProjectBytes: 25 * MB_BYTES };
+export const projectSummaries: ProjectSummary[] = [
+  { id: "p1", name: "Thesis", description: "Notes and drafts for the stats thesis. Keep answers in British English.", updated: NOW - 2 * HOUR, fileCount: 3 },
+  { id: "p2", name: "Garden", description: "", updated: NOW - 9 * HOUR, fileCount: 0 },
+];
+export const projectList: ProjectList = { projects: projectSummaries, limits: projectLimits };
+const projectOne: Project = {
+  id: "p1", owner: "u1", name: "Thesis", description: "Notes and drafts for the stats thesis. Keep answers in British English.",
+  instructions: "Answer in British English. Use short paragraphs.", instructionsUpdated: NOW - 3 * HOUR, created: NOW - 5 * HOUR * 24, updated: NOW - 2 * HOUR,
+};
+export const projectFiles: ProjectFile[] = [
+  { id: "f1", project: "p1", name: "chapter-2.md", contentType: "text/markdown", size: 48_000, created: NOW - 2 * HOUR },
+  { id: "f2", project: "p1", name: "survey.csv", contentType: "text/csv", size: 1.4 * MB_BYTES, created: NOW - 4 * HOUR },
+  { id: "f3", project: "p1", name: "supervisor-notes.pdf", contentType: "application/pdf", size: 220_000, created: NOW - 24 * HOUR },
+];
+export const projectDetail: ProjectDetail = {
+  project: projectOne,
+  files: projectFiles,
+  chats: [{ id: "c1", title: "Why is my Postgres slow", updated: NOW - HOUR, effort: "medium", project: "p1" }],
+  usedBytes: 1.7 * MB_BYTES,
+};
+export const projectMemories: ProjectMemoryView[] = [
+  { id: "m1", content: "The user writes in British English and prefers short paragraphs.", category: "style", updatedAt: NOW - 6 * HOUR },
+  { id: "m2", content: "The survey has 412 respondents; the response rate is 61 percent.", category: "facts", updatedAt: NOW - 30 * HOUR },
 ];
 
 export const channels = [

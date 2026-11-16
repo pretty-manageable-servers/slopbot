@@ -3,10 +3,14 @@
 //   /chat/$chatId                         a private chat
 //   /server/$serverId                     the Servers view of one server: its Inbox
 //   /server/$serverId/channel/$channelId  a channel or thread transcript; ?run=<id> opens one conversation of it
-// Every page takes ?settings=<section> to open Settings over it.
+//   /projects                             the projects
+//   /project/$projectId                   one project: its details, Instructions, Files, Memory and Chats
+// Every page takes ?settings=<section> to open Settings over it. A new chat takes ?project=<id> to start in a project.
 import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
 import { ChatPage } from "./chat-page";
 import { Layout } from "./layout";
+import { ProjectPage } from "./projects/project-page";
+import { ProjectsPage } from "./projects/projects-page";
 import { ChannelPage } from "./servers/channel";
 import { ServerHome } from "./servers/home";
 
@@ -21,9 +25,19 @@ const rootRoute = createRootRoute({
     return settings ? { settings } : {};
   },
 });
-const newChatRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: () => <ChatPage /> });
+const newChatRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/",
+  component: () => <ChatPage />,
+  validateSearch: (search: Record<string, unknown>): { project?: string } => {
+    const project = optionalString(search.project);
+    return project ? { project } : {};
+  },
+});
 export const chatRoute = createRoute({ getParentRoute: () => rootRoute, path: "chat/$chatId", component: function Page() { const { chatId } = chatRoute.useParams(); return <ChatPage key={chatId} id={chatId} />; } });
 export const serverRoute = createRoute({ getParentRoute: () => rootRoute, path: "server/$serverId", component: ServerHome });
+export const projectsRoute = createRoute({ getParentRoute: () => rootRoute, path: "projects", component: ProjectsPage });
+export const projectRoute = createRoute({ getParentRoute: () => rootRoute, path: "project/$projectId", component: function Page() { const { projectId } = projectRoute.useParams(); return <ProjectPage key={projectId} id={projectId} />; } });
 export const channelRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "server/$serverId/channel/$channelId",
@@ -34,7 +48,7 @@ export const channelRoute = createRoute({
   },
 });
 
-export const routeTree = rootRoute.addChildren([newChatRoute, chatRoute, serverRoute, channelRoute]);
+export const routeTree = rootRoute.addChildren([newChatRoute, chatRoute, serverRoute, channelRoute, projectsRoute, projectRoute]);
 
 export const router = createRouter({
   routeTree,
