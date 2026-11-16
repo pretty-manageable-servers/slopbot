@@ -1,7 +1,10 @@
 // Calls to the bot's console API. Writes need the session's CSRF token, which /api/session gives.
 
 import type { EngineEvent } from "@slopbot/contracts";
-import type { ChatFile, ChatImage, ChatShare, ChatSummary, Session, Usage } from "./api-types";
+import type {
+  ChatFile, ChatImage, ChatShare, ChatSummary, Project, ProjectDetail, ProjectFile, ProjectInstructionsResult, ProjectList,
+  ProjectMemoryView, Session, Usage,
+} from "./api-types";
 export type { ChatSummary, Session } from "./api-types";
 
 /** A failed call: the bot's error text, the status and the whole error body (for fields such as resetAt). */
@@ -11,13 +14,14 @@ export class ApiError extends Error {
 
 let csrf = "";
 
-/** One JSON call. Writes get the CSRF token. A failed call throws ApiError with the bot's error text. */
+/** One JSON call (a FormData body goes as it is, as a multipart form). Writes get the CSRF token. A failed call throws ApiError with the bot's error text. */
 export async function call<T>(method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
   const write = method !== "GET";
+  const form = body instanceof FormData;
   const response = await fetch(path, {
     method,
-    headers: { ...(body !== undefined && { "Content-Type": "application/json" }), ...(write && { "X-CSRF-Token": csrf }) },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    headers: { ...(body !== undefined && !form && { "Content-Type": "application/json" }), ...(write && { "X-CSRF-Token": csrf }) },
+    body: body === undefined ? undefined : form ? body : JSON.stringify(body),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new ApiError(typeof data.error === "string" ? data.error : `Request failed (${response.status}).`, response.status, data);
@@ -62,11 +66,41 @@ export async function loadSession(): Promise<Session> {
 
 const chat = (id: string) => `/api/chats/${encodeURIComponent(id)}`;
 
+const projectPath = (id: string) => `/api/projects/${encodeURIComponent(id)}`;
+const projectFilePath = (id: string, fileId: string) => `${projectPath(id)}/files/${encodeURIComponent(fileId)}`;
+const memoryPath = (id: string, memoryId: string) => `${projectPath(id)}/memories/${encodeURIComponent(memoryId)}`;
+
+/** Projects: a name, instructions, files, a shared memory and chats. The limits come with the list. */
+const projectCalls = {
+  projects: () => get<ProjectList>("/api/projects"),
+  createProject: (body: { name: string; description?: string }) => call<Project>("POST", "/api/projects", body),
+  project: (id: string) => get<ProjectDetail>(projectPath(id)),
+  updateProject: (id: string, change: { name?: string; description?: string }) => call<Project>("PATCH", projectPath(id), change),
+  /** A rejected text (422) comes back as the result, with its reason, not as an error. */
+  saveInstructions: (id: string, text: string) => call<ProjectInstructionsResult>("POST", `${projectPath(id)}/instructions`, { text })
+    .catch((error: unknown) => {
+      if (error instanceof ApiError && error.status === 422) return error.data as ProjectInstructionsResult;
+      throw error;
+    }),
+  deleteProject: (id: string) => call<unknown>("DELETE", projectPath(id)),
+  /** The file as the multipart field "file". Resolves to the saved file. */
+  uploadProjectFile: (id: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return call<ProjectFile>("POST", `${projectPath(id)}/files`, form);
+  },
+  /** The download route answers 302 to the file. Used as a link's href. */
+  projectFileUrl: (id: string, fileId: string) => projectFilePath(id, fileId),
+  removeProjectFile: (id: string, fileId: string) => call<unknown>("DELETE", projectFilePath(id, fileId)),
+  memories: (id: string) => get<{ memories: ProjectMemoryView[] }>(`${projectPath(id)}/memories`),
+  updateMemory: (id: string, memoryId: string, content: string) => call<ProjectMemoryView>("PATCH", memoryPath(id, memoryId), { content }),
+  removeMemory: (id: string, memoryId: string) => call<unknown>("DELETE", memoryPath(id, memoryId)),
+};
 export const api = {
   session: loadSession,
   transcribe,
   chats: () => call<ChatSummary[]>("GET", "/api/chats"),
-  createChat: (server: string) => call<{ id: string }>("POST", "/api/chats", { server }),
+  createChat: (server: string, project?: string) => call<{ id: string }>("POST", "/api/chats", { server, project }),
   messages: (id: string, limit = 50) => call<{ messages: unknown[]; hasMore: boolean; streamId: number }>("GET", `${chat(id)}/messages?limit=${limit}`),
   send: (id: string, text: string, images: string[] = [], files: string[] = []) => call<{ id: string }>("POST", `${chat(id)}/messages`, { text, images, files }),
   update: (id: string, change: { title?: string; effort?: string }) => call<unknown>("PATCH", chat(id), change),
@@ -88,4 +122,5 @@ export const api = {
   turnEvents: (id: string, turn: string) => call<{ events: EngineEvent[]; at?: (number | null)[] }>("GET", `${chat(id)}/turns/${encodeURIComponent(turn)}/events`),
   /** The live engine events of a chat. No position: the stream starts at the newest event. */
   eventsUrl: (id: string) => `${chat(id)}/events`,
+  ...projectCalls,
 };

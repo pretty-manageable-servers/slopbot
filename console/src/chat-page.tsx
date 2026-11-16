@@ -1,8 +1,8 @@
 // A private chat page: the chat with its effort. A new chat (no id) is made on the first attachment or send, in the
-// picked server, and the page opens on it after the first send. The old console's links open here too: a question
-// in the hash (#ask=<text>) and a shared chat to continue.
+// picked server, and the page opens on it after the first send. A new chat with ?project=<id> starts in that project.
+// The old console's links open here too: a question in the hash (#ask=<text>) and a shared chat to continue.
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "./api";
 import { Chat, linkedAsks } from "./chat";
@@ -45,6 +45,8 @@ export function ChatPage({ id }: { id?: string }) {
   const navigate = useNavigate();
   const server = useServer();
   const { data: chats } = useSuspenseQuery(chatsQuery);
+  // The project a new chat starts in (the ?project= of the new chat route). A chat that exists keeps its own project.
+  const { project: newProject } = useSearch({ strict: false });
   // The effort for a chat that does not exist yet. It is saved on the chat when the chat is made.
   const [draftEffort, setDraftEffort] = useState("medium");
   // The chat this composer made, once the first file or message made it. The page still has no id until the send
@@ -95,7 +97,7 @@ export function ChatPage({ id }: { id?: string }) {
   }, []);
 
   const create = async () => {
-    const { id: made } = await api.createChat(server.id);
+    const { id: made } = await api.createChat(server.id, newProject);
     madeId.current = made;
     // The ref, not the state: the pick can change while the chat is made.
     if (draftRef.current !== "medium") await api.update(made, { effort: draftRef.current }).catch(() => {});
