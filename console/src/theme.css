@@ -111,6 +111,12 @@ body,
   margin: 0;
 }
 
+/* No page scrolls sideways on a phone. Wide content (code, tables) scrolls in its own box. clip, not hidden: no scroll container, so sticky parts still stick. */
+html,
+body {
+  overflow-x: clip;
+}
+
 body {
   background: var(--chat-bg);
   color: var(--chat-fg);

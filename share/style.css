@@ -3,6 +3,7 @@
 :root{color-scheme:dark;--bg:#161615;--surface:#1f1e1d;--pill:#2b2a28;--line:#33322f;--strong:#f5f4ef;--text:#e2e0d9;--muted:#aaa69e;--accent:#7ea6ff;--usage-mid:#f0a04b;--usage-high:#f06a5e;--header-height:56px;--viewport-height:100dvh}
 html.light{color-scheme:light;--bg:#f5f4ef;--surface:#eeece5;--pill:#e6e3da;--line:#e2dfd6;--strong:#2a2925;--text:#3a3833;--muted:#75726a;--accent:#3a66c9;--usage-mid:#c46a12;--usage-high:#c9372c}
 *{box-sizing:border-box}html{min-height:100%;background:var(--bg)}
+html,body{overflow-x:clip}
 body{min-height:100vh;min-height:100dvh;margin:0;background:var(--bg);color:var(--text);font:14px/1.5 Inter,sans-serif}
 button,input,select,textarea{font:inherit}button,a,input,select,textarea,summary{outline-offset:3px}
 :focus-visible{outline:2px solid var(--muted)}input:focus,input:focus-visible,select:focus,select:focus-visible,textarea:focus,textarea:focus-visible{outline:none;border-color:var(--muted)}dialog:focus,dialog:focus-visible{outline:none}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
