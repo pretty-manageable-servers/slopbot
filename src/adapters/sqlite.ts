@@ -15,6 +15,7 @@ import { cosine, searchTerms, newMemory, patchMemory, memoryMetadata, memoryFrom
 import { attribution, type Attribution } from "../usage-meter.js";
 
 import { ToolError } from "../tools.js";
+import { memoryScope } from "../projects.js";
 import type { ProfileField, ProfileStore, UserProfile } from "../profiles.js";
 import type { TaskContext } from "../context.js";
 import type { Job, QueueStore } from "../queue.js";
@@ -1193,10 +1194,11 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     try {
       this.db.prepare("INSERT INTO memories(id,server,channel,author,content,status,created_at,metadata) VALUES(?,?,?,?,?,?,?,?)")
         .run(memory.id, memory.server, memory.channel, memory.author, memory.content, memory.status, memory.updatedAt, memoryMetadata(memory));
-      for (const id of memory.sourceIds) this.db.prepare("INSERT INTO memory_sources VALUES(?,?,?)").run(memory.id, memory.server, id);
+      // Sources stay on the chat's server; a project memory's server is the project scope.
+      for (const id of memory.sourceIds) this.db.prepare("INSERT INTO memory_sources VALUES(?,?,?)").run(memory.id, message.server, id);
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
-    this.queueIndex({ ...message, id: memory.id, text: memorySearchText(memory) });
+    this.queueIndex({ ...message, server: memory.server, channel: memory.channel, id: memory.id, text: memorySearchText(memory) });
     return memory;
   }
 
@@ -1214,11 +1216,12 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   }
 
   async searchMemories(message: Message, query: MemoryQuery = {}): Promise<readonly MemoryRecord[]> {
-    const notes = (await this.memories(message.server, message.channel)).filter(note => (!query.category || note.category === query.category) && (!query.tags?.length || query.tags.every(tag => note.tags.includes(tag))));
+    const scope = memoryScope(message);
+    const notes = (await this.memories(scope.server, scope.channel)).filter(note => (!query.category || note.category === query.category) && (!query.tags?.length || query.tags.every(tag => note.tags.includes(tag))));
     const scores = new Map<string, number>();
     if (this.embeddings && notes.length && query.query?.trim()) {
       try {
-        const rows = this.db.prepare(`SELECT e.memory_id,e.vector FROM memory_embeddings e JOIN memories m ON m.server=e.server AND m.id=e.memory_id WHERE m.server=? AND m.channel=? AND m.status='active' AND e.model=?`).all(message.server, message.channel, this.embeddings.model);
+        const rows = this.db.prepare(`SELECT e.memory_id,e.vector FROM memory_embeddings e JOIN memories m ON m.server=e.server AND m.id=e.memory_id WHERE m.server=? AND m.channel=? AND m.status='active' AND e.model=?`).all(scope.server, scope.channel, this.embeddings.model);
         const candidates = new Set(notes.map(note => note.id));
         if (rows.some(row => candidates.has(String(row.memory_id)))) {
           const vector = await this.embed({ ...message, text: query.query }, "memory_query", attribution(message));
@@ -1230,22 +1233,23 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   }
 
   async updateMemory(message: Message, id: string, patch: MemoryPatch, expectedRevision: number, operationId?: string): Promise<MemoryRecord | undefined> {
-    const row = this.db.prepare("SELECT * FROM memories WHERE id=? AND server=? AND channel=? AND author=? AND status='active'").get(id, message.server, message.channel, message.author);
+    const scope = memoryScope(message);
+    const row = this.db.prepare("SELECT * FROM memories WHERE id=? AND server=? AND channel=? AND author=? AND status='active'").get(id, scope.server, scope.channel, message.author);
     if (!row) return undefined;
-    const current = (await this.memories(message.server, message.channel)).find(note => note.id === id);
+    const current = (await this.memories(scope.server, scope.channel)).find(note => note.id === id);
     if (!current) return undefined;
     if (current.revision !== expectedRevision) throw new ToolError('Memory changed. Read it again and use its current revision.');
     const memory = patchMemory(current, patch, operationId);
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const result = this.db.prepare("UPDATE memories SET content=?,metadata=? WHERE id=? AND server=? AND channel=? AND author=? AND status='active' AND metadata=?")
-        .run(memory.content, memoryMetadata(memory), id, message.server, message.channel, message.author, String(row.metadata));
+        .run(memory.content, memoryMetadata(memory), id, scope.server, scope.channel, message.author, String(row.metadata));
       if (!result.changes) throw new ToolError('Memory changed. Read it again before retrying.');
-      this.db.prepare("DELETE FROM memory_embeddings WHERE server=? AND memory_id=?").run(message.server, id);
+      this.db.prepare("DELETE FROM memory_embeddings WHERE server=? AND memory_id=?").run(scope.server, id);
       this.invalidate(message.server, message.channel, { reason: 'memory_updated', sourceId: id });
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
-    this.queueIndex({ ...message, id, text: memorySearchText(memory) });
+    this.queueIndex({ ...message, server: memory.server, channel: memory.channel, id, text: memorySearchText(memory) });
     return memory;
   }
 

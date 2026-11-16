@@ -8,6 +8,7 @@ import type { Config } from "./config.js";
 import { selfKnowledgeTool } from "./self-knowledge.js";
 import type { Json, Message } from "./domain.js";
 import { MEMORY_CATEGORIES, newMemory, memoryIdForOperation, type Knowledge, type MemoryOptions, type MemoryPatch, type MemoryCategory } from "./memory.js";
+import { memoryScope } from "./projects.js";
 import type { ParticipationOptions } from "./participation.js";
 import { decisionThresholds, type ParticipationHistoryStore } from './participation-history.js';
 import type { HistoryImporter } from "./history.js";
@@ -278,7 +279,7 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
     const data = decodeToolResult(previous.result).data as { id?: string; revision?: number; memories?: { id: string; revision: number }[] } | undefined;
     const saved = data?.id ? [{ id: data.id, revision: data.revision }] : data?.memories ?? [];
     if (!saved.length) return;
-    const origin = await services.originMessage(context.message), current = await store.memories(origin.server, origin.channel);
+    const scope = memoryScope(await services.originMessage(context.message)), current = await store.memories(scope.server, scope.channel);
     if (saved.some(item => !current.some(note => note.id === item.id && note.revision === item.revision))) throw new ToolError('Memory result changed or was forgotten. Search again with a new request.');
   };
   add({ name: "memory_remember", surface: "top", description: "Save an attributed memory in this channel. Categories share search and permissions. Facts default to source-bound; memes default to independent, requiring no saved source or media copy. A media_url is optional but needed to reuse media. Save when asked; keep humor explanations separate from bot interpretations.", fields: { text: { type: "string", description: "Searchable content to remember", max: 2000, required: true }, ...memoryFields,
@@ -288,10 +289,12 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
     validate(args) { newMemory({ id: 'validation', server, channel: 'validation', author: 'validation', text: '' }, String(args.text), memoryOptions(args)); return args; },
     async execute(context, args) {
       const origin = await services.originMessage(context.message);
-      const note = await store.remember(origin, String(args.text), { ...memoryOptions(args), operationId: context.operationId });
+      // Project memories are independent (no source IDs) by default, so they survive deletes of their source chat.
+      const projectDefault = origin.project && args.source_policy === undefined && args.source_ids === undefined;
+      const note = await store.remember(origin, String(args.text), { ...(projectDefault ? { sourcePolicy: 'independent' as const } : {}), ...memoryOptions(args), operationId: context.operationId });
       return { text: `Saved as your ${note.category} memory, not a group agreement. Memory ID: ${note.id}; revision ${note.revision}; ${note.sourcePolicy}.`, data: JSON.parse(JSON.stringify(note)) as Json };
     },
-    async reconcile(context) { const origin = await services.originMessage(context.message); const found = (await store.memories(origin.server, origin.channel)).find(note => note.id === memoryIdForOperation(context.operationId) && note.author === context.message.author); return found ? `Saved memory ID: ${found.id}; revision ${found.revision}.` : undefined; }
+    async reconcile(context) { const scope = memoryScope(await services.originMessage(context.message)); const found = (await store.memories(scope.server, scope.channel)).find(note => note.id === memoryIdForOperation(context.operationId) && note.author === context.message.author); return found ? `Saved memory ID: ${found.id}; revision ${found.revision}.` : undefined; }
   });
   add({ name: "memory", surface: "top", description: "Search or browse active memories in this channel by category, tags, or situation. Returns structured details and revisions. Separate accessible task-thread scopes are listed; use memory there to read them.", fields: {
     query: { type: 'string', max: 2000, description: 'Optional name, topic, or situation; omit to browse' }, category: memoryFields.category!, tags: memoryFields.tags!,
@@ -321,10 +324,10 @@ export function registerServerTools(registry: ToolRegistry, services: ServerTool
       const note = await store.updateMemory(origin, String(args.id), patch, Number(args.expected_revision), context.operationId);
       return note ? { text: `Updated memory ${note.id}; revision ${note.revision}.`, data: JSON.parse(JSON.stringify(note)) as Json } : 'No active memory with that ID owned by you in this channel.';
     },
-    async reconcile(context, args) { const origin = await services.originMessage(context.message); const note = (await store.memories(origin.server, origin.channel)).find(note => note.id === args.id && note.author === context.message.author && note.lastOperationId === context.operationId); return note ? `Updated memory ${note.id}; revision ${note.revision}.` : undefined; }
+    async reconcile(context, args) { const scope = memoryScope(await services.originMessage(context.message)); const note = (await store.memories(scope.server, scope.channel)).find(note => note.id === args.id && note.author === context.message.author && note.lastOperationId === context.operationId); return note ? `Updated memory ${note.id}; revision ${note.revision}.` : undefined; }
   });
   add({ name: "memory_forget", surface: "top", description: "Forget one of your saved memories without deleting chat history or other memories", fields: { id: { type: "string", description: "Memory ID", required: true } }, access: "member", effect: "write", retrySafe: true, execution: "inline", resource: memoryResource,
-    async execute(context, args) { return await store.forget(context.message.server, (await services.originMessage(context.message)).channel, String(args.id), context.message.author) ? "Memory forgotten." : "No active memory with that ID owned by you in this channel."; } });
+    async execute(context, args) { const scope = memoryScope(await services.originMessage(context.message)); return await store.forget(scope.server, scope.channel, String(args.id), context.message.author) ? "Memory forgotten." : "No active memory with that ID owned by you in this channel."; } });
   add({ name: "task_start", surface: "top", needs: ["discord_actions"], description: "Move sustained work or an action request into a dedicated task thread", fields: { goal: { type: "string", description: "Task goal", required: true } }, access: "member", effect: "write", retrySafe: false, resource: message => `task-thread:${message.server}:${message.id}`,
     async execute(context, args) { await context.assertActive(); const threadId = await services.startTask(context.message, String(args.goal)); return { text: `Task thread: <#${threadId}>`, handoff: { threadId } }; },
     async reconcile(context) { const thread = await services.reconcileTask(context.message); return thread ? { text: `Task thread: <#${thread}>`, handoff: { threadId: thread } } : undefined; } });
