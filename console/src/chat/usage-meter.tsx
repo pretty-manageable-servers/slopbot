@@ -56,7 +56,7 @@ export function UsageMeter({ server, busy }: { server: string; busy: boolean }) 
 
   return (
     <PopoverTrigger>
-      <IconButton aria-label="Usage" className="text-muted">
+      <IconButton aria-label="Usage" size="sm" className="text-muted">
         <svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true" className="-rotate-90">
           <circle cx="9" cy="9" r="7" fill="none" stroke="currentColor" strokeOpacity={0.25} strokeWidth={2.5} />
           <circle cx="9" cy="9" r="7" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"

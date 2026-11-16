@@ -1,6 +1,6 @@
 import type { EngineEnvelope, EngineEvent } from "@slopbot/contracts";
 import { describe, expect, test } from "vitest";
-import { applyEngineEvent, chatMessages, emptyChat, loadTurns, pendingSend, repliesOf, runTurnsOf, toKitMessage, unloadedReplies, withLoadedTurns, withPending, type BotMessage, type ChatState } from "./events";
+import { STOPPED_KIND, applyEngineEvent, chatMessages, emptyChat, loadTurns, pendingSend, repliesOf, runTurnsOf, toKitMessage, unloadedReplies, withLoadedTurns, withPending, type BotMessage, type ChatState } from "./events";
 
 const conversation = { server: "s1", channel: "c1" };
 let seq = 0;
@@ -116,6 +116,38 @@ describe("loading a reply", () => {
   });
 });
 
+describe("a stopped reply", () => {
+  const stoppedNote = (m: { parts: { type: string; kind?: string }[] }) => m.parts.some((p) => p.type === "custom" && p.kind === STOPPED_KIND);
+
+  test("ends with the Stopped note", () => {
+    const shown = chatMessages(foldEvents([
+      { type: "turn.start", turn: "m1" },
+      { type: "round.start", turn: "m1", run: "r1" },
+      { type: "text.delta", turn: "m1", run: "r1", text: "Half a" },
+      { type: "turn.end", turn: "m1", status: "interrupted" },
+    ]));
+    expect(shown.map((m) => m.status)).toEqual(["stopped"]);
+    expect(stoppedNote(shown[0]!)).toBe(true);
+  });
+
+  test("shows even when it stopped before any output, which ends the pending reply", () => {
+    const state = foldEvents([
+      { type: "message.upsert", message: request },
+      { type: "turn.start", turn: "m1" },
+      { type: "round.start", turn: "m1", run: "r1" },
+      { type: "turn.end", turn: "m1", status: "interrupted" },
+    ]);
+    const shown = withPending(chatMessages(state), pendingSend("hi", [], 0));
+    expect(shown.done).toBe(true);
+    expect(shown.messages.map((m) => m.status)).toEqual(["done", "stopped"]);
+    expect(stoppedNote(shown.messages[1]!)).toBe(true);
+  });
+
+  test("a finished reply has no note", () => {
+    expect(chatMessages(foldEvents(turn)).some(stoppedNote)).toBe(false);
+  });
+});
+
 describe("withPending", () => {
   const sent = pendingSend("hi", [], 0);
   const roles = (r: ReturnType<typeof withPending>) => r.messages.map((m) => `${m.id}:${m.status}`);
@@ -139,6 +171,11 @@ describe("withPending", () => {
     const shown = withPending(chatMessages(state), sent);
     expect(shown.done).toBe(true);
     expect(shown.messages.some((m) => m.id.startsWith("pending:"))).toBe(false);
+  });
+
+  test("a send stopped before its reply started shows a stopped reply, not a thinking one", () => {
+    const shown = withPending([], { ...sent, stopped: true });
+    expect(roles(shown)).toEqual(["pending:user:done", "pending:reply:stopped"]);
   });
 
   test("counts only messages after the send", () => {
