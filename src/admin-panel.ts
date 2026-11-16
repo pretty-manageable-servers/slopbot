@@ -3,6 +3,7 @@ import type { Config } from "./config.js";
 import type { Json } from "./domain.js";
 import { scheduleLimits } from "./schedules/schedule-time.js";
 import { DEFAULT_SCHEDULE_LIMITS, MAX_MIN_MINUTES, MAX_SCHEDULE_LIMIT, SCHEDULE_LIMITS_KEY, type ScheduleLimits } from "./schedules/schedule-types.js";
+import { DEFAULT_PROJECT_LIMITS, PROJECT_LIMITS_KEY, projectLimits, type ProjectLimits } from "./projects.js";
 import type { KnownUserRow, Store, TokenSums, UserTokenTotalRow } from "./ports.js";
 import { limitOverride, savedLimit, USER_LIMIT_OVERRIDES_SETTING, USER_LIMIT_SCOPE, type UserLimiter, type UserLimitOverride, type UserUsageWindow } from "./user-limiter.js";
 import { activePrices, GLOBAL_SETTINGS_SCOPE, type ModelPrice } from "./usage-cost.js";
@@ -276,6 +277,22 @@ export class AdminPanel {
     };
     await this.store.setSetting(GLOBAL_SETTINGS_SCOPE, SCHEDULE_LIMITS_KEY, limits);
     return this.scheduleLimits();
+  }
+
+  /** Projects: how many a user may have, and how many files and bytes each may hold, for all servers. */
+  projectLimits(): ProjectLimits & { defaults: ProjectLimits } {
+    return { ...projectLimits(this.store.setting(GLOBAL_SETTINGS_SCOPE, PROJECT_LIMITS_KEY)), defaults: DEFAULT_PROJECT_LIMITS };
+  }
+
+  /** Every field must be a whole number. Out-of-range numbers are clamped by projectLimits, the same as the bot reads them. */
+  async saveProjectLimits(body: unknown): Promise<ProjectLimits & { defaults: ProjectLimits }> {
+    const input = object(body, "Send the limits as an object.");
+    const fields: [keyof ProjectLimits, string][] = [["maxProjects", "Projects per user"], ["maxFiles", "Files per project"], ["maxFileBytes", "Bytes per file"], ["maxProjectBytes", "Bytes per project"]];
+    for (const [key, label] of fields) {
+      if (!Number.isSafeInteger(input[key])) throw new AdminInputError(`${label} must be a whole number.`);
+    }
+    await this.store.setSetting(GLOBAL_SETTINGS_SCOPE, PROJECT_LIMITS_KEY, { ...projectLimits(input) });
+    return this.projectLimits();
   }
 
   /** The saved system prompt for all servers, or null when the default is used. */

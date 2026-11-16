@@ -8,6 +8,7 @@ import { TeamAdmins, type TeamSnapshot } from '../src/team-admins.js';
 import { UserLimiter } from '../src/user-limiter.js';
 import { MemberDirectory } from '../src/member-directory.js';
 import { DEFAULT_SCHEDULE_LIMITS, SCHEDULE_LIMITS_KEY } from '../src/schedules/schedule-types.js';
+import { DEFAULT_PROJECT_LIMITS, PROJECT_LIMITS_KEY } from '../src/projects.js';
 import { GLOBAL_SETTINGS_SCOPE } from '../src/usage-cost.js';
 import { fakeSource } from './member-fakes.js';
 
@@ -127,4 +128,58 @@ test('schedule limits route: members read, only editors save', async t => {
   assert.equal(saved.status, 200);
   assert.deepEqual(await saved.json(), { ...valid, default: DEFAULT_SCHEDULE_LIMITS });
   assert.deepEqual(await (await get('/api/admin/schedule-limits', reader)).json(), { ...valid, default: DEFAULT_SCHEDULE_LIMITS });
+});
+
+const validProjects = { maxProjects: 5, maxFiles: 10, maxFileBytes: 2 * 1024 * 1024, maxProjectBytes: 50 * 1024 * 1024 };
+
+test('project limits read the defaults, then save and read back for all servers', async t => {
+  const { store, panel } = setup(); t.after(() => store.close());
+  assert.deepEqual(panel.projectLimits(), { ...DEFAULT_PROJECT_LIMITS, defaults: DEFAULT_PROJECT_LIMITS });
+  const saved = await panel.saveProjectLimits(validProjects);
+  assert.deepEqual(saved, { ...validProjects, defaults: DEFAULT_PROJECT_LIMITS });
+  assert.deepEqual(store.setting(GLOBAL_SETTINGS_SCOPE, PROJECT_LIMITS_KEY), validProjects);
+  assert.deepEqual(panel.projectLimits(), saved);
+});
+
+test('project limits clamp numbers out of range to the bot range', async t => {
+  const { store, panel } = setup(); t.after(() => store.close());
+  const saved = await panel.saveProjectLimits({ maxProjects: 0, maxFiles: 9999, maxFileBytes: 1, maxProjectBytes: 5 * 1024 ** 3 });
+  assert.deepEqual(saved, { maxProjects: 1, maxFiles: 500, maxFileBytes: 1024, maxProjectBytes: 2 * 1024 ** 3, defaults: DEFAULT_PROJECT_LIMITS });
+});
+
+test('project limits refuse fractions, text and missing values, and save nothing', async t => {
+  const { store, panel } = setup(); t.after(() => store.close());
+  for (const value of [1.5, '9', null, undefined]) {
+    await assert.rejects(panel.saveProjectLimits({ ...validProjects, maxFiles: value }), { name: 'AdminInputError', message: 'Files per project must be a whole number.' }, String(value));
+  }
+  await assert.rejects(panel.saveProjectLimits({ ...validProjects, maxFileBytes: 1.5 }), { name: 'AdminInputError', message: 'Bytes per file must be a whole number.' });
+  await assert.rejects(panel.saveProjectLimits(null), { name: 'AdminInputError', message: 'Send the limits as an object.' });
+  assert.equal(store.setting(GLOBAL_SETTINGS_SCOPE, PROJECT_LIMITS_KEY), undefined);
+});
+
+test('project limits route: members read, only editors save', async t => {
+  const store = new SQLiteStore();
+  const panel = new AdminPanel(config, store, new UserLimiter(store, { fiveHourCostMicros: 100, weekCostMicros: 0, gracePercent: 10 }), new MemberDirectory(fakeSource({})));
+  const members: TeamSnapshot['members'] = [{ id: DEVELOPER, role: 'developer', accepted: true }, { id: READER, role: 'read_only', accepted: true }];
+  const { login, get, post } = await teamConsole(t, store, panel, members);
+  const outsider = await login(OUTSIDER), reader = await login(READER), developer = await login(DEVELOPER);
+
+  assert.equal((await get('/api/admin/project-limits', outsider)).status, 403, 'a non member cannot read');
+  assert.equal((await post('/api/admin/project-limits', validProjects, outsider)).status, 403, 'a non member cannot save');
+
+  const read = await get('/api/admin/project-limits', reader);
+  assert.equal(read.status, 200);
+  assert.deepEqual(await read.json(), { ...DEFAULT_PROJECT_LIMITS, defaults: DEFAULT_PROJECT_LIMITS });
+
+  assert.equal((await post('/api/admin/project-limits', validProjects, reader)).status, 403, 'a read only member cannot save');
+  assert.equal(store.setting(GLOBAL_SETTINGS_SCOPE, PROJECT_LIMITS_KEY), undefined);
+
+  const refused = await post('/api/admin/project-limits', { ...validProjects, maxFiles: 1.5 }, developer);
+  assert.equal(refused.status, 400);
+  assert.deepEqual(await refused.json(), { error: 'Files per project must be a whole number.' });
+
+  const saved = await post('/api/admin/project-limits', validProjects, developer);
+  assert.equal(saved.status, 200);
+  assert.deepEqual(await saved.json(), { ...validProjects, defaults: DEFAULT_PROJECT_LIMITS });
+  assert.deepEqual(await (await get('/api/admin/project-limits', reader)).json(), { ...validProjects, defaults: DEFAULT_PROJECT_LIMITS });
 });
