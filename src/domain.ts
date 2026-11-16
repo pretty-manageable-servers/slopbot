@@ -33,6 +33,8 @@ export interface Message {
   readonly surface?: Surface;
   readonly transient?: boolean;
   /** Web chat only: short-lived links of the images in this message, for the model. In memory; the saved row keeps attachments only. */
+  /** Web chat only: the project of the chat. */
+  readonly project?: string;
   readonly modelImages?: readonly { url: string; label: string }[];
   readonly revisionTimestamp?: number;
   /** Set on a request the bot answers. Its non-image files are copied to the sandbox before the run. */

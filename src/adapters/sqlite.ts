@@ -400,6 +400,9 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       CREATE TABLE IF NOT EXISTS web_provider_keys (id TEXT PRIMARY KEY, provider TEXT NOT NULL, owner TEXT NOT NULL, label TEXT NOT NULL, last4 TEXT NOT NULL, secret_encrypted TEXT NOT NULL, created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS web_provider_usage (key_id TEXT NOT NULL, month TEXT NOT NULL, used INTEGER NOT NULL, exhausted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(key_id, month));
       CREATE TABLE IF NOT EXISTS user_instructions (user_id TEXT PRIMARY KEY, text TEXT NOT NULL, updated INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', instructions TEXT NOT NULL DEFAULT '', instructions_updated INTEGER, created INTEGER NOT NULL, updated INTEGER NOT NULL, deleted INTEGER NOT NULL DEFAULT 0);
+      CREATE INDEX IF NOT EXISTS projects_owner ON projects(owner,deleted,updated);
+      CREATE TABLE IF NOT EXISTS project_files (project TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, content_type TEXT NOT NULL, size INTEGER NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(project,id));
       CREATE TABLE IF NOT EXISTS inbox_items (id TEXT PRIMARY KEY, server TEXT NOT NULL, target TEXT NOT NULL, sender TEXT NOT NULL, channel TEXT NOT NULL, source_ids TEXT NOT NULL, summary TEXT NOT NULL, created_at INTEGER NOT NULL, done_at INTEGER);
       CREATE INDEX IF NOT EXISTS inbox_items_target ON inbox_items(server,target,done_at,created_at);
       CREATE INDEX IF NOT EXISTS inbox_items_sender ON inbox_items(server,sender,created_at);
@@ -407,6 +410,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     if (!this.db.prepare("PRAGMA table_info(memories)").all().some(column => column.name === "metadata")) this.db.exec("ALTER TABLE memories ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'");
     if (!this.db.prepare("PRAGMA table_info(web_replies)").all().some(column => column.name === "via")) this.db.exec("ALTER TABLE web_replies ADD COLUMN via TEXT NOT NULL DEFAULT 'webhook'");
     if (!this.db.prepare("PRAGMA table_info(web_chats)").all().some(column => column.name === "effort")) this.db.exec("ALTER TABLE web_chats ADD COLUMN effort TEXT");
+    if (!this.db.prepare("PRAGMA table_info(web_chats)").all().some(column => column.name === "project")) this.db.exec("ALTER TABLE web_chats ADD COLUMN project TEXT");
     const operationColumns = this.db.prepare("PRAGMA table_info(tool_operations)").all();
     if (!this.db.prepare('PRAGMA table_info(agent_turns)').all().some(column => column.name === 'diagnostic_args')) this.db.exec('ALTER TABLE agent_turns ADD COLUMN diagnostic_args TEXT');
     if (!operationColumns.some(column => column.name === "resource")) this.db.exec("ALTER TABLE tool_operations ADD COLUMN resource TEXT");

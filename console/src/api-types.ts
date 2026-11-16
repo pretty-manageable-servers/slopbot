@@ -129,7 +129,17 @@ export interface ReplyResult { id: string; messageId: string; status: "posted" |
 
 // ----- Private chats (src/web-chats.ts:508-565) -----
 export type Effort = "low" | "medium" | "xhigh";
-export interface ChatSummary { id: string; title: string; updated: number; effort: Effort }
+export interface ChatSummary { id: string; title: string; updated: number; effort: Effort; project?: string | null }
+
+// ----- Projects (/api/projects, src/projects.ts) -----
+export interface ProjectLimits { maxProjects: number; maxFiles: number; maxFileBytes: number; maxProjectBytes: number }
+export interface Project { id: string; owner: string; name: string; description: string; instructions: string; instructionsUpdated: number | null; created: number; updated: number }
+export interface ProjectSummary { id: string; name: string; description: string; updated: number; fileCount: number }
+export interface ProjectFile { id: string; project: string; name: string; contentType: string; size: number; created: number }
+export interface ProjectDetail { project: Project; files: ProjectFile[]; chats: ChatSummary[]; usedBytes: number }
+export interface ProjectList { projects: ProjectSummary[]; limits: ProjectLimits }
+export interface ProjectMemoryView { id: string; content: string; category: string; updatedAt: number }
+export type ProjectInstructionsResult = { ok: true; project: Project } | { ok: false; reason: "too_long" | "flagged" | "check_failed" | "rate_limited"; category?: string; message: string }
 export interface ChatFile { fileId: string; name: string; contentType: string; size: number }
 export interface ChatImage { imageId: string; name: string; contentType: string; size: number }
 
