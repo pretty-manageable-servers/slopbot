@@ -12,6 +12,7 @@ import { parseMessage, type Effort, type Json, type Message, type ModelEvent, ty
 import type { AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow, TokenTotals, UserTokenTotalRow, TokenTotalsSummary, KnownUserPage } from "../ports.js";
 import type { KeyedProvider, ProviderKeyRow, ProviderKeyUsage } from "../web-providers.js";
 import type { UserInstructions, UserInstructionsStore } from "../user-instructions.js";
+import type { Project, ProjectFile, ProjectStore } from "../projects.js";
 import { cosine, searchTerms, newMemory, patchMemory, memoryMetadata, memoryFromRow, memorySearchText, rankMemories, type MemoryOptions, type MemoryPatch, type MemoryQuery, type Embeddings, type Evidence, type MemoryRecord } from "../memory.js";
 import { attribution, type Attribution } from "../usage-meter.js";
 import { ToolError } from "../tools.js";
@@ -42,7 +43,13 @@ function inboxItemFromRow(row: Record<string, any>): InboxItem {
 function providerKeyRow(row: Record<string, any>): ProviderKeyRow {
     return { id: String(row.id), provider: String(row.provider) as KeyedProvider, owner: String(row.owner), label: String(row.label), last4: String(row.last4), secretEncrypted: String(row.secret_encrypted), createdAt: Number(row.created_at) };
 }
-export class PostgresStore implements UserInstructionsStore {
+function projectFromRow(row: Record<string, any>): Project {
+    return { id: String(row.id), owner: String(row.owner), name: String(row.name), description: String(row.description), instructions: String(row.instructions), instructionsUpdated: row.instructions_updated === null ? null : Number(row.instructions_updated), created: Number(row.created), updated: Number(row.updated) };
+}
+function projectFileFromRow(row: Record<string, any>): ProjectFile {
+    return { id: String(row.id), project: String(row.project), name: String(row.name), contentType: String(row.content_type), size: Number(row.size), created: Number(row.created) };
+}
+export class PostgresStore implements UserInstructionsStore, ProjectStore {
   async participationHistory(server: string, channel: string, query: ParticipationHistoryQuery) {
     return readParticipationHistory(async (sql, values) => this.db.prepare(sql).all(...values), server, channel, query);
   }
@@ -1288,5 +1295,54 @@ export class PostgresStore implements UserInstructionsStore {
             if (task.parent === channel)
                 (await this.invalidate(server, task.thread, { ...change, originChannel: change.originChannel ?? channel }));
         }
+    }
+    async createProject(project: Project): Promise<void> {
+        (await this.db.prepare("INSERT INTO projects (id,owner,name,description,instructions,instructions_updated,created,updated,deleted) VALUES(?,?,?,?,?,?,?,?,0)")
+            .run(project.id, project.owner, project.name, project.description, project.instructions, project.instructionsUpdated, project.created, project.updated));
+    }
+    async project(id: string): Promise<Project | undefined> {
+        const row = await this.db.prepare("SELECT id,owner,name,description,instructions,instructions_updated,created,updated FROM projects WHERE id=? AND deleted=0").get(id);
+        return row ? projectFromRow(row) : undefined;
+    }
+    async projectsOf(owner: string): Promise<Project[]> {
+        return (await this.db.prepare("SELECT id,owner,name,description,instructions,instructions_updated,created,updated FROM projects WHERE owner=? AND deleted=0 ORDER BY updated DESC,id").all(owner))
+            .map(projectFromRow);
+    }
+    async updateProject(id: string, patch: Partial<Pick<Project, "name" | "description" | "instructions" | "instructionsUpdated">>, at: number): Promise<void> {
+        const sets = ["updated=?"], values: unknown[] = [at];
+        if (patch.name !== undefined) { sets.push("name=?"); values.push(patch.name); }
+        if (patch.description !== undefined) { sets.push("description=?"); values.push(patch.description); }
+        if (patch.instructions !== undefined) { sets.push("instructions=?"); values.push(patch.instructions); }
+        if (patch.instructionsUpdated !== undefined) { sets.push("instructions_updated=?"); values.push(patch.instructionsUpdated); }
+        (await this.db.prepare(`UPDATE projects SET ${sets.join(",")} WHERE id=? AND deleted=0`).run(...values, id));
+    }
+    async deleteProject(id: string, at: number): Promise<void> {
+        (await this.db.exec("BEGIN IMMEDIATE"));
+        try {
+            (await this.db.prepare("UPDATE projects SET deleted=1,updated=? WHERE id=?").run(at, id));
+            (await this.db.prepare("DELETE FROM project_files WHERE project=?").run(id));
+            (await this.db.exec("COMMIT"));
+        } catch (error) { (await this.db.exec("ROLLBACK")); throw error; }
+    }
+    async addProjectFile(file: ProjectFile): Promise<void> {
+        (await this.db.exec("BEGIN IMMEDIATE"));
+        try {
+            (await this.db.prepare("INSERT INTO project_files (project,id,name,content_type,size,created) VALUES(?,?,?,?,?,?)").run(file.project, file.id, file.name, file.contentType, file.size, file.created));
+            (await this.db.prepare("UPDATE projects SET updated=? WHERE id=? AND deleted=0").run(file.created, file.project));
+            (await this.db.exec("COMMIT"));
+        } catch (error) { (await this.db.exec("ROLLBACK")); throw error; }
+    }
+    async projectFiles(project: string): Promise<ProjectFile[]> {
+        return (await this.db.prepare("SELECT project,id,name,content_type,size,created FROM project_files WHERE project=? ORDER BY name,id").all(project))
+            .map(projectFileFromRow);
+    }
+    async deleteProjectFile(project: string, id: string, at: number): Promise<boolean> {
+        (await this.db.exec("BEGIN IMMEDIATE"));
+        try {
+            const result = (await this.db.prepare("DELETE FROM project_files WHERE project=? AND id=?").run(project, id));
+            if (result.changes) (await this.db.prepare("UPDATE projects SET updated=? WHERE id=? AND deleted=0").run(at, project));
+            (await this.db.exec("COMMIT"));
+            return result.changes > 0;
+        } catch (error) { (await this.db.exec("ROLLBACK")); throw error; }
     }
 }
