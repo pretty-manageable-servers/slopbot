@@ -42,7 +42,7 @@ function setup(t: { after(fn: () => void): void }, options: { saved?: Record<str
 }
 
 test("a project chat run adds the project item after the rules and the user instructions", async t => {
-  const projects = new FakeProjects({ p1: project("alice", "Write in British English.") }, [file("notes.md")]);
+  const projects = new FakeProjects({ cccccccccccccccccccccccccccccccc: project("alice", "Write in British English.") }, [file("notes.md")]);
   const { message, run, lastPrefix } = setup(t, { saved: { alice: "Answer in short bullets." }, projects });
   await run(message("1", "alice", { project: "cccccccccccccccccccccccccccccccc" }));
   const prefix = lastPrefix();
@@ -54,7 +54,7 @@ test("a project chat run adds the project item after the rules and the user inst
 });
 
 test("the project item lists the project's file names", async t => {
-  const projects = new FakeProjects({ p1: project("alice") }, [file("notes.md"), file("data.csv")]);
+  const projects = new FakeProjects({ cccccccccccccccccccccccccccccccc: project("alice") }, [file("notes.md"), file("data.csv")]);
   const { message, run, lastPrefix } = setup(t, { projects });
   await run(message("1", "alice", { project: "cccccccccccccccccccccccccccccccc" }));
   const item = lastPrefix().at(-1)!.content;
@@ -63,14 +63,14 @@ test("the project item lists the project's file names", async t => {
 });
 
 test("a message without a project gets no project item", async t => {
-  const projects = new FakeProjects({ p1: project("alice", "Write in British English.") }, [file("notes.md")]);
+  const projects = new FakeProjects({ cccccccccccccccccccccccccccccccc: project("alice", "Write in British English.") }, [file("notes.md")]);
   const { message, run, lastPrefix } = setup(t, { projects });
   await run(message("1", "alice"));
   assert.equal(lastPrefix().length, 1);
 });
 
 test("another owner's project gives no project item", async t => {
-  const projects = new FakeProjects({ p1: project("bob", "Write in British English.") }, [file("notes.md")]);
+  const projects = new FakeProjects({ cccccccccccccccccccccccccccccccc: project("bob", "Write in British English.") }, [file("notes.md")]);
   const { message, run, lastPrefix } = setup(t, { projects });
   await run(message("1", "alice", { project: "cccccccccccccccccccccccccccccccc" }));
   assert.equal(lastPrefix().length, 1);
@@ -85,7 +85,7 @@ test("a deleted project gives no project item", async t => {
 });
 
 test("a project message in a server channel gets no project item", async t => {
-  const projects = new FakeProjects({ p1: project("alice", "Write in British English.") }, [file("notes.md")]);
+  const projects = new FakeProjects({ cccccccccccccccccccccccccccccccc: project("alice", "Write in British English.") }, [file("notes.md")]);
   const { message, run, lastPrefix } = setup(t, { projects });
   await run(message("1", "alice", { channel: "c", project: "cccccccccccccccccccccccccccccccc" }));
   assert.equal(lastPrefix().length, 1);
@@ -93,7 +93,7 @@ test("a project message in a server channel gets no project item", async t => {
 
 test("a failing project store still gets an answer, without the project item", async t => {
   t.mock.method(console, "warn", () => {});
-  const projects = new FakeProjects({ p1: project("alice") }, [], true);
+  const projects = new FakeProjects({ cccccccccccccccccccccccccccccccc: project("alice") }, [], true);
   const { llm, message, run, lastPrefix } = setup(t, { projects });
   const reply = await run(message("1", "alice", { project: "cccccccccccccccccccccccccccccccc" }));
   assert.ok(reply, "the run answers");
