@@ -13,7 +13,7 @@ import type { ParticipationOptions } from '../src/participation.js';
 
 const configServer = '12345678901234567';
 const config = loadConfig({ DISCORD_BOT_TOKEN: 'test', DISCORD_GUILD_ID: configServer, DISCORD_CHANNEL_IDS: '12345678901234568', LLM_MODE: 'mock' });
-const project = 'project-1', projectScope = { server: PROJECT_MEMORY_SERVER, channel: `project:${project}` };
+const project = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', projectScope = { server: PROJECT_MEMORY_SERVER, channel: `project:${project}` };
 // Text about the launch embeds near "rocket": a semantic match finds a memory that shares no word with the query.
 const embeddings = { model: 'project-memory-test', async embed(text: string) { return /launch|rocket|lunar/i.test(text) ? [1, 0] : [0, 1]; } };
 const chatA: Message = { server: 'project-server-a', channel: 'chat-a', author: 'alice', id: 'a-1', text: 'the launch is on friday', project };
@@ -35,7 +35,7 @@ for (const backend of ['sqlite', 'postgres'] as const) {
     const store = await open(t, 'slopbot_test_project_memory_shared');
     await store.ingest(chatA); await store.ingest(chatB);
     const note = await store.remember(chatA, 'The launch is on Friday');
-    assert.equal(note.server, PROJECT_MEMORY_SERVER); assert.equal(note.channel, 'project:project-1');
+    assert.equal(note.server, PROJECT_MEMORY_SERVER); assert.equal(note.channel, 'project:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     assert.deepEqual((await store.memories(projectScope.server, projectScope.channel)).map(item => item.id), [note.id]);
     assert.deepEqual(await store.memories(chatA.server, chatA.channel), []);
     assert.equal((await store.searchMemories(chatB, { query: 'launch' }))[0]?.id, note.id);
@@ -92,7 +92,7 @@ test('memory tools in a project chat store independent memories by default and f
   const saved = await f.registry.invokeResult(chatA, 'memory_remember', { text: 'The launch is on Friday' }, 'remember-default', 'agent');
   const note = saved.data as { id: string; server: string; channel: string; sourcePolicy: string; sourceIds: string[] };
   assert.equal(note.sourcePolicy, 'independent'); assert.deepEqual(note.sourceIds, []);
-  assert.equal(note.server, PROJECT_MEMORY_SERVER); assert.equal(note.channel, 'project:project-1');
+  assert.equal(note.server, PROJECT_MEMORY_SERVER); assert.equal(note.channel, 'project:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
   const bound = await f.registry.invokeResult(chatA, 'memory_remember', { text: 'The launch is at noon', source_policy: 'source_bound' }, 'remember-bound', 'agent');
   assert.deepEqual((bound.data as { sourceIds: string[] }).sourceIds, [chatA.id]);
   const found = await f.registry.invokeResult(chatB, 'memory', { query: 'launch' }, 'find-from-b', 'agent');
