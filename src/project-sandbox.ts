@@ -54,9 +54,7 @@ export async function syncProjectToSandbox(deps: ProjectSandboxDeps, message: Me
       try { bytes = await requestTimings.wait("project file read", () => deps.storage.get(projectFileKey(project.id, file.id))); }
       catch (error) {
         if (!isMissingObject(error)) throw error;
-        // ErrorContext has no file field, so the id goes in through a variable. Adding fileId to ErrorContext would make this explicit.
-        const missing = { ...context, fileId: file.id };
-        logError("project_sandbox_file_missing", error, missing, true);
+        logError("project_sandbox_file_missing", error, { ...context, fileId: file.id }, true);
         continue;
       }
       await requestTimings.wait("sandbox project write", () => session.write(`${dir}/${names[index]!}`, bytes));

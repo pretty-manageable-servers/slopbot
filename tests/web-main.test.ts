@@ -83,3 +83,35 @@ test('the local console signs in and chats with no Discord', async t => {
   const invoke = await post('/api/settings', { server: SERVER, channel: '1', name: 'profile', args: { action: 'set' } });
   assert.match(JSON.stringify(await invoke.json()), new RegExp(LOCAL_ONLY.replace(/\./g, '\\.')));
 });
+
+test('the local console serves projects: create, upload, chat in the project, delete', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'web-main-'));
+  const oauthBase = await startDevOauth(t);
+  const port = await freePort(), base = `http://127.0.0.1:${port}`;
+  const local = await startLocalConsole({
+    SLOPBOT_PLATFORM: 'local', LLM_MODE: 'mock', WEB_ENABLED: 'true', WEB_PORT: String(port), WEB_ORIGIN: base, WEB_OAUTH_BASE: oauthBase,
+    LOCAL_WORLD: world, DATABASE_PATH: join(dir, 's.sqlite3'),
+  });
+  t.after(async () => { await local.stop(); rmSync(dir, { recursive: true, force: true }); });
+  const cookie = (await signIn(base, oauthBase, MEMBER)).cookie!;
+  const session = await (await fetch(`${base}/api/session`, { headers: { Cookie: cookie } })).json() as { csrf: string };
+  const call = (method: string, path: string, body?: unknown, headers: Record<string, string> = { 'Content-Type': 'application/json' }) => fetch(base + path, { method, headers: { Cookie: cookie, Origin: base, 'X-CSRF-Token': session.csrf, ...headers }, ...(body === undefined ? {} : { body: typeof body === 'string' ? body : JSON.stringify(body) }) });
+
+  const created = await call('POST', '/api/projects', { name: 'Notes' });
+  assert.equal(created.status, 201);
+  const project = (await created.json() as { id: string }).id;
+  const upload = await call('POST', `/api/projects/${project}/files?name=a.md`, '# hello', { 'Content-Type': 'text/markdown' });
+  assert.equal(upload.status, 201);
+  const chat = await call('POST', '/api/chats', { server: SERVER, project });
+  assert.equal(chat.status, 201);
+  const { id } = await chat.json() as { id: string };
+  assert.equal((await call('POST', `/api/chats/${id}/messages`, { text: 'hi' })).status, 201);
+  const detail = await (await call('GET', `/api/projects/${project}`)).json() as { files: unknown[]; chats: { id: string }[] };
+  assert.equal(detail.files.length, 1);
+  assert.deepEqual(detail.chats.map(item => item.id), [id]);
+
+  assert.equal((await call('DELETE', `/api/projects/${project}`)).status, 204);
+  const left = await (await call('GET', '/api/chats')).json() as { chats?: { id: string }[] } | { id: string }[];
+  const ids = (Array.isArray(left) ? left : left.chats ?? []).map(item => item.id);
+  assert.ok(!ids.includes(id), 'the project chat is deleted with the project');
+});
