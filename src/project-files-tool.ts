@@ -31,7 +31,7 @@ export function projectFilesTool(deps: ProjectFileDeps): ToolDefinition {
   return {
     name: "project_files",
     description: "Read the files of this chat's project: list, or read a file. Read-only.",
-    surface: "top", access: "member", effect: "read", retrySafe: true, execution: "inline",
+    surface: "top", needs: ["files"], access: "member", effect: "read", retrySafe: true, execution: "inline",
     fields: {
       action: { type: "string", required: true, choices: ["list", "read"], description: "list: the project's files. read: a file's text, or an answer to a question about a file that is not text." },
       file: { type: "string", max: 300, description: "For read: the file name or id, as listed." },

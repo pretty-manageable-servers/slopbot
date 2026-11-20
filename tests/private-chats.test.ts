@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { ToolRegistry, ToolError, type ToolDefinition } from "../src/tools.js";
 import { isPrivateChannel, privateChannel, privateChatTitle } from "../src/private-chat.js";
+import { PERSONAL_SERVER, personalMemoryChannel } from "../src/personal.js";
 import { transcriptSwitchOn } from "../src/server-tools.js";
 import type { Message } from "../src/domain.js";
 
@@ -161,7 +162,7 @@ test("a private chat saves memories, but cannot start tasks", async t => {
   await bot.receive(privateIncoming("web-2", "!remember I like tea"));
   await bot.receive(privateIncoming("web-3", "!task plan a trip"));
   assert.equal(created(), 0, "no task thread may be created");
-  assert.deepEqual((await store.memories("s", privateChannel(privateId))).map(note => note.content), ["I like tea"]);
+  assert.deepEqual((await store.memories(PERSONAL_SERVER, personalMemoryChannel("alice"))).map(note => note.content), ["I like tea"]);
   assert.equal(outputs.at(-1)!.text, "This action is only available in Discord.");
 });
 
