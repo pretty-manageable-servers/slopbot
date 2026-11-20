@@ -83,6 +83,21 @@ for (const backend of ['sqlite', 'postgres'] as const) {
     assert.deepEqual((await store.searchMemories(message('a-2', chatA, 'alice', 'thesis?'))).map(item => item.id), [personalNote.id]);
   });
 
+  test(`${backend}: a web chat still finds its old memories in its own channel, not in another chat`, { skip }, async t => {
+    const store = await openStore(backend, 'user_memory_legacy', t);
+    // Saved before WP4, when a web chat's memories stayed in its own channel. A non-web surface gives that rule.
+    const old = message('a-0', chatA, 'alice', 'Alice old trip plan', { surface: 'discord' });
+    await store.ingest(old);
+    const oldNote = await store.remember(old, 'Alice old trip plan');
+    assert.deepEqual([oldNote.server, oldNote.channel], [server, chatA]);
+    assert.deepEqual((await store.searchMemories(message('a-1', chatA, 'alice', 'trip plan?'))).map(item => item.id), [oldNote.id]);
+    assert.deepEqual(await store.searchMemories(message('b-1', chatB, 'alice', 'trip plan?')), []);
+    // A new memory from this chat goes to the personal scope.
+    const fresh = message('a-2', chatA, 'alice', 'fresh note');
+    await store.ingest(fresh);
+    assert.equal((await store.remember(fresh, 'Alice new plan')).server, PERSONAL_SERVER);
+  });
+
   test(`${backend}: server channel does not see personal memories`, { skip }, async t => {
     const store = await openStore(backend, 'user_memory_server', t);
     const personal = message('a-1', chatA, 'alice', 'Alice plans the summer trip');

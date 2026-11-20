@@ -54,7 +54,8 @@ export function memoryScopes(message: Pick<Message, "server" | "channel" | "proj
   if (surface === "web-incognito") return [];
   const personal = { server: PERSONAL_SERVER, channel: personalMemoryChannel(message.author) };
   if (message.project) return [{ server: PROJECT_MEMORY_SERVER, channel: projectMemoryChannel(message.project) }, personal];
-  if (surface === "web" || surface === "discord-dm") return [personal];
+  // Legacy read scope until the personal-space migration (WP3): memories saved in this chat before WP4 stay in its own channel.
+  if (surface === "web" || surface === "discord-dm") return [personal, { server: message.server, channel: message.channel }];
   return [{ server: message.server, channel: message.channel }];
 }
 /** The scope where new memories go. Throws ToolError("Memory is off in private chats.") in a private chat. */
