@@ -123,6 +123,8 @@ export class ContextBuilder {
           if (context.length - index > 4 && spent + cost > budget * 0.3) break;
           spent += cost; first = index;
         }
+        // Messages that share a timestamp stay together: contextSince after the summary drops all of them, so the group stays in the window.
+        while (first > 0 && first < context.length && (context[first]!.timestamp ?? 0) === (context[first - 1]!.timestamp ?? 0)) first--;
         const older = context.slice(0, first);
         // A failed summary keeps the old state: the history is trimmed as it is without a summary.
         try {

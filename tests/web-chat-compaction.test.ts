@@ -32,10 +32,10 @@ const note = (index: number): Message => ({ id: `m${index}`, server: "s", channe
 /** The note numbers that appear in a prompt's items. */
 const notesIn = (prompt: Prompt | undefined) => new Set([...JSON.stringify(prompt?.inputs ?? []).matchAll(/note-(\d+)/g)].map(match => Number(match[1])));
 
-function setup(t: { after(fn: () => void): void }, llm: LLM) {
+function setup(t: { after(fn: () => void): void }, llm: LLM, limits = { maxContextTokens: 20000 }) {
   const store = new SQLiteStore(); t.after(() => store.close());
-  // A small window: 19000 tokens of history after 1000 for the reply.
-  const runner = new AgentRunner(store, llm, { allowedChannels: [{ server: "s", channel: CHANNEL }], maxContextTokens: 20000, maxOutputTokens: 1000, maxInputChars: 150000 });
+  // A small window: the context minus 1000 for the reply is the history budget.
+  const runner = new AgentRunner(store, llm, { allowedChannels: [{ server: "s", channel: CHANNEL }], maxOutputTokens: 1000, maxInputChars: 150000, ...limits });
   const send = async (messages: Message[]) => {
     for (const message of messages) await store.ingest(message);
     return runner.run(messages.at(-1)!);
@@ -83,4 +83,17 @@ test("failed summary keeps history", async t => {
   assert.equal(reply?.text, "ok");
   assert.equal(await store.webChatSummary(CHAT), undefined);
   assert.equal(notesIn(llm.mainPrompt()).has(39), true);
+});
+
+test("messages that share the summary's timestamp are not lost", async t => {
+  const llm = new SummaryLLM();
+  const { send } = setup(t, llm, { maxContextTokens: 24000 });
+  // Notes 20, 21 and 22 share one timestamp, as messages saved in the same millisecond.
+  const group = [20, 21, 22];
+  await send(Array.from({ length: 40 }, (_, index) => ({ ...note(index), timestamp: group.includes(index) ? 21 : index + 1 })));
+  assert.equal(llm.summaryPrompts().length, 1);
+  const summarized = notesIn(llm.summaryPrompts()[0]);
+  const kept = notesIn(llm.mainPrompt());
+  for (const index of group) assert.ok(summarized.has(index) || kept.has(index), `note-${index} was lost`);
+  assert.equal(kept.has(39), true);
 });
