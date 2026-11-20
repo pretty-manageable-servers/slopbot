@@ -88,6 +88,16 @@ export function rankMemories(memories: readonly MemoryRecord[], query: MemoryQue
     .filter(item => query.relatedOnly === false || !query.query?.trim() || item.score > 0)
     .sort((a, b) => b.score - a.score).slice(query.offset ?? 0, (query.offset ?? 0) + (query.limit ?? 20)).map(item => item.memory);
 }
+/** One page of a user's own memories, ranked like a search. total counts every match. */
+export function ownMemoryPage(memories: readonly MemoryRecord[], user: string, query: MemoryQuery): { items: MemoryRecord[]; total: number } {
+  const mine = memories.filter(memory => memory.author === user);
+  const matched = rankMemories(mine, { ...query, limit: mine.length, offset: 0 });
+  const offset = query.offset ?? 0;
+  return { items: matched.slice(offset, offset + (query.limit ?? 20)), total: matched.length };
+}
+export function memoryEvidence(memories: readonly MemoryRecord[]): Evidence[] {
+  return memories.map((memory): Evidence => ({ kind: 'memory', content: memory.content, author: memory.author, sourceIds: memory.sourceIds, memoryId: memory.id, category: memory.category, tags: memory.tags, details: memory.details }));
+}
 
 export interface Evidence {
   content: string;
