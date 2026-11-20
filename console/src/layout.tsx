@@ -5,7 +5,7 @@ import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-quer
 import { Outlet, useMatchRoute, useNavigate } from "@tanstack/react-router";
 import { AppShell, ChatList, SidebarItem, defaultIcons } from "agentic-ui-kit";
 import { MenuItem, MenuList, MenuSeparator, SegmentedControl, confirm } from "slop-ui-components";
-import { Pencil, Share, Trash2 } from "lucide-react";
+import { Brain, Pencil, Share, Trash2 } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
 import { ApiError, api } from "./api";
 import { ShareDialog } from "./chat/share-dialog";
@@ -62,7 +62,7 @@ function Shell() {
           options={[{ id: "chats", label: "Chats", icon: icons.chats }, { id: "servers", label: "Servers", icon: icons.server }]}
           onChange={(next) => void (next === "servers" ? navigate({ to: "/server/$serverId", params: { serverId: server.id } }) : navigate({ to: "/" }))} />
       }
-      nav={mode === "chats" ? <><NewChat /><Projects /></> : undefined}
+      nav={mode === "chats" ? <><NewChat /><Projects /><Memory /></> : undefined}
       footer={
         <AccountMenu
           name={session.me?.displayName ?? session.user}
@@ -100,6 +100,14 @@ function Projects() {
   const match = useMatchRoute();
   const active = !!match({ to: "/projects" }) || !!match({ to: "/project/$projectId" });
   return <SidebarItem icon={defaultIcons.folder} label="Projects" active={active} onPress={() => void navigate({ to: "/projects" })} />;
+}
+
+/** The memory page: what Slopbot remembers about the user. Active on the page only. */
+function Memory() {
+  const navigate = useNavigate();
+  const match = useMatchRoute();
+  const active = !!match({ to: "/memory" });
+  return <SidebarItem icon={<Brain size={16} />} label="Memory" active={active} onPress={() => void navigate({ to: "/memory" })} />;
 }
 
 /** All private chats of the user, from every server, newest first, with rename and delete. */
