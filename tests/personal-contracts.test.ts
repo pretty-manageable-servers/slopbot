@@ -38,16 +38,17 @@ test("memoryScopes for project, web, dm, incognito, server", () => {
     { server: PROJECT_MEMORY_SERVER, channel: `project:${project}` },
     { server: PERSONAL_SERVER, channel: "user:alice" },
   ]);
-  assert.deepEqual(memoryScopes({ server: PERSONAL_SERVER, channel: privateChannel(chat), author: "alice", surface: "web" }), [{ server: PERSONAL_SERVER, channel: "user:alice" }]);
+  // A web chat reads its personal scope and its own channel (the legacy scope, until WP3).
+  assert.deepEqual(memoryScopes({ server: PERSONAL_SERVER, channel: privateChannel(chat), author: "alice", surface: "web" }), [{ server: PERSONAL_SERVER, channel: "user:alice" }, { server: PERSONAL_SERVER, channel: privateChannel(chat) }]);
   // A message saved before surface existed gets its surface from the channel.
-  assert.deepEqual(memoryScopes({ server: PERSONAL_SERVER, channel: privateChannel(chat), author: "alice" }), [{ server: PERSONAL_SERVER, channel: "user:alice" }]);
-  assert.deepEqual(memoryScopes({ server: PERSONAL_SERVER, channel: dm, author: "alice", surface: "discord-dm" }), [{ server: PERSONAL_SERVER, channel: "user:alice" }]);
+  assert.deepEqual(memoryScopes({ server: PERSONAL_SERVER, channel: privateChannel(chat), author: "alice" }), [{ server: PERSONAL_SERVER, channel: "user:alice" }, { server: PERSONAL_SERVER, channel: privateChannel(chat) }]);
+  assert.deepEqual(memoryScopes({ server: PERSONAL_SERVER, channel: dm, author: "alice", surface: "discord-dm" }), [{ server: PERSONAL_SERVER, channel: "user:alice" }, { server: PERSONAL_SERVER, channel: dm }]);
   assert.deepEqual(memoryScopes({ server: PERSONAL_SERVER, channel: incognito, author: "alice", surface: "web-incognito" }), []);
   assert.deepEqual(memoryScopes({ server: "guild", channel: "100000000000000002", author: "alice" }), [{ server: "guild", channel: "100000000000000002" }]);
 });
 
 test("memoryScope throws in a private chat", () => {
-  assert.throws(() => memoryScope({ server: PERSONAL_SERVER, channel: incognito, surface: "web-incognito" }), ToolError);
+  assert.throws(() => memoryScope({ server: PERSONAL_SERVER, channel: incognito, author: "alice", surface: "web-incognito" }), ToolError);
 });
 
 test("contextSince returns all messages after the time", async t => {
