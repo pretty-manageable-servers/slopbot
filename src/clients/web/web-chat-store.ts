@@ -48,9 +48,15 @@ export async function renameWebChat(db: ChatDb, id: string, title: string, updat
   await db.prepare("UPDATE web_chats SET title=?, updated=? WHERE id=?").run(title, updated, id);
 }
 
-/** Sets the title and where it came from. */
+/** Sets the title and where it came from. A model title never replaces a user title: one statement checks it. */
 export async function setWebChatTitle(db: ChatDb, id: string, title: string, source: "model" | "user", updated: number): Promise<void> {
-  await db.prepare("UPDATE web_chats SET title=?, title_source=?, updated=? WHERE id=?").run(title, source, updated, id);
+  await db.prepare("UPDATE web_chats SET title=?, title_source=?, updated=? WHERE id=? AND (title_source<>'user' OR ?='user')").run(title, source, updated, id, source);
+}
+
+/** Live chats that still have an automatic title, in all servers and for all owners, newest first. */
+export async function autoTitledWebChats(db: ChatDb): Promise<WebChatRow[]> {
+  const rows = await db.prepare(`SELECT ${COLUMNS} FROM web_chats WHERE title_source='auto' AND deleted=0 ORDER BY updated DESC, id`).all();
+  return rows.map(chatOf);
 }
 
 /** Bytes of text per token, measured for one chat. null in the database means the default. */

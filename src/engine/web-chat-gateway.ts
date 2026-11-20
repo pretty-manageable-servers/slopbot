@@ -26,7 +26,8 @@ export interface GatewayStore extends Pick<RecordStore, "record" | "putRecord"> 
 
 /** Replies that Slopbot posts in a private chat. They are saved and published, never sent to Discord. */
 export class WebChatGateway implements ChatGateway {
-  constructor(private readonly store: GatewayStore, private readonly server: string, private readonly files?: { queue: AttachQueue; storage: ObjectStorageProvider }) {}
+  /** onReplied runs after a reply is saved. Its promise is not awaited, so it must not reject. */
+  constructor(private readonly store: GatewayStore, private readonly server: string, private readonly files?: { queue: AttachQueue; storage: ObjectStorageProvider }, private readonly onReplied?: (message: Message) => Promise<void> | void) {}
 
   /** Keeps one queued file in private storage and returns it as a chat attachment. Images show inline; other files are download links. */
   private async keep(chat: string, file: QueuedFile): Promise<Attachment> {
@@ -61,6 +62,7 @@ export class WebChatGateway implements ChatGateway {
     const runIds = await this.store.requestRunIds(this.server, message.id);
     const saved = ui ? await prepareUi(this.store, message, ui, output.id) : undefined;
     await publishMessage(this.store, output, runIds, undefined, saved && { id: saved.id, revision: saved.revision, document: saved.state.document });
+    void this.onReplied?.(message);
     requestTimings.finish(message);
     return [output];
   }

@@ -163,7 +163,8 @@ export class WebChatService implements ProjectChats {
     const chat = await this.owned(user, id);
     const title = typeof raw === "string" ? raw.replace(/\s+/g, " ").trim() : "";
     if (!title || [...title].length > PRIVATE_CHAT_TITLE_CHARS) throw new ChatError(400, `Write a title of 1 to ${PRIVATE_CHAT_TITLE_CHARS} characters.`);
-    await this.store.renameWebChat(chat.id, title, this.now());
+    // A user title is never replaced by a model title (chat-titles.ts).
+    await this.store.setWebChatTitle(chat.id, title, "user", this.now());
   }
 
   async remove(user: string, id: string): Promise<void> {

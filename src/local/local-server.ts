@@ -1,6 +1,7 @@
 import type { S3StorageProvider } from "../adapters/s3-storage.js";
 import type { ChannelAccess } from "../channel-access.js";
 import type { Config } from "../config.js";
+import type { Message } from "../domain.js";
 import type { Directory } from "../engine/api.js";
 import type { DegradedRouting, WorkspacePorts } from "../engine/ports.js";
 import { WebChatGateway } from "../engine/web-chat-gateway.js";
@@ -19,6 +20,8 @@ import type { UsageMeter } from "../usage-meter.js";
 export interface LocalServerDeps {
   config: Config; store: RuntimeStore; llm: LLM; server: string; usage: UsageMeter; access: ChannelAccess;
   team: Pick<TeamAdmins, "canEdit">; directory: Directory; images?: S3StorageProvider; degraded?: DegradedRouting;
+  /** Called after a private web chat reply is saved (chat titles). */
+  chatReplied?: (message: Message) => Promise<void> | void;
 }
 
 /** One fixture server's workspace, with WorkspacePorts that serve private web chats only. */
@@ -34,7 +37,7 @@ export class LocalServer {
     const { server, directory } = deps;
     // The workspace reads ports.gateway while it is built, before this.workspace exists, so the queue is reached late.
     const lateQueue = { take: (run: string) => this.workspace.attachQueue.take(run) } as AttachQueue;
-    const gateway = () => this.gateway ??= new WebChatGateway(deps.store, server, { queue: lateQueue, storage: deps.images ?? new LocalDiskStorage() });
+    const gateway = () => this.gateway ??= new WebChatGateway(deps.store, server, { queue: lateQueue, storage: deps.images ?? new LocalDiskStorage() }, deps.chatReplied);
     const localOnly = async (): Promise<never> => { throw new ToolError(LOCAL_ONLY); };
     const ports: WorkspacePorts = this.ports = {
       directory,
