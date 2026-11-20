@@ -7,7 +7,7 @@ import { CHAT_IMAGE_ID, CHAT_IMAGE_MAX_BYTES, chatImageContentType, chatImageKey
 import { fileAttachments } from "./web-chat-files.js";
 import { withoutFileLabels } from "./run-events.js";
 import type { ObjectStorageProvider } from "./object-storage.js";
-
+import { PERSONAL_SERVER } from "./personal.js";
 /** One share link. The body is a frozen snapshot, stored as JSON text. */
 export interface ShareRow { id: string; server: string; channel: string; created_by: string; created_at: number; revoked_at: number | null; body: string }
 export interface ShareListRow { id: string; channel: string; created_at: number; revoked_at: number | null }
@@ -192,6 +192,8 @@ async function snapshotOf(store: Pick<ShareStore, "shareMessages" | "shareReques
 export interface ShareDeps {
   /** Is this user in the server? Throws when Discord cannot say. Private chat links need it; without it they are not served. */
   member?: (user: string, server: string) => Promise<boolean>;
+  /** Can this user sign in (share a server with Slopbot)? Personal chat links need it for the owner; without it they are not served. */
+  canSignIn?: (user: string) => Promise<boolean>;
   store: ShareStore & {
     setting(server: string, key: string): unknown;
     taskThreads(server: string): { thread: string; parent: string }[];
@@ -210,17 +212,19 @@ export class ShareService {
   constructor(private readonly deps: ShareDeps) { this.now = deps.now ?? Date.now; }
 
   /**
-   * Is the chat owner still in the home server? Cached for MEMBER_CACHE_MS so a busy link does not call Discord each time.
+   * Is the chat owner still in the home server (a personal chat: can the owner still sign in)? Cached for MEMBER_CACHE_MS so a busy link does not call Discord each time.
    * A Discord error is not cached and throws 503.
    */
   private async ownerIsMember(owner: string, server: string): Promise<boolean> {
-    if (!this.deps.member) return false;
+    const inServer = this.deps.member;
+    const check = server === PERSONAL_SERVER ? this.deps.canSignIn : inServer && ((user: string) => inServer(user, server));
+    if (!check) return false;
     const key = `${server}:${owner}`, now = this.now();
     const hit = this.memberCache.get(key);
     if (hit && now - hit.at < MEMBER_CACHE_MS) return hit.member;
     let member: boolean;
     try {
-      member = await this.deps.member(owner, server);
+      member = await check(owner);
     } catch {
       throw new ShareError(503, "Could not check the server right now. Try again.");
     }

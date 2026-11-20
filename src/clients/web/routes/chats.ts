@@ -55,7 +55,7 @@ export function chatRoutes(service: WebChatService): ChatRoutes {
   app.post('/', async c => {
     const input = check(createBody, looseBody(c.get('body')));
     if ('error' in input) return input.error;
-    return json(201, await service.create(userOf(c), String(input.value.server ?? ''), input.value.project));
+    return json(201, await service.create(userOf(c), input.value.project));
   });
 
   app.post('/:id/images', async c => json(201, await service.uploadImage(userOf(c), c.req.param('id'), c.get('body') as Buffer, c.req.query('name') ?? null)));

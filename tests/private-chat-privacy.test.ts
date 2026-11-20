@@ -1,3 +1,4 @@
+import { PERSONAL_SERVER } from "../src/personal.js";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -287,7 +288,7 @@ test("continued share has no file labels", async t => {
   });
   const chats = new WebChatService(store, host, () => 2_000);
   const { id } = await chats.continueShare("alice", "share-old", { snapshot: async () => snapshot } as never);
-  const saved = await store.conversationMessages(guild, privateChannel(id), undefined, 10);
+  const saved = await store.conversationMessages(PERSONAL_SERVER, privateChannel(id), undefined, 10);
   assert.deepEqual(saved.map(message => message.text), ["look"], "the copied text has no label");
 });
 

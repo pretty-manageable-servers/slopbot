@@ -1,3 +1,4 @@
+import { PERSONAL_SERVER } from "../src/personal.js";
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
@@ -57,7 +58,7 @@ async function setup(t: TestContext) {
   }
   const web = createConsole({ origin: ORIGIN, host: "127.0.0.1", port: 3000, clientId: "id", clientSecret: "secret", nextDir: NEXT_DIR }, {
     sessions: store, async canSignIn() { return true; }, async snapshot() { return {}; }, async invoke() { return {}; }, chats: createChatRoutes(service),
-    shares: new ShareService({ store, access: host.access, rule: { manager: async () => false }, member: async (user: string) => members.has(user), images: storage }) as never,
+    shares: new ShareService({ store, access: host.access, rule: { manager: async () => false }, member: async (user: string) => members.has(user), canSignIn: async (user: string) => members.has(user), images: storage }) as never,
     conversations: createTranscripts({ store, access: host.access, configured: () => [], channelName: async () => undefined, ownsPrivateChat: (server, channel, user) => service.owns(user, server, channel) }),
   });
   web.listen(0, "127.0.0.1");
@@ -75,7 +76,7 @@ async function setup(t: TestContext) {
     const text = raw.toString();
     return { status: response.status, raw, type: response.headers.get("content-type"), json: response.headers.get("content-type")?.includes("json") && text ? JSON.parse(text) : undefined };
   };
-  const chat = async (user = ALICE) => (await call(user, "POST", "/api/chats", { server: SERVER })).json.id as string;
+  const chat = async (user = ALICE) => (await call(user, "POST", "/api/chats", {})).json.id as string;
   const upload = (user: string, id: string, bytes: Buffer, name = "shot.png", type = "image/png") => call(user, "POST", `/api/chats/${id}/images?name=${name}`, bytes, type);
   return { store, storage, received, limit, members, raw, call, chat, upload };
 }
@@ -86,7 +87,7 @@ test("upload accepts a real image, rejects wrong magic bytes and a non-image typ
   assert.equal(ok.status, 201);
   assert.equal(ok.json.contentType, "image/png");
   assert.match(ok.json.imageId, /^[0-9a-f]{32}\.png$/);
-  assert.ok([...f.storage.objects.keys()].every(key => key.startsWith(`web-chats/${SERVER}/${id}/`)));
+  assert.ok([...f.storage.objects.keys()].every(key => key.startsWith(`web-chats/${PERSONAL_SERVER}/${id}/`)));
   assert.equal((await f.upload(ALICE, id, Buffer.from("<html>not an image</html>"))).status, 415);
   assert.equal((await f.upload(ALICE, id, PNG, "x.png", "text/plain")).status, 415);
 });
@@ -136,9 +137,20 @@ test("a sent image reaches the model as a link, and the stored rows hold only a 
   const rows = await f.call(ALICE, "GET", `/api/chats/${id}/messages`);
   const message = rows.json.messages[0];
   assert.deepEqual(message.images, [{ imageId: up.json.imageId, name: "cat.png", contentType: "image/png", size: PNG.length }]);
-  const stored = JSON.stringify(await f.store.canonicalMessage(SERVER, sent.json.id));
+  const stored = JSON.stringify(await f.store.canonicalMessage(PERSONAL_SERVER, sent.json.id));
   assert.ok(!stored.includes("base64") && !stored.includes("modelImages") && !stored.includes("storage.example"));
   assert.ok(!JSON.stringify(rows.json).includes("storage.example"));
+});
+
+test("old chat images still load from the server they were stored under", async t => {
+  const f = await setup(t);
+  const bytes = new Uint8Array(PNG), imageId = `${"a".repeat(32)}.png`;
+  // An old chat keeps its own server in the keys. A moved chat (storageServer set) keeps the keys it had before the move.
+  for (const [id, server, storageServer] of [["1".repeat(32), SERVER, null], ["2".repeat(32), PERSONAL_SERVER, SERVER]] as const) {
+    await f.store.insertWebChat({ id, server, owner: ALICE, title: "old", created: 1, updated: 1, deleted: false, storageServer, titleSource: "auto" });
+    await f.storage.put(`web-chats/${SERVER}/${id}/${imageId}`, bytes);
+    assert.equal((await f.call(ALICE, "GET", `/api/chats/${id}/images/${imageId}`)).status, 200, `${server} chat`);
+  }
 });
 
 test("only the owner reads an image, and deleting the chat deletes the objects", async t => {
