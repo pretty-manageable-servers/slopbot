@@ -24,6 +24,7 @@ import type { ProjectChats, ProjectStore } from "../../projects.js";
 export interface ChatStore extends TranscriptStore, ShareStore {
   ingest(message: Message): Promise<boolean>;
   insertWebChat(row: WebChatRow): Promise<void>;
+  setWebChatTitle(id: string, title: string, source: "model" | "user", updated: number): Promise<void>;
   webChat(id: string): Promise<WebChatRow | undefined>;
   webChats(owner: string): Promise<WebChatRow[]>;
   webChatsInProject(owner: string, project: string): Promise<WebChatRow[]>;
@@ -146,7 +147,7 @@ export class WebChatService implements ProjectChats {
     if (project !== undefined) await this.ownedProject(user, project);
     const workspace = await this.handle(server);
     const id = newPrivateChatId(), at = this.now();
-    await this.store.insertWebChat({ id, server, owner: user, title: "", created: at, updated: at, deleted: false, ...(project !== undefined ? { project } : {}) });
+    await this.store.insertWebChat({ id, server, owner: user, title: "", created: at, updated: at, deleted: false, storageServer: null, titleSource: "auto", ...(project !== undefined ? { project } : {}) });
     workspace.openChat(privateChannel(id));
     return { id };
   }
@@ -210,7 +211,7 @@ export class WebChatService implements ProjectChats {
     // A message with no text (only images) is not copied. Images are never copied. File labels are not copied (an old snapshot can still have them).
     const messages = copy.messages.map(item => ({ ...item, text: withoutFileLabelText(item.text) })).filter(item => item.text.trim());
     const title = privateChatTitle(messages[0]?.text ?? "");
-    await this.store.insertWebChat({ id, server: row.server, owner: user, title, created: at, updated: at, deleted: false });
+    await this.store.insertWebChat({ id, server: row.server, owner: user, title, created: at, updated: at, deleted: false, storageServer: null, titleSource: "auto" });
     const slopbot = slopbotId(this.store, row.server) ?? "slopbot";
     // Each copied row gets a new ID. Slopbot replies keep the Slopbot author, so the model reads them as its own answers.
     for (const [index, item] of messages.entries()) {
@@ -238,7 +239,7 @@ export class WebChatService implements ProjectChats {
     const workspace = await this.handle(server);
     const id = newPrivateChatId(), channel = privateChannel(id), at = this.now();
     const text = source.text;
-    await this.store.insertWebChat({ id, server, owner: user, title: privateChatTitle(text), created: at, updated: at, deleted: false });
+    await this.store.insertWebChat({ id, server, owner: user, title: privateChatTitle(text), created: at, updated: at, deleted: false, storageServer: null, titleSource: "auto" });
     await this.store.ingest({
       id: `chat-message-${randomUUID()}`, server, channel, author: source.author,
       ...(source.authorName ? { authorName: source.authorName } : {}), ...(source.isBot ? { isBot: true } : {}),

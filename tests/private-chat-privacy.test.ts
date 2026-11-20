@@ -46,7 +46,7 @@ function discordMessage(id: string, text: string, author = "bob", timestamp = 2_
 async function seed(store: SQLiteStore): Promise<{ web: Message; plain: Message }> {
   const web = webMessage("web-secret");
   const plain = discordMessage("plain-1", "the team picked the beach");
-  await store.insertWebChat({ id: "0123456789abcdef0123456789abcdef", server, owner: "alice", title: "", created: 1, updated: 1, deleted: false });
+  await store.insertWebChat({ id: "0123456789abcdef0123456789abcdef", server, owner: "alice", title: "", created: 1, updated: 1, deleted: false, storageServer: null, titleSource: "auto" });
   await store.ingest(web);
   await store.ingest(plain);
   return { web, plain };
@@ -171,11 +171,11 @@ test("a private chat is shared by its owner only, as a snapshot, and deleting it
   const store = new SQLiteStore(); t.after(() => store.close());
   // Share routes need a real server ID. This test uses one for every row.
   const guild = "1528063444874432734";
-  await store.insertWebChat({ id: "0123456789abcdef0123456789abcdef", server: guild, owner: "alice", title: "", created: 1, updated: 1, deleted: false });
+  await store.insertWebChat({ id: "0123456789abcdef0123456789abcdef", server: guild, owner: "alice", title: "", created: 1, updated: 1, deleted: false, storageServer: null, titleSource: "auto" });
   await store.ingest({ ...webMessage("web-secret"), server: guild });
   await store.ingest({ ...discordMessage("plain-1", "the team picked the beach"), server: guild });
   // A second private chat of Carol. Its text must never reach Alice's link.
-  await store.insertWebChat({ id: "fedcba9876543210fedcba9876543210", server: guild, owner: "carol", title: "", created: 1, updated: 1, deleted: false });
+  await store.insertWebChat({ id: "fedcba9876543210fedcba9876543210", server: guild, owner: "carol", title: "", created: 1, updated: 1, deleted: false, storageServer: null, titleSource: "auto" });
   await store.ingest({ ...webMessage("web-other", "carol budget note", otherChat, "carol"), server: guild });
   const members = new Set(["alice", "bob", "carol", "manager"]);
   const host = chatDeps({
@@ -223,7 +223,7 @@ test("a private chat is shared by its owner only, as a snapshot, and deleting it
 
 test("a private chat never gets a JEV participation decision", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
-  await store.insertWebChat({ id: "0123456789abcdef0123456789abcdef", server, owner: "alice", title: "", created: 1, updated: 1, deleted: false });
+  await store.insertWebChat({ id: "0123456789abcdef0123456789abcdef", server, owner: "alice", title: "", created: 1, updated: 1, deleted: false, storageServer: null, titleSource: "auto" });
   const app = new Application(store, new FakeLLM(), { allowedChannels: [{ server, channel: discord }] });
   const outputs: string[] = [];
   const gateway: ChatGateway = {

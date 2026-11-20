@@ -65,7 +65,7 @@ async function setup(t: TestContext): Promise<Fixture> {
 
   const chat = randomBytes(16).toString("hex");
   const channel = privateChannel(chat);
-  await store.insertWebChat({ id: chat, server: SERVER, owner: OWNER, title: "Bug", created: now, updated: now, deleted: false });
+  await store.insertWebChat({ id: chat, server: SERVER, owner: OWNER, title: "Bug", created: now, updated: now, deleted: false, storageServer: null, titleSource: "auto" });
   // Two messages the draft cites. They are stored in the chat, as the web chat saves its messages.
   const cites: Message[] = [
     { server: SERVER, channel, id: "30000000000000001", author: OWNER, text: "The PNG upload fails", timestamp: now - 2000 },

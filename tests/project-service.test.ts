@@ -53,6 +53,8 @@ function fakeKnowledge(events: string[], rows: MemoryRecord[]) {
   const live = (server: string, channel: string) => rows.filter(memory => memory.server === server && memory.channel === channel && memory.status === 'active');
   const knowledge: Knowledge = {
     async remember() { throw new Error('not used'); },
+    async userMemories() { throw new Error('not used'); },
+    async forgetOwn() { throw new Error('not used'); },
     async memories(server, channel) { return live(server, channel); },
     async searchMemories() { return []; },
     async updateMemory(message, id, patch, expectedRevision) {

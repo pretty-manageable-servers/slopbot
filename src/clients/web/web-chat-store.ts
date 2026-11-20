@@ -6,18 +6,18 @@ export interface ChatDb {
 
 import { parseEffort, type Effort } from "../../domain.js";
 
-/** One private chat. `channel` is `web:<id>`. */
-export interface WebChatRow { id: string; server: string; owner: string; title: string; created: number; updated: number; deleted: boolean; effort?: Effort; project?: string }
+/** One private chat. `channel` is `web:<id>`. storageServer null = the chat's server, for its image and file keys. */
+export interface WebChatRow { id: string; server: string; owner: string; title: string; created: number; updated: number; deleted: boolean; effort?: Effort; project?: string; storageServer: string | null; titleSource: "auto" | "model" | "user" }
 
-const COLUMNS = "id,server,owner,title,created,updated,deleted,effort,project";
+const COLUMNS = "id,server,owner,title,created,updated,deleted,effort,project,storage_server,title_source";
 
 function chatOf(row: Record<string, unknown>): WebChatRow {
-  return { id: String(row.id), server: String(row.server), owner: String(row.owner), title: String(row.title), created: Number(row.created), updated: Number(row.updated), deleted: Number(row.deleted) === 1, ...(parseEffort(row.effort) ? { effort: parseEffort(row.effort)! } : {}), ...(row.project ? { project: String(row.project) } : {}) };
+  return { id: String(row.id), server: String(row.server), owner: String(row.owner), title: String(row.title), created: Number(row.created), updated: Number(row.updated), deleted: Number(row.deleted) === 1, ...(parseEffort(row.effort) ? { effort: parseEffort(row.effort)! } : {}), ...(row.project ? { project: String(row.project) } : {}), storageServer: row.storage_server == null ? null : String(row.storage_server), titleSource: row.title_source === "model" || row.title_source === "user" ? row.title_source : "auto" };
 }
 
 export async function insertWebChat(db: ChatDb, row: WebChatRow): Promise<void> {
-  await db.prepare("INSERT INTO web_chats(id,server,owner,title,created,updated,deleted,project) VALUES(?,?,?,?,?,?,?,?)")
-    .run(row.id, row.server, row.owner, row.title, row.created, row.updated, row.deleted ? 1 : 0, row.project ?? null);
+  await db.prepare("INSERT INTO web_chats(id,server,owner,title,created,updated,deleted,project,storage_server,title_source) VALUES(?,?,?,?,?,?,?,?,?,?)")
+    .run(row.id, row.server, row.owner, row.title, row.created, row.updated, row.deleted ? 1 : 0, row.project ?? null, row.storageServer, row.titleSource);
 }
 
 /** A chat that was deleted is still returned here, with deleted set, so callers can refuse it. */
@@ -46,6 +46,28 @@ export async function liveWebChatChannels(db: ChatDb, server: string): Promise<s
 
 export async function renameWebChat(db: ChatDb, id: string, title: string, updated: number): Promise<void> {
   await db.prepare("UPDATE web_chats SET title=?, updated=? WHERE id=?").run(title, updated, id);
+}
+
+/** Sets the title and where it came from. */
+export async function setWebChatTitle(db: ChatDb, id: string, title: string, source: "model" | "user", updated: number): Promise<void> {
+  await db.prepare("UPDATE web_chats SET title=?, title_source=?, updated=? WHERE id=?").run(title, source, updated, id);
+}
+
+/** Bytes of text per token, measured for one chat. null in the database means the default. */
+export async function setBytesPerToken(db: ChatDb, chat: string, ratio: number): Promise<void> {
+  await db.prepare("UPDATE web_chats SET bytes_per_token=? WHERE id=?").run(ratio, chat);
+}
+
+/** The newest summary of a web chat. */
+export async function webChatSummary(db: ChatDb, chat: string): Promise<{ throughMessage: string; throughTimestamp: number; summary: string } | undefined> {
+  const row = await db.prepare("SELECT through_message,through_timestamp,summary FROM web_chat_summaries WHERE chat=? ORDER BY created DESC LIMIT 1").get(chat);
+  return row ? { throughMessage: String(row.through_message), throughTimestamp: Number(row.through_timestamp), summary: String(row.summary) } : undefined;
+}
+
+export async function saveWebChatSummary(db: ChatDb, chat: string, row: { throughMessage: string; throughTimestamp: number; summary: string; runId: string }): Promise<void> {
+  // A second save in the same millisecond replaces the first, so the newest summary always wins.
+  await db.prepare("INSERT INTO web_chat_summaries(chat,through_message,through_timestamp,summary,run_id,created) VALUES(?,?,?,?,?,?) ON CONFLICT(chat,created) DO UPDATE SET through_message=excluded.through_message, through_timestamp=excluded.through_timestamp, summary=excluded.summary, run_id=excluded.run_id")
+    .run(chat, row.throughMessage, row.throughTimestamp, row.summary, row.runId, Date.now());
 }
 
 export async function touchWebChat(db: ChatDb, id: string, updated: number): Promise<void> {

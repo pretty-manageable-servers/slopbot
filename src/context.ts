@@ -40,5 +40,17 @@ export class ByteTokenCounter implements TokenCounter {
   }
 }
 
+/** Bytes of text per token when a chat has no calibrated ratio. */
+export const DEFAULT_BYTES_PER_TOKEN = 3;
+
+/** Turns another counter's bytes into tokens with the ratio measured for one chat. */
+export class CalibratedTokenCounter implements TokenCounter {
+  readonly name: string;
+  constructor(private readonly inner: TokenCounter, private readonly bytesPerToken: number) { this.name = `calibrated-${inner.name}`; }
+  count(items: readonly PromptItem[]): number {
+    return Math.ceil(this.inner.count(items) / this.bytesPerToken);
+  }
+}
+
 export interface HistoryEntry { sequence: number; item: PromptItem }
 export interface TaskContext { checkpoint: PromptItem | null; entries: HistoryEntry[] }

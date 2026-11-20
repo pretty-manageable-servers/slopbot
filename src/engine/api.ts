@@ -2,6 +2,7 @@ import type { EngineEnvelope, EngineEvent, Surface, TimedEngineEvent } from "@sl
 import type { Message } from "../domain.js";
 import type { MemberProfile } from "../member-directory.js";
 import { isDirectMessageChannel, isPrivateChannel } from "../private-chat.js";
+import { isIncognitoChannel } from "../personal.js";
 import type { UiDocument } from "../ui/schema.js";
 
 /** One Discord server's engine: what DiscordServer owns today, without discord.js. */
@@ -40,6 +41,7 @@ export interface Directory {
 
 /** The surface of a message. Clients set message.surface. Old saved messages: derived from the channel. */
 export function surfaceOf(message: Pick<Message, "channel" | "surface">): Surface {
+  if (isIncognitoChannel(message.channel)) return "web-incognito";
   if (message.surface) return message.surface;
   if (isDirectMessageChannel(message.channel)) return "discord-dm";
   if (isPrivateChannel(message.channel)) return "web";

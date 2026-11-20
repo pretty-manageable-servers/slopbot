@@ -61,7 +61,7 @@ test("nothing is counted without a payer, such as an admin reindex", async t => 
 
 test("deleting a private chat and purging channels never reduce the totals", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
-  await store.insertWebChat({ id: "0123456789abcdef0123456789abcdef", server, owner: alice, title: "", created: 1, updated: 1, deleted: false });
+  await store.insertWebChat({ id: "0123456789abcdef0123456789abcdef", server, owner: alice, title: "", created: 1, updated: 1, deleted: false, storageServer: null, titleSource: "auto" });
   await store.ingest(webMessage("web-secret"));
   await meterFor(store).record({ server, user: alice }, "nimbus", usage(1000, 400, 100));
   const counted = await store.userTokenTotals(server, alice);
