@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import type { Message } from "../src/domain.js";
+import { UserFileStorage, objectStorageTools } from "../src/object-storage.js";
+import { INCOGNITO_SERVER, incognitoChannel } from "../src/personal.js";
 import { directMessageChannel, privateChannel } from "../src/private-chat.js";
+import { registerHistoryTools } from "../src/search/history-search.js";
+import { sandboxManageTool } from "../src/sandbox.js";
+import { sandboxFileTools } from "../src/sandbox-tools.js";
 import { ToolError, ToolRegistry, discordOnlyMessage, webOnlyMessage, type ToolDefinition } from "../src/tools.js";
 import { registerShowUiTool } from "../src/ui/show-ui.js";
 import { registerShowWidgetTool } from "../src/ui/show-widget.js";
@@ -15,6 +20,7 @@ const discordChannel: Message = { id: "m1", server: "s", channel: guild, author:
 const directMessage: Message = { id: "m2", server: "s", channel: dm, author: "alice", text: "hi", surface: "discord-dm" };
 const webMessage: Message = { id: "m3", server: "s", channel: webChat, author: "alice", text: "hi", surface: "web" };
 const oldWebMessage: Message = { id: "m4", server: "s", channel: "web:abc", author: "alice", text: "hi" };
+const incognito: Message = { id: "m5", server: INCOGNITO_SERVER, channel: incognitoChannel("0123456789abcdef0123456789abcdef"), author: "alice", text: "hi", surface: "web-incognito" };
 
 async function registry(t: TestContext): Promise<ToolRegistry> {
   const store = new SQLiteStore(); t.after(() => store.close());
@@ -52,4 +58,38 @@ test("a surface that lacks a capability is refused the tool with that capability
   for (const [name, message, tool, input, expected] of cases) {
     await assert.rejects(tools.invokeResult(message, tool, input, `op-${name}`, "agent"), (error: unknown) => error instanceof ToolError && error.message === expected, name);
   }
+});
+
+const historyTools = ["history_read", "history_search"];
+const fileTools = ["edit", "file_store", "file_store_write", "read", "sandbox_manage", "shell", "write"];
+
+async function historyAndFileTools(t: TestContext): Promise<ToolRegistry> {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const tools = new ToolRegistry(store, async () => true);
+  registerHistoryTools(tools, { store, authorize: async () => {} });
+  for (const tool of sandboxFileTools(store)) tools.register(tool);
+  tools.register(sandboxManageTool(store));
+  for (const tool of objectStorageTools({ storage: new UserFileStorage(store), authorize: async () => {}, resolveAttachment: async message => message, inspect: async () => "", send: async () => {} })) tools.register(tool);
+  return tools;
+}
+
+test("web is not offered history tools", async t => {
+  const tools = await historyAndFileTools(t);
+  const offered = tools.schemas(webMessage).map(item => item.function.name);
+  assert.deepEqual(offered.filter(name => historyTools.includes(name)), []);
+});
+
+test("discord and dm keep history tools", async t => {
+  const tools = await historyAndFileTools(t);
+  for (const message of [discordChannel, directMessage]) {
+    const offered = tools.schemas(message).map(item => item.function.name);
+    assert.deepEqual(offered.filter(name => historyTools.includes(name)).sort(), historyTools, message.surface);
+  }
+});
+
+test("web-incognito gets no file tools, while a web chat does", async t => {
+  const tools = await historyAndFileTools(t);
+  const offered = (message: Message) => tools.schemas(message).map(item => item.function.name);
+  assert.ok(offered(webMessage).includes("shell"));
+  assert.deepEqual(offered(incognito).filter(name => fileTools.includes(name)), []);
 });

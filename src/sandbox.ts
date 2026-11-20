@@ -87,7 +87,7 @@ export function sandboxManageTool(store: RecordStore, provider?: SandboxProvider
   const listTemplates = provider?.listTemplates?.bind(provider);
   const catalog = listTemplates ? new TemplateCatalog(() => listTemplates()) : undefined;
   return {
-    name: 'sandbox_manage',
+    name: 'sandbox_manage', needs: ['files'],
     description: 'Manage the sandbox of this task: templates lists the templates this PMServers project can start; build_template builds a template from apt and pip packages for later sandboxes; status shows the task sandbox; close deletes its files and processes. The read, write, edit and shell tools start the sandbox. Template sandboxes run as a non-root user in its home directory; sudo is unavailable, so install packages at build time.',
     fields: {
       action: { type: 'string', required: true, choices: ['templates', 'build_template', 'status', 'close'], description: 'templates lists templates; build_template builds one; status shows the task sandbox; close deletes it and its files' },
