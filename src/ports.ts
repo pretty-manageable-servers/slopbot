@@ -2,6 +2,7 @@ import type { TaskContext } from "./context.js";
 import type { ToolCall, ToolOutput } from "./tools.js";
 import type { Message, ModelEvent, Prompt, PromptItem, Reply } from "./domain.js";
 import type { ProviderKeyStore } from "./web-providers.js";
+import type { WebChatRow } from "./clients/web/web-chat-store.js";
 
 export interface LLM {
   // The model id that prices this LLM's calls. Unnamed LLMs get the fallback price.
@@ -28,6 +29,8 @@ export interface Store extends ProviderKeyStore {
   webChatSummary(chat: string): Promise<{ throughMessage: string; throughTimestamp: number; summary: string } | undefined>;
   saveWebChatSummary(chat: string, row: { throughMessage: string; throughTimestamp: number; summary: string; runId: string }): Promise<void>;
   setBytesPerToken(chat: string, ratio: number): Promise<void>;
+  // The web chat row, with its bytesPerToken when set. Optional: without it a chat uses DEFAULT_BYTES_PER_TOKEN.
+  webChat?(id: string): Promise<WebChatRow | undefined>;
   history(taskKey: string): Promise<readonly PromptItem[]>;
   taskContext(taskKey: string): Promise<TaskContext>;
   checkpoint(taskKey: string, through: number, item: PromptItem, runId: string): Promise<void>;
