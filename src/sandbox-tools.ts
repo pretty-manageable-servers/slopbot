@@ -47,7 +47,7 @@ async function workspace(store: RecordStore, provider: SandboxProvider | undefin
 function readTool(store: RecordStore, provider?: SandboxProvider, profile?: SandboxProfile): ToolDefinition {
   return {
     name: 'read',
-    surface: 'top',
+    surface: 'top', needs: ['files'],
     description: 'Read a text file in the sandbox. Returns numbered lines, at most 16000 characters. Relative paths start in your home directory. Use offset and limit to read long files in parts.',
     fields: {
       path: { type: 'string', required: true, max: pathCharacters, description: 'File path. Absolute, or relative to your home directory.' },
@@ -84,7 +84,7 @@ function readTool(store: RecordStore, provider?: SandboxProvider, profile?: Sand
 function writeTool(store: RecordStore, provider?: SandboxProvider, profile?: SandboxProfile): ToolDefinition {
   return {
     name: 'write',
-    surface: 'top',
+    surface: 'top', needs: ['files'],
     description: 'Create or replace a text file in the sandbox. Creates parent directories. Relative paths start in your home directory. Content is at most 64000 characters.',
     fields: {
       path: { type: 'string', required: true, max: pathCharacters, description: 'File path. Absolute, or relative to your home directory.' },
@@ -112,7 +112,7 @@ function writeTool(store: RecordStore, provider?: SandboxProvider, profile?: San
 function editTool(store: RecordStore, provider?: SandboxProvider, profile?: SandboxProfile): ToolDefinition {
   return {
     name: 'edit',
-    surface: 'top',
+    surface: 'top', needs: ['files'],
     description: 'Replace text in a sandbox file. old_string must match the file exactly and occur once, unless replace_all is true. Relative paths start in your home directory.',
     fields: {
       path: { type: 'string', required: true, max: pathCharacters, description: 'File path. Absolute, or relative to your home directory.' },
@@ -147,7 +147,7 @@ function editTool(store: RecordStore, provider?: SandboxProvider, profile?: Sand
 function shellTool(store: RecordStore, provider?: SandboxProvider, profile?: SandboxProfile): ToolDefinition {
   return {
     name: 'shell',
-    surface: 'top',
+    surface: 'top', needs: ['files'],
     description: 'Run a shell command in the sandbox. Returns the exit code, stdout and stderr, each at most 16000 characters. Runs as the sandbox user in its home directory. Files from earlier calls stay in the sandbox.',
     fields: {
       command: { type: 'string', required: true, max: commandCharacters, description: 'Shell command to run in the sandbox.' },

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { PERSONAL_SERVER } from '../src/personal.js';
 import { DEFAULT_PROJECT_LIMITS, PROJECT_ID, PROJECT_MEMORY_SERVER, hasProjectStore, memoryScope, newProjectId, projectBlock, projectFileKey, projectLimits, type Project, type ProjectFile } from '../src/projects.js';
 
 const project: Project = { id: 'a'.repeat(32), owner: 'ana', name: 'Thesis', description: '', instructions: '', instructionsUpdated: null, created: 1, updated: 1 };
@@ -11,9 +12,9 @@ test('projectLimits defaults bad fields and clamps integers', () => {
   assert.deepEqual(projectLimits({ maxProjects: 0, maxFiles: 9999, maxFileBytes: 1, maxProjectBytes: 5 * 1024 ** 3 }), { maxProjects: 1, maxFiles: 500, maxFileBytes: 1024, maxProjectBytes: 2 * 1024 ** 3 });
 });
 
-test('memoryScope uses the project scope only in project chats', () => {
-  assert.deepEqual(memoryScope({ server: 's1', channel: 'web:c1' }), { server: 's1', channel: 'web:c1' });
-  assert.deepEqual(memoryScope({ server: 's1', channel: 'web:c1', project: project.id }), { server: PROJECT_MEMORY_SERVER, channel: `project:${project.id}` });
+test('memoryScope is the first scope: the project in project chats, else the personal scope', () => {
+  assert.deepEqual(memoryScope({ server: 's1', channel: 'web:c1', author: 'ana' }), { server: PERSONAL_SERVER, channel: 'user:ana' });
+  assert.deepEqual(memoryScope({ server: 's1', channel: 'web:c1', author: 'ana', project: project.id }), { server: PROJECT_MEMORY_SERVER, channel: `project:${project.id}` });
 });
 
 test('ids, keys and store guard', () => {

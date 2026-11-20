@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { SQLiteStore } from '../src/adapters/sqlite.js';
 import { Application } from '../src/application.js';
 import type { Json } from '../src/domain.js';
+import { INCOGNITO_SERVER, incognitoChannel } from '../src/personal.js';
 import { programText, runToolsCodeTool } from '../src/run-tools-code.js';
 import type { SandboxProvider, SandboxSession } from '../src/sandbox.js';
 import { ToolRegistry, type ToolContext, type ToolDefinition, type ToolExecutor, type ToolResult } from '../src/tools.js';
@@ -93,6 +94,26 @@ test('save_to_sandbox_writes', async t => {
   assert.equal(files.get('/home/user/notes/a.txt'), '{"x":1}');
   assert.equal(files.get('/home/user/b.txt'), 'plain');
   assert.equal(files.has('/etc/x'), false);
+});
+
+test('save_to_sandbox_refused_in_web_incognito', async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const files = new Map<string, string>();
+  const session: SandboxSession = {
+    id: 'workspace-1',
+    async run() { return { stdout: '', stderr: '', exitCode: 0 }; },
+    async read() { return ''; },
+    async readBytes() { return new Uint8Array(); },
+    async write(path, data) { files.set(path, String(data)); },
+    async renew() {}, async close() {},
+  };
+  const sandbox: SandboxProvider = { defaultTemplate: 'base', async create() { return session; }, async connect() { return session; } };
+  const registry = new ToolRegistry(store, async () => true);
+  registry.register(runToolsCodeTool(registry, { store, sandbox }));
+  const incognitoRequest = { server: INCOGNITO_SERVER, channel: incognitoChannel('0123456789abcdef0123456789abcdef'), id: 'm', author: 'alice', text: 'Save it.', surface: 'web-incognito' as const };
+  const result = await registry.invokeResult(incognitoRequest, 'run_tools_code', { code: 'await save_to_sandbox("notes/a.txt", "x");' }, 'incognito-save', 'agent');
+  assert.match(result.text, /Program failed: .*not available in this chat/);
+  assert.equal(files.size, 0);
 });
 
 test('write_tool_allowed and write_retry_same_operation_id', async t => {
