@@ -13,6 +13,7 @@ import { ToolError, discordOnlyMessage, type ToolCall, type ToolRegistry, type T
 import type { ParticipationGate } from "./participation.js";
 import { UserLimitError, limitReply } from "./user-limiter.js";
 import { isPrivateChannel } from "./private-chat.js";
+import { memoryScopes } from "./projects.js";
 import { renderTranscript, saveTaskRefs, type SettingsPort } from "./transcript.js";
 import { slopbotId, type SettingReader } from "./run-events.js";
 import { DEFAULT_STATUS_NOTE_MINUTES, DEGRADED_NOTE, type LlmMode, type LlmRouter } from "./llm-mode.js";
@@ -202,11 +203,15 @@ export class Bot {
         const note = await this.options.knowledge.remember(message, value);
         await this.send(message, `Saved as your statement, not a group agreement. Memory ID: ${note.id}`);
       } else if (kind === "forget") {
-        const forgotten = await this.options.knowledge.forget(message.server, message.channel, value, message.author);
-        await this.send(message, forgotten ? "Memory forgotten." : "No active memory with that ID owned by you in this channel.");
+        let forgotten = false;
+        for (const scope of memoryScopes(message)) {
+          if (await this.options.knowledge.forget(scope.server, scope.channel, value, message.author)) { forgotten = true; break; }
+        }
+        await this.send(message, forgotten ? "Memory forgotten." : "No active memory with that ID owned by you here.");
       } else {
-        const notes = await this.options.knowledge.memories(message.server, message.channel);
-        await this.send(message, notes.length ? notes.slice(0, 20).map(note => `${note.id} | author ${note.author} | ${note.content}`).join("\n") : "No active saved memories in this channel.");
+        const notes = [];
+        for (const scope of memoryScopes(message)) notes.push(...await this.options.knowledge.memories(scope.server, scope.channel));
+        await this.send(message, notes.length ? notes.slice(0, 20).map(note => `${note.id} | author ${note.author} | ${note.content}`).join("\n") : "No active saved memories here.");
       }
       return;
     }

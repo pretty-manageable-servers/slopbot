@@ -163,6 +163,8 @@ export function runToolsCodeTool(registry: ToolRegistry, options: RunToolsCodeOp
           return { name: tool.name, description: tool.description, access: tool.access, effect: tool.effect, fields: tool.fields, inputSchema: tool.inputSchema ?? null, outputSchema: tool.outputSchema ?? null } as unknown as Json;
         }
         // save_to_sandbox
+        const refusal = surfaceRefusal(message, { needs: ['files'] });
+        if (refusal) throw new ToolError(refusal);
         const path = input.path, data = input.data;
         if (typeof path !== 'string' || path.length > 1024 || !('data' in input)) throw new ToolError('save_to_sandbox needs a path string and data.');
         if (!options.store || !options.sandbox) throw new ToolError('The sandbox is not available.', 'failed');
