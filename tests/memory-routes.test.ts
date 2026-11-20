@@ -122,3 +122,16 @@ test('delete needs the same origin and the CSRF token', async t => {
   assert.equal((await fetch(`${base}/api/memories/m1`, { method: 'DELETE', headers })).status, 403, 'no origin');
   assert.equal((await fetch(`${base}/api/memories/m1`, { method: 'DELETE', headers: { ...headers, Origin: ORIGIN, 'X-CSRF-Token': 'wrong' } })).status, 403, 'wrong CSRF token');
 });
+
+test('offset and limit page through the list', async t => {
+  const { call } = await setup(t, [
+    memory('m1', ALICE, 'One.', 'personal'),
+    memory('m2', ALICE, 'Two.', 'personal'),
+    memory('m3', ALICE, 'Three.', 'personal'),
+  ]);
+  const first = await call(ALICE, 'GET', '/api/memories?limit=2');
+  assert.equal(first.json.total, 3);
+  assert.deepEqual(first.json.items.map((item: { id: string }) => item.id), ['m1', 'm2']);
+  const second = await call(ALICE, 'GET', '/api/memories?limit=2&offset=2');
+  assert.deepEqual(second.json.items.map((item: { id: string }) => item.id), ['m3']);
+});

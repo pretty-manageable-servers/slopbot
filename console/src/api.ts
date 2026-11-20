@@ -120,7 +120,7 @@ export const api = {
   /** The live engine events of a chat. No position: the stream starts at the newest event. */
   eventsUrl: (id: string) => `${chat(id)}/events`,
   ...projectCalls,
-  /** The signed-in user's memories for the Memory page. The filters are a search text and a scope ("personal" or "project:<id>"). */
-  memoryList: (filter: { query?: string; scope?: string }) => get<MemoryList>(`/api/memories${qs(filter)}`),
+  /** The signed-in user's memories for the Memory page. The filters are a search text, a scope ("personal" or "project:<id>") and the offset of the page. */
+  memoryList: (filter: { query?: string; scope?: string; offset?: number }) => get<MemoryList>(`/api/memories${qs(filter)}`),
   deleteMemory: (id: string) => call<unknown>("DELETE", `/api/memories/${encodeURIComponent(id)}`),
 };

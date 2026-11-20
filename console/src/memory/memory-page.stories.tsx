@@ -60,3 +60,38 @@ export const Search: Story = {
     });
   },
 };
+
+/** More memories than one page: the first 50 show, and Show more loads the rest. The button goes once all are shown. */
+export const ShowMore: Story = {
+  parameters: {
+    msw: {
+      handlers: {
+        memories: http.get("/api/memories", ({ request }) => {
+          const offset = Number(new URL(request.url).searchParams.get("offset") ?? 0);
+          const items = Array.from({ length: 120 }, (_, index) => ({ id: `m${index + 1}`, content: `Memory ${index + 1}.`, category: "fact" as const, tags: [], scope: "personal", updated: 1_800_000_000_000 }));
+          return HttpResponse.json({ items: items.slice(offset, offset + 50), total: items.length });
+        }),
+      },
+    },
+  },
+  play: async ({ canvasElement, step }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await step("The first page shows 50 of 120, and Show more is there", async () => {
+      await expect(await page.findByText("Memory 50.")).toBeVisible();
+      await expect(page.queryByText("Memory 51.")).toBeNull();
+      await expect(page.getByText("120 memories")).toBeVisible();
+      await expect(page.getByRole("button", { name: "Show more" })).toBeVisible();
+    });
+    await step("Show more adds the next page, and stays while memories are left", async () => {
+      await userEvent.click(page.getByRole("button", { name: "Show more" }));
+      await expect(await page.findByText("Memory 100.")).toBeVisible();
+      await expect(page.getByText("Memory 51.")).toBeVisible();
+      await expect(page.getByRole("button", { name: "Show more" })).toBeVisible();
+    });
+    await step("The last page loads, and the button goes", async () => {
+      await userEvent.click(page.getByRole("button", { name: "Show more" }));
+      await expect(await page.findByText("Memory 120.")).toBeVisible();
+      await expect(page.queryByRole("button", { name: "Show more" })).toBeNull();
+    });
+  },
+};

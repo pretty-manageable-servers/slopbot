@@ -1,7 +1,7 @@
 // /memory: what Slopbot remembers about you, across your chats and projects. Search it, filter it by scope, and delete a
 // memory. There is no edit: a user changes a memory by telling Slopbot in a chat.
 import type { MemoryItem, MemoryList } from "@slopbot/contracts";
-import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData, type UseInfiniteQueryResult } from "@tanstack/react-query";
 import { ChatHeader, SidebarToggle } from "agentic-ui-kit";
 import { Badge, Button, EmptyState, SearchField, Select, confirm } from "slop-ui-components";
 import { useState } from "react";
@@ -24,9 +24,15 @@ export function MemoryPage() {
     { id: "personal", label: "Personal" },
     ...[...projectNames].map(([id, label]) => ({ id, label })),
   ];
-  const memories = useQuery({
+  // Each page is 50 memories. The next page starts after the loaded ones, until all of them are loaded.
+  const memories = useInfiniteQuery({
     queryKey: [...memoryKey, { search, scope }],
-    queryFn: () => api.memoryList({ query: search.trim(), scope: scope === ALL ? undefined : scope }),
+    queryFn: ({ pageParam }) => api.memoryList({ query: search.trim(), scope: scope === ALL ? undefined : scope, offset: pageParam }),
+    initialPageParam: 0,
+    getNextPageParam: (last, pages) => {
+      const loaded = pages.reduce((count, page) => count + page.items.length, 0);
+      return loaded < last.total ? loaded : undefined;
+    },
   });
   const filtered = search.trim() !== "" || scope !== ALL;
 
@@ -48,10 +54,11 @@ export function MemoryPage() {
 }
 
 /** The memories of the list. projectNames turns a project scope into the project's name. */
-function MemoryResults({ query, projectNames, filtered }: { query: UseQueryResult<MemoryList>; projectNames: Map<string, string>; filtered: boolean }) {
+function MemoryResults({ query, projectNames, filtered }: { query: UseInfiniteQueryResult<InfiniteData<MemoryList>>; projectNames: Map<string, string>; filtered: boolean }) {
   if (query.error) return <SectionNote>Memory is not available right now.</SectionNote>;
   if (!query.data) return <SectionNote>Loading…</SectionNote>;
-  const { items, total } = query.data;
+  const items = query.data.pages.flatMap((page) => page.items);
+  const total = query.data.pages[0]?.total ?? 0;
   if (items.length === 0) {
     return filtered
       ? <EmptyState headingLevel={2} title="No matches" description="Try another search or scope." />
@@ -63,6 +70,11 @@ function MemoryResults({ query, projectNames, filtered }: { query: UseQueryResul
       <ul aria-label="Memories" className="m-0 flex list-none flex-col divide-y divide-divider rounded-lg border border-border p-0">
         {items.map((item) => <MemoryRow key={item.id} item={item} scope={item.scope === "personal" ? "Personal" : projectNames.get(item.scope) ?? "Project"} />)}
       </ul>
+      {items.length < total && (
+        <div className="flex justify-center">
+          <Button variant="secondary" size="sm" isDisabled={query.isFetchingNextPage} onPress={() => void query.fetchNextPage()}>Show more</Button>
+        </div>
+      )}
     </>
   );
 }
