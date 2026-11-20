@@ -1,5 +1,5 @@
 import test, { type TestContext } from "node:test";
-import assert from "node:assert/strict";
+import { PERSONAL_SERVER } from "../src/personal.js";import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -66,8 +66,8 @@ async function setup(t: TestContext) {
 }
 
 /** A run saved before the engine log existed: a thinking step, one tool call with its result, and the reply text. */
-async function saveOldRun(store: SQLiteStore, channel: string, turn: string) {
-  const request: Message = { id: turn, server: SERVER, channel, author: ALICE, authorName: "Ada", text: "look it up", timestamp: 1000 };
+async function saveOldRun(store: SQLiteStore, channel: string, turn: string, server = SERVER) {
+  const request: Message = { id: turn, server, channel, author: ALICE, authorName: "Ada", text: "look it up", timestamp: 1000 };
   await store.startRun("run-old", request, { prefixVersion: "v1", prefix: [], history: [], inputs: [], purpose: "reply" });
   const events: ModelEvent[] = [
     { kind: "reasoning", payload: { reasoning_content: "hmm" } },
@@ -82,9 +82,9 @@ async function saveOldRun(store: SQLiteStore, channel: string, turn: string) {
 
 test("an old turn with no saved rows loads as events made from its runs; a turn with rows loads those rows", async t => {
   const f = await setup(t);
-  const created = await f.post(ALICE, "/api/chats", { server: SERVER });
+  const created = await f.post(ALICE, "/api/chats", {});
   const id = created.json.id as string, channel = `web:${id}`;
-  await saveOldRun(f.store, channel, "m-old");
+  await saveOldRun(f.store, channel, "m-old", PERSONAL_SERVER);
   const old = await f.get(ALICE, `/api/chats/${id}/turns/m-old/events`);
   assert.equal(old.status, 200);
   assert.deepEqual(old.json.events, [
@@ -96,8 +96,8 @@ test("an old turn with no saved rows loads as events made from its runs; a turn 
     { type: "turn.end", turn: "m-old", status: "done" },
   ]);
 
-  engineEvents.publish({ server: SERVER, channel }, { type: "turn.start", turn: "m-new" });
-  engineEvents.publish({ server: SERVER, channel }, { type: "text.delta", turn: "m-new", run: "r1", text: "Hi" });
+  engineEvents.publish({ server: PERSONAL_SERVER, channel }, { type: "turn.start", turn: "m-new" });
+  engineEvents.publish({ server: PERSONAL_SERVER, channel }, { type: "text.delta", turn: "m-new", run: "r1", text: "Hi" });
   await engineEvents.idle();
   assert.deepEqual((await f.get(ALICE, `/api/chats/${id}/turns/m-new/events`)).json.events, [
     { type: "turn.start", turn: "m-new" }, { type: "text.delta", turn: "m-new", run: "r1", text: "Hi" },
@@ -126,8 +126,8 @@ test("the conversation turn route loads an old turn from its runs and refuses a 
 
 test("the chat events stream replays saved events after ?after= and sends live ones with their seq", async t => {
   const f = await setup(t);
-  const id = (await f.post(ALICE, "/api/chats", { server: SERVER })).json.id as string, channel = `web:${id}`;
-  engineEvents.publish({ server: SERVER, channel }, { type: "turn.start", turn: "m1" });
+  const id = (await f.post(ALICE, "/api/chats", {})).json.id as string, channel = `web:${id}`;
+  engineEvents.publish({ server: PERSONAL_SERVER, channel }, { type: "turn.start", turn: "m1" });
   await engineEvents.idle();
   const controller = new AbortController();
   t.after(() => controller.abort());
@@ -143,7 +143,7 @@ test("the chat events stream replays saved events after ?after= and sends live o
     }
   };
   await until(/event: engine\ndata: .*"turn.start"/);
-  engineEvents.publish({ server: SERVER, channel }, { type: "text.delta", turn: "m1", run: "r1", text: "live" });
+  engineEvents.publish({ server: PERSONAL_SERVER, channel }, { type: "text.delta", turn: "m1", run: "r1", text: "live" });
   await until(/id: \d+\nevent: engine\ndata: .*"text":"live"/);
   controller.abort();
   const other = await fetch(`${f.base}/api/chats/${id}/events`, { headers: { Cookie: f.cookie(BOB) } });
