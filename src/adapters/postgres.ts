@@ -609,6 +609,10 @@ export class PostgresStore implements UserInstructionsStore, ProjectStore {
                 .all(server, channel, limit);
         return Promise.all(rows.map(row => this.namedMessage(parseMessage(JSON.parse(String(row.body))))));
     }
+    async firstConversationMessages(server: string, channel: string, limit: number): Promise<Message[]> {
+        const rows = await this.db.prepare("SELECT body FROM messages WHERE server=? AND channel=? ORDER BY COALESCE(json_extract(body,'$.timestamp'),0) ASC,id ASC LIMIT ?").all(server, channel, limit);
+        return Promise.all(rows.map(row => this.namedMessage(parseMessage(JSON.parse(String(row.body))))));
+    }
     // Conversations (see conversation-groups.ts). Reply runs only; participation runs are not conversations.
     async channelRuns(server: string, channel: string): Promise<ChannelRun[]> {
         // Only prompts with purpose reply. Participation classifier runs have no purpose, so they are not conversations.

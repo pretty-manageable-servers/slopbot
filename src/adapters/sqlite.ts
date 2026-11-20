@@ -782,6 +782,10 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
         .all(server, channel, limit);
     return rows.map(row => this.namedMessage(parseMessage(JSON.parse(String(row.body)))));
   }
+  async firstConversationMessages(server: string, channel: string, limit: number): Promise<Message[]> {
+    const rows = this.db.prepare("SELECT body FROM messages WHERE server=? AND channel=? ORDER BY COALESCE(json_extract(body,'$.timestamp'),0) ASC,id ASC LIMIT ?").all(server, channel, limit);
+    return rows.map(row => this.namedMessage(parseMessage(JSON.parse(String(row.body)))));
+  }
   // The messages of one channel that a reply run used. Participation runs are not reply runs, so they do not count.
   async usedSourceIds(server: string, channel: string, messageIds: readonly string[]): Promise<string[]> {
     if (!messageIds.length) return [];

@@ -20,7 +20,7 @@ class TitleLlm implements LLM {
   private release!: () => void;
   private readonly gate = new Promise<void>(resolve => { this.release = resolve; });
 
-  constructor(private readonly answer: string, private readonly gated = false, private readonly fail = false) {
+  constructor(private readonly answer: string, private readonly gated = false, public fail = false) {
     this.started = new Promise<void>(resolve => { this.begin = resolve; });
   }
 
@@ -122,6 +122,32 @@ test("a failed call keeps the old title, and the next reply tries again", async 
   assert.equal((await store.webChat(id))?.titleSource, "auto");
   await new ChatTitles(store, new TitleLlm("Lisbon trip in May")).replied(reply);
   assert.equal((await store.webChat(id))?.title, "Lisbon trip in May");
+});
+
+test("a long chat is titled from its first exchange", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const id = newPrivateChatId();
+  const reply = await seedChat(store, id, "plan a trip to Lisbon in May");
+  for (let n = 0; n < 40; n++) {
+    await store.ingest({ id: `later-${n}`, server, channel: privateChannel(id), author: owner, authorName: "Alice", isBot: false, text: `later question ${n}`, timestamp: 10 + n, addressed: true });
+  }
+  const llm = new TitleLlm("Lisbon trip in May");
+  await new ChatTitles(store, llm).replied(reply);
+  assert.equal((await store.webChat(id))?.title, "Lisbon trip in May");
+  assert.match(JSON.stringify(llm.prompts[0]?.inputs), /plan a trip to Lisbon in May/);
+});
+
+test("a title is tried at most three times per process, then left alone", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const id = newPrivateChatId();
+  const reply = await seedChat(store, id, "plan a trip to Lisbon in May");
+  const llm = new TitleLlm("Lisbon trip in May", false, true);
+  const titles = new ChatTitles(store, llm);
+  for (let attempt = 0; attempt < 3; attempt++) await titles.replied(reply);
+  llm.fail = false;
+  await titles.replied(reply);
+  assert.equal((await store.webChat(id))?.titleSource, "auto");
+  assert.equal((await store.webChat(id))?.title, "plan a trip to Lisbon in May");
 });
 
 test("the backfill titles chats newest first, and runs once", async t => {
