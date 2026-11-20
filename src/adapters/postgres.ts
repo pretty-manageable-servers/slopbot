@@ -32,7 +32,7 @@ const CONVERSATION_PRUNE_BATCH = 10000;
 
 import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
 import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, listChatShares, revokeShare, updateShareBody, revokeAllShares, deleteChatShares } from '../share-store.js';
-import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatTitle, setBytesPerToken, webChatSummary, saveWebChatSummary, setWebChatEffort, setChatProject, webChatsInProject, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../clients/web/web-chat-store.js';
+import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatTitle, autoTitledWebChats, setBytesPerToken, webChatSummary, saveWebChatSummary, setWebChatEffort, setChatProject, webChatsInProject, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../clients/web/web-chat-store.js';
 import { isPrivateChannel } from '../private-chat.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
 import type { InboxItem } from '../inbox.js';
@@ -497,6 +497,7 @@ export class PostgresStore implements UserInstructionsStore, ProjectStore {
     async liveWebChatChannels(server: string): Promise<string[]> { return liveWebChatChannels(this.db, server); }
     async renameWebChat(id: string, title: string, updated: number): Promise<void> { return renameWebChat(this.db, id, title, updated); }
     async setWebChatTitle(id: string, title: string, source: "model" | "user", updated: number): Promise<void> { return setWebChatTitle(this.db, id, title, source, updated); }
+    async autoTitledWebChats(): Promise<WebChatRow[]> { return autoTitledWebChats(this.db); }
     async setBytesPerToken(chat: string, ratio: number): Promise<void> { return setBytesPerToken(this.db, chat, ratio); }
     async webChatSummary(chat: string): Promise<{ throughMessage: string; throughTimestamp: number; summary: string } | undefined> { return webChatSummary(this.db, chat); }
     async saveWebChatSummary(chat: string, row: { throughMessage: string; throughTimestamp: number; summary: string; runId: string }): Promise<void> { return saveWebChatSummary(this.db, chat, row); }

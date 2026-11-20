@@ -30,6 +30,7 @@ import { ProjectService } from './project-service.js';
 import { projectRoutes } from './clients/web/routes/projects.js';
 import { GLOBAL_SETTINGS_SCOPE } from './usage-cost.js';
 import { hasProjectStore, projectLimits, PROJECT_LIMITS_KEY } from './projects.js';
+import { ChatTitles } from './chat-titles.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -54,6 +55,10 @@ async function main(): Promise<void> {
   const discord = routing ? new DiscordAdapter(config, store, new DynamicLLM(routing.router, llm, routing.health), undefined, routing) : new DiscordAdapter(config, store, llm);
   // Embedding calls are charged through the same meter as model calls.
   embeddings?.attachUsage(discord.usage);
+  // Model titles for web chats. The backfill runs in the background and does not hold up the start.
+  const titles = new ChatTitles(store, routing ? new DynamicLLM(routing.router, llm, routing.health) : llm, discord.usage);
+  discord.webChatReplied = message => titles.replied(message);
+  void titles.backfill();
   const panel = new AdminPanel(config, store, discord.usage.limiter, discord.members, discordPresentation);
   if (degraded) panel.setLlmState(() => degraded.health.state());
   const admin: ConsoleAdmin = { role: user => discord.team.role(user), canEdit: user => discord.team.canEdit(user), servers: page => discord.adminServers(page), serverChannels: server => discord.adminServerChannels(server), serverInfo: server => discord.adminServerInfo(server),setTranscript: (server, channel, enabled) => discord.adminSetTranscript(server, channel, enabled), rotateWebhook: (server, channel) => discord.adminRotateWebhook(server, channel), panel };

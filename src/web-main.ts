@@ -20,6 +20,7 @@ import { AdminPanel } from "./admin-panel.js";
 import { startConversationEventRetention } from "./run-events.js";
 import { createChatRoutes, WebChatService } from "./clients/web/web-chats.js";
 import { createUsageMeter } from "./usage-meter.js";
+import { ChatTitles } from "./chat-titles.js";
 import { MemberDirectory } from "./member-directory.js";
 import { TeamAdmins } from "./team-admins.js";
 import { ChannelAccess } from "./channel-access.js";
@@ -71,6 +72,9 @@ export async function startLocalConsole(env: NodeJS.ProcessEnv = process.env): P
   const routing = degraded ? { router: degraded.router, health: degraded.health, mode: () => degraded.health.state().mode, statusNoteMinutes: () => loadDegradedSettings(store).statusNoteMinutes } : undefined;
   const serverLlm = routing ? new DynamicLLM(routing.router, llm, routing.health) : llm;
   const usage = createUsageMeter(config, store);
+  // Model titles for web chats. The backfill runs in the background and does not hold up the start.
+  const titles = new ChatTitles(store, serverLlm, usage);
+  void titles.backfill();
   // Embedding calls are charged through the same meter as model calls.
   embeddings?.attachUsage(usage);
   engineEvents.attach(store);
@@ -83,7 +87,7 @@ export async function startLocalConsole(env: NodeJS.ProcessEnv = process.env): P
   const engine = new WorkspaceEngine();
   const openings: Promise<unknown>[] = [];
   const servers = world.servers.map(({ id }) => {
-    const server = new LocalServer({ config, store, llm: serverLlm, server: id, usage, access, team, directory, ...(images ? { images } : {}), ...(routing ? { degraded: routing } : {}) });
+    const server = new LocalServer({ config, store, llm: serverLlm, server: id, usage, access, team, directory, ...(images ? { images } : {}), ...(routing ? { degraded: routing } : {}), chatReplied: message => titles.replied(message) });
     const opening = server.ready(world.bot.id).then(() => server.workspace);
     engine.add(id, opening);
     openings.push(opening);

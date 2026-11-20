@@ -196,7 +196,7 @@ export class DiscordServer implements ChatGateway {
     };
     this.workspace = new EngineWorkspace(config, store, llm, guildId, objectStorageProvider, usage, access, team, sandboxProfile, degraded, ports);
     this.unlistenTools = engineEvents.listen(envelope => this.toolStatus(envelope));
-    this.chatGateway = new WebChatGateway(store, guildId, { queue: this.workspace.attachQueue, storage: objectStorageProvider ?? new LocalDiskStorage() });
+    this.chatGateway = new WebChatGateway(store, guildId, { queue: this.workspace.attachQueue, storage: objectStorageProvider ?? new LocalDiskStorage() }, message => this.webChatReplied?.(message));
   }
   /** Reopens a private chat of this server, for a Discord DM routed here. The chat service uses the Workspace. */
   openChat(channel: string): void { this.workspace.openChat(channel); }
@@ -361,6 +361,8 @@ export class DiscordServer implements ChatGateway {
   }
   /** Set by discord-main when the website runs. Makes a private web chat from a message and gives its link. */
   webChat: { continueMessage(user: string, server: string, source: Message): Promise<string> } | undefined;
+  /** Set by the adapter. Called after a private web chat reply is saved (chat titles). */
+  webChatReplied: ((message: Message) => Promise<void> | void) | undefined;
   /** Stops responses in a channel. The web console calls it too. Returns the stopped job IDs. */
   async stopResponses(channel: string, user: string, manager: boolean): Promise<string[]> {
     return this.workspace.stop(channel, user, manager);
@@ -873,6 +875,7 @@ export class DiscordAdapter {
     const opening = (async () => {
       const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage, this.access, this.members, this.team, this.sandboxProfile, this.degraded);
       server.webChat = this.webChat;
+      server.webChatReplied = this.webChatReplied;
       await server.start();
       await server.ready(this.botUser!);
       return server;
@@ -896,6 +899,8 @@ export class DiscordAdapter {
   }
   /** Set by discord-main when the website runs. Given to each server for the "Continue in Slopbot web" command. */
   webChat: DiscordServer["webChat"];
+  /** Set by discord-main when the website runs. Given to each server, which passes it to its web chat gateway. */
+  webChatReplied: DiscordServer["webChatReplied"];
   private async routeDirectMessage(user: string, channel: string, handle: (server: DiscordServer) => void): Promise<void> {
     try {
       const key = `dm_server:${channel}`;
