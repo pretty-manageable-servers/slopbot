@@ -57,10 +57,17 @@ export function memoryScopes(message: Pick<Message, "server" | "channel" | "proj
   if (surface === "web" || surface === "discord-dm") return [personal];
   return [{ server: message.server, channel: message.channel }];
 }
-/** Until WP4 moves the memory methods to memoryScopes, web and DM chats keep their own channel scope here. Throws ToolError("Memory is off in private chats.") in a private chat. */
-export function memoryScope(message: Pick<Message, "server" | "channel" | "project" | "surface">): { server: string; channel: string } {
+/** The scope where new memories go. Throws ToolError("Memory is off in private chats.") in a private chat. */
+export function memoryScope(message: Pick<Message, "server" | "channel" | "project" | "author" | "surface">): { server: string; channel: string } {
   if (surfaceOf(message) === "web-incognito") throw new ToolError("Memory is off in private chats.");
-  return message.project ? { server: PROJECT_MEMORY_SERVER, channel: projectMemoryChannel(message.project) } : { server: message.server, channel: message.channel };
+  return memoryScopes(message)[0]!;
+}
+/** The scopes of a user's own memories: the personal scope, then the projects the user owns. A scope filter keeps only that one. */
+export function ownMemoryScopes(user: string, projectIds: readonly string[], scope?: "personal" | `project:${string}`): { server: string; channel: string }[] {
+  const scopes = [{ server: PERSONAL_SERVER, channel: personalMemoryChannel(user) }, ...projectIds.map(id => ({ server: PROJECT_MEMORY_SERVER, channel: projectMemoryChannel(id) }))];
+  if (!scope) return scopes;
+  const wanted = scope === "personal" ? { server: PERSONAL_SERVER, channel: personalMemoryChannel(user) } : { server: PROJECT_MEMORY_SERVER, channel: projectMemoryChannel(scope.slice("project:".length)) };
+  return scopes.filter(item => item.server === wanted.server && item.channel === wanted.channel);
 }
 
 /** Storage. SQLiteStore and PostgresStore implement it (tables projects and project_files). */

@@ -47,7 +47,7 @@ test("memoryScopes for project, web, dm, incognito, server", () => {
 });
 
 test("memoryScope throws in a private chat", () => {
-  assert.throws(() => memoryScope({ server: PERSONAL_SERVER, channel: incognito, surface: "web-incognito" }), ToolError);
+  assert.throws(() => memoryScope({ server: PERSONAL_SERVER, channel: incognito, author: "alice", surface: "web-incognito" }), ToolError);
 });
 
 test("contextSince returns all messages after the time", async t => {
