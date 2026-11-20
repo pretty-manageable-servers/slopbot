@@ -5,7 +5,6 @@ import { dirname } from "node:path";
 import { loadConfig } from "./config.js";
 import { PersonalServer } from "./personal-server.js";
 import { PERSONAL_SERVER } from "./personal.js";
-import { ShareService } from "./shares.js";
 import { DiscordAdapter } from "./clients/discord/discord.js";
 import { PmAudio } from "./adapters/audio.js";
 import { PostgresStore } from "./adapters/postgres.js";
@@ -68,8 +67,7 @@ async function main(): Promise<void> {
   const projectStore = hasProjectStore(store) ? store : undefined;
   // The personal workspace hosts the web chats. It opens once Discord has opened a server, which sets the bot's user ID.
   const personal = new PersonalServer({ config, store, llm: serverLlm, usage: discord.usage, access: discord.access, team: discord.team, directory: discord.directory, ...(discord.images ? { images: discord.images } : {}), ...(routing ? { degraded: routing } : {}) });
-  discord.engine.add(PERSONAL_SERVER, botUserOf(store, discord).then(async botUser => { await personal.ready(botUser); return personal.workspace; }));
-  const shares = new ShareService({ store, access: discord.access, rule: discord.shareRule, member: (user, server) => discord.directory.isMember(user, server), canSignIn: user => discord.canSignIn(user), images: discord.images ?? new LocalDiskStorage() });
+  discord.engine.add(PERSONAL_SERVER, discord.botReady.then(async botUser => { await personal.ready(botUser); return personal.workspace; }));
   const chats = new WebChatService(store, { engine: discord.engine, directory: discord.directory, servers: user => discord.consoleServers(user), limiter: discord.usage.limiter, access: discord.access, ...(discord.images ? { images: discord.images } : {}), ...(projectStore ? { projects: projectStore } : {}) });
   const projects = projectStore ? projectRoutes(new ProjectService(projectStore, chats, discord.images ?? new LocalDiskStorage(), store, classifier, () => projectLimits(store.setting(GLOBAL_SETTINGS_SCOPE, PROJECT_LIMITS_KEY)))) : undefined;
   if (webOptions) discord.webChat = { continueMessage: async (user, server, source) => `${webOptions.origin}/chat/${encodeURIComponent((await chats.continueMessage(user, server, source)).id)}?server=${encodeURIComponent(server)}` };
@@ -78,24 +76,12 @@ async function main(): Promise<void> {
   const consoleOptionsLive = webOptions && { ...webOptions, ...(degraded ? { llmStatus: () => ({ mode: degraded.health.state().mode, canChat: degraded.router.select(undefined) !== undefined }), settings: store } : {}), ...(instructions ? { instructions } : {}) };
   // The Discord-only calls of the console: authority, settings, snapshots, webhooks. Same signatures as the adapter methods.
   const discordConsole: Pick<ConsoleBackend, "canSignIn" | "servers" | "profile" | "snapshot" | "usage" | "useReset" | "invoke" | "mcp" | "transcripts" | "inbox" | "setTranscript"> = { canSignIn: user => discord.canSignIn(user), servers: user => discord.consoleServers(user), profile: (user, server) => discord.consoleProfile(user, server), snapshot: (user, server) => discord.consoleSnapshot(user, server), usage: (user, server) => discord.consoleUsage(user, server), useReset: (user, server, kind) => discord.consoleUseReset(user, server, kind), invoke: (user, server, channel, name, args) => discord.consoleInvoke(user, server, channel, name, args), mcp: (user, server, input) => discord.consoleMcp(user, server, input), transcripts: (user, server) => discord.consoleTranscripts(user, server), inbox: { list: (user, server, includeDone) => discord.consoleInbox(user, server, includeDone), done: (user, server, ids) => discord.consoleInboxDone(user, server, ids) }, setTranscript: (user, server, channel, enabled) => discord.consoleSetTranscript(user, server, channel, enabled) };
-  const web = consoleOptionsLive ? createConsole(consoleOptionsLive, { audio: config.apiKey && config.voice ? new PmAudio(config.baseUrl, config.apiKey, config.voice.voice, undefined, config.voice.sttModel) : undefined, ...discordConsole, access: discord.access, admin, conversations, chats: createChatRoutes(chats), ...(projects ? { projects } : {}), continueShare: (user, id) => chats.continueShare(user, id, shares), reply: (user, server, channel, text) => discord.consoleReply(user, server, channel, text), shares, sessions: store }) : undefined;
+  const web = consoleOptionsLive ? createConsole(consoleOptionsLive, { audio: config.apiKey && config.voice ? new PmAudio(config.baseUrl, config.apiKey, config.voice.voice, undefined, config.voice.sttModel) : undefined, ...discordConsole, access: discord.access, admin, conversations, chats: createChatRoutes(chats), ...(projects ? { projects } : {}), continueShare: (user, id) => chats.continueShare(user, id, discord.shares), reply: (user, server, channel, text) => discord.consoleReply(user, server, channel, text), shares: discord.shares, sessions: store }) : undefined;
   const shutdown = async () => { retention(); if (web?.listening) await closeWeb(web); if (store instanceof PostgresStore) store.stopIndexing(); await personal.stop(); await discord.stop(); await store.finishIndexing(); await store.close(); process.exit(0); };
   process.once("SIGINT", () => { void shutdown().catch(error => { logError("shutdown_failed", error, { stage: "shutdown" }); process.exitCode = 1; }); });
   process.once("SIGTERM", () => { void shutdown().catch(error => { logError("shutdown_failed", error, { stage: "shutdown" }); process.exitCode = 1; }); });
   try { await discord.start(); if (web && webOptions) { await new Promise<void>((resolve, reject) => { web.once('error', reject); web.listen(webOptions.port, webOptions.host, resolve); }); console.log(`Slopbot settings: ${webOptions.origin}`); } }
   catch (error) { retention(); await store.close(); await discord.stop(); throw new Error(discordStartupError(error), { cause: error }); }
-}
-
-/** The bot's user ID, as the first open server saved it. Waits until Discord has opened one. */
-async function botUserOf(store: SQLiteStore | PostgresStore, discord: DiscordAdapter): Promise<string> {
-  for (;;) {
-    for (const server of discord.engine.servers()) {
-      if (server === PERSONAL_SERVER) continue;
-      const id = store.setting(server, "context_bot_author");
-      if (typeof id === "string" && id) return id;
-    }
-    await new Promise(resolve => setTimeout(resolve, 500));
-  }
 }
 
 void main().catch(error => {
