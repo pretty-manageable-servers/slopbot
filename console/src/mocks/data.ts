@@ -1,6 +1,6 @@
 // Fake bot data for Storybook and `pnpm dev:mock`: one user, DerpZ, in two servers, with a few chats. Handlers
 // (handlers.ts) serve it; stories that need other data override one handler with `parameters.msw.handlers`.
-import type { EngineEnvelope, EngineEvent, ShareData } from "@slopbot/contracts";
+import type { EngineEnvelope, EngineEvent, MemoryItem, ShareData } from "@slopbot/contracts";
 import type { BotMessage } from "../events";
 import type {
   AdminMe, ChatShare, ChatSummary, Conversation, ConversationSummary, InboxItem, Project, ProjectDetail, ProjectFile, ProjectLimits, ProjectList,
@@ -56,6 +56,11 @@ export const projectDetail: ProjectDetail = {
 export const projectMemories: ProjectMemoryView[] = [
   { id: "m1", content: "The user writes in British English and prefers short paragraphs.", category: "style", updatedAt: NOW - 6 * HOUR },
   { id: "m2", content: "The survey has 412 respondents; the response rate is 61 percent.", category: "facts", updatedAt: NOW - 30 * HOUR },
+];
+
+export const memoryItems: MemoryItem[] = [
+  { id: "mem1", content: "Alice likes green tea.", category: "preference", tags: [], scope: "personal", updated: NOW - 2 * HOUR },
+  { id: "mem2", content: "The survey has 412 respondents; the response rate is 61 percent.", category: "fact", tags: [], scope: "project:p1", updated: NOW - 30 * HOUR },
 ];
 
 export const channels = [

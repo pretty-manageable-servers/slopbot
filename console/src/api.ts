@@ -1,6 +1,6 @@
 // Calls to the bot's console API. Writes need the session's CSRF token, which /api/session gives.
 
-import type { EngineEvent } from "@slopbot/contracts";
+import type { EngineEvent, MemoryList } from "@slopbot/contracts";
 import type {
   ChatFile, ChatImage, ChatShare, ChatSummary, Project, ProjectDetail, ProjectFile, ProjectInstructionsResult, ProjectList,
   ProjectMemoryView, Session, Usage,
@@ -120,4 +120,7 @@ export const api = {
   /** The live engine events of a chat. No position: the stream starts at the newest event. */
   eventsUrl: (id: string) => `${chat(id)}/events`,
   ...projectCalls,
+  /** The signed-in user's memories for the Memory page. The filters are a search text, a scope ("personal" or "project:<id>") and the offset of the page. */
+  memoryList: (filter: { query?: string; scope?: string; offset?: number }) => get<MemoryList>(`/api/memories${qs(filter)}`),
+  deleteMemory: (id: string) => call<unknown>("DELETE", `/api/memories/${encodeURIComponent(id)}`),
 };

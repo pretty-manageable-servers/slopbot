@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import type { ProjectRoutes } from './routes/projects.js';
+import type { MemoryRoutes } from './routes/memories.js';
 import { getRequestListener } from '@hono/node-server';
 import { logError } from "../../errors.js";
 import type { ToolArgs } from '../../tools.js';
@@ -39,6 +40,8 @@ export interface ConsoleAdmin {
 export interface ConsoleBackend {
   /** Project routes, mounted at /api/projects. Without them the console has no projects. */
   projects?: ProjectRoutes;
+  /** Memory routes, mounted at /api/memories: the signed-in user's memories, search and delete. Without them the console has no Memory page. */
+  memories?: MemoryRoutes;
   /** Speech to text for composer dictation (POST /api/transcribe). Without it the route answers 503. */
   audio?: Pick<PmAudio, 'transcribeWav'> | undefined;
   /** Share links. Public page and snapshot routes, plus the admin list and writes. */

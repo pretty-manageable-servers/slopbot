@@ -38,6 +38,7 @@ import { UserInstructionsService } from "./user-instructions-service.js";
 import { hasUserInstructions } from "./user-instructions.js";
 import { ProjectService } from "./project-service.js";
 import { projectRoutes } from "./clients/web/routes/projects.js";
+import { memoryRoutes } from "./clients/web/routes/memories.js";
 import { GLOBAL_SETTINGS_SCOPE } from "./usage-cost.js";
 import { hasProjectStore, projectLimits, PROJECT_LIMITS_KEY } from "./projects.js";
 
@@ -112,7 +113,7 @@ export async function startLocalConsole(env: NodeJS.ProcessEnv = process.env): P
   const admin = localConsoleAdmin({ world, team, panel });
   const consoleOptionsLive = { ...webOptions, ...(degraded ? { llmStatus: () => ({ mode: degraded.health.state().mode, canChat: degraded.router.select(undefined) !== undefined }), settings: store } : {}), ...(instructions ? { instructions } : {}) };
   const web = createConsole(consoleOptionsLive, {
-    ...localBackend, access, admin, chats: createChatRoutes(chats), ...(projects ? { projects } : {}),
+    ...localBackend, access, admin, chats: createChatRoutes(chats), ...(projects ? { projects } : {}), memories: memoryRoutes(store),
     continueShare: (user, id) => chats.continueShare(user, id, shares), shares, sessions: store,
   });
   const stop = async () => {
