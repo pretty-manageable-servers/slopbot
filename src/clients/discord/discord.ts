@@ -816,6 +816,9 @@ export class DiscordAdapter {
   // One meter for the process. Its limiter is shared by every server, and discord-main attaches it to the embeddings.
   readonly usage: UsageMeter;
   private botUser: string | undefined;
+  /** The bot's user ID, once the client is ready. */
+  private resolveBot!: (id: string) => void;
+  readonly botReady = new Promise<string>(resolve => { this.resolveBot = resolve; });
   /** Live per-user view and send checks for the web console. */
   readonly access: ChannelAccess;
   /** Team roles of the Developer Portal team that owns the bot. Used by the console admin panel. */
@@ -847,9 +850,10 @@ export class DiscordAdapter {
     engineEvents.attach(store);
     this.shareRule = { manager: (user, server) => this.hasManageServer(user, server), teamAdmin: user => this.team.canEdit(user) };
     this.objectStorageProvider = config.objectStorage ? new S3StorageProvider(config.objectStorage) : undefined;
-    this.shares = new ShareService({ store, access: this.access, rule: this.shareRule, member: (user, server) => this.isServerMember(user, server), images: this.objectStorageProvider ?? new LocalDiskStorage() });
+    this.shares = new ShareService({ store, access: this.access, rule: this.shareRule, member: (user, server) => this.isServerMember(user, server), canSignIn: user => this.canSignIn(user), images: this.objectStorageProvider ?? new LocalDiskStorage() });
     this.client.once(Events.ClientReady, async client => {
       this.botUser = client.user.id;
+      this.resolveBot(client.user.id);
       this.presence.start();
       console.log(`Slopbot connected as ${client.user.tag}. LLM mode: ${config.mock ? "mock" : "provider"}. Servers: ${client.guilds.cache.size}`);
       for (const guild of client.guilds.cache.values()) void this.open(guild.id).catch(error => logError("server_start_failed", error, { server: guild.id }));

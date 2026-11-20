@@ -13,10 +13,11 @@ import type { AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow, TokenTot
 import type { KeyedProvider, ProviderKeyRow, ProviderKeyUsage } from "../web-providers.js";
 import type { UserInstructions, UserInstructionsStore } from "../user-instructions.js";
 import type { Project, ProjectFile, ProjectStore } from "../projects.js";
-import { cosine, searchTerms, newMemory, patchMemory, memoryMetadata, memoryFromRow, memorySearchText, rankMemories, type MemoryOptions, type MemoryPatch, type MemoryQuery, type Embeddings, type Evidence, type MemoryRecord, type MemoryCategory } from "../memory.js";
+import { cosine, searchTerms, newMemory, patchMemory, memoryMetadata, memoryFromRow, memorySearchText, rankMemories, ownMemoryPage, memoryEvidence, type MemoryOptions, type MemoryPatch, type MemoryQuery, type Embeddings, type Evidence, type MemoryRecord, type MemoryCategory } from "../memory.js";
 import { attribution, type Attribution } from "../usage-meter.js";
 import { ToolError } from "../tools.js";
-import { memoryScope } from "../projects.js";
+import { memoryScopes, ownMemoryScopes } from "../projects.js";
+import { surfaceOf } from "../engine/api.js";
 import type { ProfileField, UserProfile } from "../profiles.js";
 import type { TaskContext } from "../context.js";
 import type { Job } from "../queue.js";
@@ -1127,13 +1128,26 @@ export class PostgresStore implements UserInstructionsStore, ProjectStore {
     return result;
   }
 
+  private async memoriesIn(scopes: readonly { server: string; channel: string }[]): Promise<MemoryRecord[]> {
+    return (await Promise.all(scopes.map(scope => this.memories(scope.server, scope.channel)))).flat();
+  }
+  /** The active memory with this ID that the author wrote, in the first of the scopes that holds it. */
+  private async authoredMemory(scopes: readonly { server: string; channel: string }[], id: string, author: string) {
+    for (const scope of scopes) {
+      const row = await this.db.prepare("SELECT * FROM memories WHERE id=? AND server=? AND channel=? AND author=? AND status='active'").get(id, scope.server, scope.channel, author);
+      if (row) return { scope, row };
+    }
+    return undefined;
+  }
+
   async searchMemories(message: Message, query: MemoryQuery = {}): Promise<readonly MemoryRecord[]> {
-    const scope = memoryScope(message);
-    const notes = (await this.memories(scope.server, scope.channel)).filter(note => (!query.category || note.category === query.category) && (!query.tags?.length || query.tags.every(tag => note.tags.includes(tag))));
+    const scopes = memoryScopes(message);
+    const notes = (await this.memoriesIn(scopes)).filter(note => (!query.category || note.category === query.category) && (!query.tags?.length || query.tags.every(tag => note.tags.includes(tag))));
     const scores = new Map<string, number>();
     if (this.embeddings && notes.length && query.query?.trim()) {
       try {
-        const rows = await this.db.prepare(`SELECT e.memory_id,e.vector FROM memory_embeddings e JOIN memories m ON m.server=e.server AND m.id=e.memory_id WHERE m.server=? AND m.channel=? AND m.status='active' AND e.model=?`).all(scope.server, scope.channel, this.embeddings.model);
+        const model = this.embeddings.model;
+        const rows = (await Promise.all(scopes.map(scope => this.db.prepare(`SELECT e.memory_id,e.vector FROM memory_embeddings e JOIN memories m ON m.server=e.server AND m.id=e.memory_id WHERE m.server=? AND m.channel=? AND m.status='active' AND e.model=?`).all(scope.server, scope.channel, model)))).flat();
         const candidates = new Set(notes.map(note => note.id));
         if (rows.some(row => candidates.has(String(row.memory_id)))) {
           const vector = await this.embed({ ...message, text: query.query }, "memory_query", attribution(message));
@@ -1145,9 +1159,9 @@ export class PostgresStore implements UserInstructionsStore, ProjectStore {
   }
 
   async updateMemory(message: Message, id: string, patch: MemoryPatch, expectedRevision: number, operationId?: string): Promise<MemoryRecord | undefined> {
-    const scope = memoryScope(message);
-    const row = await this.db.prepare("SELECT * FROM memories WHERE id=? AND server=? AND channel=? AND author=? AND status='active'").get(id, scope.server, scope.channel, message.author);
-    if (!row) return undefined;
+    const found = await this.authoredMemory(memoryScopes(message), id, message.author);
+    if (!found) return undefined;
+    const { scope, row } = found;
     const current = (await this.memories(scope.server, scope.channel)).find(note => note.id === id);
     if (!current) return undefined;
     if (current.revision !== expectedRevision) throw new ToolError('Memory changed. Read it again and use its current revision.');
@@ -1165,11 +1179,16 @@ export class PostgresStore implements UserInstructionsStore, ProjectStore {
     return memory;
   }
 
-  async userMemories(_user: string, _query: { query?: string; scope?: "personal" | `project:${string}`; category?: MemoryCategory; limit?: number; offset?: number }): Promise<{ items: MemoryRecord[]; total: number }> {
-    throw new Error("WP4");
+  async userMemories(user: string, query: { query?: string; scope?: "personal" | `project:${string}`; category?: MemoryCategory; limit?: number; offset?: number }): Promise<{ items: MemoryRecord[]; total: number }> {
+    const projects = await this.projectsOf(user);
+    return ownMemoryPage(await this.memoriesIn(ownMemoryScopes(user, projects.map(project => project.id), query.scope)), user, query);
   }
-  async forgetOwn(_user: string, _id: string): Promise<boolean> {
-    throw new Error("WP4");
+  async forgetOwn(user: string, id: string): Promise<boolean> {
+    const projects = await this.projectsOf(user);
+    for (const scope of ownMemoryScopes(user, projects.map(project => project.id))) {
+      if (await this.forget(scope.server, scope.channel, id, user)) return true;
+    }
+    return false;
   }
   async forget(server: string, channel: string, id: string, actor: string): Promise<boolean> {
     await this.db.exec("BEGIN IMMEDIATE");
@@ -1185,6 +1204,10 @@ export class PostgresStore implements UserInstructionsStore, ProjectStore {
   }
 
     async retrieve(message: Message, limit: number): Promise<readonly Evidence[]> {
+        const surface = surfaceOf(message);
+        // Private chats have no memory. A web chat's whole transcript is already in context, so it gets its memories only.
+        if (surface === "web-incognito") return [];
+        if (surface === "web") return memoryEvidence(await this.searchMemories(message, { query: message.text, limit: Math.min(limit, 4), relatedOnly: false }));
         const evidence: Evidence[] = [];
         // Resolve people from scoped canonical authors, never from generated descriptions.
         const directory = (await this.db.prepare(`SELECT DISTINCT d.author,d.names,d.bot FROM author_directory d JOIN messages m
@@ -1222,7 +1245,7 @@ export class PostgresStore implements UserInstructionsStore, ProjectStore {
         if (personQuery)
             return [{ kind: "retrieval", author: "system", sourceIds: [], content: targets.length > 1 ? "Person name is ambiguous. Ask which member the requester means before attributing messages." : "Could not resolve the requested person from known channel author names. Ask for their Discord mention. Do not attribute unrelated recent chat to them." }];
         const relevant = await this.searchMemories(message, { query: message.text, limit: Math.min(limit, 4), relatedOnly: false });
-    for (const memory of relevant) evidence.push({ kind: "memory", content: memory.content, author: memory.author, sourceIds: memory.sourceIds, memoryId: memory.id, category: memory.category, tags: memory.tags, details: memory.details });
+    evidence.push(...memoryEvidence(relevant));
     const recalled=await this.searchHistory({server:message.server,channel:message.channel,query:message.text,mode:'keyword',limit,excludeId:message.id,requester:message.isBot?undefined:message.author});
     const selected=new Map(recalled.messages.map(item=>[item.id,item]));
         for (const item of selected.values()) {

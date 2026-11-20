@@ -166,7 +166,7 @@ test("a failed task run releases its queue for the next input", async t => {
 
 test("an old reply target has priority over recent background under a small budget", async t => {
   const llm = new FakeLLM(); const store = new SQLiteStore(); t.after(() => store.close());
-  const app = new Application(store, llm, { allowedChannels: scopes, maxInputChars: 1800 });
+  const app = new Application(store, llm, { allowedChannels: scopes, maxInputChars: 1922 });
   await store.ingest(message("old", "The reply target describes repairing a bicycle.", { timestamp: 1 }));
   for (let i = 2; i < 12; i++) await store.ingest(message(String(i), "unrelated indexing status ".repeat(15), { timestamp: i }));
   await app.handle(message("current", "what is he doing there", { replyTo: "old", timestamp: 12 }));

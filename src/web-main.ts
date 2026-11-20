@@ -30,6 +30,8 @@ import { WorkspaceEngine } from "./engine/engine.js";
 import { engineEvents } from "./engine/event-log.js";
 import { DEFAULT_WORLD_PATH, loadLocalWorld } from "./local/world.js";
 import { LocalDirectory, localChannelAccessSource, localMemberSource, localTeamSource } from "./local/local-sources.js";
+import { PersonalServer } from "./personal-server.js";
+import { PERSONAL_SERVER } from "./personal.js";
 import { LocalServer } from "./local/local-server.js";
 import { localConsoleAdmin, localConsoleBackend } from "./local/local-console.js";
 import { VaneSafetyClassifier } from "./adapters/safety-classifier.js";
@@ -37,6 +39,7 @@ import { UserInstructionsService } from "./user-instructions-service.js";
 import { hasUserInstructions } from "./user-instructions.js";
 import { ProjectService } from "./project-service.js";
 import { projectRoutes } from "./clients/web/routes/projects.js";
+import { memoryRoutes } from "./clients/web/routes/memories.js";
 import { GLOBAL_SETTINGS_SCOPE } from "./usage-cost.js";
 import { hasProjectStore, projectLimits, PROJECT_LIMITS_KEY } from "./projects.js";
 
@@ -94,22 +97,27 @@ export async function startLocalConsole(env: NodeJS.ProcessEnv = process.env): P
     return server;
   });
 
+  const personal = new PersonalServer({ config, store, llm: serverLlm, usage, access, team, directory, ...(images ? { images } : {}), ...(routing ? { degraded: routing } : {}) });
+  const personalOpening = personal.ready(world.bot.id).then(() => personal.workspace);
+  engine.add(PERSONAL_SERVER, personalOpening);
+  openings.push(personalOpening);
+  const localBackend = localConsoleBackend({ world, config, store, members, usage });
+
   const shareRule: ShareRule = { manager: (user, server) => directory.canManage(user, server), teamAdmin: user => team.canEdit(user) };
-  const shares = new ShareService({ store, access, rule: shareRule, member: (user, server) => directory.isMember(user, server), images: images ?? new LocalDiskStorage() });
+  const shares = new ShareService({ store, access, rule: shareRule, member: (user, server) => directory.isMember(user, server), canSignIn: user => localBackend.canSignIn(user), images: images ?? new LocalDiskStorage() });
   // Saved user instructions: the store keeps the table; the vane check fails closed without a key, so saves are refused.
   const classifier = config.baseUrl && config.apiKey && !config.mock ? new VaneSafetyClassifier({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.jevModel, usage }) : undefined;
   const instructions = hasUserInstructions(store) ? new UserInstructionsService(store, classifier) : undefined;
   // Projects share the storage the project_files tool reads from (workspace.ts: object storage, else LocalDiskStorage).
   const projectStore = hasProjectStore(store) ? store : undefined;
-  const chats = new WebChatService(store, { engine, directory, limiter: usage.limiter, access, ...(images ? { images } : {}), ...(projectStore ? { projects: projectStore } : {}) });
+  const chats = new WebChatService(store, { engine, directory, servers: user => localBackend.servers!(user), limiter: usage.limiter, access, ...(images ? { images } : {}), ...(projectStore ? { projects: projectStore } : {}) });
   const projects = projectStore ? projectRoutes(new ProjectService(projectStore, chats, images ?? new LocalDiskStorage(), store, classifier, () => projectLimits(store.setting(GLOBAL_SETTINGS_SCOPE, PROJECT_LIMITS_KEY)))) : undefined;
   const panel = new AdminPanel(config, store, usage.limiter, members);
   if (degraded) panel.setLlmState(() => degraded.health.state());
   const admin = localConsoleAdmin({ world, team, panel });
-  const localBackend = localConsoleBackend({ world, config, store, members, usage });
   const consoleOptionsLive = { ...webOptions, ...(degraded ? { llmStatus: () => ({ mode: degraded.health.state().mode, canChat: degraded.router.select(undefined) !== undefined }), settings: store } : {}), ...(instructions ? { instructions } : {}) };
   const web = createConsole(consoleOptionsLive, {
-    ...localBackend, access, admin, chats: createChatRoutes(chats), ...(projects ? { projects } : {}),
+    ...localBackend, access, admin, chats: createChatRoutes(chats), ...(projects ? { projects } : {}), memories: memoryRoutes(store),
     continueShare: (user, id) => chats.continueShare(user, id, shares), shares, sessions: store,
   });
   const stop = async () => {
@@ -117,6 +125,7 @@ export async function startLocalConsole(env: NodeJS.ProcessEnv = process.env): P
     if (web.listening) await closeWeb(web);
     if (store instanceof PostgresStore) store.stopIndexing();
     for (const server of servers) await server.stop();
+    await personal.stop();
     await store.finishIndexing();
     await store.close();
   };

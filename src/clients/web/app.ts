@@ -64,6 +64,11 @@ export function createApp(options: ConsoleOptions, backend: ConsoleBackend, widg
     app.use('/api/projects/*', (c, next) => c.req.method === 'GET' ? next() : writes(c, next));
     app.route('/api/projects', backend.projects);
   }
+  if (backend.memories) {
+    const writes = guard(['DELETE']);
+    app.use('/api/memories/*', (c, next) => c.req.method === 'GET' ? next() : writes(c, next));
+    app.route('/api/memories', backend.memories);
+  }
   shareRoutes(app, deps);
   adminRoutes(app, deps);
   app.all('/api/*', guard(), () => json(404, { error: 'Not found.' }));

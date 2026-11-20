@@ -5,9 +5,11 @@
 //   /server/$serverId/channel/$channelId  a channel or thread transcript; ?run=<id> opens one conversation of it
 //   /projects                             the projects
 //   /project/$projectId                   one project: its details, Instructions, Files, Memory and Chats
+//   /memory                               your memory: what Slopbot remembers about you
 // Every page takes ?settings=<section> to open Settings over it. A new chat takes ?project=<id> to start in a project.
 import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
 import { ChatPage } from "./chat-page";
+import { MemoryPage } from "./memory/memory-page";
 import { Layout } from "./layout";
 import { ProjectPage } from "./projects/project-page";
 import { ProjectsPage } from "./projects/projects-page";
@@ -38,6 +40,7 @@ export const chatRoute = createRoute({ getParentRoute: () => rootRoute, path: "c
 export const serverRoute = createRoute({ getParentRoute: () => rootRoute, path: "server/$serverId", component: ServerHome });
 export const projectsRoute = createRoute({ getParentRoute: () => rootRoute, path: "projects", component: ProjectsPage });
 export const projectRoute = createRoute({ getParentRoute: () => rootRoute, path: "project/$projectId", component: function Page() { const { projectId } = projectRoute.useParams(); return <ProjectPage key={projectId} id={projectId} />; } });
+export const memoryRoute = createRoute({ getParentRoute: () => rootRoute, path: "memory", component: MemoryPage });
 export const channelRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "server/$serverId/channel/$channelId",
@@ -48,7 +51,7 @@ export const channelRoute = createRoute({
   },
 });
 
-export const routeTree = rootRoute.addChildren([newChatRoute, chatRoute, serverRoute, channelRoute, projectsRoute, projectRoute]);
+export const routeTree = rootRoute.addChildren([newChatRoute, chatRoute, serverRoute, channelRoute, projectsRoute, projectRoute, memoryRoute]);
 
 export const router = createRouter({
   routeTree,

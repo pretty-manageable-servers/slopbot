@@ -8,6 +8,7 @@ import type { ChannelAccess } from "../../channel-access.js";
 import type { Directory, Engine, Workspace } from "../../engine/api.js";
 import type { UserLimiter } from "../../user-limiter.js";
 import { ToolError } from "../../tools.js";
+import { PERSONAL_SERVER } from "../../personal.js";
 import { PRIVATE_CHANNEL_PREFIX, PRIVATE_CHAT_TITLE_CHARS, isPrivateChannel, newPrivateChatId, privateChannel, privateChatTitle } from "../../private-chat.js";
 import { fileLabel, publishMessage, slopbotId, withoutFileLabelText } from "../../run-events.js";
 import type { EngineEvent } from "@slopbot/contracts";
@@ -40,6 +41,8 @@ export interface ChatStore extends TranscriptStore, ShareStore {
 export interface ChatDeps {
   engine: Engine;
   directory: Directory;
+  /** The servers the user and Slopbot share. Only used to find the user's display name; without it the name is the user ID. */
+  servers?(user: string): Promise<{ id: string }[]>;
   limiter: Pick<UserLimiter, "check">;
   access: ChannelAccess;
   /** Private storage for chat images. Without it, a local disk folder is used (development only). */
@@ -47,6 +50,9 @@ export interface ChatDeps {
   /** Projects a chat can be put in. Without it, no project is found, so a chat cannot join one. */
   projects?: Pick<ProjectStore, "project">;
 }
+
+/** The server in the image and file keys of a chat. Old chats keep their keys. */
+const storageOf = (chat: WebChatRow): string => chat.storageServer ?? chat.server;
 
 /** A chat as the console lists it. project is null for a chat in no project. */
 export interface ChatSummary { id: string; title: string; updated: number; effort: Effort; project: string | null }
@@ -65,7 +71,7 @@ const PENDING_IMAGE_MS = 60 * 60 * 1000;
 const PENDING_FILE_MS = 60 * 60 * 1000;
 const MESSAGE_ID = /^[\w:.-]{1,64}$/;
 
-/** The private chat API: list, create, rename, delete, messages, live stream and send. Every call checks the owner and the server membership. */
+/** The private chat API: list, create, rename, delete, messages, live stream and send. Every call checks the owner; an old chat in a server workspace also checks the server membership. */
 export class WebChatService implements ProjectChats {
   private readonly shares: ChatShareService;
   private readonly storage: ObjectStorageProvider;
@@ -79,8 +85,8 @@ export class WebChatService implements ProjectChats {
   }
 
   /**
-   * All live chats of the user, from every server, newest first. The server of a chat only hosts its runs, so the list
-   * is the same on every device. Chats in a server that the user or Slopbot left are not shown (they cannot be opened).
+   * All live chats of the user, newest first. Personal chats are always shown. An old chat (in a server workspace) is
+   * dropped when the user or Slopbot left its server, because it cannot be opened.
    */
   async list(user: string): Promise<ChatSummary[]> {
     return (await this.openChats(user, await this.store.webChats(user))).map(chat => this.summary(chat));
@@ -93,7 +99,7 @@ export class WebChatService implements ProjectChats {
       if (!member.has(server)) member.set(server, SNOWFLAKE.test(server) ? this.host.directory.isMember(user, server).catch(() => false) : Promise.resolve(false));
       return member.get(server)!;
     };
-    const kept = await Promise.all(chats.map(chat => open(chat.server)));
+    const kept = await Promise.all(chats.map(chat => chat.server === PERSONAL_SERVER ? true : open(chat.server)));
     return chats.filter((_, index) => kept[index]);
   }
 
@@ -101,8 +107,9 @@ export class WebChatService implements ProjectChats {
     return { id: chat.id, title: chat.title, updated: chat.updated, effort: this.effortOf(chat), project };
   }
 
-  /** The chat's own effort, else the server default, else medium. */
+  /** The chat's own effort, else medium. An old chat (in a server workspace) falls back to the server default first. */
   private effortOf(chat: WebChatRow): Effort {
+    if (chat.server === PERSONAL_SERVER) return chat.effort ?? "medium";
     return chat.effort ?? parseEffort(this.store.setting(chat.server, "default_effort")) ?? "medium";
   }
 
@@ -141,10 +148,10 @@ export class WebChatService implements ProjectChats {
     await this.store.setWebChatEffort(chat.id, effort);
   }
 
-  /** A new empty chat in a server, in the project if one is given. The project must be the user's. */
-  async create(user: string, server: string, project?: string): Promise<{ id: string }> {
-    await this.requireMember(user, server);
+  /** A new empty chat in the personal workspace, in the project if one is given. The project must be the user's. */
+  async create(user: string, project?: string): Promise<{ id: string }> {
     if (project !== undefined) await this.ownedProject(user, project);
+    const server = PERSONAL_SERVER;
     const workspace = await this.handle(server);
     const id = newPrivateChatId(), at = this.now();
     await this.store.insertWebChat({ id, server, owner: user, title: "", created: at, updated: at, deleted: false, storageServer: null, titleSource: "auto", ...(project !== undefined ? { project } : {}) });
@@ -206,18 +213,19 @@ export class WebChatService implements ProjectChats {
     const row = await this.store.getShare(shareId);
     const copy = row ? await shares.snapshot(shareId) : undefined;
     if (!row || !copy) throw new ChatError(404, "Not found.");
-    await this.requireMember(user, row.server);
-    const workspace = await this.handle(row.server);
+    // The share's server only gates the link (shares.snapshot); the copy is a personal chat.
+    const server = PERSONAL_SERVER;
+    const workspace = await this.handle(server);
     const id = newPrivateChatId(), channel = privateChannel(id), at = this.now();
     // A message with no text (only images) is not copied. Images are never copied. File labels are not copied (an old snapshot can still have them).
     const messages = copy.messages.map(item => ({ ...item, text: withoutFileLabelText(item.text) })).filter(item => item.text.trim());
     const title = privateChatTitle(messages[0]?.text ?? "");
-    await this.store.insertWebChat({ id, server: row.server, owner: user, title, created: at, updated: at, deleted: false, storageServer: null, titleSource: "auto" });
-    const slopbot = slopbotId(this.store, row.server) ?? "slopbot";
+    await this.store.insertWebChat({ id, server, owner: user, title, created: at, updated: at, deleted: false, storageServer: null, titleSource: "auto" });
+    const slopbot = slopbotId(this.store, server) ?? "slopbot";
     // Each copied row gets a new ID. Slopbot replies keep the Slopbot author, so the model reads them as its own answers.
     for (const [index, item] of messages.entries()) {
       const saved: Message = {
-        id: `chat-share-${randomUUID()}`, server: row.server, channel,
+        id: `chat-share-${randomUUID()}`, server, channel,
         author: item.bot ? slopbot : `share:${shareId}:${index}`,
         authorName: item.bot ? "Slopbot" : item.author,
         ...(item.bot ? { isBot: true } : {}),
@@ -235,8 +243,8 @@ export class WebChatService implements ProjectChats {
    * Makes a new private chat that starts with one Discord message, for the "Continue in Slopbot web" message command.
    * The message is saved as earlier history, so the model reads it. Slopbot does not answer until the user writes.
    */
-  async continueMessage(user: string, server: string, source: Message): Promise<{ id: string }> {
-    await this.requireMember(user, server);
+  async continueMessage(user: string, _server: string, source: Message): Promise<{ id: string }> {
+    const server = PERSONAL_SERVER;
     const workspace = await this.handle(server);
     const id = newPrivateChatId(), channel = privateChannel(id), at = this.now();
     const text = source.text;
@@ -283,7 +291,7 @@ export class WebChatService implements ProjectChats {
     const files = fileIds.map(fileId => {
       const found = typeof fileId === "string" ? this.pendingFiles.get(fileId) : undefined;
       if (!found || found.chat !== chat.id || found.user !== user) throw new ChatError(400, "A file was not found. Attach it again.");
-      return { fileId: fileId as string, url: fileUrl(chat.server, chat.id, fileId as string), ...found };
+      return { fileId: fileId as string, url: fileUrl(storageOf(chat), chat.id, fileId as string), ...found };
     });
     const text = typeof raw === "string" ? raw.trim() : "";
     if (!text && !images.length && !files.length) throw new ChatError(400, "Write a message.");
@@ -292,7 +300,7 @@ export class WebChatService implements ProjectChats {
     if (!limit.allowed) throw new ChatError(429, "Usage limit reached.", limit.resetAt);
     const workspace = await this.handle(chat.server);
     const channel = privateChannel(chat.id), at = this.now();
-    const name = (await this.host.directory.profiles(chat.server, [user]))?.get(user)?.displayName ?? user;
+    const name = await this.nameOf(chat, user);
     // The saved row keeps a placeholder per image or file (name, type, size, ID), never bytes.
     const attachments = [
       ...images.map(item => ({ name: item.name, url: CHAT_IMAGE_SCHEME + item.imageId, contentType: item.contentType, size: item.size })),
@@ -302,7 +310,7 @@ export class WebChatService implements ProjectChats {
     const labels = files.map(item => fileLabel(item.name, item.contentType, item.url));
     const message: Message = { id: `chat-${randomUUID()}`, server: chat.server, channel, author: user, authorName: name, text: [body, ...labels].join("\n"), timestamp: at, addressed: true, source: "web", surface: "web", effort: this.effortOf(chat), ...(attachments.length ? { attachments } : {}), ...(chat.project ? { project: chat.project } : {}) };
     // The model gets short-lived signed links, only in memory.
-    const modelImages = await Promise.all(images.map(async item => ({ url: await this.storage.link(chatImageKey(chat.server, chat.id, item.imageId), item.name, MODEL_LINK_SECONDS), label: item.name })));
+    const modelImages = await Promise.all(images.map(async item => ({ url: await this.storage.link(chatImageKey(storageOf(chat), chat.id, item.imageId), item.name, MODEL_LINK_SECONDS), label: item.name })));
     await this.store.ingest(message);
     for (const item of images) this.pending.delete(item.imageId);
     for (const item of files) this.pendingFiles.delete(item.fileId);
@@ -320,12 +328,12 @@ export class WebChatService implements ProjectChats {
     const kind = sniffImage(bytes);
     if (!kind) throw new ChatError(415, "Use a PNG, JPEG, GIF or WebP image.");
     const at = this.now();
-    for (const [key, item] of this.pending) if (at - item.at > PENDING_IMAGE_MS) { this.pending.delete(key); void this.storage.delete(chatImageKey(chat.server, item.chat, key)).catch(error => logError("web_chat_image_sweep_failed", error, { server: chat.server }, true)); }
+    for (const [key, item] of this.pending) if (at - item.at > PENDING_IMAGE_MS) { this.pending.delete(key); void this.storage.delete(chatImageKey(storageOf(chat), item.chat, key)).catch(error => logError("web_chat_image_sweep_failed", error, { server: chat.server }, true)); }
     if ([...this.pending.values()].filter(item => item.chat === chat.id && item.user === user).length >= CHAT_IMAGE_MAX_COUNT) throw new ChatError(400, `Attach ${CHAT_IMAGE_MAX_COUNT} images or fewer.`);
     const limit = await this.host.limiter.check(user);
     if (!limit.allowed) throw new ChatError(429, "Usage limit reached.", limit.resetAt);
     const imageId = newChatImageId(kind.extension), name = imageName(rawName, kind.extension);
-    await this.storage.put(chatImageKey(chat.server, chat.id, imageId), bytes, kind.contentType);
+    await this.storage.put(chatImageKey(storageOf(chat), chat.id, imageId), bytes, kind.contentType);
     this.pending.set(imageId, { chat: chat.id, user, name, contentType: kind.contentType, size: bytes.length, at });
     return { imageId, name, contentType: kind.contentType, size: bytes.length };
   }
@@ -336,14 +344,14 @@ export class WebChatService implements ProjectChats {
     const found = this.pending.get(imageId);
     if (!found || found.chat !== chat.id || found.user !== user) throw new ChatError(404, "Not found.");
     this.pending.delete(imageId);
-    await this.storage.delete(chatImageKey(chat.server, chat.id, imageId));
+    await this.storage.delete(chatImageKey(storageOf(chat), chat.id, imageId));
   }
 
   /** The bytes of one image of an owned chat. The key has the chat in it, so another chat's image is never reached. */
   async readImage(user: string, id: string, imageId: string): Promise<{ bytes: Uint8Array; contentType: string }> {
     const chat = await this.owned(user, id);
     if (!CHAT_IMAGE_ID.test(imageId)) throw new ChatError(404, "Not found.");
-    const bytes = await this.storage.get(chatImageKey(chat.server, chat.id, imageId), CHAT_IMAGE_MAX_BYTES).catch(() => undefined);
+    const bytes = await this.storage.get(chatImageKey(storageOf(chat), chat.id, imageId), CHAT_IMAGE_MAX_BYTES).catch(() => undefined);
     if (!bytes) throw new ChatError(404, "Not found.");
     return { bytes, contentType: chatImageContentType(imageId) };
   }
@@ -354,13 +362,13 @@ export class WebChatService implements ProjectChats {
     if (!bytes.length) throw new ChatError(400, "The file is empty.");
     if (bytes.length > CHAT_FILE_MAX_BYTES) throw new ChatError(413, "Files can be 10 MB or smaller.");
     const at = this.now();
-    for (const [key, item] of this.pendingFiles) if (at - item.at > PENDING_FILE_MS) { this.pendingFiles.delete(key); void this.storage.delete(chatFileKey(chat.server, item.chat, key)).catch(error => logError("web_chat_file_sweep_failed", error, { server: chat.server }, true)); }
+    for (const [key, item] of this.pendingFiles) if (at - item.at > PENDING_FILE_MS) { this.pendingFiles.delete(key); void this.storage.delete(chatFileKey(storageOf(chat), item.chat, key)).catch(error => logError("web_chat_file_sweep_failed", error, { server: chat.server }, true)); }
     if ([...this.pending.values(), ...this.pendingFiles.values()].filter(item => item.chat === chat.id && item.user === user).length >= CHAT_ATTACHMENT_MAX_COUNT) throw new ChatError(400, `Attach ${CHAT_ATTACHMENT_MAX_COUNT} files or images or fewer.`);
     const limit = await this.host.limiter.check(user);
     if (!limit.allowed) throw new ChatError(429, "Usage limit reached.", limit.resetAt);
     const name = fileName(rawName), contentType = fileContentType(rawType);
     const fileId = newChatFileId(name);
-    await this.storage.put(chatFileKey(chat.server, chat.id, fileId), bytes, contentType);
+    await this.storage.put(chatFileKey(storageOf(chat), chat.id, fileId), bytes, contentType);
     this.pendingFiles.set(fileId, { chat: chat.id, user, name, contentType, size: bytes.length, at });
     return { fileId, name, contentType, size: bytes.length };
   }
@@ -371,14 +379,14 @@ export class WebChatService implements ProjectChats {
     const found = this.pendingFiles.get(fileId);
     if (!found || found.chat !== chat.id || found.user !== user) throw new ChatError(404, "Not found.");
     this.pendingFiles.delete(fileId);
-    await this.storage.delete(chatFileKey(chat.server, chat.id, fileId));
+    await this.storage.delete(chatFileKey(storageOf(chat), chat.id, fileId));
   }
 
   /** The bytes and name of one file of an owned chat. The key has the chat in it, so another chat's file is never reached. */
   async readFile(user: string, id: string, fileId: string): Promise<{ bytes: Uint8Array; name: string }> {
     const chat = await this.owned(user, id);
     if (!CHAT_FILE_ID.test(fileId)) throw new ChatError(404, "Not found.");
-    const bytes = await this.storage.get(chatFileKey(chat.server, chat.id, fileId), CHAT_FILE_MAX_BYTES).catch(() => undefined);
+    const bytes = await this.storage.get(chatFileKey(storageOf(chat), chat.id, fileId), CHAT_FILE_MAX_BYTES).catch(() => undefined);
     if (!bytes) throw new ChatError(404, "Not found.");
     return { bytes, name: await this.chatFileName(chat, fileId) };
   }
@@ -415,8 +423,8 @@ export class WebChatService implements ProjectChats {
       if (rows.length < 100 || !last) break;
       cursor = { time: last.timestamp ?? 0, id: last.id };
     }
-    for (const imageId of ids) { await this.storage.delete(chatImageKey(chat.server, chat.id, imageId)); this.pending.delete(imageId); }
-    for (const fileId of fileIds) { await this.storage.delete(chatFileKey(chat.server, chat.id, fileId)); this.pendingFiles.delete(fileId); }
+    for (const imageId of ids) { await this.storage.delete(chatImageKey(storageOf(chat), chat.id, imageId)); this.pending.delete(imageId); }
+    for (const fileId of fileIds) { await this.storage.delete(chatFileKey(storageOf(chat), chat.id, fileId)); this.pendingFiles.delete(fileId); }
   }
 
   /** Opens the engine event stream of a chat (SSE). Without ?after= or Last-Event-ID it starts at the newest event. */
@@ -471,10 +479,20 @@ export class WebChatService implements ProjectChats {
     }
   }
 
+  /** The owner's live chat. An old chat (in a server workspace) also needs the owner to still be in that server. */
   private async owned(user: string, id: string): Promise<WebChatRow> {
     const chat = await this.ownedChat(user, id);
-    await this.requireMember(user, chat.server);
+    if (chat.server !== PERSONAL_SERVER) await this.requireMember(user, chat.server);
     return chat;
+  }
+  /**
+   * The name Slopbot sees for the user. The session holds no name, so a personal chat uses the user's name in their
+   * first shared server (the same name the console shows). An old chat uses its own server's name.
+   */
+  private async nameOf(chat: WebChatRow, user: string): Promise<string> {
+    const server = chat.server !== PERSONAL_SERVER ? chat.server : (await this.host.servers?.(user).catch(() => undefined))?.[0]?.id;
+    if (!server) return user;
+    return (await this.host.directory.profiles(server, [user]).catch(() => undefined))?.get(user)?.displayName ?? user;
   }
   /** The owner's live chat in any server. Anyone else gets 404. */
   private async ownedChat(user: string, id: string): Promise<WebChatRow> {

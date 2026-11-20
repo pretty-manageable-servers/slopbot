@@ -3,6 +3,8 @@ import { logError } from "./errors.js";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { loadConfig } from "./config.js";
+import { PersonalServer } from "./personal-server.js";
+import { PERSONAL_SERVER } from "./personal.js";
 import { DiscordAdapter } from "./clients/discord/discord.js";
 import { PmAudio } from "./adapters/audio.js";
 import { PostgresStore } from "./adapters/postgres.js";
@@ -28,6 +30,7 @@ import { hasUserInstructions } from './user-instructions.js';
 import { LocalDiskStorage } from './web-chat-images.js';
 import { ProjectService } from './project-service.js';
 import { projectRoutes } from './clients/web/routes/projects.js';
+import { memoryRoutes } from './clients/web/routes/memories.js';
 import { GLOBAL_SETTINGS_SCOPE } from './usage-cost.js';
 import { hasProjectStore, projectLimits, PROJECT_LIMITS_KEY } from './projects.js';
 import { ChatTitles } from './chat-titles.js';
@@ -52,7 +55,8 @@ async function main(): Promise<void> {
   })();
   const retention = startConversationEventRetention(store, { days: config.conversationEventsRetentionDays, maxRows: config.conversationEventsMaxRows });
   const routing = degraded ? { router: degraded.router, health: degraded.health, mode: () => degraded.health.state().mode, statusNoteMinutes: () => loadDegradedSettings(store).statusNoteMinutes } : undefined;
-  const discord = routing ? new DiscordAdapter(config, store, new DynamicLLM(routing.router, llm, routing.health), undefined, routing) : new DiscordAdapter(config, store, llm);
+  const serverLlm = routing ? new DynamicLLM(routing.router, llm, routing.health) : llm;
+  const discord = new DiscordAdapter(config, store, serverLlm, undefined, routing);
   // Embedding calls are charged through the same meter as model calls.
   embeddings?.attachUsage(discord.usage);
   // Model titles for web chats. The backfill runs in the background and does not hold up the start.
@@ -67,7 +71,10 @@ async function main(): Promise<void> {
   const instructions = hasUserInstructions(store) ? new UserInstructionsService(store, classifier) : undefined;
   // Projects share the storage the project_files tool reads from (workspace.ts: object storage, else LocalDiskStorage).
   const projectStore = hasProjectStore(store) ? store : undefined;
-  const chats = new WebChatService(store, { engine: discord.engine, directory: discord.directory, limiter: discord.usage.limiter, access: discord.access, ...(discord.images ? { images: discord.images } : {}), ...(projectStore ? { projects: projectStore } : {}) });
+  // The personal workspace hosts the web chats. It opens once Discord has opened a server, which sets the bot's user ID.
+  const personal = new PersonalServer({ config, store, llm: serverLlm, usage: discord.usage, access: discord.access, team: discord.team, directory: discord.directory, ...(discord.images ? { images: discord.images } : {}), ...(routing ? { degraded: routing } : {}) });
+  discord.engine.add(PERSONAL_SERVER, discord.botReady.then(async botUser => { await personal.ready(botUser); return personal.workspace; }));
+  const chats = new WebChatService(store, { engine: discord.engine, directory: discord.directory, servers: user => discord.consoleServers(user), limiter: discord.usage.limiter, access: discord.access, ...(discord.images ? { images: discord.images } : {}), ...(projectStore ? { projects: projectStore } : {}) });
   const projects = projectStore ? projectRoutes(new ProjectService(projectStore, chats, discord.images ?? new LocalDiskStorage(), store, classifier, () => projectLimits(store.setting(GLOBAL_SETTINGS_SCOPE, PROJECT_LIMITS_KEY)))) : undefined;
   if (webOptions) discord.webChat = { continueMessage: async (user, server, source) => `${webOptions.origin}/chat/${encodeURIComponent((await chats.continueMessage(user, server, source)).id)}?server=${encodeURIComponent(server)}` };
   const conversations = createTranscripts({ store, access: discord.access, configured: server => configuredChannels(config, store, server), channelName: (server, channel) => discord.channelName(server, channel), shareRule: discord.shareRule, members: discord.members, ownsPrivateChat: (server, channel, user) => chats.owns(user, server, channel) });
@@ -75,8 +82,8 @@ async function main(): Promise<void> {
   const consoleOptionsLive = webOptions && { ...webOptions, ...(degraded ? { llmStatus: () => ({ mode: degraded.health.state().mode, canChat: degraded.router.select(undefined) !== undefined }), settings: store } : {}), ...(instructions ? { instructions } : {}) };
   // The Discord-only calls of the console: authority, settings, snapshots, webhooks. Same signatures as the adapter methods.
   const discordConsole: Pick<ConsoleBackend, "canSignIn" | "servers" | "profile" | "snapshot" | "usage" | "useReset" | "invoke" | "mcp" | "transcripts" | "inbox" | "setTranscript"> = { canSignIn: user => discord.canSignIn(user), servers: user => discord.consoleServers(user), profile: (user, server) => discord.consoleProfile(user, server), snapshot: (user, server) => discord.consoleSnapshot(user, server), usage: (user, server) => discord.consoleUsage(user, server), useReset: (user, server, kind) => discord.consoleUseReset(user, server, kind), invoke: (user, server, channel, name, args) => discord.consoleInvoke(user, server, channel, name, args), mcp: (user, server, input) => discord.consoleMcp(user, server, input), transcripts: (user, server) => discord.consoleTranscripts(user, server), inbox: { list: (user, server, includeDone) => discord.consoleInbox(user, server, includeDone), done: (user, server, ids) => discord.consoleInboxDone(user, server, ids) }, setTranscript: (user, server, channel, enabled) => discord.consoleSetTranscript(user, server, channel, enabled) };
-  const web = consoleOptionsLive ? createConsole(consoleOptionsLive, { audio: config.apiKey && config.voice ? new PmAudio(config.baseUrl, config.apiKey, config.voice.voice, undefined, config.voice.sttModel) : undefined, ...discordConsole, access: discord.access, admin, conversations, chats: createChatRoutes(chats), ...(projects ? { projects } : {}), continueShare: (user, id) => chats.continueShare(user, id, discord.shares), reply: (user, server, channel, text) => discord.consoleReply(user, server, channel, text), shares: discord.shares, sessions: store }) : undefined;
-  const shutdown = async () => { retention(); if (web?.listening) await closeWeb(web); if (store instanceof PostgresStore) store.stopIndexing(); await discord.stop(); await store.finishIndexing(); await store.close(); process.exit(0); };
+  const web = consoleOptionsLive ? createConsole(consoleOptionsLive, { audio: config.apiKey && config.voice ? new PmAudio(config.baseUrl, config.apiKey, config.voice.voice, undefined, config.voice.sttModel) : undefined, ...discordConsole, access: discord.access, admin, conversations, chats: createChatRoutes(chats), ...(projects ? { projects } : {}), memories: memoryRoutes(store), continueShare: (user, id) => chats.continueShare(user, id, discord.shares), reply: (user, server, channel, text) => discord.consoleReply(user, server, channel, text), shares: discord.shares, sessions: store }) : undefined;
+  const shutdown = async () => { retention(); if (web?.listening) await closeWeb(web); if (store instanceof PostgresStore) store.stopIndexing(); await personal.stop(); await discord.stop(); await store.finishIndexing(); await store.close(); process.exit(0); };
   process.once("SIGINT", () => { void shutdown().catch(error => { logError("shutdown_failed", error, { stage: "shutdown" }); process.exitCode = 1; }); });
   process.once("SIGTERM", () => { void shutdown().catch(error => { logError("shutdown_failed", error, { stage: "shutdown" }); process.exitCode = 1; }); });
   try { await discord.start(); if (web && webOptions) { await new Promise<void>((resolve, reject) => { web.once('error', reject); web.listen(webOptions.port, webOptions.host, resolve); }); console.log(`Slopbot settings: ${webOptions.origin}`); } }

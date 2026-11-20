@@ -11,6 +11,7 @@ import { discordChannelAccessSource } from "../src/clients/discord/discord-chann
 import { ChannelAccess } from "../src/channel-access.js";
 import { HistoryImporter } from "../src/history.js";
 import { privateChannel } from "../src/private-chat.js";
+import { PERSONAL_SERVER, personalMemoryChannel } from "../src/personal.js";
 import type { ParticipationGate } from "../src/participation.js";
 import { registerReportTools } from "../src/search/reports.js";
 import { ShareError, ShareService, buildMessages } from "../src/shares.js";
@@ -89,7 +90,7 @@ test("saved memories from a private chat never reach another channel", async t =
   const store = new SQLiteStore(); t.after(() => store.close());
   const { web } = await seed(store);
   await store.remember(web, "Alice plans the summer trip");
-  assert.equal((await store.memories(server, ownerChat)).length, 1, "the owner's chat still lists its own memory");
+  assert.equal((await store.memories(PERSONAL_SERVER, personalMemoryChannel("alice"))).length, 1, "the owner still lists the memory in their personal scope");
   assert.deepEqual(await store.memories(server, discord), []);
   const asked = discordMessage("ask-2", "what is the summer trip plan", "bob", 3_000);
   await store.ingest(asked);
@@ -287,7 +288,7 @@ test("continued share has no file labels", async t => {
   });
   const chats = new WebChatService(store, host, () => 2_000);
   const { id } = await chats.continueShare("alice", "share-old", { snapshot: async () => snapshot } as never);
-  const saved = await store.conversationMessages(guild, privateChannel(id), undefined, 10);
+  const saved = await store.conversationMessages(PERSONAL_SERVER, privateChannel(id), undefined, 10);
   assert.deepEqual(saved.map(message => message.text), ["look"], "the copied text has no label");
 });
 

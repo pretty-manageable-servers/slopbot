@@ -83,6 +83,18 @@ export const handlers = {
     return HttpResponse.json({ ...memory, content });
   }),
   removeProjectMemory: http.delete("/api/projects/:id/memories/:memory", () => new HttpResponse(null, { status: 204 })),
+  // Memory: the user's own memories, filtered by the search text and the scope the page sends, one page of 50 at the
+  // offset. A delete answers 204.
+  memories: http.get("/api/memories", ({ request }) => {
+    const params = new URL(request.url).searchParams;
+    const text = params.get("query")?.toLowerCase() ?? "";
+    const scope = params.get("scope");
+    const offset = Number(params.get("offset") ?? 0);
+    const limit = Number(params.get("limit") ?? 50);
+    const items = data.memoryItems.filter((item) => (!text || item.content.toLowerCase().includes(text)) && (!scope || item.scope === scope));
+    return HttpResponse.json({ items: items.slice(offset, offset + limit), total: items.length });
+  }),
+  deleteMemory: http.delete("/api/memories/:id", () => new HttpResponse(null, { status: 204 })),
   moveChat: http.patch("/api/chats/:id/project", async ({ request, params }) => {
     const { project } = (await request.json()) as { project: string | null };
     return HttpResponse.json({ ...data.chats.find((c) => c.id === params.id)!, project });

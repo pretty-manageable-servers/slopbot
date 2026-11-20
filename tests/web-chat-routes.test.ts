@@ -1,5 +1,5 @@
 import test, { type TestContext } from "node:test";
-import assert from "node:assert/strict";
+import { PERSONAL_SERVER } from "../src/personal.js";import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createHash, randomBytes } from "node:crypto";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const SERVER = "1528063444874432734", OTHER_SERVER = "1528063444874432735";
-const SERVERS = [SERVER, OTHER_SERVER];
+const SERVERS = [SERVER, OTHER_SERVER, PERSONAL_SERVER];
 const ALICE = "1514413259522838529", BOB = "1514413259522838530", CAROL = "1514413259522838531";
 const ORIGIN = "http://localhost:3000";
 const MISSING = "0".repeat(32);
@@ -96,6 +96,10 @@ const shareService = new ShareService({
       if (membership.fail) throw new Error("discord is down");
       return server === SERVER && members.has(user);
     },
+    async canSignIn(user: string) {
+      if (membership.fail) throw new Error("discord is down");
+      return members.has(user);
+    },
 } as never);
   const web = createConsole({ origin: ORIGIN, host: "127.0.0.1", port: 3000, clientId: "id", clientSecret: "secret", nextDir: NEXT_DIR }, {
     sessions: store, async canSignIn() { return true; },
@@ -128,8 +132,15 @@ const shareService = new ShareService({
   return { store, storage, members, limit, membership, shareNow, received, ingested, stops, base, projects, service, cookie: user => logins[user]!.cookie, call };
 }
 
-async function newChat(f: Fixture, user = ALICE): Promise<string> {
-  const created = await f.call(user, "POST", "/api/chats", { server: SERVER });
+/** A chat from before the personal workspace: its row names a Discord server. */
+async function oldChat(f: Fixture, user = ALICE, server = SERVER): Promise<string> {
+  const id = randomBytes(16).toString("hex");
+  await f.store.insertWebChat({ id, server, owner: user, title: "old", created: 1, updated: 1, deleted: false, storageServer: null, titleSource: "auto" });
+  return id;
+}
+
+async function newChat(f: Fixture, user = ALICE, body: object = {}): Promise<string> {
+  const created = await f.call(user, "POST", "/api/chats", body);
   assert.equal(created.status, 201);
   return created.json.id as string;
 }
@@ -150,7 +161,7 @@ async function download(f: Fixture, user: string | null, path: string) {
 
 test("the list, create, rename and delete routes keep the shapes the UI reads", async t => {
   const f = await setup(t);
-  const created = await f.call(ALICE, "POST", "/api/chats", { server: SERVER });
+  const created = await f.call(ALICE, "POST", "/api/chats", {});
   assert.equal(created.status, 201);
   assert.deepEqual(Object.keys(created.json), ["id"]);
   assert.match(created.json.id, /^[0-9a-f]{32}$/);
@@ -233,18 +244,26 @@ test("only the owner can read, send, rename, delete or stream a chat; others get
   assert.equal(kept.json[0].title, "private note", "the owner's chat is unchanged");
 });
 
-test("a user who is not in the server is refused, and loses a chat when they leave", async t => {
+test("a new chat has no server, and keeps working after the user leaves a server", async t => {
   const f = await setup(t);
-  const id = await newChat(f);
-  assert.deepEqual((await f.call(CAROL, "GET", `/api/chats`)).json, [], "a user with no chats gets an empty list");
-  assert.equal((await f.call(CAROL, "POST", "/api/chats", { server: SERVER })).status, 404);
+  const id = await newChat(f, ALICE, { server: OTHER_SERVER });
+  assert.equal((await f.store.webChat(id))!.server, PERSONAL_SERVER, "a server in the body is ignored");
+  assert.equal((await f.call(CAROL, "GET", `/api/chats/${id}/messages`)).status, 404, "another user gets 404");
   assert.equal((await f.call(CAROL, "POST", `/api/chats/${id}/messages`, { text: "hi" })).status, 404);
-  assert.equal((await f.call(ALICE, "GET", `/api/chats?server=123`)).json.length, 1, "the server parameter is ignored: chats are not per server");
 
   f.members.delete(ALICE);
-  assert.deepEqual((await f.call(ALICE, "GET", `/api/chats`)).json, [], "a chat in a server the user left is not listed");
-  assert.equal((await f.call(ALICE, "GET", `/api/chats/${id}/messages`)).status, 404, "a user who left the server gets 404");
-  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "still here?" })).status, 404);
+  assert.equal((await f.call(ALICE, "GET", `/api/chats`)).json.length, 1, "the chat is still listed");
+  assert.equal((await f.call(ALICE, "GET", `/api/chats/${id}/messages`)).status, 200);
+  assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "still here" })).status, 201);
+});
+
+test("an old chat keeps its server rules: it is hidden and refused once the user leaves its server", async t => {
+  const f = await setup(t);
+  const old = await oldChat(f), fresh = await newChat(f);
+  assert.equal((await f.call(ALICE, "GET", `/api/chats`)).json.length, 2, "both are listed");
+  f.members.delete(ALICE);
+  assert.deepEqual((await f.call(ALICE, "GET", `/api/chats`)).json.map((chat: { id: string }) => chat.id), [fresh], "only the personal chat is listed");
+  assert.equal((await f.call(ALICE, "GET", `/api/chats/${old}/messages`)).status, 404);
 });
 
 test("a usage limit refuses the message before it is saved, with the reset time", async t => {
@@ -267,7 +286,7 @@ test("the turn of a private chat reply opens for its owner only", async t => {
   const f = await setup(t);
   const id = await newChat(f);
   const sent = await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "what is the plan?" });
-  const request = await f.store.canonicalMessage(SERVER, sent.json.id);
+  const request = await f.store.canonicalMessage(PERSONAL_SERVER, sent.json.id);
   assert.ok(request);
   await f.store.startRun("run-private-1", request, { prefixVersion: "v1", prefix: [], history: [], inputs: [], purpose: "reply" });
   await f.store.appendEvent("run-private-1", 0, { kind: "text", payload: { text: "The plan is ready." } });
@@ -286,7 +305,7 @@ test("a sent message is saved as a web message from the user and handed to the b
   const f = await setup(t);
   const id = await newChat(f);
   const sent = await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "hello bot" });
-  const saved = await f.store.canonicalMessage(SERVER, sent.json.id);
+  const saved = await f.store.canonicalMessage(PERSONAL_SERVER, sent.json.id);
   assert.ok(saved, "the message is saved");
   assert.equal(saved.author, ALICE);
   assert.equal(saved.source, "web");
@@ -342,10 +361,6 @@ test("only the owner can create, list or revoke a chat link; others get 404", as
   assert.equal((await f.call(null, "GET", `/api/chats/${id}/shares`)).status, 401, "no session");
   assert.equal((await f.call(ALICE, "GET", `/api/chats/${id}/shares`)).json.shares.length, 1, "the owner still sees the link");
   assert.equal((await f.call(null, "GET", `/api/shares/${shareId}`)).status, 200, "the link still works");
-
-  f.members.delete(ALICE);
-  assert.equal((await f.call(ALICE, "GET", `/api/chats/${id}/shares`)).status, 404, "an owner who left the server cannot manage the link");
-  f.members.add(ALICE);
 });
 
 test("revoking a chat link stops it; a link of another chat is 404; deleting the chat removes its links", async t => {
@@ -390,7 +405,7 @@ test("bad input gets a status and an {error} body; writes need the session, CSRF
   assert.equal((await f.call(ALICE, "POST", messages, "{}", { "Content-Type": "text/plain" })).status, 415, "non-JSON body");
   assert.equal((await f.call(ALICE, "PATCH", `/api/chats/${id}`, { title: "   " })).status, 400);
   assert.equal((await f.call(ALICE, "PATCH", `/api/chats/${id}`, { title: "x".repeat(61) })).status, 400);
-  assert.equal((await f.call(ALICE, "POST", "/api/chats", {})).status, 404, "a create without a server");
+  assert.equal((await f.call(ALICE, "POST", "/api/chats", {})).status, 201, "a create needs no server");
 
   assert.equal((await f.call(null, "GET", `/api/chats`)).status, 401, "no session");
   assert.equal((await f.call(ALICE, "POST", messages, { text: "no csrf" }, { "X-CSRF-Token": "wrong" })).status, 403, "wrong CSRF token");
@@ -451,17 +466,17 @@ test("only the owner can set the effort of a chat", async t => {
   assert.equal((await f.call(ALICE, "GET", `/api/chats`)).json[0].effort, "medium");
 });
 
-test("a sent message carries the chat effort, else the server default, else medium", async t => {
+test("a personal chat's effort is the chat choice, else medium; an old chat falls back to its server default", async t => {
   const f = await setup(t);
   const id = await newChat(f);
   await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "one" });
-  assert.equal(f.received.at(-1)!.effort, "medium", "no choice and no setting");
+  assert.equal(f.received.at(-1)!.effort, "medium", "no choice");
   f.store.setSetting(SERVER, "default_effort", "low");
   await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "two" });
-  assert.equal(f.received.at(-1)!.effort, "low", "the server default");
-  f.store.setSetting(SERVER, "default_effort", "default");
-  await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "three" });
-  assert.equal(f.received.at(-1)!.effort, "medium", "the default value means no setting");
+  assert.equal(f.received.at(-1)!.effort, "medium", "a server default does not reach a personal chat");
+  const old = await oldChat(f);
+  await f.call(ALICE, "POST", `/api/chats/${old}/messages`, { text: "three" });
+  assert.equal(f.received.at(-1)!.effort, "low", "an old chat keeps the server default");
   await f.call(ALICE, "PATCH", `/api/chats/${id}`, { effort: "xhigh" });
   await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "four" });
   assert.equal(f.received.at(-1)!.effort, "xhigh", "the chat choice wins");
@@ -473,8 +488,8 @@ async function sharedChat(f: Fixture): Promise<{ shareId: string }> {
   const id = await newChat(f, ALICE);
   assert.equal((await f.call(ALICE, "POST", `/api/chats/${id}/messages`, { text: "first private line" })).status, 201);
   // A saved answer from Slopbot. It has no run here, so only its text is copied.
-  f.store.setSetting(SERVER, "context_bot_author", "bot-1");
-  await f.store.ingest({ id: "bot-answer-1", server: SERVER, channel: `web:${id}`, author: "bot-1", authorName: "Slopbot", isBot: true, text: "**Adapter** is ready.", timestamp: 2_000, addressed: false });
+  f.store.setSetting(PERSONAL_SERVER, "context_bot_author", "bot-1");
+  await f.store.ingest({ id: "bot-answer-1", server: PERSONAL_SERVER, channel: `web:${id}`, author: "bot-1", authorName: "Slopbot", isBot: true, text: "**Adapter** is ready.", timestamp: 2_000, addressed: false });
   const shared = await f.call(ALICE, "POST", `/api/chats/${id}/shares`, {});
   assert.equal(shared.status, 201);
   return { shareId: shared.json.id as string };
@@ -499,7 +514,7 @@ test("a valid share is copied into a new private chat of the viewer, and the mod
   // The model input for a new message in the copy includes the copied history.
   const sent = await f.call(BOB, "POST", `/api/chats/${made.json.id}/messages`, { text: "what did it say?" });
   assert.equal(sent.status, 201);
-  const sentRow = await f.store.canonicalMessage(SERVER, sent.json.id);
+  const sentRow = await f.store.canonicalMessage(PERSONAL_SERVER, sent.json.id);
   assert.ok(sentRow);
   const context = await f.store.context(sentRow, 10);
   assert.deepEqual(context.map(m => m.text), ["first private line", "**Adapter** is ready."]);
@@ -548,7 +563,7 @@ test("upload file any type", async t => {
   assert.equal(binary.json.contentType, "application/octet-stream");
   assert.match(binary.json.fileId, /^[0-9a-f]{32}\.exe$/);
   assert.equal(f.storage.objects.size, 2, "both files are stored");
-  assert.ok(f.storage.objects.has(chatFileKey(SERVER, id, pdf.json.fileId)));
+  assert.ok(f.storage.objects.has(chatFileKey(PERSONAL_SERVER, id, pdf.json.fileId)));
   assert.equal((await uploadFile(f, ALICE, id, Buffer.alloc(0))).status, 400, "an empty file is refused");
   assert.equal((await uploadFile(f, BOB, id, Buffer.from("x"))).status, 404, "another user cannot upload here");
 });
@@ -604,7 +619,7 @@ test("read file sets attachment disposition", async t => {
   check(await download(f, ALICE, path));
   // With no pending entry and no message row, the file ID is the name.
   const orphan = "f".repeat(32) + ".txt";
-  f.storage.objects.set(chatFileKey(SERVER, id, orphan), Buffer.from("orphan"));
+  f.storage.objects.set(chatFileKey(PERSONAL_SERVER, id, orphan), Buffer.from("orphan"));
   const named = await download(f, ALICE, `/api/chats/${id}/files/${orphan}`);
   assert.equal(named.status, 200);
   assert.equal(named.headers.get("content-disposition"), `attachment; filename*=UTF-8''${orphan}`);
@@ -682,14 +697,14 @@ test("a chat is created in a project of its owner; another owner's, an unknown o
   f.projects.set(PROJECT_ONE, project(PROJECT_ONE, ALICE));
   f.projects.set(PROJECT_TWO, project(PROJECT_TWO, BOB));
 
-  const created = await f.call(ALICE, "POST", "/api/chats", { server: SERVER, project: PROJECT_ONE });
+  const created = await f.call(ALICE, "POST", "/api/chats", { project: PROJECT_ONE });
   assert.equal(created.status, 201);
   assert.deepEqual(Object.keys(created.json), ["id"]);
   assert.equal((await f.call(ALICE, "GET", "/api/chats")).json[0].project, PROJECT_ONE);
 
-  assert.equal((await f.call(ALICE, "POST", "/api/chats", { server: SERVER, project: PROJECT_TWO })).status, 404);
-  assert.equal((await f.call(ALICE, "POST", "/api/chats", { server: SERVER, project: MISSING })).status, 404);
-  assert.equal((await f.call(ALICE, "POST", "/api/chats", { server: SERVER, project: "not-an-id" })).status, 400);
+  assert.equal((await f.call(ALICE, "POST", "/api/chats", { project: PROJECT_TWO })).status, 404);
+  assert.equal((await f.call(ALICE, "POST", "/api/chats", { project: MISSING })).status, 404);
+  assert.equal((await f.call(ALICE, "POST", "/api/chats", { project: "not-an-id" })).status, 400);
   assert.equal((await f.call(ALICE, "GET", "/api/chats")).json.length, 1, "the refused creates made no chat");
 });
 
@@ -719,8 +734,8 @@ test("a chat moves into and out of a project; another owner's project is 404 and
 test("a project lists its chats from every server, newest first, and deleting one chat removes it", async t => {
   const f = await setup(t);
   f.projects.set(PROJECT_ONE, project(PROJECT_ONE, ALICE));
-  const here = await f.call(ALICE, "POST", "/api/chats", { server: SERVER, project: PROJECT_ONE });
-  const there = await f.call(ALICE, "POST", "/api/chats", { server: OTHER_SERVER, project: PROJECT_ONE });
+  const here = await f.call(ALICE, "POST", "/api/chats", { project: PROJECT_ONE });
+  const there = await f.call(ALICE, "POST", "/api/chats", { project: PROJECT_ONE });
   const loose = await newChat(f);
 
   const listed = await f.service.chatsInProject(ALICE, PROJECT_ONE);
@@ -750,8 +765,8 @@ test("the run message carries the project of the chat, and a chat in no project 
 test("a project's chats are listed and deleted even after the owner left their servers", async t => {
   const f = await setup(t);
   f.projects.set(PROJECT_ONE, project(PROJECT_ONE, ALICE));
-  const here = await f.call(ALICE, "POST", "/api/chats", { server: SERVER, project: PROJECT_ONE });
-  const there = await f.call(ALICE, "POST", "/api/chats", { server: OTHER_SERVER, project: PROJECT_ONE });
+  const here = await f.call(ALICE, "POST", "/api/chats", { project: PROJECT_ONE });
+  const there = await f.call(ALICE, "POST", "/api/chats", { project: PROJECT_ONE });
   f.members.delete(ALICE);
 
   assert.deepEqual((await f.service.chatsInProject(ALICE, PROJECT_ONE)).map(chat => chat.id), [there.json.id, here.json.id]);

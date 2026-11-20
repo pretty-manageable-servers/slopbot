@@ -7,12 +7,12 @@ export interface ChatDb {
 import { parseEffort, type Effort } from "../../domain.js";
 
 /** One private chat. `channel` is `web:<id>`. storageServer null = the chat's server, for its image and file keys. */
-export interface WebChatRow { id: string; server: string; owner: string; title: string; created: number; updated: number; deleted: boolean; effort?: Effort; project?: string; storageServer: string | null; titleSource: "auto" | "model" | "user" }
+export interface WebChatRow { id: string; server: string; owner: string; title: string; created: number; updated: number; deleted: boolean; effort?: Effort; project?: string; storageServer: string | null; titleSource: "auto" | "model" | "user"; bytesPerToken?: number }
 
-const COLUMNS = "id,server,owner,title,created,updated,deleted,effort,project,storage_server,title_source";
+const COLUMNS = "id,server,owner,title,created,updated,deleted,effort,project,storage_server,title_source,bytes_per_token";
 
 function chatOf(row: Record<string, unknown>): WebChatRow {
-  return { id: String(row.id), server: String(row.server), owner: String(row.owner), title: String(row.title), created: Number(row.created), updated: Number(row.updated), deleted: Number(row.deleted) === 1, ...(parseEffort(row.effort) ? { effort: parseEffort(row.effort)! } : {}), ...(row.project ? { project: String(row.project) } : {}), storageServer: row.storage_server == null ? null : String(row.storage_server), titleSource: row.title_source === "model" || row.title_source === "user" ? row.title_source : "auto" };
+  return { id: String(row.id), server: String(row.server), owner: String(row.owner), title: String(row.title), created: Number(row.created), updated: Number(row.updated), deleted: Number(row.deleted) === 1, ...(parseEffort(row.effort) ? { effort: parseEffort(row.effort)! } : {}), ...(row.project ? { project: String(row.project) } : {}), storageServer: row.storage_server == null ? null : String(row.storage_server), titleSource: row.title_source === "model" || row.title_source === "user" ? row.title_source : "auto", ...(row.bytes_per_token == null ? {} : { bytesPerToken: Number(row.bytes_per_token) }) };
 }
 
 export async function insertWebChat(db: ChatDb, row: WebChatRow): Promise<void> {
