@@ -99,7 +99,7 @@ const mb = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(bytes < 1024 * 
 /** attach_file: queues a sandbox file or a file_store file for the reply of this run. No URLs. */
 export function registerAttachFile(registry: ToolRegistry, deps: AttachDeps): void {
   const tool: ToolDefinition = {
-    name: "attach_file", surface: "top", access: "member", effect: "read", retrySafe: true,
+    name: "attach_file", surface: "top", needs: ["files"], access: "member", effect: "read", retrySafe: true,
     description: "Attach a file to your reply: a sandbox file (path) or a file_store file (store:<scope>/<path>, scope user, server or user_server). Media is shown inline. Files over 10 MB become a 7-day link in the reply. Files over 100 MB are refused.",
     fields: {
       path: { type: "string", required: true, description: "Sandbox path, or store:<scope>/<path> for a file_store file." },
