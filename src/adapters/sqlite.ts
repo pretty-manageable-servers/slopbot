@@ -11,7 +11,7 @@ import type { Store, AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow, T
 import type { KeyedProvider, ProviderKeyRow, ProviderKeyUsage } from "../web-providers.js";
 import type { UserInstructions, UserInstructionsStore } from "../user-instructions.js";
 import type { Project, ProjectFile, ProjectStore } from "../projects.js";
-import { cosine, searchTerms, newMemory, patchMemory, memoryMetadata, memoryFromRow, memorySearchText, rankMemories, type MemoryOptions, type MemoryPatch, type MemoryQuery, type Embeddings, type Evidence, type MemoryRecord, type Knowledge, type Recall } from "../memory.js";
+import { cosine, searchTerms, newMemory, patchMemory, memoryMetadata, memoryFromRow, memorySearchText, rankMemories, type MemoryOptions, type MemoryPatch, type MemoryQuery, type Embeddings, type Evidence, type MemoryRecord, type MemoryCategory, type Knowledge, type Recall } from "../memory.js";
 import { attribution, type Attribution } from "../usage-meter.js";
 
 import { ToolError } from "../tools.js";
@@ -34,7 +34,7 @@ import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
 import type { InboxItem } from '../inbox.js';
 import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, listChatShares, revokeShare, updateShareBody, revokeAllShares, deleteChatShares } from '../share-store.js';
 import { getWebSession, saveWebSession, deleteWebSession, deleteExpiredWebSessions } from '../clients/web/web-session-store.js';
-import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatEffort, setChatProject, webChatsInProject, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../clients/web/web-chat-store.js';
+import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatTitle, setBytesPerToken, webChatSummary, saveWebChatSummary, setWebChatEffort, setChatProject, webChatsInProject, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../clients/web/web-chat-store.js';
 import { isPrivateChannel } from '../private-chat.js';
 import type { WebSessionRow } from '../clients/web/web-session-store.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
@@ -405,6 +405,7 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       CREATE INDEX IF NOT EXISTS web_sessions_expires ON web_sessions(expires);
       CREATE TABLE IF NOT EXISTS web_chats (id TEXT PRIMARY KEY, server TEXT NOT NULL, owner TEXT NOT NULL, title TEXT NOT NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL, deleted INTEGER NOT NULL DEFAULT 0);
       CREATE INDEX IF NOT EXISTS web_chats_owner ON web_chats(server,owner,updated);
+      CREATE TABLE IF NOT EXISTS web_chat_summaries (chat TEXT NOT NULL, through_message TEXT NOT NULL, through_timestamp INTEGER NOT NULL, summary TEXT NOT NULL, run_id TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (chat, created));
       CREATE TABLE IF NOT EXISTS web_provider_keys (id TEXT PRIMARY KEY, provider TEXT NOT NULL, owner TEXT NOT NULL, label TEXT NOT NULL, last4 TEXT NOT NULL, secret_encrypted TEXT NOT NULL, created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS web_provider_usage (key_id TEXT NOT NULL, month TEXT NOT NULL, used INTEGER NOT NULL, exhausted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(key_id, month));
       CREATE TABLE IF NOT EXISTS user_instructions (user_id TEXT PRIMARY KEY, text TEXT NOT NULL, updated INTEGER NOT NULL);
@@ -419,6 +420,9 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     if (!this.db.prepare("PRAGMA table_info(web_replies)").all().some(column => column.name === "via")) this.db.exec("ALTER TABLE web_replies ADD COLUMN via TEXT NOT NULL DEFAULT 'webhook'");
     if (!this.db.prepare("PRAGMA table_info(web_chats)").all().some(column => column.name === "effort")) this.db.exec("ALTER TABLE web_chats ADD COLUMN effort TEXT");
     if (!this.db.prepare("PRAGMA table_info(web_chats)").all().some(column => column.name === "project")) this.db.exec("ALTER TABLE web_chats ADD COLUMN project TEXT");
+    if (!this.db.prepare("PRAGMA table_info(web_chats)").all().some(column => column.name === "storage_server")) this.db.exec("ALTER TABLE web_chats ADD COLUMN storage_server TEXT");
+    if (!this.db.prepare("PRAGMA table_info(web_chats)").all().some(column => column.name === "title_source")) this.db.exec("ALTER TABLE web_chats ADD COLUMN title_source TEXT NOT NULL DEFAULT 'auto'");
+    if (!this.db.prepare("PRAGMA table_info(web_chats)").all().some(column => column.name === "bytes_per_token")) this.db.exec("ALTER TABLE web_chats ADD COLUMN bytes_per_token REAL");
     const operationColumns = this.db.prepare("PRAGMA table_info(tool_operations)").all();
     if (!this.db.prepare('PRAGMA table_info(agent_turns)').all().some(column => column.name === 'diagnostic_args')) this.db.exec('ALTER TABLE agent_turns ADD COLUMN diagnostic_args TEXT');
     if (!operationColumns.some(column => column.name === "resource")) this.db.exec("ALTER TABLE tool_operations ADD COLUMN resource TEXT");
@@ -559,6 +563,29 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     return selected;
   }
 
+  async contextSince(message: Message, afterTimestamp: number | undefined): Promise<readonly Message[]> {
+    const moment = "coalesce(json_extract(body,'$.timestamp'),sequence)";
+    const rows = afterTimestamp === undefined
+      ? this.db.prepare(`SELECT body FROM messages WHERE server=? AND channel=? ORDER BY ${moment}`).all(message.server, message.channel)
+      : this.db.prepare(`SELECT body FROM messages WHERE server=? AND channel=? AND ${moment}>? ORDER BY ${moment}`).all(message.server, message.channel, afterTimestamp);
+    const selected = rows.map(row => this.namedMessage(parseMessage(JSON.parse(String(row.body)))));
+    // Reply ancestors that are outside the range, so each reply has the message it answers.
+    const seen = new Set(selected.map(item => item.id));
+    const ancestors: Message[] = [];
+    for (const item of selected) {
+      let reference = item.replyTo;
+      while (reference && !seen.has(reference)) {
+        const row = this.db.prepare("SELECT body FROM messages WHERE server=? AND channel=? AND id=?").get(message.server, message.channel, reference);
+        if (!row) break;
+        const ancestor = this.namedMessage(parseMessage(JSON.parse(String(row.body))));
+        seen.add(ancestor.id);
+        ancestors.push(ancestor);
+        reference = ancestor.replyTo;
+      }
+    }
+    return [...ancestors.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0)), ...selected];
+  }
+
   async history(taskKey: string): Promise<readonly PromptItem[]> {
     const context = await this.taskContext(taskKey);
     return [...(context.checkpoint ? [context.checkpoint] : []), ...context.entries.map(entry => entry.item)];
@@ -640,6 +667,10 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
   async webChatsInProject(owner: string, project: string): Promise<WebChatRow[]> { return webChatsInProject(this.db, owner, project); }
   async liveWebChatChannels(server: string): Promise<string[]> { return liveWebChatChannels(this.db, server); }
   async renameWebChat(id: string, title: string, updated: number): Promise<void> { return renameWebChat(this.db, id, title, updated); }
+  async setWebChatTitle(id: string, title: string, source: "model" | "user", updated: number): Promise<void> { return setWebChatTitle(this.db, id, title, source, updated); }
+  async setBytesPerToken(chat: string, ratio: number): Promise<void> { return setBytesPerToken(this.db, chat, ratio); }
+  async webChatSummary(chat: string): Promise<{ throughMessage: string; throughTimestamp: number; summary: string } | undefined> { return webChatSummary(this.db, chat); }
+  async saveWebChatSummary(chat: string, row: { throughMessage: string; throughTimestamp: number; summary: string; runId: string }): Promise<void> { return saveWebChatSummary(this.db, chat, row); }
   async setWebChatEffort(id: string, effort: Effort | null): Promise<void> { return setWebChatEffort(this.db, id, effort); }
   async setChatProject(id: string, project: string | null, at: number): Promise<void> { return setChatProject(this.db, id, project, at); }
   async touchWebChat(id: string, updated: number): Promise<void> { return touchWebChat(this.db, id, updated); }
@@ -1255,6 +1286,12 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
     return memory;
   }
 
+  async userMemories(_user: string, _query: { query?: string; scope?: "personal" | `project:${string}`; category?: MemoryCategory; limit?: number; offset?: number }): Promise<{ items: MemoryRecord[]; total: number }> {
+    throw new Error("WP4");
+  }
+  async forgetOwn(_user: string, _id: string): Promise<boolean> {
+    throw new Error("WP4");
+  }
   async forget(server: string, channel: string, id: string, actor: string): Promise<boolean> {
     this.db.exec("BEGIN IMMEDIATE");
     try {

@@ -22,6 +22,12 @@ export interface Store extends ProviderKeyStore {
   recentChannelMessages?(server: string, channel: string, limit: number): Promise<readonly Message[]>;
   ingest(message: Message): Promise<boolean>;
   context(message: Message, limit: number): Promise<readonly Message[]>;
+  // All messages of the channel after the time, no count cap, plus reply ancestors.
+  contextSince(message: Message, afterTimestamp: number | undefined): Promise<readonly Message[]>;
+  // The newest summary of a web chat.
+  webChatSummary(chat: string): Promise<{ throughMessage: string; throughTimestamp: number; summary: string } | undefined>;
+  saveWebChatSummary(chat: string, row: { throughMessage: string; throughTimestamp: number; summary: string; runId: string }): Promise<void>;
+  setBytesPerToken(chat: string, ratio: number): Promise<void>;
   history(taskKey: string): Promise<readonly PromptItem[]>;
   taskContext(taskKey: string): Promise<TaskContext>;
   checkpoint(taskKey: string, through: number, item: PromptItem, runId: string): Promise<void>;

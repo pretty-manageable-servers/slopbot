@@ -3,6 +3,9 @@
 // Instructions go through the same safety check as user instructions. See wiki plan slopbot-projects.
 import { randomBytes } from "node:crypto";
 import type { Message } from "./domain.js";
+import { ToolError } from "./errors.js";
+import { surfaceOf } from "./engine/api.js";
+import { PERSONAL_SERVER, personalMemoryChannel } from "./personal.js";
 
 export const PROJECT_LIMITS_KEY = "project_limits";
 export interface ProjectLimits { maxProjects: number; maxFiles: number; maxFileBytes: number; maxProjectBytes: number }
@@ -45,8 +48,18 @@ export function projectFileKey(project: string, fileId: string): string { return
 export function projectMemoryChannel(project: string): string { return `project:${project}`; }
 /** Projects have no server, so all project memories use this server key. Memory sources keep the chat's real server. */
 export const PROJECT_MEMORY_SERVER = "__slopbot_projects__";
-/** Where a message's memories live: the project scope in a project chat, else the message's server and channel. */
-export function memoryScope(message: Pick<Message, "server" | "channel" | "project">): { server: string; channel: string } {
+/** The memory scopes of a message. The first one is where new memories go. Empty = no memory (private chats). */
+export function memoryScopes(message: Pick<Message, "server" | "channel" | "project" | "author" | "surface">): readonly { server: string; channel: string }[] {
+  const surface = surfaceOf(message);
+  if (surface === "web-incognito") return [];
+  const personal = { server: PERSONAL_SERVER, channel: personalMemoryChannel(message.author) };
+  if (message.project) return [{ server: PROJECT_MEMORY_SERVER, channel: projectMemoryChannel(message.project) }, personal];
+  if (surface === "web" || surface === "discord-dm") return [personal];
+  return [{ server: message.server, channel: message.channel }];
+}
+/** Until WP4 moves the memory methods to memoryScopes, web and DM chats keep their own channel scope here. Throws ToolError("Memory is off in private chats.") in a private chat. */
+export function memoryScope(message: Pick<Message, "server" | "channel" | "project" | "surface">): { server: string; channel: string } {
+  if (surfaceOf(message) === "web-incognito") throw new ToolError("Memory is off in private chats.");
   return message.project ? { server: PROJECT_MEMORY_SERVER, channel: projectMemoryChannel(message.project) } : { server: message.server, channel: message.channel };
 }
 

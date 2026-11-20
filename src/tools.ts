@@ -170,6 +170,9 @@ const refusalByCapability: Record<Capability, string> = {
   discord_actions: discordOnlyMessage,
   web_visuals: webOnlyMessage,
   live_tool_input: "This action is not available in this chat.",
+  channel_history: "This action is not available in this chat.",
+  memory: "This action is not available in this chat.",
+  files: "This action is not available in this chat.",
 };
 
 /** The text returned when the message's surface lacks a capability the tool needs, or undefined when it has them all. */

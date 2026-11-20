@@ -146,6 +146,10 @@ CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, owner TEXT NOT NULL, n
 CREATE INDEX IF NOT EXISTS projects_owner ON projects(owner,deleted,updated);
 CREATE TABLE IF NOT EXISTS project_files (project TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, content_type TEXT NOT NULL, size BIGINT NOT NULL, created BIGINT NOT NULL, PRIMARY KEY(project,id));
 ALTER TABLE web_chats ADD COLUMN IF NOT EXISTS project TEXT;
+ALTER TABLE web_chats ADD COLUMN IF NOT EXISTS storage_server TEXT;
+ALTER TABLE web_chats ADD COLUMN IF NOT EXISTS title_source TEXT NOT NULL DEFAULT 'auto';
+ALTER TABLE web_chats ADD COLUMN IF NOT EXISTS bytes_per_token REAL;
+CREATE TABLE IF NOT EXISTS web_chat_summaries (chat TEXT NOT NULL, through_message TEXT NOT NULL, through_timestamp BIGINT NOT NULL, summary TEXT NOT NULL, run_id TEXT NOT NULL, created BIGINT NOT NULL, PRIMARY KEY (chat, created));
 CREATE TABLE IF NOT EXISTS inbox_items (id TEXT PRIMARY KEY, server TEXT NOT NULL, target TEXT NOT NULL, sender TEXT NOT NULL, channel TEXT NOT NULL, source_ids TEXT NOT NULL, summary TEXT NOT NULL, created_at BIGINT NOT NULL, done_at BIGINT);
 CREATE INDEX IF NOT EXISTS inbox_items_target ON inbox_items(server,target,done_at,created_at);
 CREATE INDEX IF NOT EXISTS inbox_items_sender ON inbox_items(server,sender,created_at);

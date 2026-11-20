@@ -120,6 +120,10 @@ export interface Knowledge {
   searchMemories(message: Message, query?: MemoryQuery): Promise<readonly MemoryRecord[]>;
   updateMemory(message: Message, id: string, patch: MemoryPatch, expectedRevision: number, operationId?: string): Promise<MemoryRecord | undefined>;
   forget(server: string, channel: string, id: string, actor: string): Promise<boolean>;
+  /** The user's own memories for the Memory page: author = user, status active, in the personal scope or one of the user's project scopes. */
+  userMemories(user: string, query: { query?: string; scope?: "personal" | `project:${string}`; category?: MemoryCategory; limit?: number; offset?: number }): Promise<{ items: MemoryRecord[]; total: number }>;
+  /** Forgets one of the user's own memories by id, in any scope. false when there is none. */
+  forgetOwn(user: string, id: string): Promise<boolean>;
 }
 
 export function cosine(a: readonly number[], b: readonly number[]): number {

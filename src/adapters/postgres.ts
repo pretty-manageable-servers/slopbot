@@ -13,7 +13,7 @@ import type { AgentTurn, UserLimitWindow, UserLimitState, UserLimitRow, TokenTot
 import type { KeyedProvider, ProviderKeyRow, ProviderKeyUsage } from "../web-providers.js";
 import type { UserInstructions, UserInstructionsStore } from "../user-instructions.js";
 import type { Project, ProjectFile, ProjectStore } from "../projects.js";
-import { cosine, searchTerms, newMemory, patchMemory, memoryMetadata, memoryFromRow, memorySearchText, rankMemories, type MemoryOptions, type MemoryPatch, type MemoryQuery, type Embeddings, type Evidence, type MemoryRecord } from "../memory.js";
+import { cosine, searchTerms, newMemory, patchMemory, memoryMetadata, memoryFromRow, memorySearchText, rankMemories, type MemoryOptions, type MemoryPatch, type MemoryQuery, type Embeddings, type Evidence, type MemoryRecord, type MemoryCategory } from "../memory.js";
 import { attribution, type Attribution } from "../usage-meter.js";
 import { ToolError } from "../tools.js";
 import { memoryScope } from "../projects.js";
@@ -32,7 +32,7 @@ const CONVERSATION_PRUNE_BATCH = 10000;
 
 import type { WebReplyRow, WebVia, WebWebhookRow } from '../web-replies.js';
 import { shareMessages, shareRequestEvents, insertShare, getShare, listShares, listChatShares, revokeShare, updateShareBody, revokeAllShares, deleteChatShares } from '../share-store.js';
-import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatEffort, setChatProject, webChatsInProject, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../clients/web/web-chat-store.js';
+import { insertWebChat, getWebChat, listWebChats, liveWebChatChannels, renameWebChat, setWebChatTitle, setBytesPerToken, webChatSummary, saveWebChatSummary, setWebChatEffort, setChatProject, webChatsInProject, touchWebChat, markWebChatDeleted, deleteChatRows, type WebChatRow } from '../clients/web/web-chat-store.js';
 import { isPrivateChannel } from '../private-chat.js';
 import type { ShareMessageRange, ShareMessageResult, ShareRow } from '../shares.js';
 import type { InboxItem } from '../inbox.js';
@@ -396,6 +396,28 @@ export class PostgresStore implements UserInstructionsStore, ProjectStore {
         }
         return selected;
     }
+    async contextSince(message: Message, afterTimestamp: number | undefined): Promise<readonly Message[]> {
+        const moment = "coalesce(json_extract(body,'$.timestamp'),sequence)";
+        const rows = afterTimestamp === undefined
+            ? await this.db.prepare(`SELECT body FROM messages WHERE server=? AND channel=? ORDER BY ${moment}`).all(message.server, message.channel)
+            : await this.db.prepare(`SELECT body FROM messages WHERE server=? AND channel=? AND ${moment}>? ORDER BY ${moment}`).all(message.server, message.channel, afterTimestamp);
+        const selected: Message[] = await Promise.all(rows.map(async (row: Record<string, unknown>) => this.namedMessage(parseMessage(JSON.parse(String(row.body))))));
+        // Reply ancestors that are outside the range, so each reply has the message it answers.
+        const seen = new Set(selected.map(item => item.id));
+        const ancestors: Message[] = [];
+        for (const item of selected) {
+            let reference = item.replyTo;
+            while (reference && !seen.has(reference)) {
+                const row = await this.db.prepare("SELECT body FROM messages WHERE server=? AND channel=? AND id=?").get(message.server, message.channel, reference);
+                if (!row) break;
+                const ancestor = await this.namedMessage(parseMessage(JSON.parse(String(row.body))));
+                seen.add(ancestor.id);
+                ancestors.push(ancestor);
+                reference = ancestor.replyTo;
+            }
+        }
+        return [...ancestors.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0)), ...selected];
+    }
     async history(taskKey: string): Promise<readonly PromptItem[]> {
         const context = await (await this.taskContext(taskKey));
         return [...(context.checkpoint ? [context.checkpoint] : []), ...context.entries.map(entry => entry.item)];
@@ -474,6 +496,10 @@ export class PostgresStore implements UserInstructionsStore, ProjectStore {
     async webChatsInProject(owner: string, project: string): Promise<WebChatRow[]> { return webChatsInProject(this.db, owner, project); }
     async liveWebChatChannels(server: string): Promise<string[]> { return liveWebChatChannels(this.db, server); }
     async renameWebChat(id: string, title: string, updated: number): Promise<void> { return renameWebChat(this.db, id, title, updated); }
+    async setWebChatTitle(id: string, title: string, source: "model" | "user", updated: number): Promise<void> { return setWebChatTitle(this.db, id, title, source, updated); }
+    async setBytesPerToken(chat: string, ratio: number): Promise<void> { return setBytesPerToken(this.db, chat, ratio); }
+    async webChatSummary(chat: string): Promise<{ throughMessage: string; throughTimestamp: number; summary: string } | undefined> { return webChatSummary(this.db, chat); }
+    async saveWebChatSummary(chat: string, row: { throughMessage: string; throughTimestamp: number; summary: string; runId: string }): Promise<void> { return saveWebChatSummary(this.db, chat, row); }
     async setWebChatEffort(id: string, effort: Effort | null): Promise<void> { return setWebChatEffort(this.db, id, effort); }
     async setChatProject(id: string, project: string | null, at: number): Promise<void> { return setChatProject(this.db, id, project, at); }
     async touchWebChat(id: string, updated: number): Promise<void> { return touchWebChat(this.db, id, updated); }
@@ -1134,6 +1160,12 @@ export class PostgresStore implements UserInstructionsStore, ProjectStore {
     return memory;
   }
 
+  async userMemories(_user: string, _query: { query?: string; scope?: "personal" | `project:${string}`; category?: MemoryCategory; limit?: number; offset?: number }): Promise<{ items: MemoryRecord[]; total: number }> {
+    throw new Error("WP4");
+  }
+  async forgetOwn(_user: string, _id: string): Promise<boolean> {
+    throw new Error("WP4");
+  }
   async forget(server: string, channel: string, id: string, actor: string): Promise<boolean> {
     await this.db.exec("BEGIN IMMEDIATE");
     try {

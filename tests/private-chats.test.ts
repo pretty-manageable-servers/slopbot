@@ -63,7 +63,7 @@ test("a private chat has its transcript switch on, a Discord channel does not", 
   assert.equal(transcriptSwitchOn(store, "s", "100000000000000001"), false);
 });
 
-const chatRow = (id: string, owner = "alice") => ({ id, server: "s", owner, title: "", created: 1, updated: 1, deleted: false });
+const chatRow = (id: string, owner = "alice") => ({ id, server: "s", owner, title: "", created: 1, updated: 1, deleted: false, storageServer: null, titleSource: "auto" as const });
 
 test("a web chat row is saved, listed by owner and renamed", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
@@ -167,8 +167,8 @@ test("a private chat saves memories, but cannot start tasks", async t => {
 
 test("the chat list of an owner has the chats of all servers", async t => {
   const store = new SQLiteStore(); t.after(() => store.close());
-  await store.insertWebChat({ id: "a".repeat(32), server: "s1", owner: "alice", title: "one", created: 1, updated: 1, deleted: false });
-  await store.insertWebChat({ id: "b".repeat(32), server: "s2", owner: "alice", title: "two", created: 2, updated: 2, deleted: false });
-  await store.insertWebChat({ id: "c".repeat(32), server: "s1", owner: "bob", title: "not hers", created: 3, updated: 3, deleted: false });
+  await store.insertWebChat({ id: "a".repeat(32), server: "s1", owner: "alice", title: "one", created: 1, updated: 1, deleted: false, storageServer: null, titleSource: "auto" });
+  await store.insertWebChat({ id: "b".repeat(32), server: "s2", owner: "alice", title: "two", created: 2, updated: 2, deleted: false, storageServer: null, titleSource: "auto" });
+  await store.insertWebChat({ id: "c".repeat(32), server: "s1", owner: "bob", title: "not hers", created: 3, updated: 3, deleted: false, storageServer: null, titleSource: "auto" });
   assert.deepEqual((await store.webChats("alice")).map(row => row.id), ["b".repeat(32), "a".repeat(32)]);
 });
