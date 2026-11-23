@@ -77,7 +77,7 @@ function Shell() {
   );
   return (
     <>
-      <AppShell sidebar={sidebar}>
+      <AppShell sidebar={sidebar} className="app-frame">
         <LlmBanner />
         <Suspense fallback={<PageLoading />}><Outlet /></Suspense>
       </AppShell>
