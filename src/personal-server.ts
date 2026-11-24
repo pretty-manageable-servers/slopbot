@@ -40,7 +40,7 @@ export class PersonalServer {
 
   constructor(private readonly deps: PersonalServerDeps) {
     const server = this.server = deps.server ?? PERSONAL_SERVER;
-    const { directory, dm } = deps;
+    const { dm } = deps;
     // The workspace reads ports.gateway while it is built, before this.workspace exists, so the queue is reached late.
     const lateQueue = { take: (run: string) => this.workspace.attachQueue.take(run) } as AttachQueue;
     const web = () => this.web ??= new WebChatGateway(deps.store, server, { queue: lateQueue, storage: deps.images ?? new LocalDiskStorage() });
@@ -53,7 +53,8 @@ export class PersonalServer {
       react: async (message, emoji) => { await gatewayFor(message.channel).react?.(message, emoji); },
     };
     this.ports = {
-      directory,
+      // Every tool call asks canManage. This workspace is not a Discord server, so a guild lookup would fail; nobody manages it.
+      directory: { canManage: async () => false },
       gateway,
       validateChannel: async (message, channel) => {
         if (channel !== message.channel || !isPrivateChannel(channel)) throw new ToolError("Only this chat is available here.");
