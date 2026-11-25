@@ -8,11 +8,13 @@ import { createRoot } from "react-dom/client";
 import { queryClient } from "./data";
 import { Loader, Logo } from "./logo";
 import { themeIcons } from "./ui/sidebar";
+import { pinToVisualViewport } from "./ui/viewport";
 import "./prefs";
 import { router } from "./router";
 import { stashAsk } from "./chat-page";
 
 stashAsk();
+pinToVisualViewport();
 
 // `pnpm dev:mock`: answer /api from the fake bot in src/mocks before the first call.
 if (import.meta.env.VITE_MOCK_API) {
