@@ -63,3 +63,13 @@ test("a dm channel without dm ports gives a ToolError", async t => {
   await assert.rejects(async () => f.personal.ports.fetchHistory("web:dm:555", null, 5), { message: "DMs are not available here." });
   assert.throws(() => f.personal.ports.typing("web:dm:555"), { message: "DMs are not available here." });
 });
+
+test("tool access never asks the Discord directory about the personal workspace", async t => {
+  const config = loadConfig({ DISCORD_BOT_TOKEN: "test-only", LLM_MODE: "mock" });
+  const store = new SQLiteStore();
+  const directory = { isMember: async () => false, canManage: async () => { throw new Error('guild_id: Value "__personal__" is not snowflake.'); } } as unknown as Directory;
+  const personal = new PersonalServer({ config, store, llm: { async *stream() {} }, usage: createUsageMeter(config, store), access: new ChannelAccess({ facts: async () => undefined }), team: { canEdit: async () => false } as never, directory });
+  t.after(() => store.close());
+  const message: Message = { id: "m1", server: PERSONAL_SERVER, channel: chat, author: user, text: "hello", addressed: true, timestamp: Date.now() };
+  assert.equal(await personal.workspace.tools.checkAccess(message, "file_store"), false);
+});
