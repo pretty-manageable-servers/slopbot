@@ -44,8 +44,10 @@ export const InstructionsRejected: Story = {
   play: async ({ canvasElement, step }) => {
     const page = within(canvasElement.ownerDocument.body);
     await step("Save shows the reason from the bot", async () => {
-      await userEvent.type(await page.findByRole("textbox", { name: "Instructions" }), " More.");
-      await userEvent.click(page.getByRole("button", { name: "Save" }));
+      const instructions = await page.findByRole("textbox", { name: "Instructions" });
+      await userEvent.type(instructions, " More.");
+      // Details has a Save too, so look for this section's Save only.
+      await userEvent.click(within(instructions.closest("section")!).getByRole("button", { name: "Save" }));
       await expect(await page.findByText("These instructions were not saved. Change them and try again.")).toBeVisible();
     });
   },
