@@ -106,3 +106,13 @@ test("view_image_uses_reply_target_images", async t => {
   assert.equal(result.text, "Image cat.png from the message it replies to.");
   assert.deepEqual(result.images, [{ url: "https://signed.example/cat.png", label: "cat.png" }]);
 });
+
+test("view_image_refuses_image_of_current_request", async t => {
+  const store = new SQLiteStore(); t.after(() => store.close());
+  const registry = new ToolRegistry(store, async () => false);
+  const request: Message = { ...stored([cat]), id: "chat-1", source: "web", surface: "web", modelImages: [{ url: "https://signed.example/cat.png", label: "cat.png" }] };
+  registerViewImage(registry, { store: fakeStore(request), images: fixedImages("https://signed.example/cat.png"), authorize: async () => {} });
+  const result = await registry.invokeResult(request, "view_image", { message_ref: "chat-1" }, "op-9", "agent");
+  assert.equal(result.status, "rejected");
+  assert.equal(result.images, undefined);
+});
