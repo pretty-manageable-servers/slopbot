@@ -51,6 +51,8 @@ export function ProjectPage({ id }: { id: string }) {
       <ChatHeader leading={<SidebarToggle drawerOnly />} title={project.name} />
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full flex-col gap-8 px-4 pb-8" style={{ maxWidth: "var(--chat-content-width)" }}>
+          {/* The section titles below are h3s (SettingsGroup), so this h2 keeps the order after the h1 title. */}
+          <h2 className="sr-only">Project</h2>
           <ProjectDetails project={project} />
           <ProjectInstructions project={project} />
           <Tabs selectedKey={tab} onSelectionChange={(key) => setTab(String(key) as ProjectTab)}>
