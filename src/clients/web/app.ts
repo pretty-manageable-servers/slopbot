@@ -8,6 +8,7 @@ import type { ConsoleBackend, ConsoleOptions } from './web-console.js';
 import { failure, isAlreadySent, json, type WebApp, type WebDeps, type WebEnv } from './env.js';
 import { accountRoutes } from './routes/account.js';
 import { adminRoutes } from './routes/admin.js';
+import { assistantRoutes, type AssistantBackend } from './routes/assistant.js';
 import { authRoutes, sessionLoader } from './routes/auth.js';
 import { publicShareRoutes, shareRoutes } from './routes/shares.js';
 import { consoleCsp, staticRoutes } from './routes/static.js';
@@ -18,7 +19,7 @@ import { versionRoutes } from './routes/version.js';
  * public pages, then the login check, then the transcript and chat routes, then the other routes (each write checks the
  * Origin and CSRF token first), then the static files.
  */
-export function createApp(options: ConsoleOptions, backend: ConsoleBackend, widgetFrame: string): WebApp {
+export function createApp(options: ConsoleOptions, backend: ConsoleBackend & { assistant?: AssistantBackend }, widgetFrame: string): WebApp {
   const app = new Hono<WebEnv>();
   const cookie = (name: string, value: string, age: number) => `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${options.origin.startsWith('https:') ? '; Secure' : ''}`;
   const origin = new URL(options.origin).origin;
@@ -68,6 +69,11 @@ export function createApp(options: ConsoleOptions, backend: ConsoleBackend, widg
     const writes = guard(['DELETE']);
     app.use('/api/memories/*', (c, next) => c.req.method === 'GET' ? next() : writes(c, next));
     app.route('/api/memories', backend.memories);
+  }
+  if (backend.assistant) {
+    const writes = guard(['POST', 'PUT', 'PATCH', 'DELETE']);
+    app.use('/api/assistant/*', (c, next) => c.req.method === 'GET' ? next() : writes(c, next));
+    app.route('/api/assistant', assistantRoutes(backend.assistant));
   }
   shareRoutes(app, deps);
   adminRoutes(app, deps);
