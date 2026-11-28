@@ -7,7 +7,8 @@ export interface AssistantStore {
   task(id: string): Promise<AssistantTask | undefined>;
   putTask(t: AssistantTask, expectedRevision: number | null): Promise<boolean>;   // CAS; null = insert
   dueTasks(now: number, limit: number): Promise<AssistantTask[]>;                 // active, nextAt <= now
-  dueBriefs(now: number, limit: number): Promise<AssistantSettings[]>;
+  dueBriefs(now: number, limit: number): Promise<AssistantSettings[]>;            // enabled, brief_cron set, brief_next_at <= now
+  setBriefNextAt(user: string, at: number | null): Promise<void>;
   addTrigger(t: Trigger): Promise<void>;
   takeTriggers(owner: string, now: number): Promise<Trigger[]>;                    // sets takenAt
   addApproval(a: ApprovalRequest): Promise<void>;
