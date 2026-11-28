@@ -18,7 +18,7 @@ export function AssistantPage() {
   return (
     <div className="flex h-full min-h-0 flex-col lg:flex-row">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <ChatPage id={homeChat} />
+        <ChatPage id={homeChat.replace(/^web:/, "")} />
       </div>
       <aside className="flex max-h-[60dvh] shrink-0 flex-col gap-6 overflow-y-auto border-t border-border p-4 lg:max-h-none lg:w-96 lg:border-t-0 lg:border-l">
         <section aria-labelledby="bud-waiting">
