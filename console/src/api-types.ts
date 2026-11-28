@@ -162,6 +162,7 @@ export interface SystemPrompt { text: string | null; default: string; max: numbe
 export interface BotReplyLimit { replies: number; minutes: number }
 export interface BotReplies extends BotReplyLimit { temporary?: BotReplyLimit & { until: number }; default: BotReplyLimit }
 export interface ScheduleLimits { perServer: number; perUser: number; minMinutes: { message: number; prompt: number; tool: number } }
+export interface AssistantLimits { maxActiveTasks: number; minWakeMinutes: number; maxPendingApprovals: number; approvalTtlHours: number; mentionDebounceMinutes: number }
 export interface AdminServer { id: string; name: string; icon?: string | null; channelCount: number; transcriptsOn: number }
 export interface UsageRow { requests: number; cost_micros: number; total_tokens: number; input_tokens: number; cached_tokens: number; output_tokens: number }
 export interface UsageTotals { total: UsageRow; servers: (UsageRow & { name: string; icon: string | null; server: string })[]; models: (UsageRow & { model: string })[] }

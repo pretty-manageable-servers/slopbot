@@ -140,6 +140,17 @@ export const scheduleBody = (form: ScheduleForm) => ({
   minMinutes: { message: form.minMessage, prompt: form.minPrompt, tool: form.minTool },
 });
 
+// ----- Assistant (Bud): caps on sprouts and approvals, the shortest wake interval, and the mention debounce. -----
+
+export interface AssistantForm { maxActiveTasks: number; minWakeMinutes: number; maxPendingApprovals: number; approvalTtlHours: number; mentionDebounceMinutes: number }
+export const ASSISTANT_RULES: Record<keyof AssistantForm, Rule> = {
+  maxActiveTasks: { min: 0, max: 100, whole: true },
+  minWakeMinutes: { min: 15, max: 10080, whole: true },
+  maxPendingApprovals: { min: 1, max: 200, whole: true },
+  approvalTtlHours: { min: 1, max: 720, whole: true },
+  mentionDebounceMinutes: { min: 0, max: 1440, whole: true },
+};
+
 // ----- Projects: counts, and file and project sizes in megabytes. The bot keeps sizes in bytes. -----
 
 const BYTES_PER_MEGABYTE = 1024 * 1024;
