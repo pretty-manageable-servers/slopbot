@@ -24,6 +24,7 @@ export function SproutPage({ id }: { id: string }) {
           <div className="flex flex-wrap items-center gap-2 text-ui-sm">
             <Badge tone={STATUS_TONE[task.status]}>{STATUS_LABEL[task.status]}</Badge>
             {task.status === "paused" && task.pause && <span className="text-muted">{PAUSE_LABEL[task.pause]}</span>}
+            {task.status === "active" && task.pause === "usage" && <span className="text-muted">Waiting for usage reset</span>}
           </div>
           {task.instructions && <p className="m-0 whitespace-pre-wrap text-ui-sm text-muted">{task.instructions}</p>}
         </div>
