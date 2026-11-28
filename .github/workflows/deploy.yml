@@ -10,7 +10,8 @@ concurrency:
   group: slopbot-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-  test:
+  # Needs Postgres and the root build. The light job runs beside it.
+  node:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -28,11 +29,30 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test
+      - run: pnpm run build
+      - run: pnpm run test:node
         env:
           TEST_DATABASE_URL: postgres://postgres:test@localhost:5432/slopbot_test
+  # No Postgres and no root build: the deployment script tests, the contracts tests, and the console.
+  light:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run test:light
       - run: pnpm -F slopbot-console test
       - run: pnpm -F slopbot-console build
+  # One name for the deploy job to wait on, so it still waits for every test job.
+  test:
+    needs: [node, light]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "all test jobs passed"
   # Builds and pushes the image while the tests run. The image is only tagged with the commit; deploy waits for both.
   image:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
