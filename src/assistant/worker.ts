@@ -144,9 +144,11 @@ export class AssistantWorker {
     const { store } = this.deps;
     // A trigger that reaches a paused or finished task is dropped.
     if (task.status !== "active") return;
+    // Over usage the sprout stays active and is retried after the minimum wake interval, so it restarts once the window resets.
     if (await this.deps.overUsage(task.owner)) {
-      if (await this.save({ ...task, status: "paused", pause: "usage", updatedAt: now }, task.revision))
-        await this.activity(task.owner, task.id, "paused", "Paused: you are over your usage limit.", now);
+      const held: AssistantTask = { ...task, pause: "usage", nextAt: now + limits.minWakeMinutes * MINUTE_MS, updatedAt: now };
+      if ((await this.save(held, task.revision)) && task.pause !== "usage")
+        await this.activity(task.owner, task.id, "paused", "Paused: over your usage limit. Bud tries again later.", now);
       return;
     }
     // Quiet hours hold timer wakes only. Triggers are never held.
@@ -155,12 +157,14 @@ export class AssistantWorker {
       await this.save({ ...task, nextAt: held, updatedAt: now }, task.revision);
       return;
     }
-    const claimed: AssistantTask = { ...task, nextAt: now + WAKE_CLAIM_MS, updatedAt: now };
+    const resumed = task.pause === "usage";
+    const claimed: AssistantTask = { ...task, pause: resumed ? null : task.pause, nextAt: now + WAKE_CLAIM_MS, updatedAt: now };
     if (!(await this.save(claimed, task.revision))) {
       // Another worker claimed the task first. The triggers go back on the queue for the next tick.
       for (const trigger of triggers) await store.addTrigger({ ...trigger, id: `${trigger.id}:requeue:${now}`, takenAt: null });
       return;
     }
+    if (resumed) await this.activity(task.owner, task.id, "update", "Resumed after your usage limit reset.", now);
     const expected = task.revision + 1;
     const slot = triggers.length === 0 ? (task.nextAt ?? now) : now;
     const target: WakeTarget = { kind: "task", goal: task.goal, instructions: task.instructions, timezone: settings.timezone };

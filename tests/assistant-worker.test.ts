@@ -130,17 +130,51 @@ test('pauses after 3 failures', async () => {
   assert.ok(h.store.activities.some(a => a.kind === 'paused' && a.task === 't1'));
 });
 
-test('pauses on usage', async () => {
+test('holds on usage and retries later', async () => {
   const h = harness();
   h.world.usage = true;
   h.store.tasksById.set('t1', task());
   h.store.settingsByUser.set('u1', settings());
   await h.worker().tick();
   assert.equal(h.submitted.length, 0);
-  const paused = h.store.tasksById.get('t1')!;
-  assert.equal(paused.status, 'paused');
-  assert.equal(paused.pause, 'usage');
+  const held = h.store.tasksById.get('t1')!;
+  assert.equal(held.status, 'active');
+  assert.equal(held.pause, 'usage');
+  assert.equal(held.nextAt, T0 + DEFAULT_ASSISTANT_LIMITS.minWakeMinutes * MINUTE);
   assert.ok(h.store.activities.some(a => a.kind === 'paused' && a.task === 't1'));
+});
+
+test('usage hold resumes after reset', async () => {
+  const h = harness();
+  h.world.usage = true;
+  h.store.tasksById.set('t1', task());
+  h.store.settingsByUser.set('u1', settings());
+  const worker = h.worker();
+  await worker.tick();
+  h.world.usage = false;
+  h.world.now = h.store.tasksById.get('t1')!.nextAt!;
+  await worker.tick();
+  assert.equal(h.submitted.length, 1);
+  assert.equal(h.submitted[0]!.channel, assistantTaskChannel('t1'));
+  assert.equal(h.store.tasksById.get('t1')!.pause, null);
+  const resumed = h.store.activities.filter(a => a.kind === 'update' && a.task === 't1');
+  assert.equal(resumed.length, 1);
+  assert.equal(resumed[0]!.text, 'Resumed after your usage limit reset.');
+});
+
+test('usage hold activity added once', async () => {
+  const h = harness();
+  h.world.usage = true;
+  h.store.tasksById.set('t1', task());
+  h.store.settingsByUser.set('u1', settings());
+  const worker = h.worker();
+  for (let run = 1; run <= 3; run++) {
+    h.world.now = h.store.tasksById.get('t1')!.nextAt!;
+    await worker.tick();
+  }
+  assert.equal(h.submitted.length, 0);
+  assert.equal(h.store.tasksById.get('t1')!.pause, 'usage');
+  assert.equal(h.store.activities.filter(a => a.kind === 'paused' && a.task === 't1').length, 1);
 });
 
 test('quiet hours skip', async () => {
