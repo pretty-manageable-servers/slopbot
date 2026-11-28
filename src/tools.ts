@@ -90,6 +90,8 @@ export interface ToolDefinition {
   needs?: readonly Capability[];
   /** Only a person's command or button runs this tool. The model is not offered it, and an agent call is refused with this text. */
   commandOnly?: string;
+  /** Only the messages this accepts are offered the tool. */
+  offered?(message: Message): boolean;
   publicResult?(args: ToolArgs): boolean;
   matchRead?(message: Message): ToolArgs | undefined;
   resource?(message: Message, args: ToolArgs): string;
@@ -434,6 +436,7 @@ function sortedDefinitions(tools: ReadonlyMap<string, ToolDefinition>): readonly
 /** A tool is offered when the message's surface has every capability the tool needs. */
 function offeredIn(tool: ToolDefinition, message?: Message): boolean {
   if (tool.commandOnly) return false;
+  if (tool.offered && (!message || !tool.offered(message))) return false;
   if (!message) return true;
   return !surfaceRefusal(message, tool);
 }

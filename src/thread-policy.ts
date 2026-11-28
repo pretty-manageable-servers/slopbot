@@ -3,12 +3,12 @@ import type { ToolArgs } from './tools.js';
 type Policy = 'inline' | 'thread' | { actions: readonly string[] };
 /** Every native write tool belongs here. Edit this table to change automatic thread routing. */
 export const NATIVE_THREAD_POLICY = {
-  bot_replies: 'inline', calibration: 'inline', channels: 'thread', context: 'inline', cooldown: 'inline',
+  assistant_idle: 'inline', assistant_notify: 'inline', bot_replies: 'inline', calibration: 'inline', channels: 'thread', context: 'inline', cooldown: 'inline',
   default_effort: 'inline', edit: 'inline', file_store: 'inline', fix_watch: 'thread',
   inbox_add: 'inline', inbox_done: 'inline', index: 'thread', issue_draft: 'inline', file_report: 'inline',
   memory_forget: 'inline', memory_remember: 'inline', memory_update: 'inline', monitoring: 'inline', mute_users: 'inline',
   profile: 'inline', reactions: 'inline', reminder: 'inline', sandbox_manage: { actions: ['build_template'] },
-  schedule: 'inline', shell: 'inline', task_manage: 'inline', task_retry: 'thread',
+  schedule: 'inline', shell: 'inline', task_finish: 'inline', task_manage: 'inline', task_note: 'inline', task_propose: 'inline', task_retry: 'thread',
   task_start: 'inline', timing: 'inline', tool_display: 'inline', voice: 'inline', write: 'inline',
 } as const satisfies Record<string, Policy>;
 
