@@ -10,7 +10,7 @@ import { attachmentIds, attachmentKind, attachmentProblem } from "./chat/attachm
 import { ImageViewer, imageClicked, type ViewedImage } from "./chat/image-viewer";
 import { ShareDialog } from "./chat/share-dialog";
 import { UsageMeter } from "./chat/usage-meter";
-import { STOPPED_KIND, applyEngineEvent, chatMessages, emptyChat, pendingSend, repliesOf, runTurnsOf, timedEvents, toKitMessage, withPending, type PendingSend, type BotMessage, type ChatState, type TurnSource } from "./events";
+import { STOPPED_KIND, WAKE_KIND, applyEngineEvent, chatMessages, emptyChat, pendingSend, repliesOf, runTurnsOf, timedEvents, toKitMessage, withPending, type PendingSend, type BotMessage, type ChatState, type TurnSource } from "./events";
 import { useTurns } from "./use-turns";
 import { Logo } from "./logo";
 import { useConsoleDictation } from "./ui/dictation";
@@ -215,7 +215,12 @@ export function Chat({ id, title, effort, onEffort, onCreate, onSent, project, p
       busy={busy}
       onSend={send}
       onStop={id ? stop : undefined}
-      renderPart={(part) => part.type === "custom" && part.kind === STOPPED_KIND ? <StoppedNote /> : undefined}
+      renderPart={(part) => {
+        if (part.type !== "custom") return undefined;
+        if (part.kind === STOPPED_KIND) return <StoppedNote />;
+        if (part.kind === WAKE_KIND) return <WakeNote {...(part.data as { label: string; text: string })} />;
+        return undefined;
+      }}
       header={
         <ChatHeader
           leading={<><SidebarToggle drawerOnly /><ProjectChip project={project} projects={projects} onMove={onMove} /></>}
@@ -317,6 +322,18 @@ function Disclaimer() {
       <Info aria-hidden className="size-3.5 shrink-0" />
       AI can be wrong. Check facts that matter.
     </span>
+  );
+}
+
+/** A Bud wake prompt, as a small centered note. The prompt text is behind "Show details". */
+export function WakeNote({ label, text }: { label: string; text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="flex flex-col items-center gap-1 text-xs text-muted">
+      <p className="m-0">Bud woke up · {label}</p>
+      <button type="button" className="cursor-pointer border-0 bg-transparent p-0 text-xs text-muted underline" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? "Hide details" : "Show details"}</button>
+      {open && <pre className="m-0 max-h-64 w-full overflow-auto whitespace-pre-wrap break-words rounded-chat-sm p-2 text-left font-mono text-xs">{text}</pre>}
+    </div>
   );
 }
 

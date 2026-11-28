@@ -26,6 +26,7 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
     if (path === '/api/admin/system-prompt') return panel.systemPrompt();
     if (path === '/api/admin/bot-replies') return panel.botReplies();
     if (path === '/api/admin/schedule-limits') return panel.scheduleLimits();
+    if (path === '/api/admin/assistant-limits') return panel.assistantLimits();
     if (path === '/api/admin/project-limits') return panel.projectLimits();
     if (path === '/api/admin/servers') return admin.servers(serverPage(query));
     if (path === '/api/admin/servers/channels') return admin.serverChannels(snowflake(query.get('server'), 'server'));
@@ -45,6 +46,7 @@ async function adminRoute(admin: ConsoleAdmin, user: string, method: string, pat
   if (path === '/api/admin/system-prompt') return panel.saveSystemPrompt(body);
   if (path === '/api/admin/bot-replies') return panel.saveBotReplies(body);
   if (path === '/api/admin/schedule-limits') return panel.saveScheduleLimits(body);
+  if (path === '/api/admin/assistant-limits') return panel.saveAssistantLimits(body);
   if (path === '/api/admin/project-limits') return panel.saveProjectLimits(body);
   if (path === '/api/admin/llm') return panel.saveLlm(body);
   if (path === '/api/admin/llm/test') return panel.testLlm();

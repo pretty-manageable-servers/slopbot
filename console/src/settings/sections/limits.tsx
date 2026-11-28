@@ -5,18 +5,19 @@ import { queryOptions, useMutation, useQueryClient, useSuspenseQuery, type Query
 import { Avatar, Badge, Button, confirm, DataTable, NumberField, ProgressBar, SettingsGroup, SettingsRow, TextField } from "slop-ui-components";
 import { useState } from "react";
 import { get, post } from "../../api";
-import type { BotReplies, LimitsView, ModelPrice, Prices, ProjectLimits, ScheduleLimits, UsageRow, UsageTotals } from "../../api-types";
+import type { AssistantLimits, BotReplies, LimitsView, ModelPrice, Prices, ProjectLimits, ScheduleLimits, UsageRow, UsageTotals } from "../../api-types";
 import { adminMeQuery } from "../../data";
 import { notify, notifyError } from "../../ui/feedback";
 import {
-  BOT_REPLY_RULES, LIMITS_RULES, PRICE_RULES, PROJECT_RULES, SCHEDULE_RULES, botRepliesBody, botRepliesForm, botRepliesIssues, checkFields,
+  ASSISTANT_RULES, BOT_REPLY_RULES, LIMITS_RULES, PRICE_RULES, PROJECT_RULES, SCHEDULE_RULES, botRepliesBody, botRepliesForm, botRepliesIssues, checkFields,
   costText, count, dollarsOf, iconUrl, limitsBody, megabytesOf, modelError, money, priceBody, priceLabel, projectsBody, projectsForm, scheduleBody, sharePercent,
-  type BotRepliesForm, type Issues, type LimitsForm, type PriceForm, type ProjectsForm, type ScheduleForm,
+  type AssistantForm, type BotRepliesForm, type Issues, type LimitsForm, type PriceForm, type ProjectsForm, type ScheduleForm,
 } from "./limits-format";
 
 // The bot's admin routes (src/admin-panel.ts). Each POST answers the view its GET gives, and the answer goes into the cache.
 // api-types' ScheduleLimits leaves out `default`, which the bot sends with it (admin-panel.ts scheduleLimits()).
 type ScheduleView = ScheduleLimits & { default: ScheduleLimits };
+type AssistantView = AssistantLimits & { default: AssistantLimits };
 // The bot sends the defaults as `defaults` with the project limits (admin-panel.ts projectLimits()).
 type ProjectsView = ProjectLimits & { defaults: ProjectLimits };
 type PriceRow = Prices["models"][number];
@@ -28,6 +29,7 @@ const limitsQuery = queryOptions({ queryKey: ["admin", "limits"], queryFn: () =>
 const pricesQuery = queryOptions({ queryKey: ["admin", "prices"], queryFn: () => get<Prices>("/api/admin/prices") });
 const botRepliesQuery = queryOptions({ queryKey: ["admin", "bot-replies"], queryFn: () => get<BotReplies>("/api/admin/bot-replies") });
 const schedulesQuery = queryOptions({ queryKey: ["admin", "schedule-limits"], queryFn: () => get<ScheduleView>("/api/admin/schedule-limits") });
+const assistantQuery = queryOptions({ queryKey: ["admin", "assistant-limits"], queryFn: () => get<AssistantView>("/api/admin/assistant-limits") });
 const projectsQuery = queryOptions({ queryKey: ["admin", "project-limits"], queryFn: () => get<ProjectsView>("/api/admin/project-limits") });
 const totalsQuery = queryOptions({ queryKey: ["admin", "usage-total"], queryFn: () => get<UsageTotals>("/api/admin/usage/total") });
 
@@ -39,6 +41,7 @@ const pricesForm = (price: ModelPrice): PriceForm => ({ input: dollarsOf(price.i
 const scheduleForm = (view: ScheduleLimits): ScheduleForm => ({
   perServer: view.perServer, perUser: view.perUser, minMessage: view.minMinutes.message, minPrompt: view.minMinutes.prompt, minTool: view.minMinutes.tool,
 });
+const assistantForm = (view: AssistantLimits): AssistantForm => ({ ...view });
 const BLANK_PRICES: PriceForm = { input: Number.NaN, cached_input: Number.NaN, output: Number.NaN };
 
 /** A save to one admin route. Its answer is the route's new view, so it goes straight into the cache. */
@@ -60,6 +63,7 @@ export default function Limits() {
       <ModelPrices canEdit={canEdit} />
       <BotReplyLimits canEdit={canEdit} />
       <ScheduleCaps canEdit={canEdit} />
+      <AssistantCaps canEdit={canEdit} />
       <ProjectCaps canEdit={canEdit} />
       <TotalUsage />
     </>
@@ -266,6 +270,38 @@ function ScheduleCaps({ canEdit }: { canEdit: boolean }) {
   ];
   return (
     <SettingsGroup title="Schedules" description="For all servers. Caps the scheduled tasks each server and user may have, and how often each kind may run." actions={canEdit && <Button variant="secondary" size="sm" onPress={submit} isDisabled={save.isPending}>Save</Button>}>
+      {rows.map(({ key, label, help }) => (
+        <SettingsRow key={key} label={label} description={help}>
+          <NumberField aria-label={label} errorMessage={shown[key]} value={form[key]} onChange={(value) => setForm({ ...form, [key]: value })} isDisabled={!canEdit} />
+        </SettingsRow>
+      ))}
+    </SettingsGroup>
+  );
+}
+
+/** Assistant (Bud): sprout and approval caps, the shortest wake interval and the mention debounce, for all servers. */
+function AssistantCaps({ canEdit }: { canEdit: boolean }) {
+  const { data } = useSuspenseQuery(assistantQuery);
+  const save = useSave<AssistantView>("/api/admin/assistant-limits", assistantQuery.queryKey);
+  const [form, setForm] = useState(() => assistantForm(data));
+  const [tried, setTried] = useState(false);
+  const issues = checkFields(form, ASSISTANT_RULES);
+  const submit = () => {
+    setTried(true);
+    if (Object.keys(issues).length) return;
+    save.mutate({ ...form }, { onSuccess: (view) => setForm(assistantForm(view)) });
+  };
+  const shown = tried ? issues : {};
+  const defaults = data.default;
+  const rows: { key: keyof AssistantForm; label: string; help: string }[] = [
+    { key: "maxActiveTasks", label: "Active sprouts", help: `Default ${defaults.maxActiveTasks}. From 0 to 100.` },
+    { key: "minWakeMinutes", label: "Shortest wake interval (minutes)", help: `Default ${defaults.minWakeMinutes}. From 15 to 10080.` },
+    { key: "maxPendingApprovals", label: "Pending approvals", help: `Default ${defaults.maxPendingApprovals}. From 1 to 200.` },
+    { key: "approvalTtlHours", label: "Approval lifetime (hours)", help: `Default ${defaults.approvalTtlHours}. From 1 to 720.` },
+    { key: "mentionDebounceMinutes", label: "Mention debounce (minutes)", help: `Default ${defaults.mentionDebounceMinutes}. From 0 to 1440.` },
+  ];
+  return (
+    <SettingsGroup title="Assistant" description="For all servers. Caps the sprouts and pending approvals of the Bud assistant, how often a sprout may wake, and how long a mention waits before Bud answers." actions={canEdit && <Button variant="secondary" size="sm" onPress={submit} isDisabled={save.isPending}>Save</Button>}>
       {rows.map(({ key, label, help }) => (
         <SettingsRow key={key} label={label} description={help}>
           <NumberField aria-label={label} errorMessage={shown[key]} value={form[key]} onChange={(value) => setForm({ ...form, [key]: value })} isDisabled={!canEdit} />

@@ -5,6 +5,7 @@ import type { BotMessage } from "../events";
 import type {
   AdminMe, ChatShare, ChatSummary, Conversation, ConversationSummary, InboxItem, Project, ProjectDetail, ProjectFile, ProjectLimits, ProjectList,
   ProjectMemoryView, ProjectSummary, ServerShare, ServerSnapshot, ServerSummary, Session, Status, TranscriptPage, Usage,
+  ActivityItem, ApprovalRequest, AssistantConnector, AssistantSettings, AssistantState, AssistantTask,
 } from "../api-types";
 
 const HOUR = 3_600_000;
@@ -105,6 +106,13 @@ const BUILD_THREAD = "300000000000000003";
 export const chatSaved: BotMessage[] = [
   { id: "m1", channel: "c1", author: session.user, authorName: "DerpZ", username: null, avatarUrl: null, text: "Why is my Postgres slow", timestamp: NOW - HOUR, editedAt: null, slopbot: false, runIds: [], used: false },
   { id: "m2", channel: "c1", author: BOT, authorName: "Slopbot", username: null, avatarUrl: null, text: "Usually a missing index. Run `EXPLAIN ANALYZE` on the slowest query and look for a sequential scan on a big table.", timestamp: NOW - HOUR + 40_000, editedAt: null, slopbot: true, runIds: ["r-c1"], used: false, turn: "m1" },
+];
+
+/** A Bud chat: a daily-brief wake prompt with its untrusted-data block, Bud's reply, and a wake from an approval result. */
+export const chatWithWakes: BotMessage[] = [
+  { id: "assistant:home:1", channel: "c1", author: session.user, authorName: "DerpZ", username: null, avatarUrl: null, text: ["Daily brief.", "Trigger: timer", "Time: 2026-03-02T08:00:00+00:00", "If there is nothing to do, call assistant_idle."].join("\n"), timestamp: NOW - 2 * HOUR, editedAt: null, slopbot: false, runIds: [], used: false },
+  { id: "m2", channel: "c1", author: BOT, authorName: "Slopbot", username: null, avatarUrl: null, text: "Good morning. The build is green and nothing is waiting for you.", timestamp: NOW - 2 * HOUR + 40_000, editedAt: null, slopbot: true, runIds: ["r-c1"], used: false, turn: "assistant:home:1" },
+  { id: "assistant:t-active:2", channel: "c1", author: session.user, authorName: "DerpZ", username: null, avatarUrl: null, text: ["Goal: Watch the build dashboard", "Instructions: Report failures.", "Trigger: approval", "Time: 2026-03-02T09:00:00+00:00", "If there is nothing to do, call assistant_idle.", "<untrusted-data>", "{\"approval\":\"a-1\",\"tool\":\"github_comment\",\"result\":\"Commented.\"}", "</untrusted-data>"].join("\n"), timestamp: NOW - HOUR, editedAt: null, slopbot: false, runIds: [], used: false },
 ];
 
 /** A live turn: a new question and its answer as it streams in. The chat's event stream sends these. */
@@ -213,3 +221,42 @@ export const longTranscript = (channel: string, count = 200): TranscriptPage => 
 export const channelLive = (channel: string): EngineEvent[] => chatLive.filter((event) => event.type !== "thinking.delta").map((event) => (event.type === "message.upsert"
   ? { ...event, message: { ...event.message, channel, author: SAM, authorName: "Sam", text: "@Slopbot can you check the orders table too?" } }
   : event));
+
+// Bud, the assistant: on, with two proposed sprouts, an active one, one paused by failures, two approvals waiting and
+// an activity feed of 24 items (the feed pages 20 at a time). `unread` counts the first two items.
+const MINUTE = 60_000;
+const sprout = (over: Pick<AssistantTask, "id" | "goal" | "status"> & Partial<AssistantTask>): AssistantTask => ({
+  owner: session.user, instructions: "", pause: null, wake: { kind: "interval", minutes: 360 }, nextAt: null, rules: {}, effort: "medium",
+  failures: 0, lastRunAt: null, lastError: null, createdAt: NOW - 24 * HOUR, updatedAt: NOW - HOUR, revision: 1, ...over,
+});
+export const assistantSettings: AssistantSettings = {
+  user: session.user, enabled: true, briefCron: "0 8 * * *", timezone: "Europe/Berlin", dmUpdates: true, quietStart: "22:00", quietEnd: "07:00", updated: NOW,
+};
+export const assistantTasks: AssistantTask[] = [
+  sprout({ id: "t-proposed-1", goal: "Summarise the Postgres release notes every week", status: "proposed", wake: { kind: "cron", cron: "0 9 * * 1", timezone: "Europe/Berlin" } }),
+  sprout({ id: "t-proposed-2", goal: "Keep the garden watering log up to date", status: "proposed", instructions: "Note the rain each morning." }),
+  sprout({ id: "t-active", goal: "Watch the build dashboard for failures", status: "active", wake: { kind: "interval", minutes: 60 }, nextAt: NOW + 30 * MINUTE, lastRunAt: NOW - 30 * MINUTE, effort: "low", rules: { github_comment: "ask", web_search: "allow" }, instructions: "Report failures on main only." }),
+  sprout({ id: "t-paused", goal: "Track the Tailscale ACL changes", status: "paused", pause: "failures", failures: 3, lastError: "The ACL feed returned 503.", rules: { web_search: "allow" }, revision: 4 }),
+];
+export const assistantApprovals: ApprovalRequest[] = [
+  { id: "a-1", owner: session.user, task: "t-active", run: "run-1", tool: "github_comment", input: { issue: 42 }, summary: "Comment on issue #42: main has been red since 09:10.", status: "pending", result: null, createdAt: NOW - 20 * MINUTE, decidedAt: null, expiresAt: NOW + 7 * 24 * HOUR },
+  { id: "a-2", owner: session.user, task: null, run: "run-2", tool: "send_email", input: {}, summary: "Send the weekly brief to the team list.", status: "pending", result: null, createdAt: NOW - 2 * HOUR, decidedAt: null, expiresAt: NOW + 6 * 24 * HOUR },
+];
+const activityTexts: [ActivityItem["kind"], string][] = [
+  ["approval", "Asked to comment on issue #42."],
+  ["update", "Build dashboard: two failures on main, reported."],
+  ["paused", "Paused \"Track the Tailscale ACL changes\" after three failures."],
+  ["brief", "Morning brief: three items for today."],
+];
+export const assistantActivity: ActivityItem[] = Array.from({ length: 24 }, (_, i) => {
+  const [kind, text] = activityTexts[i % activityTexts.length]!;
+  return {
+    id: `act-${i + 1}`, owner: session.user, task: i % 2 ? "t-active" : null, kind, text, ref: null,
+    createdAt: NOW - (i + 1) * 45 * MINUTE, readAt: i < 2 ? null : NOW - HOUR,
+  };
+});
+export const assistantConnectors: AssistantConnector[] = [{ name: "github", url: "https://mcp.example.com/github" }];
+export const assistantState = (): AssistantState => ({
+  settings: assistantSettings, tasks: assistantTasks, pending: assistantApprovals, unread: assistantActivity.filter((item) => item.readAt === null).length,
+  homeChat: `assistant:${session.user}`,
+});

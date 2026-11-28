@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ToolError, errorSummary } from "../errors.js";
+import { ToolError, errorSummary, logError } from "../errors.js";
 import type { Message } from "../domain.js";
 import { PERSONAL_SERVER } from "../personal.js";
 import { toolResult, type AssistantGate, type ToolArgs, type ToolRegistry, type ToolResult } from "../tools.js";
@@ -55,10 +55,12 @@ export class Gate implements AssistantGate {
       result = await this.deps.registry().invokeResult(this.approvalMessage(approval), approval.tool, approval.input, `assistant-approval:${approval.id}`, "command");
     } catch (error) {
       const text = errorSummary(error);
+      await this.deps.store.setApprovalResult(approval.id, "failed", text);
       await this.wake(approval, { approval: approval.id, tool: approval.tool, error: text });
       await this.addActivity(approval, "error", `${approval.tool} failed after approval: ${text}`.slice(0, MAX_NOTIFY_CHARS), approval.id);
       throw error;
     }
+    await this.deps.store.setApprovalResult(approval.id, "approved", result.text);
     await this.wake(approval, { approval: approval.id, tool: approval.tool, result: result.text });
     await this.addActivity(approval, "approval", result.text.slice(0, MAX_NOTIFY_CHARS), approval.id);
     return result;
@@ -81,7 +83,8 @@ export class Gate implements AssistantGate {
     };
     await this.deps.store.addApproval(approval);
     const item = await this.addActivity(approval, "approval", `Waiting for your approval: ${approval.summary}`, approval.id);
-    await this.deps.notifier.notify(item, approval);
+    // The approval is queued already. A failed DM must not lose it.
+    try { await this.deps.notifier.notify(item, approval); } catch (error) { logError("assistant_notify_failed", error, { stage: "assistant approval notify", operationId: approval.id }); }
     return toolResult(`Queued for approval ${approval.id}. Continue without it.`);
   }
 
@@ -102,9 +105,10 @@ export class Gate implements AssistantGate {
     throw new ToolError("The sprout changed while saving the rule. Try again.");
   }
 
+  /** The approved call runs as the request that asked for it (the saved wake message), so tools that cite the request, like memory_remember, find it. The operation id keeps the approval apart. */
   private approvalMessage(approval: ApprovalRequest): Message {
     return {
-      id: `assistant-approval:${approval.id}`, server: PERSONAL_SERVER, surface: "web", author: approval.owner, text: "",
+      id: approval.run, server: PERSONAL_SERVER, surface: "web", author: approval.owner, text: "",
       channel: approval.task ? assistantTaskChannel(approval.task) : assistantHomeChannel(approval.owner),
     };
   }

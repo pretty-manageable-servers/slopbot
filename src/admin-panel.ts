@@ -1,6 +1,8 @@
 import { BOT_REPLY_LIMIT_KEY, DEFAULT_BOT_REPLY_LIMIT, MAX_BOT_REPLIES, MAX_BOT_REPLY_MINUTES, MAX_TEMPORARY_MINUTES, botReplyLimits, type BotReplyLimit, type BotReplyLimits } from "./bot-reply-limit.js";
 import type { Config } from "./config.js";
 import type { Json } from "./domain.js";
+import { clampAssistantLimits, readAssistantLimits } from "./assistant/limits.js";
+import { ASSISTANT_LIMITS_KEY, DEFAULT_ASSISTANT_LIMITS, type AssistantLimits } from "./assistant/types.js";
 import { scheduleLimits } from "./schedules/schedule-time.js";
 import { DEFAULT_SCHEDULE_LIMITS, MAX_MIN_MINUTES, MAX_SCHEDULE_LIMIT, SCHEDULE_LIMITS_KEY, type ScheduleLimits } from "./schedules/schedule-types.js";
 import { DEFAULT_PROJECT_LIMITS, PROJECT_LIMITS_KEY, projectLimits, type ProjectLimits } from "./projects.js";
@@ -277,6 +279,17 @@ export class AdminPanel {
     };
     await this.store.setSetting(GLOBAL_SETTINGS_SCOPE, SCHEDULE_LIMITS_KEY, limits);
     return this.scheduleLimits();
+  }
+
+  /** Assistant (Bud): caps on sprouts and approvals, the shortest wake interval, and the mention debounce, for all servers. */
+  assistantLimits(): AssistantLimits & { default: AssistantLimits } {
+    return { ...readAssistantLimits(this.store), default: DEFAULT_ASSISTANT_LIMITS };
+  }
+
+  async saveAssistantLimits(body: unknown): Promise<AssistantLimits & { default: AssistantLimits }> {
+    const limits = clampAssistantLimits(object(body, "Send the limits as an object."));
+    await this.store.setSetting(GLOBAL_SETTINGS_SCOPE, ASSISTANT_LIMITS_KEY, { ...limits });
+    return this.assistantLimits();
   }
 
   /** Projects: how many a user may have, and how many files and bytes each may hold, for all servers. */

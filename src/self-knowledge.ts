@@ -17,7 +17,7 @@ export function selfKnowledgeTool(registry: ToolRegistry, isTeamEditor: (user: s
   const topics = [...sections.keys(), "capabilities", "runtime"];
   return {
     name: "bot_info", surface: "top",
-    description: "Read Slopbot's architecture, tools, error diagnostics, current safe runtime, and reviewed PMServers documentation/changelog. Use this before explaining how the bot works or how to use it. Documentation describes design, not live service health.",
+    description: "Read Slopbot's architecture, tools, error diagnostics, current safe runtime, and reviewed PMServers documentation/changelog. Use this before explaining how the bot works or how to use it. Bud is an opt-in personal assistant that wakes on a timer, on Discord mentions and on the user's connectors. It works on approved goal tasks called sprouts. It runs reads freely and asks for approval in the console or a DM before a write. Documentation describes design, not live service health.",
     fields: { topic: { type: "string", description: "Default: overview. Use capabilities for registered tools, runtime for current safe configuration.", choices: topics } },
     access: "member", effect: "read", retrySafe: true,
     async execute(context, args) {

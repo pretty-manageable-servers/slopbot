@@ -89,6 +89,16 @@ scenario("decide approval only once", async store => {
   assert.deepEqual(ids(await store.pendingApprovals("u2")), ["ap3"]);
 });
 
+scenario("set the result of an approved approval", async store => {
+  await store.addApproval(approval("ap1", { createdAt: 1 }));
+  await store.addApproval(approval("ap2", { createdAt: 2 }));
+  await store.setApprovalResult("ap1", "failed", "no");
+  assert.equal((await store.approval("ap1"))?.status, "pending");
+  await store.decideApproval("ap1", "approved", null, 5);
+  await store.setApprovalResult("ap1", "failed", "boom");
+  assert.deepEqual(await store.approval("ap1"), { ...approval("ap1", { createdAt: 1 }), status: "failed", result: "boom", decidedAt: 5 });
+});
+
 scenario("triggers taken once", async store => {
   const trigger = (id: string, patch: Partial<Trigger>): Trigger => ({ id, owner: "u1", task: null, kind: "user", payload: { text: id }, createdAt: 1, takenAt: null, ...patch });
   await store.addTrigger(trigger("t2", { createdAt: 2 }));

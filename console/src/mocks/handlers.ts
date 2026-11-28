@@ -99,6 +99,48 @@ export const handlers = {
     const { project } = (await request.json()) as { project: string | null };
     return HttpResponse.json({ ...data.chats.find((c) => c.id === params.id)!, project });
   }),
+  // Bud: the state, its settings, the activity feed (newest first, `before` is the time of the oldest item shown), the
+  // sprouts, the approvals and the connectors. The writes answer with the changed piece, as the bot does.
+  assistant: http.get("/api/assistant", () => HttpResponse.json(data.assistantState())),
+  updateAssistantSettings: http.put("/api/assistant/settings", async ({ request }) => {
+    const change = (await request.json()) as Record<string, unknown>;
+    return HttpResponse.json({ settings: { ...data.assistantSettings, ...change } });
+  }),
+  assistantActivity: http.get("/api/assistant/activity", ({ request }) => {
+    const params = new URL(request.url).searchParams;
+    const before = params.get("before");
+    const limit = Number(params.get("limit") ?? 20);
+    const older = data.assistantActivity.filter((item) => before === null || item.createdAt < Number(before));
+    return HttpResponse.json({ items: older.slice(0, limit) });
+  }),
+  markAssistantActivityRead: http.post("/api/assistant/activity/read", () => HttpResponse.json({})),
+  sproutAction: http.post("/api/assistant/tasks/:id", async ({ request, params }) => {
+    const { action } = (await request.json()) as { action: string };
+    const status = { approve: "active", decline: "declined", pause: "paused", resume: "active", cancel: "cancelled" }[action];
+    const task = data.assistantTasks.find((t) => t.id === params.id)!;
+    return HttpResponse.json({ task: { ...task, status, revision: task.revision + 1 } });
+  }),
+  updateSprout: http.patch("/api/assistant/tasks/:id", async ({ request, params }) => {
+    const change = (await request.json()) as Record<string, unknown>;
+    const task = data.assistantTasks.find((t) => t.id === params.id)!;
+    return HttpResponse.json({ task: { ...task, ...change, revision: task.revision + 1 } });
+  }),
+  decideApproval: http.post("/api/assistant/approvals/:id", async ({ request, params }) => {
+    const { decision } = (await request.json()) as { decision: "approve" | "deny" };
+    const approval = data.assistantApprovals.find((a) => a.id === params.id)!;
+    // send_email is the tool that fails once approved: the bot answers 200 with the failed approval and its error.
+    if (decision === "approve" && approval.tool === "send_email") return HttpResponse.json({ approval: { ...approval, status: "failed", result: "The mail server refused the message.", decidedAt: data.NOW } });
+    return HttpResponse.json({ approval: { ...approval, status: decision === "approve" ? "approved" : "denied", decidedAt: data.NOW } });
+  }),
+  connectors: http.get("/api/assistant/connectors", () => HttpResponse.json({ connectors: data.assistantConnectors })),
+  saveConnector: http.put("/api/assistant/connectors", async ({ request }) => {
+    const { name, url } = (await request.json()) as { name: string; url: string };
+    return HttpResponse.json({ connectors: [...data.assistantConnectors.filter((c) => c.name !== name), { name, url }] });
+  }),
+  removeConnector: http.delete("/api/assistant/connectors", ({ request }) => {
+    const name = new URL(request.url).searchParams.get("name");
+    return HttpResponse.json({ connectors: data.assistantConnectors.filter((c) => c.name !== name) });
+  }),
 } satisfies Record<string, HttpHandler>;
 
 /** A stream at `url` that sends these engine events, as the bot's `engine` events, then stays open. */

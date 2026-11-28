@@ -37,8 +37,27 @@ export const runTurnsOf = (messages: readonly Pick<BotMessage, "slopbot" | "runI
 
 const createdAt = (timestamp: number | null) => new Date(timestamp ?? Date.now()).toISOString();
 
+/** The custom part kind of a Bud wake prompt, which the chat draws as a small note. */
+export const WAKE_KIND = "wake";
+const WAKE_TRIGGER: Record<string, string> = { timer: "timer", mention: "mention", approval: "approval result", user: "your message" };
+
+/** The note's label: "daily brief" for the brief, else the trigger kinds on the prompt's "Trigger:" line. */
+export function wakeLabel(text: string): string {
+  if (text.startsWith("Daily brief.")) return "daily brief";
+  const kinds = /^Trigger: (.+)$/m.exec(text)?.[1]?.split(", ").map((kind) => WAKE_TRIGGER[kind] ?? kind);
+  return kinds?.join(", ") ?? "timer";
+}
+
+/** Bud's wake prompts are saved as the owner's messages with an id that starts with "assistant:". */
+const isWake = (message: Pick<BotMessage, "id" | "slopbot">) => !message.slopbot && message.id.startsWith("assistant:");
+
 /** A saved bot message as a kit message. Slopbot's messages are the assistant's; all others are the user's. */
 export function toKitMessage(message: BotMessage, chatId: string): Message {
+  if (isWake(message)) {
+    // The kit has no system role. An assistant message with one custom part is drawn as a note by the chat's renderPart.
+    const part: Part = { type: "custom", id: `${message.id}:wake`, status: "done", kind: WAKE_KIND, data: { label: wakeLabel(message.text ?? ""), text: message.text ?? "" }, text: "" };
+    return { id: message.id, parentId: null, role: "assistant", status: "done", parts: [part], createdAt: createdAt(message.timestamp) };
+  }
   const parts: Part[] = [];
   for (const image of message.images ?? []) {
     parts.push({ type: "attachment", id: `image:${image.imageId}`, status: "done", fileId: image.imageId, name: image.name, mime: image.contentType, size: image.size, url: `/api/chats/${encodeURIComponent(chatId)}/images/${encodeURIComponent(image.imageId)}` });

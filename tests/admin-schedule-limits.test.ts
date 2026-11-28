@@ -8,6 +8,7 @@ import { TeamAdmins, type TeamSnapshot } from '../src/team-admins.js';
 import { UserLimiter } from '../src/user-limiter.js';
 import { MemberDirectory } from '../src/member-directory.js';
 import { DEFAULT_SCHEDULE_LIMITS, SCHEDULE_LIMITS_KEY } from '../src/schedules/schedule-types.js';
+import { ASSISTANT_LIMITS_KEY, DEFAULT_ASSISTANT_LIMITS } from '../src/assistant/types.js';
 import { DEFAULT_PROJECT_LIMITS, PROJECT_LIMITS_KEY } from '../src/projects.js';
 import { GLOBAL_SETTINGS_SCOPE } from '../src/usage-cost.js';
 import { fakeSource } from './member-fakes.js';
@@ -128,6 +129,28 @@ test('schedule limits route: members read, only editors save', async t => {
   assert.equal(saved.status, 200);
   assert.deepEqual(await saved.json(), { ...valid, default: DEFAULT_SCHEDULE_LIMITS });
   assert.deepEqual(await (await get('/api/admin/schedule-limits', reader)).json(), { ...valid, default: DEFAULT_SCHEDULE_LIMITS });
+});
+
+test('assistant limits route: members read, only editors save, and the save clamps', async t => {
+  const store = new SQLiteStore();
+  const panel = new AdminPanel(config, store, new UserLimiter(store, { fiveHourCostMicros: 100, weekCostMicros: 0, gracePercent: 10 }), new MemberDirectory(fakeSource({})));
+  const members: TeamSnapshot['members'] = [{ id: DEVELOPER, role: 'developer', accepted: true }, { id: READER, role: 'read_only', accepted: true }];
+  const { login, get, post } = await teamConsole(t, store, panel, members);
+  const outsider = await login(OUTSIDER), reader = await login(READER), developer = await login(DEVELOPER);
+
+  assert.equal((await get('/api/admin/assistant-limits', outsider)).status, 403, 'a non member cannot read');
+  const read = await get('/api/admin/assistant-limits', reader);
+  assert.equal(read.status, 200);
+  assert.deepEqual(await read.json(), { ...DEFAULT_ASSISTANT_LIMITS, default: DEFAULT_ASSISTANT_LIMITS });
+
+  assert.equal((await post('/api/admin/assistant-limits', { maxActiveTasks: 3 }, reader)).status, 403, 'a read only member cannot save');
+  assert.equal(store.setting(GLOBAL_SETTINGS_SCOPE, ASSISTANT_LIMITS_KEY), undefined);
+
+  const saved = await post('/api/admin/assistant-limits', { maxActiveTasks: 900, minWakeMinutes: 30 }, developer);
+  assert.equal(saved.status, 200);
+  const expected = { ...DEFAULT_ASSISTANT_LIMITS, maxActiveTasks: 100, minWakeMinutes: 30 };
+  assert.deepEqual(await saved.json(), { ...expected, default: DEFAULT_ASSISTANT_LIMITS });
+  assert.deepEqual(await (await get('/api/admin/assistant-limits', reader)).json(), { ...expected, default: DEFAULT_ASSISTANT_LIMITS });
 });
 
 const validProjects = { maxProjects: 5, maxFiles: 10, maxFileBytes: 2 * 1024 * 1024, maxProjectBytes: 50 * 1024 * 1024 };

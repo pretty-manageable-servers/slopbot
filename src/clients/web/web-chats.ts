@@ -63,7 +63,8 @@ export class ChatError extends Error {
   constructor(readonly status: number, message: string, readonly resetAt?: number) { super(message); }
 }
 
-const CHAT_ID = /^[0-9a-f]{32}$/;
+/** A web chat id: 32 hex characters, or one of Bud's chats (the home chat of a user, a sprout chat). */
+const CHAT_ID = /^(?:[0-9a-f]{32}|assistant:\d{17,20}|assistant-task:[\w-]{1,64})$/;
 const SNOWFLAKE = /^\d{17,20}$/;
 /** The model reads an image soon after the send. */
 const MODEL_LINK_SECONDS = 900;

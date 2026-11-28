@@ -8,6 +8,7 @@ import type { ConsoleBackend, ConsoleOptions } from './web-console.js';
 import { failure, isAlreadySent, json, type WebApp, type WebDeps, type WebEnv } from './env.js';
 import { accountRoutes } from './routes/account.js';
 import { adminRoutes } from './routes/admin.js';
+import { assistantRoutes } from './routes/assistant.js';
 import { authRoutes, sessionLoader } from './routes/auth.js';
 import { publicShareRoutes, shareRoutes } from './routes/shares.js';
 import { consoleCsp, staticRoutes } from './routes/static.js';
@@ -68,6 +69,11 @@ export function createApp(options: ConsoleOptions, backend: ConsoleBackend, widg
     const writes = guard(['DELETE']);
     app.use('/api/memories/*', (c, next) => c.req.method === 'GET' ? next() : writes(c, next));
     app.route('/api/memories', backend.memories);
+  }
+  if (backend.assistant) {
+    const writes = guard(['POST', 'PUT', 'PATCH', 'DELETE']);
+    app.use('/api/assistant/*', (c, next) => c.req.method === 'GET' ? next() : writes(c, next));
+    app.route('/api/assistant', assistantRoutes(backend.assistant));
   }
   shareRoutes(app, deps);
   adminRoutes(app, deps);

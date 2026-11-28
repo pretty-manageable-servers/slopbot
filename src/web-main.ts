@@ -117,7 +117,7 @@ export async function startLocalConsole(env: NodeJS.ProcessEnv = process.env): P
   const admin = localConsoleAdmin({ world, team, panel });
   const consoleOptionsLive = { ...webOptions, ...(degraded ? { llmStatus: () => ({ mode: degraded.health.state().mode, canChat: degraded.router.select(undefined) !== undefined }), settings: store } : {}), ...(instructions ? { instructions } : {}) };
   const web = createConsole(consoleOptionsLive, {
-    ...localBackend, access, admin, chats: createChatRoutes(chats), ...(projects ? { projects } : {}), memories: memoryRoutes(store),
+    ...localBackend, access, admin, chats: createChatRoutes(chats), ...(projects ? { projects } : {}), memories: memoryRoutes(store), ...(personal.assistant ? { assistant: personal.assistant.backend } : {}),
     continueShare: (user, id) => chats.continueShare(user, id, shares), shares, sessions: store,
   });
   const stop = async () => {

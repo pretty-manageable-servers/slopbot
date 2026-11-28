@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { ToolError } from "../src/errors.js";
 import { SQLiteStore } from "../src/adapters/sqlite.js";
 import { PERSONAL_SERVER } from "../src/personal.js";
 import { ToolRegistry, type ToolDefinition } from "../src/tools.js";
@@ -40,6 +41,10 @@ class FakeStore implements AssistantStore {
     this.approvals.set(id, { ...a, status, result, decidedAt: now });
     return true;
   }
+  async setApprovalResult(id: string, status: "approved" | "failed", result: string | null) {
+    const a = this.approvals.get(id);
+    if (a?.status === "approved") this.approvals.set(id, { ...a, status, result });
+  }
   async pendingApprovals(who: string) { return [...this.approvals.values()].filter(a => a.owner === who && a.status === "pending"); }
   async addActivity(a: ActivityItem) { this.activities.push(a); }
   async activity() { return []; }
@@ -58,9 +63,10 @@ function setup() {
   const journal = new SQLiteStore(":memory:");
   const registry = new ToolRegistry(journal, async () => false);
   const calls: Record<string, number> = { note_read: 0, note_write: 0, task_note: 0 };
+  const requests: string[] = [];
   const tool = (name: string, effect: "read" | "write", retrySafe: boolean): ToolDefinition => ({
     name, description: name, fields: { text: { type: "string", description: "Note text." } }, access: "member", effect, retrySafe,
-    execute: async () => { calls[name] = (calls[name] ?? 0) + 1; return `${name} ran`; },
+    execute: async context => { calls[name] = (calls[name] ?? 0) + 1; requests.push(context.message.id); return `${name} ran`; },
   });
   registry.register(tool("note_read", "read", true));
   registry.register(tool("note_write", "write", false));
@@ -70,7 +76,7 @@ function setup() {
   const gate = new Gate({ store, notifier, limits: async () => DEFAULT_ASSISTANT_LIMITS, registry: () => registry, now: () => clock, id: () => `id${++ids}` });
   registry.setAssistantGate(gate);
   const advance = (ms: number) => { clock += ms; };
-  return { store, notified, registry, gate, calls, advance, close: () => journal.close() };
+  return { store, notified, registry, gate, calls, requests, advance, close: () => journal.close() };
 }
 
 const assistantMessage = (id: string, taskId: string | null): Message => ({
@@ -136,10 +142,22 @@ test("approve runs stored call once", async (t) => {
   assert.equal(result.text, "note_write ran");
   assert.equal(s.calls.note_write, 1);
   assert.equal(s.store.approvals.get(approval.id)?.status, "approved");
+  assert.equal(s.store.approvals.get(approval.id)?.result, "note_write ran");
   assert.deepEqual(s.store.triggers.at(-1)?.payload, { approval: approval.id, tool: "note_write", result: "note_write ran" });
   assert.equal(s.store.triggers.at(-1)?.task, "t1");
   await assert.rejects(s.gate.execute(approval.id, owner), { message: "Already decided." });
   assert.equal(s.calls.note_write, 1);
+});
+
+test("a tool that fails after approval leaves the approval failed with the error", async (t) => {
+  const s = setup(); t.after(s.close);
+  s.store.taskRows.set("t1", task("t1"));
+  s.registry.register({ name: "note_boom", description: "boom", fields: {}, access: "member", effect: "write", retrySafe: false, execute: async () => { throw new ToolError("It broke."); } });
+  await s.registry.invokeResult(assistantMessage("m1", "t1"), "note_boom", {}, "op-boom", "agent");
+  const approval = onlyApproval(s.store);
+  await assert.rejects(s.gate.execute(approval.id, owner), { message: "It broke." });
+  assert.equal(s.store.approvals.get(approval.id)?.status, "failed");
+  assert.match(s.store.approvals.get(approval.id)?.result ?? "", /It broke\./);
 });
 
 test("deny stores no call", async (t) => {
@@ -152,6 +170,13 @@ test("deny stores no call", async (t) => {
   assert.deepEqual(s.store.triggers.at(-1)?.payload, { approval: approval.id, denied: true });
   await assert.rejects(s.gate.execute(approval.id, owner), { message: "Already decided." });
   assert.equal(s.calls.note_write, 0);
+});
+
+test("an approved call runs in the request that asked for it", async (t) => {
+  const s = setup(); t.after(s.close);
+  await s.registry.invokeResult(assistantMessage("wake-1", "t1"), "note_write", { text: "hi" }, "op-write", "agent");
+  await s.gate.execute(onlyApproval(s.store).id, owner);
+  assert.deepEqual(s.requests, ["wake-1"]);
 });
 
 test("expired cannot be approved", async (t) => {

@@ -105,6 +105,11 @@ export abstract class AssistantSqlStore implements AssistantStore {
     return rows.map(triggerFrom).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
   }
 
+  /** Owners that have triggers no wake has taken yet. */
+  async triggerOwners(): Promise<string[]> {
+    return (await this.db.prepare("SELECT DISTINCT owner FROM assistant_triggers WHERE taken_at IS NULL").all()).map(row => String(row.owner));
+  }
+
   async addApproval(a: ApprovalRequest): Promise<void> {
     await this.db.prepare("INSERT INTO assistant_approvals (id,owner,task,run,tool,input,summary,status,result,created_at,decided_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
       .run(a.id, a.owner, a.task, a.run, a.tool, JSON.stringify(a.input), a.summary, a.status, a.result, a.createdAt, a.decidedAt, a.expiresAt);
@@ -117,6 +122,10 @@ export abstract class AssistantSqlStore implements AssistantStore {
 
   async decideApproval(id: string, status: ApprovalRequest["status"], result: string | null, now: number): Promise<boolean> {
     return changed(await this.db.prepare("UPDATE assistant_approvals SET status=?,result=?,decided_at=? WHERE id=? AND status='pending'").run(status, result, now, id));
+  }
+
+  async setApprovalResult(id: string, status: "approved" | "failed", result: string | null): Promise<void> {
+    await this.db.prepare("UPDATE assistant_approvals SET status=?,result=? WHERE id=? AND status='approved'").run(status, result, id);
   }
 
   async pendingApprovals(owner: string): Promise<ApprovalRequest[]> {

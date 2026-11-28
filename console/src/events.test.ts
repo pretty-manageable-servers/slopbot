@@ -1,6 +1,6 @@
 import type { EngineEnvelope, EngineEvent } from "@slopbot/contracts";
 import { describe, expect, test } from "vitest";
-import { STOPPED_KIND, applyEngineEvent, chatMessages, emptyChat, loadTurns, pendingSend, repliesOf, runTurnsOf, toKitMessage, unloadedReplies, withLoadedTurns, withPending, type BotMessage, type ChatState } from "./events";
+import { STOPPED_KIND, WAKE_KIND, applyEngineEvent, chatMessages, emptyChat, loadTurns, pendingSend, repliesOf, runTurnsOf, toKitMessage, unloadedReplies, withLoadedTurns, withPending, type BotMessage, type ChatState } from "./events";
 
 const conversation = { server: "s1", channel: "c1" };
 let seq = 0;
@@ -181,5 +181,24 @@ describe("withPending", () => {
   test("counts only messages after the send", () => {
     const earlier = chatMessages(foldEvents([{ type: "message.upsert", message: { ...request, slopbot: true } }]));
     expect(withPending(earlier, pendingSend("again", [], 1)).done).toBe(false);
+  });
+});
+
+describe("Bud wake prompts", () => {
+  const wake = (text: string) => toKitMessage(message({ id: "assistant:home:1", text }), "c1");
+
+  test("a wake prompt is a note with its trigger, and keeps the prompt text for the details", () => {
+    const text = "Home thread: answer the messages below.\nTrigger: mention\nTime: now\n<untrusted-data>\n{}\n</untrusted-data>";
+    const kit = wake(text);
+    expect(kit.parts).toEqual([expect.objectContaining({ type: "custom", kind: WAKE_KIND, data: { label: "mention", text } })]);
+  });
+
+  test("the brief and an approval result are named", () => {
+    expect(wake("Daily brief.\nTrigger: timer").parts[0]).toMatchObject({ data: { label: "daily brief" } });
+    expect(wake("Goal: g\nInstructions: i\nTrigger: approval").parts[0]).toMatchObject({ data: { label: "approval result" } });
+  });
+
+  test("a message the user typed is a normal user message", () => {
+    expect(toKitMessage(message({ id: "chat-1", text: "Trigger: timer" }), "c1")).toMatchObject({ role: "user", parts: [{ type: "text" }] });
   });
 });

@@ -34,6 +34,8 @@ import { memoryRoutes } from './clients/web/routes/memories.js';
 import { GLOBAL_SETTINGS_SCOPE } from './usage-cost.js';
 import { hasProjectStore, projectLimits, PROJECT_LIMITS_KEY } from './projects.js';
 import { ChatTitles } from './chat-titles.js';
+import { DiscordAssistantNotifier } from './clients/discord/assistant-notifier.js';
+import { MentionTrigger } from './clients/discord/assistant-mentions.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -72,8 +74,17 @@ async function main(): Promise<void> {
   // Projects share the storage the project_files tool reads from (workspace.ts: object storage, else LocalDiskStorage).
   const projectStore = hasProjectStore(store) ? store : undefined;
   // The personal workspace hosts the web chats. It opens once Discord has opened a server, which sets the bot's user ID.
-  const personal = new PersonalServer({ config, store, llm: serverLlm, usage: discord.usage, access: discord.access, team: discord.team, directory: discord.directory, ...(discord.images ? { images: discord.images } : {}), ...(routing ? { degraded: routing } : {}) });
+  // Bud's DMs: the notifier's buttons call the gate, which exists only once the personal workspace is built.
+  const assistantGate = { execute: (id: string, user: string, always: boolean) => personal.assistant!.gate.execute(id, user, always), deny: (id: string, user: string) => personal.assistant!.gate.deny(id, user) };
+  const notifier = new DiscordAssistantNotifier({ store: { settings: user => personal.assistant!.store.settings(user), approval: id => personal.assistant!.store.approval(id) }, send: (user, payload) => discord.sendDm(user, payload), consoleUrl: webOptions ? `${webOptions.origin}/console` : '', gate: assistantGate });
+  const personal: PersonalServer = new PersonalServer({ notifier, config, store, llm: serverLlm, usage: discord.usage, access: discord.access, team: discord.team, directory: discord.directory, ...(discord.images ? { images: discord.images } : {}), ...(routing ? { degraded: routing } : {}) });
   discord.engine.add(PERSONAL_SERVER, discord.botReady.then(async botUser => { await personal.ready(botUser); return personal.workspace; }));
+  discord.setAssistantButtons((customId, clicker, reply) => notifier.handleButton(customId, clicker, reply));
+  if (personal.assistant) {
+    const assistant = personal.assistant;
+    const trigger = new MentionTrigger({ store: assistant.store, limits: assistant.limits, serverSetting: async (server, key) => { const value = store.setting(server, key); return value === undefined ? undefined : String(value); }, history: (channel, before, limit) => discord.mentionHistory(channel, before, limit) });
+    discord.setMentionHook(m => trigger.onGuildMessage(m));
+  }
   const chats = new WebChatService(store, { engine: discord.engine, directory: discord.directory, servers: user => discord.consoleServers(user), limiter: discord.usage.limiter, access: discord.access, ...(discord.images ? { images: discord.images } : {}), ...(projectStore ? { projects: projectStore } : {}) });
   const projects = projectStore ? projectRoutes(new ProjectService(projectStore, chats, discord.images ?? new LocalDiskStorage(), store, classifier, () => projectLimits(store.setting(GLOBAL_SETTINGS_SCOPE, PROJECT_LIMITS_KEY)))) : undefined;
   if (webOptions) discord.webChat = { continueMessage: async (user, server, source) => `${webOptions.origin}/chat/${encodeURIComponent((await chats.continueMessage(user, server, source)).id)}?server=${encodeURIComponent(server)}` };
@@ -82,7 +93,7 @@ async function main(): Promise<void> {
   const consoleOptionsLive = webOptions && { ...webOptions, ...(degraded ? { llmStatus: () => ({ mode: degraded.health.state().mode, canChat: degraded.router.select(undefined) !== undefined }), settings: store } : {}), ...(instructions ? { instructions } : {}) };
   // The Discord-only calls of the console: authority, settings, snapshots, webhooks. Same signatures as the adapter methods.
   const discordConsole: Pick<ConsoleBackend, "canSignIn" | "servers" | "profile" | "snapshot" | "usage" | "useReset" | "invoke" | "mcp" | "transcripts" | "inbox" | "setTranscript"> = { canSignIn: user => discord.canSignIn(user), servers: user => discord.consoleServers(user), profile: (user, server) => discord.consoleProfile(user, server), snapshot: (user, server) => discord.consoleSnapshot(user, server), usage: (user, server) => discord.consoleUsage(user, server), useReset: (user, server, kind) => discord.consoleUseReset(user, server, kind), invoke: (user, server, channel, name, args) => discord.consoleInvoke(user, server, channel, name, args), mcp: (user, server, input) => discord.consoleMcp(user, server, input), transcripts: (user, server) => discord.consoleTranscripts(user, server), inbox: { list: (user, server, includeDone) => discord.consoleInbox(user, server, includeDone), done: (user, server, ids) => discord.consoleInboxDone(user, server, ids) }, setTranscript: (user, server, channel, enabled) => discord.consoleSetTranscript(user, server, channel, enabled) };
-  const web = consoleOptionsLive ? createConsole(consoleOptionsLive, { audio: config.apiKey && config.voice ? new PmAudio(config.baseUrl, config.apiKey, config.voice.voice, undefined, config.voice.sttModel) : undefined, ...discordConsole, access: discord.access, admin, conversations, chats: createChatRoutes(chats), ...(projects ? { projects } : {}), memories: memoryRoutes(store), continueShare: (user, id) => chats.continueShare(user, id, discord.shares), reply: (user, server, channel, text) => discord.consoleReply(user, server, channel, text), shares: discord.shares, sessions: store }) : undefined;
+  const web = consoleOptionsLive ? createConsole(consoleOptionsLive, { audio: config.apiKey && config.voice ? new PmAudio(config.baseUrl, config.apiKey, config.voice.voice, undefined, config.voice.sttModel) : undefined, ...discordConsole, access: discord.access, admin, conversations, chats: createChatRoutes(chats), ...(projects ? { projects } : {}), memories: memoryRoutes(store), ...(personal.assistant ? { assistant: personal.assistant.backend } : {}), continueShare: (user, id) => chats.continueShare(user, id, discord.shares), reply: (user, server, channel, text) => discord.consoleReply(user, server, channel, text), shares: discord.shares, sessions: store }) : undefined;
   const shutdown = async () => { retention(); if (web?.listening) await closeWeb(web); if (store instanceof PostgresStore) store.stopIndexing(); await personal.stop(); await discord.stop(); await store.finishIndexing(); await store.close(); process.exit(0); };
   process.once("SIGINT", () => { void shutdown().catch(error => { logError("shutdown_failed", error, { stage: "shutdown" }); process.exitCode = 1; }); });
   process.once("SIGTERM", () => { void shutdown().catch(error => { logError("shutdown_failed", error, { stage: "shutdown" }); process.exitCode = 1; }); });
