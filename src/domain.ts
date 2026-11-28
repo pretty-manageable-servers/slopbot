@@ -1,4 +1,5 @@
 import { Surface } from "@slopbot/contracts";
+import type { AssistantRunTag } from "./assistant/types.js";
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -29,6 +30,8 @@ export interface Message {
   readonly isBot?: boolean;
   /** "web" marks a Discord webhook post that a signed-in user sent from the web console. */
   readonly source?: "web" | "voice";
+  /** Set on a message that an assistant wake makes. The approval gate keys off it. */
+  readonly assistant?: AssistantRunTag;
   /** Where the turn came from. A client sets it; a saved message without it gets its surface from the channel. */
   readonly surface?: Surface;
   readonly transient?: boolean;
