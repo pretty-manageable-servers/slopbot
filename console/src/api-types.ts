@@ -175,3 +175,27 @@ export interface Llm {
   settings: { override: LlmOverride; breaker: Breaker; statusNoteMinutes: number; fallback?: LlmFallback };
   state: { mode: "normal" | "fallback" | "offline"; source: "override" | "breaker"; since: number; lastError?: string };
 }
+
+// ----- Bud, the assistant (/api/assistant, src/assistant/types.ts). A sprout is a task. -----
+export type Wake = { kind: "interval"; minutes: number } | { kind: "cron"; cron: string; timezone: string };
+export type RuleEffect = "allow" | "ask" | "block";
+export type TaskStatus = "proposed" | "active" | "paused" | "done" | "cancelled" | "declined";
+export type TaskPause = "owner" | "failures" | "usage";
+export interface AssistantSettings { user: string; enabled: boolean; briefCron: string | null; timezone: string; dmUpdates: boolean; quietStart: string | null; quietEnd: string | null; updated: number }
+export interface AssistantTask {
+  id: string; owner: string; goal: string; instructions: string; status: TaskStatus; pause: TaskPause | null;
+  wake: Wake; nextAt: number | null; rules: Record<string, RuleEffect>;
+  effort: Effort; failures: number; lastRunAt: number | null; lastError: string | null;
+  createdAt: number; updatedAt: number; revision: number;
+}
+export interface ApprovalRequest {
+  id: string; owner: string; task: string | null; run: string; tool: string; input: Record<string, unknown>;
+  summary: string; status: "pending" | "approved" | "denied" | "expired" | "failed"; result: string | null;
+  createdAt: number; decidedAt: number | null; expiresAt: number;
+}
+export type ActivityKind = "update" | "brief" | "approval" | "proposal" | "done" | "paused" | "error";
+export interface ActivityItem { id: string; owner: string; task: string | null; kind: ActivityKind; text: string; ref: string | null; createdAt: number; readAt: number | null }
+/** GET /api/assistant. `unread` counts the activity items not read yet. `homeChat` is the id of the Bud home chat. */
+export interface AssistantState { settings: AssistantSettings; tasks: AssistantTask[]; pending: ApprovalRequest[]; unread: number; homeChat: string }
+/** A connector as the list shows it. The token is never sent back. */
+export interface AssistantConnector { name: string; url: string }

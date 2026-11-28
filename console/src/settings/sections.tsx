@@ -23,6 +23,7 @@ export const SECTIONS: SectionInfo[] = [
   section("instructions", "Instructions", icons.account, "you", ["instructions", "custom instructions", "preferences", "personalization", "markdown", "about me", "tone"], () => import("./sections/instructions")),
   section("appearance", "Appearance", icons.appearance, "you", ["theme", "dark", "light", "text size", "font", "content width"], () => import("./sections/appearance")),
   section("usage", "Usage", icons.usage, "you", ["limits", "plan", "5 hour", "week", "reset", "banked"], () => import("./sections/usage")),
+  section("assistant", "Bud", icons.bot, "you", ["assistant", "bud", "sprouts", "daily brief", "brief", "timezone", "quiet hours", "dm updates", "connectors", "connector", "mcp"], () => import("../assistant/settings")),
   section("server", "Server", icons.server, "server", ["monitoring", "join the conversation", "calibration", "participation", "context", "cooldown", "tool display", "default effort", "timing", "voice", "web transcripts"], () => import("./sections/server")),
   section("channels", "Channels & history", icons.channels, "server", ["monitored channels", "history", "saved messages", "import", "pause", "days"], () => import("./sections/channels")),
   section("mcp", "MCP connections", icons.mcp, "server", ["connector", "endpoint", "token", "tools", "transport"], () => import("./sections/mcp")),

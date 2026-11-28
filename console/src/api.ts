@@ -2,8 +2,8 @@
 
 import type { EngineEvent, MemoryList } from "@slopbot/contracts";
 import type {
-  ChatFile, ChatImage, ChatShare, ChatSummary, Project, ProjectDetail, ProjectFile, ProjectInstructionsResult, ProjectList,
-  ProjectMemoryView, Session, Usage,
+  ActivityItem, ApprovalRequest, AssistantConnector, AssistantSettings, AssistantState, AssistantTask, ChatFile, ChatImage, ChatShare, ChatSummary,
+  Project, ProjectDetail, ProjectFile, ProjectInstructionsResult, ProjectList, ProjectMemoryView, Session, Usage,
 } from "./api-types";
 export type { ChatSummary, Session } from "./api-types";
 
@@ -15,7 +15,7 @@ export class ApiError extends Error {
 let csrf = "";
 
 /** One JSON call. Writes get the CSRF token. A failed call throws ApiError with the bot's error text. */
-export async function call<T>(method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
+export async function call<T>(method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
   const write = method !== "GET";
   const response = await fetch(path, {
     method,
@@ -91,6 +91,23 @@ const projectCalls = {
   updateMemory: (id: string, memoryId: string, content: string) => call<ProjectMemoryView>("PATCH", memoryPath(id, memoryId), { content }),
   removeMemory: (id: string, memoryId: string) => call<unknown>("DELETE", memoryPath(id, memoryId)),
 };
+/** Bud, the assistant: its settings, activity, sprouts (tasks), approvals and connectors. A sprout's id is its task id. */
+const assistantCalls = {
+  assistant: () => get<AssistantState>("/api/assistant"),
+  /** A partial change. The bot answers with the whole settings. */
+  updateAssistantSettings: (change: Partial<Omit<AssistantSettings, "user" | "updated">>) => call<{ settings: AssistantSettings }>("PUT", "/api/assistant/settings", change),
+  /** The activity feed, newest first. `before` is the creation time of the oldest item shown so far. */
+  assistantActivity: (before: number | null, limit: number) => get<{ items: ActivityItem[] }>(`/api/assistant/activity${qs({ before, limit })}`),
+  markAssistantActivityRead: (ids: string[]) => post<unknown>("/api/assistant/activity/read", { ids }),
+  /** A sprout's lifecycle step: approve or decline a proposal, pause, resume or cancel it. */
+  sproutAction: (id: string, action: "approve" | "decline" | "pause" | "resume" | "cancel") => post<{ task: AssistantTask }>(`/api/assistant/tasks/${encodeURIComponent(id)}`, { action }),
+  /** Edits a sprout. `revision` is the revision the edit was made on; the bot answers 409 when it has changed since. */
+  updateSprout: (id: string, change: Partial<Pick<AssistantTask, "wake" | "rules" | "effort">> & { revision: number }) => call<{ task: AssistantTask }>("PATCH", `/api/assistant/tasks/${encodeURIComponent(id)}`, change),
+  decideApproval: (id: string, decision: "approve" | "deny", always?: boolean) => post<{ approval: ApprovalRequest }>(`/api/assistant/approvals/${encodeURIComponent(id)}`, { decision, ...(always && { always }) }),
+  connectors: () => get<{ connectors: AssistantConnector[] }>("/api/assistant/connectors"),
+  saveConnector: (connector: { name: string; url: string; token?: string }) => call<{ connectors: AssistantConnector[] }>("PUT", "/api/assistant/connectors", connector),
+  removeConnector: (name: string) => call<{ connectors: AssistantConnector[] }>("DELETE", `/api/assistant/connectors${qs({ name })}`),
+};
 export const api = {
   session: loadSession,
   transcribe,
@@ -120,6 +137,7 @@ export const api = {
   /** The live engine events of a chat. No position: the stream starts at the newest event. */
   eventsUrl: (id: string) => `${chat(id)}/events`,
   ...projectCalls,
+  ...assistantCalls,
   /** The signed-in user's memories for the Memory page. The filters are a search text, a scope ("personal" or "project:<id>") and the offset of the page. */
   memoryList: (filter: { query?: string; scope?: string; offset?: number }) => get<MemoryList>(`/api/memories${qs(filter)}`),
   deleteMemory: (id: string) => call<unknown>("DELETE", `/api/memories/${encodeURIComponent(id)}`),

@@ -5,9 +5,10 @@ import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-quer
 import { Outlet, useMatchRoute, useNavigate } from "@tanstack/react-router";
 import { AppShell, ChatList, SidebarItem, defaultIcons } from "agentic-ui-kit";
 import { MenuItem, MenuList, MenuSeparator, SegmentedControl, confirm } from "slop-ui-components";
-import { Brain, Pencil, Share, Trash2 } from "lucide-react";
+import { Brain, Pencil, Share, Sprout, Trash2 } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
 import { ApiError, api } from "./api";
+import { assistantQuery } from "./assistant/queries";
 import { ShareDialog } from "./chat/share-dialog";
 import { chatsQuery, pickServer, sessionQuery, useServer } from "./data";
 import { LlmBanner } from "./llm-status";
@@ -62,7 +63,7 @@ function Shell() {
           options={[{ id: "chats", label: "Chats", icon: icons.chats }, { id: "servers", label: "Servers", icon: icons.server }]}
           onChange={(next) => void (next === "servers" ? navigate({ to: "/server/$serverId", params: { serverId: server.id } }) : navigate({ to: "/" }))} />
       }
-      nav={mode === "chats" ? <><NewChat /><Projects /><Memory /></> : undefined}
+      nav={mode === "chats" ? <><NewChat /><Assistant /><Projects /><Memory /></> : undefined}
       footer={
         <AccountMenu
           name={session.me?.displayName ?? session.user}
@@ -108,6 +109,15 @@ function Memory() {
   const match = useMatchRoute();
   const active = !!match({ to: "/memory" });
   return <SidebarItem icon={<Brain size={16} />} label="Memory" active={active} onPress={() => void navigate({ to: "/memory" })} />;
+}
+
+/** Bud, the assistant. Active on its page and on each sprout's page. The badge is the activity not read yet. */
+function Assistant() {
+  const navigate = useNavigate();
+  const match = useMatchRoute();
+  const { data } = useQuery(assistantQuery);
+  const active = !!match({ to: "/assistant", fuzzy: true });
+  return <SidebarItem icon={<Sprout size={16} />} label="Bud" active={active} badge={data?.unread ? data.unread : undefined} onPress={() => void navigate({ to: "/assistant" })} />;
 }
 
 /** All private chats of the user, from every server, newest first, with rename and delete. */
