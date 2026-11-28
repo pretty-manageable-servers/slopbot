@@ -55,10 +55,12 @@ export class Gate implements AssistantGate {
       result = await this.deps.registry().invokeResult(this.approvalMessage(approval), approval.tool, approval.input, `assistant-approval:${approval.id}`, "command");
     } catch (error) {
       const text = errorSummary(error);
+      await this.deps.store.setApprovalResult(approval.id, "failed", text);
       await this.wake(approval, { approval: approval.id, tool: approval.tool, error: text });
       await this.addActivity(approval, "error", `${approval.tool} failed after approval: ${text}`.slice(0, MAX_NOTIFY_CHARS), approval.id);
       throw error;
     }
+    await this.deps.store.setApprovalResult(approval.id, "approved", result.text);
     await this.wake(approval, { approval: approval.id, tool: approval.tool, result: result.text });
     await this.addActivity(approval, "approval", result.text.slice(0, MAX_NOTIFY_CHARS), approval.id);
     return result;

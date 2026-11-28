@@ -239,7 +239,12 @@ export function assistantRoutes(backend: AssistantBackend): AssistantRoutes {
       if (parsed.value.decision === 'approve') await gate.execute(id, user, parsed.value.always ?? false);
       else await gate.deny(id, user);
     } catch (error) {
-      if (error instanceof ToolError) return json(409, { error: error.message });
+      if (error instanceof ToolError) {
+        // A tool that failed after approval is a decided approval with the error saved, not a conflict.
+        const failed = await store.approval(id);
+        if (failed?.status === 'failed') return json(200, { approval: failed });
+        return json(409, { error: error.message });
+      }
       throw error;
     }
     const approval: ApprovalRequest | undefined = await store.approval(id);

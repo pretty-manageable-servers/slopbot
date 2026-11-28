@@ -31,7 +31,8 @@ export function Sprouts({ tasks }: { tasks: AssistantTask[] }) {
   );
 }
 
-function SproutRow({ task }: { task: AssistantTask }) {
+/** The buttons that move a sprout on: Approve or Decline, Pause or Cancel, Resume or Cancel. The sprout's page uses them too. */
+export function SproutActions({ task }: { task: AssistantTask }) {
   const client = useQueryClient();
   const act = useMutation({
     mutationFn: (action: Action) => api.sproutAction(task.id, action),
@@ -43,6 +44,17 @@ function SproutRow({ task }: { task: AssistantTask }) {
     if (action === "cancel" && !await confirm({ title: "Cancel this sprout?", description: "Bud stops working on it. This cannot be undone.", confirmLabel: "Cancel sprout", destructive: true })) return;
     act.mutate(action);
   };
+  if (ACTIONS[task.status].length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-2">
+      {ACTIONS[task.status].map(({ action, label, variant }) => (
+        <Button key={action} variant={variant} size="sm" isDisabled={act.isPending} onPress={() => void press(action)}>{label}</Button>
+      ))}
+    </div>
+  );
+}
+
+function SproutRow({ task }: { task: AssistantTask }) {
   return (
     <div className="flex flex-col gap-2 p-3">
       <Link to="/assistant/task/$taskId" params={{ taskId: task.id }} className="text-ui font-medium text-fg no-underline hover:underline">{task.goal}</Link>
@@ -53,13 +65,7 @@ function SproutRow({ task }: { task: AssistantTask }) {
       </div>
       {task.status === "paused" && task.lastError && <p className="m-0 text-ui-sm text-muted">{task.lastError}</p>}
       {task.status === "active" && task.nextAt !== null && <p className="m-0 text-ui-sm text-muted">Next wake {ago(task.nextAt)} · {wakeText(task.wake)}</p>}
-      {ACTIONS[task.status].length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {ACTIONS[task.status].map(({ action, label, variant }) => (
-            <Button key={action} variant={variant} size="sm" isDisabled={act.isPending} onPress={() => void press(action)}>{label}</Button>
-          ))}
-        </div>
-      )}
+      <SproutActions task={task} />
     </div>
   );
 }

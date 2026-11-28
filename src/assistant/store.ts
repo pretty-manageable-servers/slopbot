@@ -14,6 +14,7 @@ export interface AssistantStore {
   addApproval(a: ApprovalRequest): Promise<void>;
   approval(id: string): Promise<ApprovalRequest | undefined>;
   decideApproval(id: string, status: ApprovalRequest["status"], result: string | null, now: number): Promise<boolean>; // only from pending
+  setApprovalResult(id: string, status: "approved" | "failed", result: string | null): Promise<void>; // only on an approved row
   pendingApprovals(owner: string): Promise<ApprovalRequest[]>;
   addActivity(a: ActivityItem): Promise<void>;
   activity(owner: string, before: number | null, limit: number): Promise<ActivityItem[]>;

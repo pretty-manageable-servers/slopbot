@@ -124,6 +124,10 @@ export abstract class AssistantSqlStore implements AssistantStore {
     return changed(await this.db.prepare("UPDATE assistant_approvals SET status=?,result=?,decided_at=? WHERE id=? AND status='pending'").run(status, result, now, id));
   }
 
+  async setApprovalResult(id: string, status: "approved" | "failed", result: string | null): Promise<void> {
+    await this.db.prepare("UPDATE assistant_approvals SET status=?,result=? WHERE id=? AND status='approved'").run(status, result, id);
+  }
+
   async pendingApprovals(owner: string): Promise<ApprovalRequest[]> {
     const rows = await this.db.prepare("SELECT * FROM assistant_approvals WHERE owner=? AND status='pending' ORDER BY created_at DESC, id DESC").all(owner);
     return rows.map(approvalFrom);

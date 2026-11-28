@@ -52,6 +52,7 @@ class FakeStore implements AssistantStore {
     for (const t of taken) t.takenAt = now;
     return taken.map(t => ({ ...t }));
   }
+  async setApprovalResult(): Promise<void> { throw new Error('not used by the worker'); }
   async addApproval(_a: ApprovalRequest): Promise<void> { throw new Error('not used by the worker'); }
   async approval(_id: string): Promise<ApprovalRequest | undefined> { throw new Error('not used by the worker'); }
   async decideApproval(_id: string, _status: ApprovalRequest['status'], _result: string | null, _now: number): Promise<boolean> { throw new Error('not used by the worker'); }

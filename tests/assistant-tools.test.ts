@@ -36,6 +36,7 @@ class MemoryAssistantStore implements AssistantStore {
   async addApproval() {}
   async approval() { return undefined; }
   async decideApproval() { return false; }
+  async setApprovalResult() {}
   async pendingApprovals() { return []; }
   async addActivity(item: ActivityItem) { this.activities.push(item); }
   async activity(owner: string, _before: number | null, limit: number) { return this.activities.filter(item => item.owner === owner).slice(0, limit); }

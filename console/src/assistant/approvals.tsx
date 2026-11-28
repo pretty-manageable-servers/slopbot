@@ -20,7 +20,11 @@ function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
   const client = useQueryClient();
   const decide = useMutation({
     mutationFn: ({ decision, always }: { decision: "approve" | "deny"; always?: boolean }) => api.decideApproval(approval.id, decision, always),
-    onSuccess: () => void client.invalidateQueries({ queryKey: assistantKey }),
+    onSuccess: ({ approval: decided }) => {
+      // The bot answers 200 when the approved tool itself failed. Its error is the approval's result.
+      if (decided.status === "failed") notifyError(new Error(`${decided.tool} failed: ${decided.result ?? "no error text"}`));
+      void client.invalidateQueries({ queryKey: assistantKey });
+    },
     onError: notifyError,
   });
   return (

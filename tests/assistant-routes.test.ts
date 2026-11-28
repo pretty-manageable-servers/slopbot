@@ -50,7 +50,7 @@ function fakeStore(seed: { tasks?: AssistantTask[]; approvals?: ApprovalRequest[
       tasks.set(t.id, t);
       return true;
     },
-    dueTasks: unused, dueBriefs: unused, addTrigger: unused, takeTriggers: unused, addApproval: unused, decideApproval: unused, addActivity: unused,
+    dueTasks: unused, dueBriefs: unused, addTrigger: unused, takeTriggers: unused, addApproval: unused, decideApproval: unused, setApprovalResult: unused, addActivity: unused,
     async setBriefNextAt(user, at) { briefNext.set(user, at); },
     async approval(id) { return approvals.get(id); },
     async pendingApprovals(owner) { return [...approvals.values()].filter(a => a.owner === owner && a.status === 'pending'); },
@@ -74,7 +74,13 @@ function fakeGate(approvals: Map<string, ApprovalRequest>): AssistantBackend['ga
     found.decidedAt = NOW;
   };
   return {
-    async execute(id) { decide(id, 'approved'); },
+    async execute(id) {
+      decide(id, 'approved');
+      if (id === 'boom') {
+        Object.assign(approvals.get(id)!, { status: 'failed', result: 'Tool exploded' });
+        throw new ToolError('Tool exploded');
+      }
+    },
     async deny(id) { decide(id, 'denied'); },
   };
 }
@@ -274,6 +280,14 @@ test('POST approvals/:id approve runs the gate and returns the approval as decid
   const response = await call(ALICE, 'POST', '/api/assistant/approvals/a1', { decision: 'approve', always: true });
   assert.equal(response.status, 200);
   assert.equal(response.json.approval.status, 'approved');
+});
+
+test('POST approvals/:id approve whose tool failed is 200 with the failed approval and its error', async t => {
+  const { call } = await setup(t, { approvals: [approval('boom', ALICE)] });
+  const response = await call(ALICE, 'POST', '/api/assistant/approvals/boom', { decision: 'approve' });
+  assert.equal(response.status, 200);
+  assert.equal(response.json.approval.status, 'failed');
+  assert.equal(response.json.approval.result, 'Tool exploded');
 });
 
 test('POST approvals/:id on a decided approval is 409 with the gate message', async t => {

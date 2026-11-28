@@ -1,6 +1,8 @@
 // Pages/Bud sprout: one sprout with its chat, its tool rules, its wake and its effort. A rule can be added by its tool name.
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within } from "storybook/test";
+import { http, HttpResponse } from "msw";
+import * as data from "../mocks/data";
 import { SproutPage } from "./sprout-page";
 
 const meta = {
@@ -31,6 +33,32 @@ export const SproutPageStory: Story = {
     await step("The wake and the effort can be edited and saved", async () => {
       await expect(page.getByRole("textbox", { name: "Every, minutes" })).toHaveValue("60");
       await expect(page.getByRole("button", { name: "Save sprout" })).toBeEnabled();
+    });
+  },
+};
+
+/** The sprout's actions sit beside its goal, the same as in the list: an active sprout can be paused or cancelled. */
+export const SproutActionsShown: Story = {
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await expect(await page.findByRole("button", { name: "Pause" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Cancel" })).toBeVisible();
+  },
+};
+
+/** Bud's wake prompts are small notes, not the user's bubbles. Show details opens the prompt text. */
+export const WakeNotes: Story = {
+  parameters: { msw: { handlers: { chatMessages: http.get("/api/chats/:id/messages", () => HttpResponse.json({ messages: data.chatWithWakes, hasMore: false, streamId: 1 })) } } },
+  play: async ({ canvasElement, step }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await step("Each wake shows its trigger and no prompt text", async () => {
+      await expect(await page.findByText("Bud woke up · daily brief")).toBeVisible();
+      await expect(page.getByText("Bud woke up · approval result")).toBeVisible();
+      await expect(page.queryByText(/untrusted-data/)).toBeNull();
+    });
+    await step("Show details reveals the prompt", async () => {
+      await userEvent.click(page.getAllByRole("button", { name: "Show details" })[1]!);
+      await expect(await page.findByText(/untrusted-data/)).toBeVisible();
     });
   },
 };

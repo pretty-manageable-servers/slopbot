@@ -128,6 +128,8 @@ export const handlers = {
   decideApproval: http.post("/api/assistant/approvals/:id", async ({ request, params }) => {
     const { decision } = (await request.json()) as { decision: "approve" | "deny" };
     const approval = data.assistantApprovals.find((a) => a.id === params.id)!;
+    // send_email is the tool that fails once approved: the bot answers 200 with the failed approval and its error.
+    if (decision === "approve" && approval.tool === "send_email") return HttpResponse.json({ approval: { ...approval, status: "failed", result: "The mail server refused the message.", decidedAt: data.NOW } });
     return HttpResponse.json({ approval: { ...approval, status: decision === "approve" ? "approved" : "denied", decidedAt: data.NOW } });
   }),
   connectors: http.get("/api/assistant/connectors", () => HttpResponse.json({ connectors: data.assistantConnectors })),

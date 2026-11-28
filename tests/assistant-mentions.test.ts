@@ -26,6 +26,7 @@ function fakeStore(enabledUsers: string[]) {
     async addApproval() { throw new Error("unused"); },
     async approval() { throw new Error("unused"); },
     async decideApproval() { throw new Error("unused"); },
+    async setApprovalResult() { throw new Error("unused"); },
     async pendingApprovals() { throw new Error("unused"); },
     async addActivity() { throw new Error("unused"); },
     async activity() { throw new Error("unused"); },

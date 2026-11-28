@@ -2,7 +2,7 @@
 // approvals waiting, a paused sprout, and the default feed (its first page with Load more).
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
-import { expect, within } from "storybook/test";
+import { expect, userEvent, within } from "storybook/test";
 import * as data from "../mocks/data";
 import { AssistantPage } from "./assistant-page";
 
@@ -54,6 +54,18 @@ export const ApprovalsWaiting: Story = {
       await expect(page.getByText("Send the weekly brief to the team list.")).toBeVisible();
       await expect(page.getAllByRole("button", { name: "Always allow" })).toHaveLength(2);
       await expect(page.getAllByRole("button", { name: "Deny" })).toHaveLength(2);
+    });
+  },
+};
+
+/** An approved call whose tool fails comes back as a failed approval. Its error shows as a toast. */
+export const ApprovedCallFailed: Story = {
+  play: async ({ canvasElement, step }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await step("Approving the email shows the tool's error", async () => {
+      const card = within((await page.findByText("Send the weekly brief to the team list.")).closest("li")!);
+      await userEvent.click(card.getByRole("button", { name: "Approve" }));
+      await expect(await page.findByText("send_email failed: The mail server refused the message.")).toBeVisible();
     });
   },
 };

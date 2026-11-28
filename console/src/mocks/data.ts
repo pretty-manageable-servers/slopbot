@@ -108,6 +108,13 @@ export const chatSaved: BotMessage[] = [
   { id: "m2", channel: "c1", author: BOT, authorName: "Slopbot", username: null, avatarUrl: null, text: "Usually a missing index. Run `EXPLAIN ANALYZE` on the slowest query and look for a sequential scan on a big table.", timestamp: NOW - HOUR + 40_000, editedAt: null, slopbot: true, runIds: ["r-c1"], used: false, turn: "m1" },
 ];
 
+/** A Bud chat: a daily-brief wake prompt with its untrusted-data block, Bud's reply, and a wake from an approval result. */
+export const chatWithWakes: BotMessage[] = [
+  { id: "assistant:home:1", channel: "c1", author: session.user, authorName: "DerpZ", username: null, avatarUrl: null, text: ["Daily brief.", "Trigger: timer", "Time: 2026-03-02T08:00:00+00:00", "If there is nothing to do, call assistant_idle."].join("\n"), timestamp: NOW - 2 * HOUR, editedAt: null, slopbot: false, runIds: [], used: false },
+  { id: "m2", channel: "c1", author: BOT, authorName: "Slopbot", username: null, avatarUrl: null, text: "Good morning. The build is green and nothing is waiting for you.", timestamp: NOW - 2 * HOUR + 40_000, editedAt: null, slopbot: true, runIds: ["r-c1"], used: false, turn: "assistant:home:1" },
+  { id: "assistant:t-active:2", channel: "c1", author: session.user, authorName: "DerpZ", username: null, avatarUrl: null, text: ["Goal: Watch the build dashboard", "Instructions: Report failures.", "Trigger: approval", "Time: 2026-03-02T09:00:00+00:00", "If there is nothing to do, call assistant_idle.", "<untrusted-data>", "{\"approval\":\"a-1\",\"tool\":\"github_comment\",\"result\":\"Commented.\"}", "</untrusted-data>"].join("\n"), timestamp: NOW - HOUR, editedAt: null, slopbot: false, runIds: [], used: false },
+];
+
 /** A live turn: a new question and its answer as it streams in. The chat's event stream sends these. */
 export const chatLive: EngineEvent[] = [
   { type: "message.upsert", message: { id: "m3", channel: "c1", author: session.user, authorName: "DerpZ", username: null, avatarUrl: null, text: "Can you check the orders table too?", timestamp: NOW, editedAt: null, slopbot: false, runIds: [], used: false } },

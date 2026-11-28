@@ -7,6 +7,7 @@ import { PageNote } from "../ui/page-state";
 import { PAUSE_LABEL, STATUS_LABEL, STATUS_TONE } from "./format";
 import { assistantQuery, sproutChatId } from "./queries";
 import { SproutEditor } from "./sprout-editor";
+import { SproutActions } from "./sprouts";
 
 export function SproutPage({ id }: { id: string }) {
   const { data } = useSuspenseQuery(assistantQuery);
@@ -26,6 +27,7 @@ export function SproutPage({ id }: { id: string }) {
             {task.status === "paused" && task.pause && <span className="text-muted">{PAUSE_LABEL[task.pause]}</span>}
             {task.status === "active" && task.pause === "usage" && <span className="text-muted">Waiting for usage reset</span>}
           </div>
+          <SproutActions task={task} />
           {task.instructions && <p className="m-0 whitespace-pre-wrap text-ui-sm text-muted">{task.instructions}</p>}
         </div>
         {/* Keyed by revision: a saved or changed sprout starts the form over from the bot's copy. */}
