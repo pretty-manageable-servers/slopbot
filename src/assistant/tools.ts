@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { EFFORTS, type Effort, type Json, type Message } from "../domain.js";
+import { nextRun } from "../schedules/schedule-time.js";
 import { ToolError, type ToolRegistry } from "../tools.js";
 import type { AssistantStore } from "./store.js";
 import {
   assistantHomeChannel,
   assistantTaskChannel,
   assistantTaskMemoryChannel,
+  isAssistantChannel,
   MAX_GOAL_CHARS,
   MAX_NOTIFY_CHARS,
   type ActivityItem,
@@ -48,6 +50,20 @@ function parseRules(value: Json | undefined): Record<string, RuleEffect> {
   return value as Record<string, RuleEffect>;
 }
 
+/** Bud's tools are offered only in assistant chats. */
+const offered = (message: Message) => isAssistantChannel(message.channel);
+
+/** Throws when a cron wake fires more often than minutes apart, from its next two runs after `at`. */
+function checkCronWake(wake: Extract<Wake, { kind: "cron" }>, minutes: number, at: number): void {
+  let first: Date | null, second: Date | null;
+  try {
+    first = nextRun(wake, new Date(at));
+    second = first && nextRun(wake, first);
+  } catch { throw new ToolError("The cron is not valid."); }
+  if (!first || !second) throw new ToolError("The cron is not valid.");
+  if (second.getTime() - first.getTime() < minutes * 60_000) throw new ToolError(`Sprouts wake at most every ${minutes} minutes.`);
+}
+
 /** Makes sure the Bud home chat row exists, so the normal chat view shows it. */
 export function ensureHomeChat(chats: AssistantToolDeps["chats"], user: string): Promise<void> {
   return chats.ensure(assistantHomeChannel(user), user, "Bud");
@@ -59,7 +75,7 @@ export function registerAssistantTools(registry: ToolRegistry, deps: AssistantTo
   const newId = deps.id ?? randomUUID;
 
   registry.register({
-    name: "assistant_notify",
+    name: "assistant_notify", offered,
     description: "Tell the owner what Bud did or found. feed adds it to the activity feed; dm also sends it as a direct message.",
     access: "member", effect: "write", retrySafe: false, execution: "inline",
     fields: {
@@ -76,7 +92,7 @@ export function registerAssistantTools(registry: ToolRegistry, deps: AssistantTo
   });
 
   registry.register({
-    name: "assistant_idle",
+    name: "assistant_idle", offered,
     description: "Nothing needs doing this wake. Ends the wake without a change.",
     access: "member", effect: "write", retrySafe: true, execution: "inline",
     fields: {},
@@ -87,7 +103,7 @@ export function registerAssistantTools(registry: ToolRegistry, deps: AssistantTo
   });
 
   registry.register({
-    name: "task_propose",
+    name: "task_propose", offered,
     description: "Propose a sprout: a goal Bud works on at a set wake interval. Only from the Bud home thread. The owner accepts it before it wakes.",
     access: "member", effect: "write", retrySafe: false, execution: "inline",
     fields: {
@@ -105,6 +121,7 @@ export function registerAssistantTools(registry: ToolRegistry, deps: AssistantTo
       if (open >= limits.maxActiveTasks) throw new ToolError(`Limit reached: ${open} active sprouts.`);
       const wake = parseWake(args.wake);
       if (wake.kind === "interval" && wake.minutes < limits.minWakeMinutes) throw new ToolError(`Sprouts wake at most every ${limits.minWakeMinutes} minutes.`);
+      if (wake.kind === "cron") checkCronWake(wake, limits.minWakeMinutes, now());
       const id = newId(), at = now(), goal = String(args.goal);
       const task: AssistantTask = {
         id, owner: run.owner, goal, instructions: String(args.instructions ?? ""), status: "proposed", pause: null,
@@ -119,7 +136,7 @@ export function registerAssistantTools(registry: ToolRegistry, deps: AssistantTo
   });
 
   registry.register({
-    name: "task_note",
+    name: "task_note", offered,
     description: "Save a note to this sprout's own memory. Only in a sprout run.",
     access: "member", effect: "write", retrySafe: false, execution: "inline",
     fields: {
@@ -134,7 +151,7 @@ export function registerAssistantTools(registry: ToolRegistry, deps: AssistantTo
   });
 
   registry.register({
-    name: "task_finish",
+    name: "task_finish", offered,
     description: "Finish this sprout. It does not wake again. Only in a sprout run.",
     access: "member", effect: "write", retrySafe: false, execution: "inline",
     fields: {

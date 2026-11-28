@@ -70,7 +70,7 @@ async function setup(t: { after(fn: () => void | Promise<void>): void }, overrid
   });
   const call = (message: Message, name: string, input: Record<string, unknown>) =>
     registry.invokeResult(message, name, input, `op${++operations}`, "agent");
-  return { store, notified, chats, call };
+  return { store, notified, chats, call, registry };
 }
 
 const sprout = { goal: "Watch the build", wake: { kind: "interval", minutes: 120 } };
@@ -90,6 +90,16 @@ test("propose below min interval refused", async (t) => {
     (error: unknown) => error instanceof ToolError && error.message === "Sprouts wake at most every 60 minutes.",
   );
   assert.equal((await store.tasks("u1")).length, 0);
+});
+
+test("propose cron wake firing more often than the minimum refused", async (t) => {
+  const { store, call } = await setup(t);
+  await assert.rejects(
+    call(homeMessage(), "task_propose", { ...sprout, wake: { kind: "cron", cron: "*/30 * * * *", timezone: "UTC" } }),
+    (error: unknown) => error instanceof ToolError && error.message === "Sprouts wake at most every 60 minutes.",
+  );
+  await call(homeMessage(), "task_propose", { ...sprout, wake: { kind: "cron", cron: "0 */2 * * *", timezone: "UTC" } });
+  assert.equal((await store.tasks("u1")).length, 1);
 });
 
 test("propose only from home", async (t) => {
@@ -139,6 +149,16 @@ test("finish stops wakes", async (t) => {
   assert.equal(finished?.nextAt, null);
   assert.deepEqual(await store.dueTasks(1_000_000, 10), []);
   assert.deepEqual(store.activities.map(item => [item.kind, item.text]), [["done", "Built it"]]);
+});
+
+test("tools hidden outside assistant channels", async (t) => {
+  const { registry } = await setup(t);
+  const { assistant: _tag, ...chat } = homeMessage();
+  const plainChat: Message = { ...chat, channel: "web:chat-1" };
+  for (const name of ["assistant_idle", "assistant_notify", "task_finish", "task_note", "task_propose"]) {
+    assert.match(registry.catalog(homeMessage()), new RegExp(name));
+    assert.doesNotMatch(registry.catalog(plainChat), new RegExp(name));
+  }
 });
 
 test("tools refuse without assistant tag", async (t) => {
