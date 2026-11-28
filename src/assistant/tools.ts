@@ -54,7 +54,7 @@ function parseRules(value: Json | undefined): Record<string, RuleEffect> {
 const offered = (message: Message) => isAssistantChannel(message.channel);
 
 /** Throws when a cron wake fires more often than minutes apart, from its next two runs after `at`. */
-function checkCronWake(wake: Extract<Wake, { kind: "cron" }>, minutes: number, at: number): void {
+export function checkCronWake(wake: Extract<Wake, { kind: "cron" }>, minutes: number, at: number): void {
   let first: Date | null, second: Date | null;
   try {
     first = nextRun(wake, new Date(at));

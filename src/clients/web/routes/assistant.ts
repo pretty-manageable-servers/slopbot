@@ -8,6 +8,7 @@ import {
   type ActivityItem, type ApprovalRequest, type AssistantLimits, type AssistantSettings, type AssistantTask,
 } from '../../../assistant/types.js';
 import { nextRun, validateWhen, scheduleLimits } from '../../../schedules/schedule-time.js';
+import { checkCronWake } from '../../../assistant/tools.js';
 import { check, looseBody, readJson } from '../body.js';
 import { json, notFound, userOf, type WebEnv } from '../env.js';
 
@@ -215,7 +216,7 @@ export function assistantRoutes(backend: AssistantBackend): AssistantRoutes {
       return json(400, { error: `Wake must be at least ${limits.minWakeMinutes} minutes.` });
     }
     if (wake?.kind === 'cron') {
-      try { checkCron(wake.cron, wake.timezone, at); } catch (error) {
+      try { checkCron(wake.cron, wake.timezone, at); checkCronWake(wake, limits.minWakeMinutes, at); } catch (error) {
         if (error instanceof ToolError) return json(400, { error: error.message });
         throw error;
       }

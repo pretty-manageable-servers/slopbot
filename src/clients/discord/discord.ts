@@ -58,7 +58,8 @@ import { WebReplies, asWebUser, webReplyKey } from "../../web-replies.js";
 import { MemberDirectory } from "../../member-directory.js";
 import { discordMemberSource } from "./discord-member-source.js";
 import { discordWebReplies } from "./discord-web-replies.js";
-import type { GuildMessageMention } from "./assistant-mentions.js";
+import type { GuildMessageMention, MentionHistoryLine } from "./assistant-mentions.js";
+import type { ApprovalButtonReply, DmPayload } from "./assistant-notifier.js";
 import { isPrivateChannel, isDirectMessageChannel, directMessageChannel, discordChannelId } from "../../private-chat.js";
 import { WebChatGateway } from "../../engine/web-chat-gateway.js";
 import type { Directory } from "../../engine/api.js";
@@ -816,6 +817,8 @@ export class DiscordAdapter {
   private readonly memberCache = new Map<string, { at: number; servers: { id: string; name: string; icon: string | null; admin: boolean }[] }>();
   private readonly client: Client;
   private readonly servers = new Map<string, Promise<DiscordServer>>();
+  private mentionHook: ((message: GuildMessageMention) => Promise<void>) | undefined;
+  private assistantButtons: ((customId: string, clicker: string, reply: ApprovalButtonReply) => Promise<boolean>) | undefined;
   /** The Workspace of each server that is open. Same lifetime as servers. */
   readonly engine = new WorkspaceEngine();
   private readonly objectStorageProvider: S3StorageProvider | undefined;
@@ -872,7 +875,10 @@ export class DiscordAdapter {
     this.client.on(Events.GuildMemberRemove, forget); this.client.on(Events.GuildMemberUpdate, forget);
     this.client.on(Events.GuildCreate, guild => { forget(); if (this.botUser) void this.open(guild.id).catch(error => logError("server_start_failed", error, { server: guild.id })); });
     this.client.on(Events.GuildDelete, guild => { forget(); void this.close(guild.id).catch(error => logError("server_stop_failed", error, { server: guild.id })); });
-    this.client.on(Events.InteractionCreate, interaction => { if (interaction.guildId) void this.route(interaction.guildId, server => server.interaction(interaction)); else if (interaction.channelId && (interaction.isButton() || interaction.isStringSelectMenu())) void this.routeDirectMessage(interaction.user.id, interaction.channelId, server => server.interaction(interaction)); });
+    this.client.on(Events.InteractionCreate, interaction => {
+      // Bud's approval buttons arrive in DMs. They need no server, so they skip the server routing.
+      if (interaction.isButton() && interaction.customId.startsWith('assistant:') && this.assistantButtons) { void this.assistantButton(interaction, this.assistantButtons).catch(error => logError('assistant_button_failed', error, { stage: 'assistant button' })); return; }
+      if (interaction.guildId) void this.route(interaction.guildId, server => server.interaction(interaction)); else if (interaction.channelId && (interaction.isButton() || interaction.isStringSelectMenu())) void this.routeDirectMessage(interaction.user.id, interaction.channelId, server => server.interaction(interaction)); });
     this.client.on(Events.Error, error => logError("discord_client_failed", error));
     this.client.on(Events.MessageCreate, message => { if (message.guildId) void this.route(message.guildId, server => server.messageCreate(message)); else if (!message.author.bot) void this.routeDirectMessage(message.author.id, message.channelId, server => server.messageCreate(message)); });
     this.client.on(Events.MessageUpdate, (_old, updated) => { if (updated.guildId) void this.route(updated.guildId, server => server.messageUpdate(updated)); else for (const id of this.servers.keys()) void this.route(id, server => server.messageUpdate(updated)); });
@@ -880,6 +886,32 @@ export class DiscordAdapter {
     this.client.on(Events.MessageBulkDelete, messages => { for (const message of messages.values()) if (message.guildId) void this.route(message.guildId, server => server.messageDelete(message)); else for (const id of this.servers.keys()) void this.route(id, server => server.messageDelete(message)); });
   }
   /** True when the operator allows Slopbot in this server. An empty list allows all servers. */
+  /** Bud: every server (open now or later) reports guild messages that mention users. */
+  setMentionHook(hook: (message: GuildMessageMention) => Promise<void>): void {
+    this.mentionHook = hook;
+    for (const opening of this.servers.values()) void opening.then(server => server.setMentionHook(hook)).catch(() => undefined);
+  }
+  /** Bud: routes clicks on `assistant:` buttons. Discord's 3 second ack comes first, then the result edits the DM. */
+  setAssistantButtons(handle: (customId: string, clicker: string, reply: ApprovalButtonReply) => Promise<boolean>): void { this.assistantButtons = handle; }
+  private async assistantButton(interaction: ButtonInteraction, handle: (customId: string, clicker: string, reply: ApprovalButtonReply) => Promise<boolean>): Promise<void> {
+    await interaction.deferUpdate();
+    await handle(interaction.customId, interaction.user.id, {
+      update: async content => { await interaction.editReply({ content, components: [] }); },
+      ephemeral: async content => { await interaction.followUp({ content, ephemeral: true }); },
+    });
+  }
+  /** Bud: sends a DM to a user. Throws when the user's DMs are closed. */
+  async sendDm(user: string, payload: DmPayload): Promise<void> {
+    const target = await this.client.users.fetch(user);
+    await target.send({ content: payload.content, allowedMentions: payload.allowedMentions, ...(payload.components ? { components: payload.components as ActionRowBuilder<ButtonBuilder>[] } : {}) });
+  }
+  /** Bud: the lines before a message, oldest first, for a mention trigger. */
+  async mentionHistory(channel: string, before: string, limit: number): Promise<MentionHistoryLine[]> {
+    const found = await this.client.channels.fetch(channel);
+    if (!found?.isTextBased()) return [];
+    const lines = await found.messages.fetch({ before, limit });
+    return [...lines.values()].reverse().map(line => ({ author: line.author.id, text: line.content }));
+  }
   private allowed(guildId: string): boolean { return !this.config.guildIds.length || this.config.guildIds.includes(guildId); }
   private open(guildId: string): Promise<DiscordServer> {
     const existing = this.servers.get(guildId);
@@ -889,6 +921,7 @@ export class DiscordAdapter {
       const server = new DiscordServer(this.config, this.store, this.llm, this.client, guildId, this.objectStorageProvider, this.usage, this.access, this.members, this.team, this.sandboxProfile, this.degraded);
       server.webChat = this.webChat;
       server.webChatReplied = this.webChatReplied;
+      if (this.mentionHook) server.setMentionHook(this.mentionHook);
       await server.start();
       await server.ready(this.botUser!);
       return server;

@@ -1,6 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import type { ProjectRoutes } from './routes/projects.js';
 import type { MemoryRoutes } from './routes/memories.js';
+import type { AssistantBackend } from './routes/assistant.js';
 import { getRequestListener } from '@hono/node-server';
 import { logError } from "../../errors.js";
 import type { ToolArgs } from '../../tools.js';
@@ -68,6 +69,8 @@ export interface ConsoleBackend {
   /** Live per-user view and send checks for the read and send routes. */
   access?: ChannelAccess;
   admin?: ConsoleAdmin;
+  /** Bud, the assistant: routes at /api/assistant. Without it the console has no assistant. */
+  assistant?: AssistantBackend;
   /** Read-only conversation transcripts, runs, search and the live stream. */
   conversations?: TranscriptRoutes;
   /** Private chats: list, create, rename, delete, messages, stream and send. Owner only. */

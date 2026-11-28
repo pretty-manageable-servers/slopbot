@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ToolError, errorSummary } from "../errors.js";
+import { ToolError, errorSummary, logError } from "../errors.js";
 import type { Message } from "../domain.js";
 import { PERSONAL_SERVER } from "../personal.js";
 import { toolResult, type AssistantGate, type ToolArgs, type ToolRegistry, type ToolResult } from "../tools.js";
@@ -81,7 +81,8 @@ export class Gate implements AssistantGate {
     };
     await this.deps.store.addApproval(approval);
     const item = await this.addActivity(approval, "approval", `Waiting for your approval: ${approval.summary}`, approval.id);
-    await this.deps.notifier.notify(item, approval);
+    // The approval is queued already. A failed DM must not lose it.
+    try { await this.deps.notifier.notify(item, approval); } catch (error) { logError("assistant_notify_failed", error, { stage: "assistant approval notify", operationId: approval.id }); }
     return toolResult(`Queued for approval ${approval.id}. Continue without it.`);
   }
 

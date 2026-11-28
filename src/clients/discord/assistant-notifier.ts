@@ -90,7 +90,8 @@ export function inQuietHours(settings: Pick<AssistantSettings, 'timezone' | 'qui
   if (!settings.quietStart || !settings.quietEnd) return false;
   const start = minutesOfDay(settings.quietStart), end = minutesOfDay(settings.quietEnd);
   if (start === end) return false;
-  const current = localMinutesOfDay(settings.timezone, now);
+  let current: number;
+  try { current = localMinutesOfDay(settings.timezone, now); } catch { return false; }   // an invalid timezone means no quiet hours
   return start < end ? current >= start && current < end : current >= start || current < end;
 }
 
