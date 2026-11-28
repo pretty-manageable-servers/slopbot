@@ -224,6 +224,16 @@ test("the messages route returns a page with hasMore and streamId, and pages bac
   }
 });
 
+test("the owner reads Bud's home chat and a sprout chat; others get 404", async t => {
+  const f = await setup(t);
+  for (const id of [`assistant:${ALICE}`, "assistant-task:0b7f5c1e-6a52-4f0a-9d63-2f1d9c3a8e44"]) {
+    await f.store.insertWebChat({ id, server: PERSONAL_SERVER, owner: ALICE, title: "Bud", created: 1, updated: 1, deleted: false, storageServer: null, titleSource: "user" });
+    const mine = await f.call(ALICE, "GET", `/api/chats/${encodeURIComponent(id)}/messages`);
+    assert.equal(mine.status, 200, id);
+    assert.equal((await f.call(BOB, "GET", `/api/chats/${encodeURIComponent(id)}/messages`)).status, 404, id);
+  }
+});
+
 test("only the owner can read, send, rename, delete or stream a chat; others get 404", async t => {
   const f = await setup(t);
   const id = await newChat(f);

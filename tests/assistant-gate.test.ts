@@ -58,9 +58,10 @@ function setup() {
   const journal = new SQLiteStore(":memory:");
   const registry = new ToolRegistry(journal, async () => false);
   const calls: Record<string, number> = { note_read: 0, note_write: 0, task_note: 0 };
+  const requests: string[] = [];
   const tool = (name: string, effect: "read" | "write", retrySafe: boolean): ToolDefinition => ({
     name, description: name, fields: { text: { type: "string", description: "Note text." } }, access: "member", effect, retrySafe,
-    execute: async () => { calls[name] = (calls[name] ?? 0) + 1; return `${name} ran`; },
+    execute: async context => { calls[name] = (calls[name] ?? 0) + 1; requests.push(context.message.id); return `${name} ran`; },
   });
   registry.register(tool("note_read", "read", true));
   registry.register(tool("note_write", "write", false));
@@ -70,7 +71,7 @@ function setup() {
   const gate = new Gate({ store, notifier, limits: async () => DEFAULT_ASSISTANT_LIMITS, registry: () => registry, now: () => clock, id: () => `id${++ids}` });
   registry.setAssistantGate(gate);
   const advance = (ms: number) => { clock += ms; };
-  return { store, notified, registry, gate, calls, advance, close: () => journal.close() };
+  return { store, notified, registry, gate, calls, requests, advance, close: () => journal.close() };
 }
 
 const assistantMessage = (id: string, taskId: string | null): Message => ({
@@ -152,6 +153,13 @@ test("deny stores no call", async (t) => {
   assert.deepEqual(s.store.triggers.at(-1)?.payload, { approval: approval.id, denied: true });
   await assert.rejects(s.gate.execute(approval.id, owner), { message: "Already decided." });
   assert.equal(s.calls.note_write, 0);
+});
+
+test("an approved call runs in the request that asked for it", async (t) => {
+  const s = setup(); t.after(s.close);
+  await s.registry.invokeResult(assistantMessage("wake-1", "t1"), "note_write", { text: "hi" }, "op-write", "agent");
+  await s.gate.execute(onlyApproval(s.store).id, owner);
+  assert.deepEqual(s.requests, ["wake-1"]);
 });
 
 test("expired cannot be approved", async (t) => {

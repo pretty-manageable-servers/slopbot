@@ -103,9 +103,10 @@ export class Gate implements AssistantGate {
     throw new ToolError("The sprout changed while saving the rule. Try again.");
   }
 
+  /** The approved call runs as the request that asked for it (the saved wake message), so tools that cite the request, like memory_remember, find it. The operation id keeps the approval apart. */
   private approvalMessage(approval: ApprovalRequest): Message {
     return {
-      id: `assistant-approval:${approval.id}`, server: PERSONAL_SERVER, surface: "web", author: approval.owner, text: "",
+      id: approval.run, server: PERSONAL_SERVER, surface: "web", author: approval.owner, text: "",
       channel: approval.task ? assistantTaskChannel(approval.task) : assistantHomeChannel(approval.owner),
     };
   }
