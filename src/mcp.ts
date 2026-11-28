@@ -7,6 +7,7 @@ import { default as formats } from 'ajv-formats';
 import type { Json, Message } from './domain.js';
 import type { RecordStore } from './records.js';
 import { stableJson } from './prompt-cache.js';
+import { PERSONAL_SERVER } from './personal.js';
 import { ToolError, type ToolArgs, type ToolDefinition, type ToolRegistry } from './tools.js';
 
 export interface McpTool {
@@ -36,6 +37,8 @@ export interface McpConfig {
   timeoutMs: number;
   concurrency: number;
   tools: McpPolicy[];
+  /** Set on a personal connector: the one user who may use it. Its id is `u:<owner>:<name>`. */
+  owner?: string;
 }
 interface SavedConnection extends McpConfig { secret?: string; deleted?: boolean; updatedBy: string; updatedAt: number }
 export type McpConnector = (config: McpConfig, token?: string) => Promise<McpConnection>;
@@ -50,8 +53,11 @@ interface LiveConnection {
   closing?: Promise<void>;
 }
 const kind = 'mcp_connection';
+const personalName = /^[a-z0-9-]{1,32}$/;
+/** A personal connector's tools need no admin grant: access is member and effect follows the tool's readOnlyHint. */
+const personalPolicies = (tools: McpTool[]): McpPolicy[] => tools.map(tool => ({ name: tool.name, schemaHash: mcpSchemaHash(tool), access: 'member', effect: tool.readOnlyHint === true ? 'read' : 'write' }));
 export const mcpSchemaHash = (tool: McpTool) => createHash('sha256').update(stableJson({ input: tool.inputSchema, output: tool.outputSchema ?? null, description: tool.description ?? '', readOnlyHint: tool.readOnlyHint ?? null })).digest('hex');
-export const mcpToolName = (id: string, name: string) => `mcp_${id.slice(0, 12)}_${createHash('sha256').update(JSON.stringify([id, name])).digest('hex').slice(0, 12)}`;
+export const mcpToolName = (id: string, name: string) => `mcp_${id.slice(0, 12).replace(/[^A-Za-z0-9_-]/g, '_')}_${createHash('sha256').update(JSON.stringify([id, name])).digest('hex').slice(0, 12)}`;
 
 // Only ciphertext is persisted. Neither tokens nor remote error messages enter
 // the tool catalog, action journal, console snapshots, or application logs.
@@ -103,12 +109,12 @@ export class McpManager {
   }
   snapshot() {
     return { credentialsEnabled: this.secrets.enabled, connections: [...this.live.values()].map(state => ({
-      id: state.config.id, url: state.config.url, transport: state.config.transport,
+      id: state.config.id, ...(state.config.owner ? { owner: state.config.owner } : {}), url: state.config.url, transport: state.config.transport,
       enabled: state.config.enabled, timeoutMs: state.config.timeoutMs, concurrency: state.config.concurrency,
       hasToken: Boolean(state.config.secret), updatedBy: state.config.updatedBy, updatedAt: state.config.updatedAt,
       status: state.error ? 'error' : state.config.enabled && state.client ? 'connected' : 'disabled', error: state.error ?? null,
       tools: state.tools.map(tool => {
-        const policy = state.config.tools.find(item => item.name === tool.name), schemaHash = mcpSchemaHash(tool);
+        const policy = this.policies(state).find(item => item.name === tool.name), schemaHash = mcpSchemaHash(tool);
         return { ...tool, schemaHash, registeredName: mcpToolName(state.config.id, tool.name),
           enabled: Boolean(policy && policy.schemaHash === schemaHash),
           access: policy?.access ?? 'admin', effect: policy?.effect ?? 'write',
@@ -128,8 +134,13 @@ export class McpManager {
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw new ToolError('Invalid MCP configuration.');
       const value = input as Record<string, unknown>;
       const id = value.id;
-      if (typeof id !== 'string' || !/^[a-z][a-z0-9_]{0,11}$/.test(id)) throw new ToolError('Connection ID must be 1–12 lowercase letters, numbers, or underscores, starting with a letter.');
+      const owner = value.owner;
+      if (owner !== undefined) {
+        if (this.server !== PERSONAL_SERVER || typeof owner !== 'string' || !owner || owner !== actor) throw new ToolError('Invalid personal connector.');
+        if (typeof id !== 'string' || !id.startsWith(`u:${owner}:`) || !personalName.test(id.slice(`u:${owner}:`.length))) throw new ToolError('Invalid personal connector name.');
+      } else if (typeof id !== 'string' || !/^[a-z][a-z0-9_]{0,11}$/.test(id)) throw new ToolError('Connection ID must be 1–12 lowercase letters, numbers, or underscores, starting with a letter.');
       const old = this.live.get(id), record = await this.store.record(this.server, kind, id);
+      if (old && old.config.owner !== owner) throw new ToolError('This connector belongs to another user.');
       if (value.action === 'remove') {
         if (!old) throw new ToolError('Unknown MCP connection.');
         const saved: SavedConnection = { ...old.config, enabled: false, tools: [], deleted: true, updatedBy: actor, updatedAt: Date.now() };
@@ -140,8 +151,8 @@ export class McpManager {
       }
       if (!['save', 'refresh', 'disable'].includes(String(value.action))) throw new ToolError('Unsupported MCP action.');
       if (value.action !== 'save' && !old) throw new ToolError('Unknown MCP connection.');
-      if (!old && this.live.size >= 20) throw new ToolError('At most 20 MCP connections are supported.');
-      const config = value.action === 'save' ? this.parseConfig(value, id) : { ...old!.config, enabled: value.action !== 'disable' && old!.config.enabled };
+      if (!old && !owner && this.live.size >= 20) throw new ToolError('At most 20 MCP connections are supported.');
+      const config = value.action === 'save' ? this.parseConfig(value, id, owner) : { ...old!.config, enabled: value.action !== 'disable' && old!.config.enabled };
       const saved: SavedConnection = { ...config, updatedBy: actor, updatedAt: Date.now() };
       if (old?.config.secret && config.url === old.config.url) saved.secret = old.config.secret;
       if (value.action === 'save' && value.token !== undefined) {
@@ -169,7 +180,7 @@ export class McpManager {
       }
     } finally { release(); }
   }
-  private parseConfig(value: Record<string, unknown>, id: string): McpConfig {
+  private parseConfig(value: Record<string, unknown>, id: string, owner?: string): McpConfig {
     if (typeof value.url !== 'string' || value.url.length > 2048) throw new ToolError('Enter an MCP endpoint URL.');
     let url: URL;
     try { url = new URL(value.url); } catch { throw new ToolError('Invalid MCP endpoint URL.'); }
@@ -177,6 +188,7 @@ export class McpManager {
     if (!['http', 'sse'].includes(String(value.transport)) || typeof value.enabled !== 'boolean') throw new ToolError('Choose a transport and enabled state.');
     const timeoutMs = value.timeoutMs ?? 15000, concurrency = value.concurrency ?? 4;
     if (typeof timeoutMs !== 'number' || !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 60000 || typeof concurrency !== 'number' || !Number.isInteger(concurrency) || concurrency < 1 || concurrency > 16) throw new ToolError('Timeout must be 1000–60000 ms; concurrency must be 1–16.');
+    if (owner !== undefined) return { id, url: url.href, transport: value.transport as 'http' | 'sse', enabled: value.enabled, timeoutMs, concurrency, tools: [], owner };
     if (!Array.isArray(value.tools) || value.tools.length > 100) throw new ToolError('Choose at most 100 tools.');
     const names = new Set<string>();
     const tools = value.tools.map(item => {
@@ -219,9 +231,12 @@ export class McpManager {
     if ('$async' in validate && validate.$async) throw new Error('Asynchronous schemas are unsupported');
     return validate;
   }
+  private policies(state: LiveConnection): McpPolicy[] {
+    return state.config.owner ? personalPolicies(state.tools) : state.config.tools;
+  }
   private definitions(state: LiveConnection): ToolDefinition[] {
     if (!state.client || !state.config.enabled) return [];
-    return state.config.tools.flatMap(policy => {
+    return this.policies(state).flatMap(policy => {
       const tool = state.tools.find(item => item.name === policy.name);
       if (!tool || mcpSchemaHash(tool) !== policy.schemaHash) return [];
       const validate = this.validator(tool.inputSchema);
@@ -236,6 +251,7 @@ export class McpManager {
         validate: (args: ToolArgs) => { if (!validate(args)) throw new ToolError('Arguments do not match the MCP tool schema.'); return args; },
         authorize: async context => {
           if (context.message.server !== this.server) throw new ToolError('MCP connection belongs to another server.');
+          if (state.config.owner && context.message.author !== state.config.owner) throw new ToolError('This connector belongs to another user.');
           this.assertCurrent(state); await this.authorize(context.message);
         },
         execute: async (context, args) => {
