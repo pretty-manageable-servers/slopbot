@@ -416,6 +416,12 @@ export class SQLiteStore implements HarnessJournal, Store, Knowledge, Recall, Qu
       CREATE TABLE IF NOT EXISTS inbox_items (id TEXT PRIMARY KEY, server TEXT NOT NULL, target TEXT NOT NULL, sender TEXT NOT NULL, channel TEXT NOT NULL, source_ids TEXT NOT NULL, summary TEXT NOT NULL, created_at INTEGER NOT NULL, done_at INTEGER);
       CREATE INDEX IF NOT EXISTS inbox_items_target ON inbox_items(server,target,done_at,created_at);
       CREATE INDEX IF NOT EXISTS inbox_items_sender ON inbox_items(server,sender,created_at);
+      CREATE TABLE IF NOT EXISTS assistant_settings (user_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL, brief_cron TEXT, timezone TEXT NOT NULL, dm_updates INTEGER NOT NULL, quiet_start TEXT, quiet_end TEXT, brief_next_at INTEGER, updated INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS assistant_tasks (id TEXT PRIMARY KEY, owner TEXT NOT NULL, goal TEXT NOT NULL, instructions TEXT NOT NULL, status TEXT NOT NULL, pause TEXT, wake TEXT NOT NULL, next_at INTEGER, rules TEXT NOT NULL, effort TEXT NOT NULL, failures INTEGER NOT NULL, last_run_at INTEGER, last_error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, revision INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS assistant_tasks_due ON assistant_tasks (status, next_at);
+      CREATE TABLE IF NOT EXISTS assistant_triggers (id TEXT PRIMARY KEY, owner TEXT NOT NULL, task TEXT, kind TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL, taken_at INTEGER);
+      CREATE TABLE IF NOT EXISTS assistant_approvals (id TEXT PRIMARY KEY, owner TEXT NOT NULL, task TEXT, run TEXT NOT NULL, tool TEXT NOT NULL, input TEXT NOT NULL, summary TEXT NOT NULL, status TEXT NOT NULL, result TEXT, created_at INTEGER NOT NULL, decided_at INTEGER, expires_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS assistant_activity (id TEXT PRIMARY KEY, owner TEXT NOT NULL, task TEXT, kind TEXT NOT NULL, text TEXT NOT NULL, ref TEXT, created_at INTEGER NOT NULL, read_at INTEGER);
     `);
     if (!this.db.prepare("PRAGMA table_info(memories)").all().some(column => column.name === "metadata")) this.db.exec("ALTER TABLE memories ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'");
     if (!this.db.prepare("PRAGMA table_info(web_replies)").all().some(column => column.name === "via")) this.db.exec("ALTER TABLE web_replies ADD COLUMN via TEXT NOT NULL DEFAULT 'webhook'");

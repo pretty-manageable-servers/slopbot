@@ -162,3 +162,9 @@ DELETE FROM embedding_usage WHERE purpose IN ('index','query');
 
 -- Additive memory metadata preserves legacy source-bound facts and their vectors.
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS metadata TEXT NOT NULL DEFAULT '{}';
+CREATE TABLE IF NOT EXISTS assistant_settings (user_id TEXT PRIMARY KEY, enabled BIGINT NOT NULL, brief_cron TEXT, timezone TEXT NOT NULL, dm_updates BIGINT NOT NULL, quiet_start TEXT, quiet_end TEXT, brief_next_at BIGINT, updated BIGINT NOT NULL);
+CREATE TABLE IF NOT EXISTS assistant_tasks (id TEXT PRIMARY KEY, owner TEXT NOT NULL, goal TEXT NOT NULL, instructions TEXT NOT NULL, status TEXT NOT NULL, pause TEXT, wake TEXT NOT NULL, next_at BIGINT, rules TEXT NOT NULL, effort TEXT NOT NULL, failures BIGINT NOT NULL, last_run_at BIGINT, last_error TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, revision BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS assistant_tasks_due ON assistant_tasks (status, next_at);
+CREATE TABLE IF NOT EXISTS assistant_triggers (id TEXT PRIMARY KEY, owner TEXT NOT NULL, task TEXT, kind TEXT NOT NULL, payload TEXT NOT NULL, created_at BIGINT NOT NULL, taken_at BIGINT);
+CREATE TABLE IF NOT EXISTS assistant_approvals (id TEXT PRIMARY KEY, owner TEXT NOT NULL, task TEXT, run TEXT NOT NULL, tool TEXT NOT NULL, input TEXT NOT NULL, summary TEXT NOT NULL, status TEXT NOT NULL, result TEXT, created_at BIGINT NOT NULL, decided_at BIGINT, expires_at BIGINT NOT NULL);
+CREATE TABLE IF NOT EXISTS assistant_activity (id TEXT PRIMARY KEY, owner TEXT NOT NULL, task TEXT, kind TEXT NOT NULL, text TEXT NOT NULL, ref TEXT, created_at BIGINT NOT NULL, read_at BIGINT);
