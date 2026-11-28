@@ -7,6 +7,7 @@ import { MAX_TOOL_CALLS_PER_BATCH } from "./generation-policy.js";
 import type { Json, Message, ModelTool } from "./domain.js";
 import { SURFACE_CAPABILITIES, type Capability } from "@slopbot/contracts";
 import { surfaceOf } from "./engine/api.js";
+import { ASSISTANT_INTERNAL_TOOLS } from "./assistant/types.js";
 
 export interface ToolResult {
   text: string;
@@ -209,15 +210,22 @@ function withNotes(output: ToolOutput, notes: readonly string[]): ToolResult {
   return notes.length ? { ...result, notes, text: `Note: ${notes.join("; ")}.\n${result.text}` } : result;
 }
 
+/** Decides whether an assistant run (a message with `assistant` set) may make a tool call. `result` replaces the call. */
+export interface AssistantGate {
+  decide(message: Message, name: string, args: ToolArgs, effect: "read" | "write"): Promise<{ run: true } | { result: ToolResult }>;
+}
+
 export class ToolRegistry {
   private readonly writers = new Map<string, Promise<void>>();
   private readonly tools = new Map<string, ToolDefinition>();
+  private assistantGate?: AssistantGate;
   constructor(private readonly journal: ToolJournal, private readonly authorize: (message: Message) => Promise<boolean>, private readonly guard: (context: ToolContext, expectedVersion: number | undefined) => Promise<void> = async () => {}) {}
   private checkDefinition(tool: ToolDefinition, names: ReadonlyMap<string, ToolDefinition>): void {
     if (!/^[a-z][a-z0-9_]{0,31}$/.test(tool.name) || tool.name === "run" || names.has(tool.name)) throw new Error("Invalid or duplicate tool name");
     for (const key of Object.keys(tool.fields)) if (!/^[a-z][a-z0-9_]{0,31}$/.test(key) || ["constructor", "prototype"].includes(key)) throw new Error("Invalid tool field name");
     if (tool.inputSchema && !tool.validate) throw new Error("Schema tools require an input validator");
   }
+  setAssistantGate(gate: AssistantGate): void { this.assistantGate = gate; }
   register(tool: ToolDefinition): void {
     this.checkDefinition(tool, this.tools);
     this.tools.set(tool.name, tool);
@@ -331,6 +339,11 @@ export class ToolRegistry {
     // A surface runs a tool only if it has the capabilities the tool needs. A DM has none, so it runs no Discord or web tool.
     const refusal = surfaceRefusal(message, tool);
     if (refusal) throw new ToolError(refusal);
+    // An assistant run's call may need an approval first. The gate's result stands in for the call.
+    if (message.assistant && this.assistantGate && !(ASSISTANT_INTERNAL_TOOLS as readonly string[]).includes(name)) {
+      const decision = await this.assistantGate.decide(message, name, args, this.effect(name, args));
+      if ("result" in decision) return decision.result;
+    }
     if (this.effect(name, args) === "read") return this.perform(message, name, args, operationId, source, expectedVersion, invocation, notes);
     const key = tool.resource?.(message, args) ?? `server:${message.server}:tool:${name}`;
     const previous = this.writers.get(key) ?? Promise.resolve();
