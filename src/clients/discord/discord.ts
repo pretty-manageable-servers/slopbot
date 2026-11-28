@@ -58,6 +58,7 @@ import { WebReplies, asWebUser, webReplyKey } from "../../web-replies.js";
 import { MemberDirectory } from "../../member-directory.js";
 import { discordMemberSource } from "./discord-member-source.js";
 import { discordWebReplies } from "./discord-web-replies.js";
+import type { GuildMessageMention } from "./assistant-mentions.js";
 import { isPrivateChannel, isDirectMessageChannel, directMessageChannel, discordChannelId } from "../../private-chat.js";
 import { WebChatGateway } from "../../engine/web-chat-gateway.js";
 import type { Directory } from "../../engine/api.js";
@@ -112,6 +113,7 @@ export class DiscordServer implements ChatGateway {
   private attachSweep: (() => void) | undefined;
   private readonly objectStorage: S3StorageProvider | undefined;
   private voice: DiscordVoice | undefined;
+  private mentionHook: ((message: GuildMessageMention) => Promise<void>) | undefined;
   private get bot() { return this.workspace.bot; }
   private get reminders() { return this.workspace.reminders; }
   private get schedules() { return this.workspace.schedules; }
@@ -276,6 +278,8 @@ export class DiscordServer implements ChatGateway {
     } catch (error) { logError("code_confirmation_post_failed", error, { stage: "confirmation", server: this.guildId, channel: channelId, messageId: turn }, true); }
   }
   messageCreate(message: DiscordMessage): void { void this.receive(message).catch(error => logError("Discord event failed. Check channel permissions.", error)); }
+  /** Runs for each guild message that mentions users. The hook is fire-and-forget. */
+  setMentionHook(hook: (message: GuildMessageMention) => Promise<void>): void { this.mentionHook = hook; }
   messageUpdate(updated: DiscordMessage | PartialMessage): void {
     void (async () => {
       const channel = updated.guildId ? updated.channelId : directMessageChannel(updated.channelId);
@@ -518,6 +522,10 @@ export class DiscordServer implements ChatGateway {
     if (!this.bot.accepts(message.guildId ?? this.guildId, channel)) return;
     if (message.author.id === this.client.user?.id) return this.receiveOwn(message);
     const live = this.normalize(message);
+    if (message.guildId && message.mentions.users.size > 0 && this.mentionHook) {
+      const mention: GuildMessageMention = { server: live.server, channel: live.channel, messageId: message.id, author: live.author, authorIsBot: message.author.bot || Boolean(message.webhookId), text: live.text, mentionedUserIds: [...message.mentions.users.keys()], isDm: false };
+      void this.mentionHook(mention).catch(error => logError("assistant_mention_failed", error, { stage: "assistant mention", server: live.server, channel: live.channel, messageId: message.id }, true));
+    }
     // Not awaited: a member lookup must not delay the reply.
     if (!live.transient) void publishMessage(this.store, live, undefined, this.members).catch(error => logError("web_transcript_publish_failed", error, { server: this.guildId }, true));
     const timingScope = { server: live.server, channel: live.channel, id: message.id };
