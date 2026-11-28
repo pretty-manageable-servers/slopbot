@@ -14,7 +14,7 @@ const authorOf = (message: Message) => message.authorName && !/^\d{17,20}$/.test
 /** view_image: shows an image of a message in this chat again. The link is fresh and only goes into this one tool result. */
 export function registerViewImage(registry: ToolRegistry, deps: { store: Pick<SearchServices["store"], "readHistory"> & Pick<Store, "context">; images: ImageSource; authorize: SearchServices["authorize"] }): void {
   registry.register({ name: "view_image", surface: "top", access: "member", effect: "read", retrySafe: true,
-    description: "Look at an image from a message in this chat. Use it when you need to see an earlier image again. Returns the image.",
+    description: "Look at an image from a message in this chat. Use it only for an image from an earlier message. Images of the current request, and recent images shown above it, are already attached to this run as image input: do not call this for them. Returns the image.",
     fields: {
       message_ref: { type: "message_ref", required: true, description: "Ref (like m7) or ID of the message with the image. Transcript lines with images show [images: …]." },
       index: { type: "integer", min: 1, max: 10, description: "Which image of the message, counting from 1. Default 1." },
@@ -39,6 +39,8 @@ export function registerViewImage(registry: ToolRegistry, deps: { store: Pick<Se
           .map(item => `${item.id} (${imagesOf(item).map(image => image.name).join(", ")}, by ${authorOf(item)} at ${clock(item.timestamp)})`).join(", ");
         return { text: listed ? `That message has no images. Messages with images in this chat: ${listed}. Call view_image with one of these IDs.` : "No message in this chat has images.", status: "rejected" };
       }
+      // The request's own images are already image input in this run.
+      if (source.id === context.message.id) return { text: "The images of the current request are already attached to it as image input. Look at them directly.", status: "rejected" };
       const index = Number(args.index ?? 1);
       if (index > images.length) return { text: `Message ${source.id} has ${images.length} image${images.length === 1 ? "" : "s"}. Use index 1 to ${images.length}.`, status: "rejected" };
       const image = images[index - 1]!;
